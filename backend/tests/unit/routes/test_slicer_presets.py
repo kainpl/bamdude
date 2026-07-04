@@ -12,8 +12,8 @@ import pytest
 
 from backend.app.api.routes import slicer_presets as sp
 from backend.app.api.routes.slicer_presets import (
-    _dedupe_by_name,
     _empty_slots,
+    _enrich_cloud_metadata,
     _parse_compatible_printers,
     _parse_filament_metadata,
     list_printer_models,
@@ -27,56 +27,54 @@ def _slots(**overrides) -> dict:
     return base
 
 
-class TestDedupePriority:
-    def test_cloud_wins_over_local_and_standard(self):
-        cloud = _slots(printer=[UnifiedPreset(id="c1", name="A1 0.4 nozzle", source="cloud")])
-        local = _slots(printer=[UnifiedPreset(id="42", name="A1 0.4 nozzle", source="local")])
-        standard = _slots(printer=[UnifiedPreset(id="A1 0.4 nozzle", name="A1 0.4 nozzle", source="standard")])
-        _oc, out_cloud, out_local, out_standard = _dedupe_by_name(_empty_slots(), cloud, local, standard)
-        assert [p.name for p in out_cloud["printer"]] == ["A1 0.4 nozzle"]
-        assert out_local["printer"] == []
-        assert out_standard["printer"] == []
+class TestEnrichCloudMetadata:
+    """No cross-tier dedup post-#1712 — every tier surfaces its full list so
+    the user can pick any source. The tier order only drives auto-pick + group
+    rendering, never hiding."""
 
-    def test_local_wins_over_standard(self):
-        cloud = _slots()
-        local = _slots(process=[UnifiedPreset(id="7", name="0.20mm Standard", source="local")])
-        standard = _slots(process=[UnifiedPreset(id="0.20mm Standard", name="0.20mm Standard", source="standard")])
-        _oc, out_cloud, out_local, out_standard = _dedupe_by_name(_empty_slots(), cloud, local, standard)
-        assert out_local["process"][0].source == "local"
-        assert out_standard["process"] == []
-
-    def test_disjoint_names_all_present(self):
-        cloud = _slots(filament=[UnifiedPreset(id="c1", name="My PLA", source="cloud")])
-        local = _slots(filament=[UnifiedPreset(id="3", name="Imported PETG", source="local")])
-        standard = _slots(filament=[UnifiedPreset(id="Bambu PLA Basic", name="Bambu PLA Basic", source="standard")])
-        _oc, out_cloud, out_local, out_standard = _dedupe_by_name(_empty_slots(), cloud, local, standard)
-        assert len(out_cloud["filament"]) == 1
-        assert len(out_local["filament"]) == 1
-        assert len(out_standard["filament"]) == 1
-
-    def test_orca_cloud_wins_over_every_lower_tier(self):
-        """Orca Cloud sits at the top of the ``orca_cloud > cloud > local >
-        standard`` precedence — a name shared with any lower tier renders
-        only in the Orca tier."""
+    def test_same_name_in_all_tiers_appears_in_every_tier(self):
+        """A name present in orca_cloud AND cloud AND local AND standard must
+        come back in EACH tier — the order is used for auto-pick + rendering,
+        not for hiding."""
         name = "A1 0.4 nozzle"
         orca_cloud = _slots(printer=[UnifiedPreset(id="o1", name=name, source="orca_cloud")])
         cloud = _slots(printer=[UnifiedPreset(id="c1", name=name, source="cloud")])
         local = _slots(printer=[UnifiedPreset(id="42", name=name, source="local")])
         standard = _slots(printer=[UnifiedPreset(id=name, name=name, source="standard")])
-        out_orca, out_cloud, out_local, out_standard = _dedupe_by_name(orca_cloud, cloud, local, standard)
+        out_orca, out_cloud, out_local, out_standard = _enrich_cloud_metadata(orca_cloud, cloud, local, standard)
         assert [p.source for p in out_orca["printer"]] == ["orca_cloud"]
-        assert out_cloud["printer"] == []
-        assert out_local["printer"] == []
-        assert out_standard["printer"] == []
+        assert [p.source for p in out_cloud["printer"]] == ["cloud"]
+        assert [p.source for p in out_local["printer"]] == ["local"]
+        assert [p.source for p in out_standard["printer"]] == ["standard"]
+
+    def test_preserves_order_within_tier(self):
+        cloud = _slots(
+            printer=[
+                UnifiedPreset(id="c1", name="Z-First", source="cloud"),
+                UnifiedPreset(id="c2", name="A-Second", source="cloud"),
+                UnifiedPreset(id="c3", name="M-Third", source="cloud"),
+            ]
+        )
+        _oc, out_cloud, _ol, _os = _enrich_cloud_metadata(_empty_slots(), cloud, _empty_slots(), _empty_slots())
+        assert [p.name for p in out_cloud["printer"]] == ["Z-First", "A-Second", "M-Third"]
+
+    def test_disjoint_names_all_present(self):
+        cloud = _slots(filament=[UnifiedPreset(id="c1", name="My PLA", source="cloud")])
+        local = _slots(filament=[UnifiedPreset(id="3", name="Imported PETG", source="local")])
+        standard = _slots(filament=[UnifiedPreset(id="Bambu PLA Basic", name="Bambu PLA Basic", source="standard")])
+        _oc, out_cloud, out_local, out_standard = _enrich_cloud_metadata(_empty_slots(), cloud, local, standard)
+        assert len(out_cloud["filament"]) == 1
+        assert len(out_local["filament"]) == 1
+        assert len(out_standard["filament"]) == 1
 
 
 class TestFilamentMetadataMerge:
-    def test_cloud_inherits_local_filament_metadata_on_dedup(self):
-        """When a cloud entry wins over a same-named local entry, the cloud
-        entry inherits filament_type + filament_colour from the local row.
-        Cloud doesn't carry metadata (rate-limited detail endpoint), so without
-        this merge the SliceModal's pre-pick loses match info for every preset
-        the user has cloud-synced AND locally imported."""
+    def test_cloud_inherits_local_filament_metadata(self):
+        """A Bambu Cloud entry without its own filament_type + filament_colour
+        inherits them from a same-named local row. Cloud doesn't carry metadata
+        (rate-limited detail endpoint), so without this merge the SliceModal's
+        pre-pick loses match info for every preset the user has cloud-synced AND
+        locally imported. Both entries still surface — no dedup."""
         cloud = _slots(filament=[UnifiedPreset(id="c", name="Bambu PLA Basic", source="cloud")])
         local = _slots(
             filament=[
@@ -90,9 +88,11 @@ class TestFilamentMetadataMerge:
             ]
         )
         standard = _slots()
-        _oc, out_cloud, _ol, _os = _dedupe_by_name(_empty_slots(), cloud, local, standard)
+        _oc, out_cloud, out_local, _os = _enrich_cloud_metadata(_empty_slots(), cloud, local, standard)
         assert out_cloud["filament"][0].filament_type == "PLA"
         assert out_cloud["filament"][0].filament_colour == "#00FF00"
+        # Local entry is untouched and still present.
+        assert out_local["filament"][0].filament_type == "PLA"
 
     def test_cloud_keeps_own_metadata_when_present(self):
         cloud = _slots(
@@ -117,7 +117,7 @@ class TestFilamentMetadataMerge:
                 )
             ]
         )
-        _oc, out_cloud, _ol, _os = _dedupe_by_name(_empty_slots(), cloud, local, _empty_slots())
+        _oc, out_cloud, _ol, _os = _enrich_cloud_metadata(_empty_slots(), cloud, local, _empty_slots())
         # Cloud's own non-None metadata MUST win — that's the user's actual
         # cloud preset content, even if it happens to share a name with a
         # local import.

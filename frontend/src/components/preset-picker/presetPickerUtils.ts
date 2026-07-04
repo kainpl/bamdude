@@ -12,11 +12,13 @@ import type { PresetRef, PresetSource, UnifiedPreset, UnifiedPresetsResponse } f
 // vocabulary.
 export type Slot = 'printer' | 'process' | 'filament';
 
-// Manual mode tier display order — orca_cloud first (the operator's most-
-// recently-curated source, metadata inlined via sync_pull), then local
-// imports, then Bambu Cloud (per-user, no inline metadata), then standard
-// bundled fallbacks. Identical to the SliceModal ordering.
-export const TIER_ORDER = ['orca_cloud', 'local', 'cloud', 'standard'] as const;
+// Tier display + lookup order — local first (the operator explicitly
+// imported them for this install), then Orca Cloud (metadata inlined via
+// sync_pull), then Bambu Cloud (per-user, no inline metadata), then
+// standard bundled fallbacks. The backend does NOT dedup tiers, so a
+// same-named preset appears in each group; this order only drives auto-pick
+// and rendering (#1712). Identical to the SliceModal ordering.
+export const TIER_ORDER = ['local', 'orca_cloud', 'cloud', 'standard'] as const;
 
 export type OwnerFilter = 'all' | 'custom' | 'builtin';
 

@@ -7,10 +7,8 @@ import {
   type BedType,
   type PresetRef,
   type PresetSource,
-  type SliceBundleSpec,
   type SliceJobProgress,
   type SliceRequest,
-  type SlicerBundle,
   type SlicerCloudStatus,
   type UnifiedPreset,
   type UnifiedPresetsResponse,
@@ -21,7 +19,6 @@ import { SlicePlateSelector } from './SlicePlateSelector';
 import type { PlateFilament } from '../types/plates';
 import { normalizeColorForCompare, colorsAreSimilar } from '../utils/amsHelpers';
 import {
-  BundleStringDropdown,
   PresetDropdown,
   PresetSourceControl,
 } from './preset-picker/PresetTripletPicker';
@@ -117,8 +114,8 @@ function pickProcessDefault(
 }
 
 const TIER_BONUS: Record<PresetSource, number> = {
-  orca_cloud: 1.75,
-  local: 1.5,
+  local: 1.75,
+  orca_cloud: 1.5,
   cloud: 1.0,
   standard: 0.5,
 };
@@ -305,20 +302,6 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // entry per AMS slot the plate uses. Pre-pick (effect below) initialises
   // each slot from the source plate's required (type, colour).
   const [filamentPresets, setFilamentPresets] = useState<(PresetRef | null)[]>([]);
-  // Bundle dispatch (alternative to the preset triplet). When non-null, the
-  // SliceModal hides the cloud/local/standard preset dropdowns and shows
-  // bundle-scoped pickers (process + per-slot filament from the chosen
-  // bundle's contents). Submit routes through the backend's bundle dispatch
-  // (`SliceRequest.bundle`) which skips PresetRef resolution.
-  //
-  // We do NOT restore the bundle id from localStorage on mount — a stale
-  // id would put the modal in "bundle mode with empty dropdowns" if the
-  // bundle was deleted between sessions. Instead, the unified preset-source
-  // toggle reads ``last-bundle-id`` only when the user explicitly clicks
-  // "Bundle", and validates against the current ``bundlesQuery.data`` first.
-  const [selectedBundleId, setSelectedBundleId] = useState<string | null>(null);
-  const [bundleProcessName, setBundleProcessName] = useState<string | null>(null);
-  const [bundleFilamentNames, setBundleFilamentNames] = useState<(string | null)[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   // Owner filter for the preset dropdowns — same 3-state model as the
   // ProfilesPage filter (``all`` / ``custom`` ("My presets") /
@@ -343,20 +326,6 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       /* private mode / quota — silently skip */
     }
   }, [filterOwner]);
-
-  // Remember the last-picked bundle id so reopening the modal in bundle
-  // mode doesn't make the user re-pick from the dropdown every time.
-  // Only writes — restoration happens on explicit "Bundle" click via
-  // ``handlePresetSourceChange`` (with a freshness check against the
-  // current ``bundlesQuery.data``).
-  useEffect(() => {
-    if (typeof localStorage === 'undefined' || selectedBundleId == null) return;
-    try {
-      localStorage.setItem('bamdude:slice-modal:last-bundle-id', selectedBundleId);
-    } catch {
-      /* private mode / quota — silently skip */
-    }
-  }, [selectedBundleId]);
 
   // Bed plate override sent to the slicer as ``--curr-bed-type``. Default
   // ``Textured PEI Plate`` matches the factory plate shipped with X1C / P1S
@@ -601,46 +570,26 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     }
   };
 
-  // Imported Printer Preset Bundles (.bbscfg). Empty list when no sidecar
-  // configured / no bundles imported yet; the bundle picker hides itself
-  // in that case so users without bundles see the original modal layout.
-  const bundlesQuery = useQuery({
-    queryKey: ['slicerBundles'],
-    queryFn: api.listSlicerBundles,
-    staleTime: 60_000,
-    enabled: !platesQuery.isLoading && !needsPlatePicker,
-    // Bundle listing is a hard 503 when the sidecar is offline; don't
-    // retry tight loops in that case.
-    retry: false,
-  });
   // Canonical Bambu printer-model registry — drives the @BBL name fallback in
-  // the compatibility matcher for cloud / standard presets when no uploaded
-  // bundle covers them (#1325 follow-up). Long staleTime: the registry only
-  // changes across backend releases.
+  // the compatibility matcher for cloud / standard presets (#1325). Long
+  // staleTime: the registry only changes across backend releases.
   const printerModelsQuery = useQuery({
     queryKey: ['slicerPrinterModels'],
     queryFn: api.getPrinterModels,
     staleTime: Infinity,
   });
-  const selectedBundle: SlicerBundle | null = useMemo(() => {
-    if (!selectedBundleId || !bundlesQuery.data) return null;
-    return bundlesQuery.data.find((b) => b.id === selectedBundleId) ?? null;
-  }, [selectedBundleId, bundlesQuery.data]);
-  const isBundleMode = selectedBundle != null;
 
   // Selected-printer context for the process / filament filter (#1325).
   const selectedPrinterName = useMemo<string | null>(() => {
     if (!presetsQuery.data || !printerPreset) return null;
     return findPreset(presetsQuery.data, printerPreset, 'printer')?.name ?? null;
   }, [presetsQuery.data, printerPreset]);
-  // Compatibility ground truth: the user's uploaded Slicer Bundles plus the
-  // backend Bambu printer-model registry (#1325 + follow-up). The bundle path
-  // handles imported / custom presets; the registry-driven @BBL name fallback
-  // inside slicerPrinterMatch picks up cloud / standard presets for users who
-  // haven't uploaded bundles yet.
+  // Compatibility ground truth: the slicer's own `compatible_printers` list
+  // on local-imported presets, plus the @BBL <code> name fallback for cloud /
+  // standard presets via the backend Bambu printer-model registry.
   const compatIndex = useMemo<PrinterCompatibilityIndex>(
-    () => buildCompatibilityIndex(bundlesQuery.data ?? [], printerModelsQuery.data ?? {}),
-    [bundlesQuery.data, printerModelsQuery.data],
+    () => buildCompatibilityIndex(printerModelsQuery.data ?? {}),
+    [printerModelsQuery.data],
   );
 
   // Printer / process preset names the source 3MF was prepared with. The
@@ -648,30 +597,6 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // it), so these are known by the time the pre-pick effects run.
   const embeddedPrinter = platesQuery.data?.embedded_printer ?? null;
   const embeddedProcess = platesQuery.data?.embedded_process ?? null;
-
-  // Unified mode toggle for the preset-source row. Switching to "manual"
-  // clears the selected bundle (so all the cloud/local/standard machinery
-  // re-renders); switching to "bundle" picks the last-used bundle id from
-  // localStorage if it's still present in the current list, otherwise
-  // falls back to the first available bundle. We never set a stale id.
-  const handlePresetSourceChange = (next: 'manual' | 'bundle') => {
-    if (next === 'manual') {
-      setSelectedBundleId(null);
-      return;
-    }
-    const bundles = bundlesQuery.data ?? [];
-    if (bundles.length === 0) return;
-    let candidate: string | null = null;
-    if (typeof localStorage !== 'undefined') {
-      try {
-        const stored = localStorage.getItem('bamdude:slice-modal:last-bundle-id');
-        if (stored && bundles.some((b) => b.id === stored)) candidate = stored;
-      } catch {
-        /* private mode / quota — fall through to first */
-      }
-    }
-    setSelectedBundleId(candidate ?? bundles[0].id);
-  };
 
   // Printer pre-pick: defaults to the printer the 3MF was prepared for when
   // that preset is available, else the first listed printer (see
@@ -734,35 +659,6 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     });
   }, [presetsQuery.data, filamentSlots, selectedPrinterName, compatIndex]);
 
-  // Bundle-mode auto-pick: when the user picks a bundle (or the slot count
-  // changes after the picker is open), default the process to the bundle's
-  // first listed process and every filament slot to the bundle's first
-  // listed filament. Plain string match — bundles store delta files keyed
-  // by user preset name, no scoring needed since the user picks per-slot
-  // afterwards if the default is wrong.
-  useEffect(() => {
-    if (!selectedBundle) {
-      // Reset bundle picks when bundle is cleared so re-selection
-      // re-defaults rather than carrying stale values.
-      setBundleProcessName(null);
-      setBundleFilamentNames([]);
-      return;
-    }
-    setBundleProcessName((current) => {
-      // Preserve a manual pick if it still exists in the bundle; otherwise
-      // re-default. Same shape as the preset auto-pick effect above.
-      if (current && selectedBundle.process.includes(current)) return current;
-      return selectedBundle.process[0] ?? null;
-    });
-    setBundleFilamentNames((current) => {
-      if (current.length === filamentSlots.length && current.every((n) => n != null)) {
-        return current;
-      }
-      const fallback = selectedBundle.filament[0] ?? null;
-      return filamentSlots.map((_, i) => current[i] ?? fallback);
-    });
-  }, [selectedBundle, filamentSlots]);
-
   // Clear any current preset selection that no longer satisfies the
   // owner filter (resolves the picked id against the loaded preset
   // catalogue and drops the value if the resolved entry — or its absence
@@ -789,60 +685,34 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
 
   const enqueueMutation = useMutation({
     mutationFn: async () => {
-      let body: SliceRequest;
-      if (isBundleMode) {
-        // Bundle dispatch path. The selected bundle's first printer is the
-        // implicit printer choice (every .bbscfg carries exactly one).
-        if (
-          !selectedBundle ||
-          !bundleProcessName ||
-          bundleFilamentNames.length === 0 ||
-          bundleFilamentNames.some((n) => n == null)
-        ) {
-          throw new Error(t('slice.bundleAllRequired', 'Bundle process and every filament slot must be picked'));
-        }
-        const bundleSpec: SliceBundleSpec = {
-          bundle_id: selectedBundle.id,
-          printer_name: selectedBundle.printer[0] ?? selectedBundle.printer_preset_name,
-          process_name: bundleProcessName,
-          filament_names: bundleFilamentNames as string[],
-        };
-        body = {
-          bundle: bundleSpec,
-          ...(sliceAllPlates ? { plate: 0 } : selectedPlate != null ? { plate: selectedPlate } : {}),
-          ...(pickedSlicer != null ? { slicer: pickedSlicer } : {}),
-          bed_type: bedType,
-        };
-      } else {
-        if (
-          !printerPreset ||
-          !processPreset ||
-          filamentPresets.length === 0 ||
-          filamentPresets.some((r) => r == null)
-        ) {
-          throw new Error(t('slice.allPresetsRequired', 'All presets must be selected'));
-        }
-        body = {
-          printer_preset: printerPreset,
-          process_preset: processPreset,
-          // The first slot also goes into the legacy singular field so the
-          // backend's older callers / clients keep behaving the same — the
-          // backend validator prefers `filament_presets` when both are set.
-          filament_preset: filamentPresets[0] as PresetRef,
-          filament_presets: filamentPresets as PresetRef[],
-          // Always send a concrete plate number when the source is multi-plate;
-          // omit otherwise so the backend default applies for STL / single-plate
-          // 3MF sources where the concept doesn't apply.
-          ...(sliceAllPlates ? { plate: 0 } : selectedPlate != null ? { plate: selectedPlate } : {}),
-          // Per-job slicer override. Only sent when the picker is actually
-          // visible to the user (both sidecars healthy) AND the user picked
-          // something — otherwise the global preferred_slicer setting decides.
-          ...(pickedSlicer != null ? { slicer: pickedSlicer } : {}),
-          // Bed plate override → sidecar's ``bedType`` form field →
-          // ``--curr-bed-type`` CLI flag.
-          bed_type: bedType,
-        };
+      if (
+        !printerPreset ||
+        !processPreset ||
+        filamentPresets.length === 0 ||
+        filamentPresets.some((r) => r == null)
+      ) {
+        throw new Error(t('slice.allPresetsRequired', 'All presets must be selected'));
       }
+      const body: SliceRequest = {
+        printer_preset: printerPreset,
+        process_preset: processPreset,
+        // The first slot also goes into the legacy singular field so the
+        // backend's older callers / clients keep behaving the same — the
+        // backend validator prefers `filament_presets` when both are set.
+        filament_preset: filamentPresets[0] as PresetRef,
+        filament_presets: filamentPresets as PresetRef[],
+        // Always send a concrete plate number when the source is multi-plate;
+        // omit otherwise so the backend default applies for STL / single-plate
+        // 3MF sources where the concept doesn't apply.
+        ...(sliceAllPlates ? { plate: 0 } : selectedPlate != null ? { plate: selectedPlate } : {}),
+        // Per-job slicer override. Only sent when the picker is actually
+        // visible to the user (both sidecars healthy) AND the user picked
+        // something — otherwise the global preferred_slicer setting decides.
+        ...(pickedSlicer != null ? { slicer: pickedSlicer } : {}),
+        // Bed plate override → sidecar's ``bedType`` form field →
+        // ``--curr-bed-type`` CLI flag.
+        bed_type: bedType,
+      };
       if (source.kind === 'libraryFile') {
         return api.sliceLibraryFile(source.id, body);
       }
@@ -866,23 +736,18 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // Slice button gates only on a complete picker selection. Multi-plate
   // sources also need an explicit plate pick so the slicer (and the
   // filament-reqs query that feeds the dropdowns) target the right plate.
-  // Tier mode also gates on the preview-slice / embedded-metadata read
-  // having succeeded (``filamentReqsQuery.isSuccess``) — until then, the
-  // synthetic single-slot fallback would have auto-enabled the button on
-  // opaque defaults before the slicer returned the real slot map.
+  // Also gates on the preview-slice / embedded-metadata read having
+  // succeeded (``filamentReqsQuery.isSuccess``) — until then, the synthetic
+  // single-slot fallback would have auto-enabled the button on opaque
+  // defaults before the slicer returned the real slot map.
   // Upstream Bambuddy commit a64cfbbd.
-  const isReady = isBundleMode
-    ? selectedBundle != null &&
-      bundleProcessName != null &&
-      bundleFilamentNames.length > 0 &&
-      bundleFilamentNames.every((n) => n != null) &&
-      (!isMultiPlate || sliceAllPlates || selectedPlate != null)
-    : printerPreset != null &&
-      processPreset != null &&
-      filamentReqsQuery.isSuccess &&
-      filamentPresets.length > 0 &&
-      filamentPresets.every((r) => r != null) &&
-      (!isMultiPlate || sliceAllPlates || selectedPlate != null);
+  const isReady =
+    printerPreset != null &&
+    processPreset != null &&
+    filamentReqsQuery.isSuccess &&
+    filamentPresets.length > 0 &&
+    filamentPresets.every((r) => r != null) &&
+    (!isMultiPlate || sliceAllPlates || selectedPlate != null);
   const isEnqueuing = enqueueMutation.isPending;
 
   // Single-screen layout: preset picker
@@ -1011,74 +876,34 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                   matches the factory plate on X1C / P1S / H2D; A1 owners
                   flip to SuperTack once and localStorage persists. */}
               <BedTypePicker value={bedType} onChange={setBedType} disabled={isEnqueuing} />
-              {/* Unified preset-source control: top-level Manual/Bundle
-                  toggle (only when at least one .bbscfg is imported), plus
-                  a sub-control that swaps between the 3-state owner
-                  filter (Manual mode) and the bundle picker (Bundle mode).
-                  Replaces the previous two side-by-side widgets that left
-                  the owner filter visibly active in bundle mode where it
-                  had no effect. */}
+              {/* Preset-source control: 3-state owner filter (All / My
+                  Presets / Built-in) applied across the cloud / local /
+                  standard tiers. */}
               <PresetSourceControl
-                mode={isBundleMode ? 'bundle' : 'manual'}
-                onModeChange={handlePresetSourceChange}
                 ownerFilter={filterOwner}
                 onOwnerFilterChange={setFilterOwner}
-                bundles={bundlesQuery.data ?? []}
-                selectedBundleId={selectedBundleId}
-                onBundleChange={setSelectedBundleId}
                 disabled={isEnqueuing}
               />
-              {/* removed inline `bundlesQuery.data && length > 0` BundlePicker —
-                  PresetSourceControl renders the picker only when bundles exist */}
-              {/* Preset triplet — hidden when a bundle is selected so the
-                  user only sees one tier at a time. The bundle's process +
-                  filament dropdowns render below in their stead. */}
-              {!isBundleMode && (
-                <>
-                  <PresetDropdown
-                    label={t('slice.printer', 'Printer profile')}
-                    slot="printer"
-                    data={presetsQuery.data}
-                    value={printerPreset}
-                    onChange={setPrinterPreset}
-                    disabled={isEnqueuing}
-                    ownerFilter={filterOwner}
-                  />
-                  <PresetDropdown
-                    label={t('slice.process', 'Process profile')}
-                    slot="process"
-                    data={presetsQuery.data}
-                    value={processPreset}
-                    onChange={setProcessPreset}
-                    disabled={isEnqueuing}
-                    ownerFilter={filterOwner}
-                    selectedPrinterName={selectedPrinterName}
-                    compatIndex={compatIndex}
-                  />
-                </>
-              )}
-              {isBundleMode && selectedBundle && (
-                <>
-                  {/* Bundle's printer is implicit (each .bbscfg has exactly
-                      one). Show it as a read-only label so the user can
-                      verify the printer they're slicing for. */}
-                  <div>
-                    <label className="block text-sm text-bambu-gray mb-1">
-                      {t('slice.printer', 'Printer profile')}
-                    </label>
-                    <div className="px-3 py-2 rounded-md bg-bambu-dark/40 border border-bambu-dark-tertiary text-white text-sm">
-                      {selectedBundle.printer_preset_name}
-                    </div>
-                  </div>
-                  <BundleStringDropdown
-                    label={t('slice.process', 'Process profile')}
-                    options={selectedBundle.process}
-                    value={bundleProcessName}
-                    onChange={setBundleProcessName}
-                    disabled={isEnqueuing}
-                  />
-                </>
-              )}
+              <PresetDropdown
+                label={t('slice.printer', 'Printer profile')}
+                slot="printer"
+                data={presetsQuery.data}
+                value={printerPreset}
+                onChange={setPrinterPreset}
+                disabled={isEnqueuing}
+                ownerFilter={filterOwner}
+              />
+              <PresetDropdown
+                label={t('slice.process', 'Process profile')}
+                slot="process"
+                data={presetsQuery.data}
+                value={processPreset}
+                onChange={setProcessPreset}
+                disabled={isEnqueuing}
+                ownerFilter={filterOwner}
+                selectedPrinterName={selectedPrinterName}
+                compatIndex={compatIndex}
+              />
               {/* Filament reqs may need a server-side preview-slice for
                   unsliced project files (single-pass, then cached). Show a
                   scoped spinner so the user sees the printer/process
@@ -1088,41 +913,6 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                   requestId={previewRequestId}
                   sourceName={source.filename}
                 />
-              ) : isBundleMode && selectedBundle ? (
-                filamentSlots.map((slot, idx) => {
-                  const isUsed = slot.used_in_plate !== false;
-                  const baseLabel =
-                    filamentSlots.length > 1
-                      ? t('slice.filamentSlot', {
-                          index: idx + 1,
-                          type: slot.type,
-                          defaultValue: `Filament ${idx + 1} (${slot.type || ''})`,
-                        })
-                      : t('slice.filament', 'Filament profile');
-                  const label = isUsed
-                    ? baseLabel
-                    : `${baseLabel} ${t('slice.notUsedByPlate', '— not used by this plate')}`;
-                  return (
-                    <BundleStringDropdown
-                      key={`bundle-filament-${idx}`}
-                      label={label}
-                      options={selectedBundle.filament}
-                      value={bundleFilamentNames[idx] ?? null}
-                      onChange={(name) =>
-                        setBundleFilamentNames((current) => {
-                          const next =
-                            current.length === filamentSlots.length
-                              ? [...current]
-                              : filamentSlots.map((_, i) => current[i] ?? null);
-                          next[idx] = name;
-                          return next;
-                        })
-                      }
-                      disabled={isEnqueuing || !isUsed}
-                      swatchColor={filamentSlots.length > 1 ? slot.color : undefined}
-                    />
-                  );
-                })
               ) : (
                 filamentSlots.map((slot, idx) => {
                   // Slots flagged by the backend as not used by the
@@ -1221,7 +1011,12 @@ function CloudStatusBanner({
   cloudName?: 'bambu' | 'orca';
 }) {
   const { t } = useTranslation();
-  if (status === 'ok') return null;
+  // `ok` is the happy path. `not_authenticated` is silenced too: a user who
+  // hasn't signed in (or has explicitly logged out — #1712) doesn't need a
+  // permanent nag at the top of the modal; sign-in lives on the Profiles
+  // page if they want it. Only `expired` and `unreachable` surface — those
+  // are real breakage states a previously-signed-in user needs to see.
+  if (status === 'ok' || status === 'not_authenticated') return null;
 
   // Same status vocabulary for both Bambu and Orca Cloud — only the
   // user-facing text varies. The fallbacks below name each cloud explicitly
@@ -1230,10 +1025,6 @@ function CloudStatusBanner({
   const messages =
     cloudName === 'orca'
       ? {
-          not_authenticated: {
-            key: 'slice.orcaCloud.notAuthenticated',
-            fallback: 'Sign in to Orca Cloud (Profiles → Orca Cloud) to see your Orca presets.',
-          },
           expired: {
             key: 'slice.orcaCloud.expired',
             fallback: 'Orca Cloud session expired — sign in again to refresh your Orca presets.',
@@ -1244,10 +1035,6 @@ function CloudStatusBanner({
           },
         }
       : {
-          not_authenticated: {
-            key: 'slice.cloud.notAuthenticated',
-            fallback: 'Sign in to Bambu Cloud (Settings → Profiles → Cloud) to see your cloud presets.',
-          },
           expired: {
             key: 'slice.cloud.expired',
             fallback: 'Bambu Cloud session expired — sign in again to refresh your cloud presets.',
@@ -1258,11 +1045,7 @@ function CloudStatusBanner({
           },
         };
 
-  const tones: Record<Exclude<SlicerCloudStatus, 'ok'>, { tone: string; icon: typeof Cloud }> = {
-    not_authenticated: {
-      tone: 'border-bambu-dark-tertiary/40 bg-bambu-dark text-bambu-gray',
-      icon: Cloud,
-    },
+  const tones: Record<'expired' | 'unreachable', { tone: string; icon: typeof Cloud }> = {
     expired: {
       tone: 'border-amber-700/40 bg-amber-900/20 text-amber-200',
       icon: CloudOff,

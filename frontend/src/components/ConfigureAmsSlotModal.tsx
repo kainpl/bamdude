@@ -415,24 +415,13 @@ export function ConfigureAmsSlotModal({
     staleTime: Infinity,
   });
 
-  // Imported Printer Preset Bundles (.bbscfg) — feed the compatibility index
-  // so local presets without a ``compatible_printers`` list can still be
-  // classified. Empty list / hard 503 when no sidecar is configured; don't
-  // retry-loop in that case (mirrors SliceModal).
-  const { data: bundlesData } = useQuery({
-    queryKey: ['slicerBundles'],
-    queryFn: api.listSlicerBundles,
-    enabled: isOpen,
-    staleTime: 60_000,
-    retry: false,
-  });
-
-  // Compatibility ground truth for the local-preset filter: uploaded bundles
-  // plus the backend printer-model registry (the @BBL name fallback inside
-  // slicerPrinterMatch). Same wiring as SliceModal / CalibrationPresetPage.
+  // Compatibility ground truth for the local-preset filter: the slicer's own
+  // ``compatible_printers`` list plus the backend printer-model registry (the
+  // @BBL name fallback inside slicerPrinterMatch). Same wiring as SliceModal /
+  // CalibrationPresetPage.
   const compatIndex = useMemo(
-    () => buildCompatibilityIndex(bundlesData ?? [], printerModelsData ?? {}),
-    [bundlesData, printerModelsData],
+    () => buildCompatibilityIndex(printerModelsData ?? {}),
+    [printerModelsData],
   );
 
   // The full slicer printer-preset name for this slot's printer — e.g. short
@@ -810,10 +799,11 @@ export function ConfigureAmsSlotModal({
       }
     }
 
-    // Sort: orca_cloud first (user-curated), then cloud user presets, then
-    // cloud built-in, then local, then builtin fallback
+    // Sort: local first (user explicitly imported them), then orca_cloud,
+    // then bambu cloud, then builtin fallback. Matches the SliceModal
+    // tier priority.
     return items.sort((a, b) => {
-      const sourceOrder = { orca_cloud: 0, cloud: 1, local: 2, builtin: 3 };
+      const sourceOrder = { local: 0, orca_cloud: 1, cloud: 2, builtin: 3 };
       if (a.source !== b.source) return sourceOrder[a.source] - sourceOrder[b.source];
       if (a.isUser && !b.isUser) return -1;
       if (!a.isUser && b.isUser) return 1;
@@ -1207,6 +1197,16 @@ export function ConfigureAmsSlotModal({
                                 {t('profiles.localProfiles.badge')}
                               </span>
                             )}
+                            {preset.source === 'orca_cloud' && (
+                              <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400">
+                                {t('configureAmsSlot.orcaCloud')}
+                              </span>
+                            )}
+                            {preset.source === 'cloud' && (
+                              <span className="text-xs px-1.5 py-0.5 rounded bg-bambu-blue/20 text-bambu-blue">
+                                {t('configureAmsSlot.bambuCloud')}
+                              </span>
+                            )}
                             {preset.source === 'builtin' && (
                               <span className="text-xs px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400">
                                 {t('configureAmsSlot.builtin')}
@@ -1440,6 +1440,16 @@ export function ConfigureAmsSlotModal({
                               {preset.source === 'local' && (
                                 <span className="text-xs px-1.5 py-0.5 rounded bg-green-500/20 text-green-400">
                                   {t('profiles.localProfiles.badge')}
+                                </span>
+                              )}
+                              {preset.source === 'orca_cloud' && (
+                                <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400">
+                                  {t('configureAmsSlot.orcaCloud')}
+                                </span>
+                              )}
+                              {preset.source === 'cloud' && (
+                                <span className="text-xs px-1.5 py-0.5 rounded bg-bambu-blue/20 text-bambu-blue">
+                                  {t('configureAmsSlot.bambuCloud')}
                                 </span>
                               )}
                               {preset.source === 'builtin' && (

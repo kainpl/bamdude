@@ -168,6 +168,22 @@ async def _resolve_cloud(db: AsyncSession, user: User | None, ref: PresetRef, sl
             slot,
         )
         payload = detail
+    if isinstance(payload, dict):
+        # Bambu Cloud labels presets with ``type: "printer"`` / ``"print"`` /
+        # ``"filament"``, but the BS / Orca CLI's ``--load-settings`` parser
+        # only accepts ``"machine"`` / ``"process"`` / ``"filament"``. Without
+        # this rewrite the CLI exits -5 with ``operator(): unknown config type``
+        # and the sidecar surfaces a generic "The input preset file is invalid
+        # and can not be parsed" — see the module header for the silent-fail
+        # history. ``from`` gets the same treatment: Bambu Cloud's filament
+        # details routinely arrive with ``from: ""`` (or no ``from`` at all)
+        # and the CLI rejects either with ``operator(): ... from  unsupported``
+        # (same -5 exit). ``_resolve_standard`` already pins ``from: "system"``
+        # for exactly this reason; the cloud tier lands at the same parser and
+        # needs the same pin. The sidecar's ``normalizeFromField`` only
+        # rewrites the ``"User"`` / ``"System"`` casings, not empty / missing
+        # values.
+        payload = {**payload, "type": _SLOT_TO_PROFILE_TYPE[slot], "from": "system"}
     return json.dumps(payload)
 
 
@@ -226,6 +242,16 @@ async def _resolve_orca_cloud(db: AsyncSession, user: User | None, ref: PresetRe
             slot,
         )
         content = profile
+    if isinstance(content, dict):
+        # Orca natively uses ``machine`` / ``process`` / ``filament`` for
+        # ``type`` (what the CLI wants), but Bambu-imported profiles synced
+        # through Orca Cloud can carry ``printer`` / ``print`` instead, and the
+        # CLI's ``--load-settings`` parser rejects those the same way it does
+        # for the Bambu Cloud tier. Force the slot-appropriate value so the
+        # source tier doesn't decide whether slicing works. ``from`` gets the
+        # same forced pin to ``"system"`` for the same reason — see the Bambu
+        # Cloud branch above.
+        content = {**content, "type": _SLOT_TO_PROFILE_TYPE[slot], "from": "system"}
     return json.dumps(content)
 
 

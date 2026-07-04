@@ -1753,22 +1753,6 @@ export type BedType =
   | 'Textured PEI Plate'
   | 'Supertack Plate';
 
-export interface SliceBundleSpec {
-  bundle_id: string;
-  printer_name: string;
-  process_name: string;
-  filament_names: string[];
-}
-
-export interface SlicerBundle {
-  id: string;
-  printer_preset_name: string;
-  printer: string[];
-  process: string[];
-  filament: string[];
-  version: string | null;
-}
-
 export interface SliceRequest {
   printer_preset_id?: number;
   process_preset_id?: number;
@@ -1794,11 +1778,6 @@ export interface SliceRequest {
   // "Cool Plate" (the upstream default — wrong for X1/A1 users who actually
   // use Textured PEI / SuperTack).
   bed_type?: BedType;
-  // Optional Printer Preset Bundle reference. When set, the dispatcher
-  // skips PresetRef resolution and asks the sidecar to materialise the
-  // printer / process / filament JSONs from the stored bundle by name.
-  // Mutually exclusive with the *_preset / *_preset_id fields.
-  bundle?: SliceBundleSpec;
 }
 
 export interface SlicerHealth {
@@ -1840,8 +1819,7 @@ export interface UnifiedPreset {
   // populated for the local tier. The SliceModal + calibration matcher
   // (slicerPrinterMatch) uses it as the authoritative compatibility signal
   // against the selected printer; null on cloud / standard stubs, where the
-  // matcher falls back to bundle membership then the `@BBL <model> <nozzle>`
-  // name convention (#1325).
+  // matcher falls back to the `@BBL <model> <nozzle>` name convention (#1325).
   compatible_printers?: string[] | null;
 }
 
@@ -1852,8 +1830,9 @@ export interface UnifiedPresetsBySlot {
 }
 
 export interface UnifiedPresetsResponse {
-  // Priority order: orca_cloud > cloud > local > standard. Dedup is applied
-  // backend-side so each name appears in only one tier.
+  // Priority order: local > orca_cloud > cloud > standard. No cross-tier
+  // dedup — every tier surfaces its full list so the user can pick from
+  // any source. The order drives auto-pick + visual group rendering only.
   orca_cloud: UnifiedPresetsBySlot;
   cloud: UnifiedPresetsBySlot;
   local: UnifiedPresetsBySlot;
@@ -3956,7 +3935,6 @@ export interface StartSessionIn {
   // (PA Tower and beyond); ignored by AUTO modes (AUTO_PA_LINE,
   // FLOW_RATE fire MQTT directly).
   spec?: Record<string, number | string | boolean>;
-  bundle?: SliceBundleSpec;
   printer_preset?: PresetRef;
   process_preset?: PresetRef;
   filament_presets?: PresetRef[];
@@ -3993,11 +3971,8 @@ export interface CalibSliceOnlyIn {
   spec?: Record<string, number | string | boolean>;
   extruder_count?: number;
   pass_n?: number;
-  // Either bundle OR (printer_preset + process_preset + filament_presets).
-  // The server's validator rejects bodies that don't carry one shape or
-  // the other. See SliceRequest for the symmetric pattern in the main
-  // slice routes.
-  bundle?: SliceBundleSpec;
+  // Requires printer_preset + process_preset + filament_presets. The
+  // server's validator rejects bodies that don't carry the full triplet.
   printer_preset?: PresetRef;
   process_preset?: PresetRef;
   filament_presets?: PresetRef[];
@@ -7194,8 +7169,8 @@ export const api = {
   // Canonical Bambu printer-model registry (long "Bambu Lab <model>" name →
   // normalized short code used in `@BBL <code>` cloud-preset filenames). The
   // slicerPrinterMatch classifier uses it to match cloud / standard presets
-  // against the selected printer when no bundle covers them (#1325). Static
-  // reference data — safe to cache aggressively.
+  // against the selected printer (#1325). Static reference data — safe to
+  // cache aggressively.
   getPrinterModels: () =>
     request<Record<string, string>>('/slicer/printer-models'),
   // Resolve one filament preset's flow-rate-relevant metadata on demand.
@@ -7218,44 +7193,6 @@ export const api = {
   // the wire on every dropdown open.
   getSlicerHealth: (slicer: 'orcaslicer' | 'bambu_studio') =>
     request<SlicerHealth>(`/slicer/health/${slicer}`),
-
-  // Slicer Preset Bundles (.bbscfg) — pick presets from a stored bundle
-  // sidecar-side instead of resolving cloud/local/standard PresetRefs every
-  // slice. SliceModal renders the bundle picker only when this list is
-  // non-empty; falls back to PresetRef triplet path when empty.
-  listSlicerBundles: () =>
-    request<SlicerBundle[]>('/slicer/bundles'),
-  getSlicerBundle: (id: string) =>
-    request<SlicerBundle>(`/slicer/bundles/${encodeURIComponent(id)}`),
-  importSlicerBundle: (file: File) => {
-    const formData = new FormData();
-    formData.append('file', file);
-    return fetch(`${API_BASE}/slicer/bundles`, {
-      method: 'POST',
-      headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
-      body: formData,
-    }).then(async (response) => {
-      if (!response.ok) {
-        // Pull `detail` out of the FastAPI JSON envelope so the toast
-        // shows "Invalid file type. ..." instead of the raw
-        // `{"detail":"..."}` body. We read text() once (body is a
-        // one-shot stream — calling json() then text() would throw
-        // "body already used") and try JSON.parse ourselves.
-        const text = await response.text().catch(() => '');
-        let detail: string | null = null;
-        try {
-          const parsed = JSON.parse(text);
-          if (parsed && typeof parsed.detail === 'string') detail = parsed.detail;
-        } catch {
-          // not JSON — keep raw text
-        }
-        throw new Error(detail || text || `HTTP ${response.status}`);
-      }
-      return response.json() as Promise<SlicerBundle>;
-    });
-  },
-  deleteSlicerBundle: (id: string) =>
-    request<void>(`/slicer/bundles/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   // Local Presets (OrcaSlicer imports)
   getLocalPresets: () =>

@@ -23,11 +23,9 @@ import type {
   PresetRef,
   Printer,
   PrinterStatus,
-  SlicerBundle,
   UnifiedPresetsResponse,
 } from '../../api/client';
 import {
-  BundleStringDropdown,
   PresetDropdown,
   PresetSourceControl,
 } from '../preset-picker/PresetTripletPicker';
@@ -46,8 +44,6 @@ import {
   type PrinterCompatibilityIndex,
 } from '../../utils/slicerPrinterMatch';
 
-type PresetSource = 'manual' | 'bundle';
-
 interface Props {
   printerId: number;
   caliMode: CaliMode;
@@ -60,7 +56,6 @@ interface Props {
     extruder_id: number;
     filaments: CalibFilamentIn[];
     spec?: Record<string, number | string | boolean>;
-    bundle?: { bundle_id: string; printer_name: string; process_name: string; filament_names: string[] };
     printer_preset?: PresetRef;
     process_preset?: PresetRef;
     filament_presets?: PresetRef[];
@@ -128,15 +123,6 @@ function matchesPrinterModel(presetName: string, model: string | null | undefine
   return false;
 }
 
-function filterBundlesByModel(bundles: SlicerBundle[], model: string | null | undefined): SlicerBundle[] {
-  if (!model) return bundles;
-  return bundles.filter(
-    (b) =>
-      b.printer.some((name) => matchesPrinterModel(name, model)) ||
-      matchesPrinterModel(b.printer_preset_name, model),
-  );
-}
-
 interface LoadedSlot {
   ams_id: number;
   slot_id: number;
@@ -179,11 +165,6 @@ export function CalibrationPresetPage({
   // for consistency (operator picks once, server discards).
   const needsPresetPicker = method !== 'auto';
 
-  const bundlesQuery = useQuery<SlicerBundle[]>({
-    queryKey: ['slicer-bundles'],
-    queryFn: () => api.listSlicerBundles(),
-    enabled: needsPresetPicker,
-  });
   const presetsQuery = useQuery<UnifiedPresetsResponse>({
     queryKey: ['slicer-presets'],
     queryFn: () => api.getSlicerPresets(),
@@ -224,11 +205,11 @@ export function CalibrationPresetPage({
   const [nozzleDia, setNozzleDia] = useState<number>(firstNozzleDia);
   const [nozzleVolType, setNozzleVolType] = useState<NozzleVolumeType>('standard');
 
-  // Compatibility ground truth shared with the SliceModal: uploaded Slicer
-  // Bundles + the backend printer-model registry (#1325).
+  // Compatibility ground truth shared with the SliceModal: the slicer's own
+  // ``compatible_printers`` list + the backend printer-model registry (#1325).
   const compatIndex = useMemo<PrinterCompatibilityIndex>(
-    () => buildCompatibilityIndex(bundlesQuery.data ?? [], printerModelsQuery.data ?? {}),
-    [bundlesQuery.data, printerModelsQuery.data],
+    () => buildCompatibilityIndex(printerModelsQuery.data ?? {}),
+    [printerModelsQuery.data],
   );
   const [printerRef, setPrinterRef] = useState<PresetRef | null>(null);
   const [processRef, setProcessRef] = useState<PresetRef | null>(null);
@@ -249,10 +230,6 @@ export function CalibrationPresetPage({
     [presetsQuery.data, printerRef],
   );
 
-  const bundles = useMemo(
-    () => filterBundlesByModel(bundlesQuery.data ?? [], printerModel),
-    [bundlesQuery.data, printerModel],
-  );
   // Strict hide (D2): calibration drops process / filament presets that
   // resolve to a *different* printer (a wrong-printer calibration print wastes
   // a bed), but keeps compatibility-unknown presets (the operator's own custom
@@ -283,11 +260,8 @@ export function CalibrationPresetPage({
     };
   }, [presetsQuery.data, printerModel, selectedPrinterName, compatIndex]);
 
-  // Bundles are hidden from the calibration preset picker for now: the
-  // source stays 'manual' and PresetSourceControl receives an empty bundle
-  // list, so the Manual/Bundle toggle never renders. Default owner filter
-  // is 'custom' ("My presets"), matching the model-slicing picker.
-  const [presetSource, setPresetSource] = useState<PresetSource>('manual');
+  // Default owner filter is 'custom' ("My presets"), matching the
+  // model-slicing picker.
   const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>('custom');
 
   useEffect(() => {
@@ -296,32 +270,6 @@ export function CalibrationPresetPage({
     setProcessRef((cur) => cur ?? pickDefaultRef(presets, 'process', ownerFilter));
     setFilamentRef((cur) => cur ?? pickDefaultRef(presets, 'filament', ownerFilter));
   }, [presets, ownerFilter]);
-
-  const [bundleId, setBundleId] = useState<string | null>(null);
-  const selectedBundle = useMemo(
-    () => bundles.find((b) => b.id === bundleId) ?? null,
-    [bundles, bundleId],
-  );
-  const [bundlePrinterName, setBundlePrinterName] = useState<string | null>(null);
-  const [bundleProcessName, setBundleProcessName] = useState<string | null>(null);
-  const [bundleFilamentName, setBundleFilamentName] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!bundleId && bundles.length > 0) setBundleId(bundles[0].id);
-  }, [bundles, bundleId]);
-
-  useEffect(() => {
-    if (!selectedBundle) return;
-    setBundlePrinterName((p) =>
-      p && selectedBundle.printer.includes(p) ? p : selectedBundle.printer[0] ?? null,
-    );
-    setBundleProcessName((p) =>
-      p && selectedBundle.process.includes(p) ? p : selectedBundle.process[0] ?? null,
-    );
-    setBundleFilamentName((p) =>
-      p && selectedBundle.filament.includes(p) ? p : selectedBundle.filament[0] ?? null,
-    );
-  }, [selectedBundle]);
 
   const [pickedSlicer, setPickedSlicer] = useState<SlicerKind | null>(null);
   useEffect(() => {
@@ -619,7 +567,6 @@ export function CalibrationPresetPage({
   const buildPresetExtras = () => {
     const extras: {
       spec?: Record<string, number | string | boolean>;
-      bundle?: { bundle_id: string; printer_name: string; process_name: string; filament_names: string[] };
       printer_preset?: PresetRef;
       process_preset?: PresetRef;
       filament_presets?: PresetRef[];
@@ -683,14 +630,7 @@ export function CalibrationPresetPage({
         nozzle_diameter: nozzleDia,
       };
     }
-    if (presetSource === 'bundle' && selectedBundle && bundlePrinterName && bundleProcessName && bundleFilamentName) {
-      extras.bundle = {
-        bundle_id: selectedBundle.id,
-        printer_name: bundlePrinterName,
-        process_name: bundleProcessName,
-        filament_names: [bundleFilamentName],
-      };
-    } else if (presetSource === 'manual' && printerRef && processRef && filamentRef) {
+    if (printerRef && processRef && filamentRef) {
       extras.printer_preset = printerRef;
       extras.process_preset = processRef;
       extras.filament_presets = [filamentRef];
@@ -749,9 +689,6 @@ export function CalibrationPresetPage({
 
   const presetShapeOk = (() => {
     if (!needsPresetPicker) return true;
-    if (presetSource === 'bundle') {
-      return !!selectedBundle && !!bundlePrinterName && !!bundleProcessName && !!bundleFilamentName;
-    }
     return !!printerRef && !!processRef && !!filamentRef;
   })();
 
@@ -798,72 +735,43 @@ export function CalibrationPresetPage({
           <SlicerPicker value={pickedSlicer} onChange={setPickedSlicer} />
           <BedTypePicker value={bedType} onChange={setBedType} />
           <PresetSourceControl
-            mode={presetSource}
-            onModeChange={setPresetSource}
             ownerFilter={ownerFilter}
             onOwnerFilterChange={setOwnerFilter}
-            bundles={[]}
-            selectedBundleId={bundleId}
-            onBundleChange={setBundleId}
           />
-          {presetSource === 'manual' && (
-            <div className="grid grid-cols-1 gap-2">
-              {presets ? (
-                <>
-                  <PresetDropdown
-                    label={t('slice.printer', 'Printer profile')}
-                    slot="printer"
-                    data={presets}
-                    value={printerRef}
-                    onChange={setPrinterRef}
-                    ownerFilter={ownerFilter}
-                  />
-                  <PresetDropdown
-                    label={t('slice.process', 'Process profile')}
-                    slot="process"
-                    data={presets}
-                    value={processRef}
-                    onChange={setProcessRef}
-                    ownerFilter={ownerFilter}
-                  />
-                  <PresetDropdown
-                    label={t('slice.filament', 'Filament profile')}
-                    slot="filament"
-                    data={presets}
-                    value={filamentRef}
-                    onChange={setFilamentRef}
-                    ownerFilter={ownerFilter}
-                  />
-                </>
-              ) : (
-                <div className="p-3 bg-bambu-dark rounded text-sm text-bambu-gray">
-                  {t('filamentCali.verifyDownload.loadingPresets', 'Loading presets…')}
-                </div>
-              )}
-            </div>
-          )}
-          {presetSource === 'bundle' && selectedBundle && (
-            <div className="grid grid-cols-1 gap-2">
-              <BundleStringDropdown
-                label={t('slice.printer', 'Printer profile')}
-                options={selectedBundle.printer}
-                value={bundlePrinterName}
-                onChange={setBundlePrinterName}
-              />
-              <BundleStringDropdown
-                label={t('slice.process', 'Process profile')}
-                options={selectedBundle.process}
-                value={bundleProcessName}
-                onChange={setBundleProcessName}
-              />
-              <BundleStringDropdown
-                label={t('slice.filament', 'Filament profile')}
-                options={selectedBundle.filament}
-                value={bundleFilamentName}
-                onChange={setBundleFilamentName}
-              />
-            </div>
-          )}
+          <div className="grid grid-cols-1 gap-2">
+            {presets ? (
+              <>
+                <PresetDropdown
+                  label={t('slice.printer', 'Printer profile')}
+                  slot="printer"
+                  data={presets}
+                  value={printerRef}
+                  onChange={setPrinterRef}
+                  ownerFilter={ownerFilter}
+                />
+                <PresetDropdown
+                  label={t('slice.process', 'Process profile')}
+                  slot="process"
+                  data={presets}
+                  value={processRef}
+                  onChange={setProcessRef}
+                  ownerFilter={ownerFilter}
+                />
+                <PresetDropdown
+                  label={t('slice.filament', 'Filament profile')}
+                  slot="filament"
+                  data={presets}
+                  value={filamentRef}
+                  onChange={setFilamentRef}
+                  ownerFilter={ownerFilter}
+                />
+              </>
+            ) : (
+              <div className="p-3 bg-bambu-dark rounded text-sm text-bambu-gray">
+                {t('filamentCali.verifyDownload.loadingPresets', 'Loading presets…')}
+              </div>
+            )}
+          </div>
           {isPaTower && (
             <div className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
               <h4 className="text-sm font-medium text-bambu-gray">

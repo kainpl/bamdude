@@ -128,7 +128,6 @@ export function FilamentCalibrationModal({ isOpen, onClose, printerId }: Props) 
                   extruder_id: preset.extruder_id,
                   filaments: preset.filaments,
                   spec: preset.spec,
-                  bundle: preset.bundle,
                   printer_preset: preset.printer_preset,
                   process_preset: preset.process_preset,
                   filament_presets: preset.filament_presets,

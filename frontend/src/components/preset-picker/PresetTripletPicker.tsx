@@ -1,10 +1,8 @@
-import { Package } from 'lucide-react';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type {
   PresetRef,
-  SlicerBundle,
   UnifiedPreset,
   UnifiedPresetsBySlot,
   UnifiedPresetsResponse,
@@ -36,11 +34,12 @@ interface PresetDropdownProps {
   // + bundled cloud presets. Empty tiers collapse out.
   ownerFilter?: OwnerFilter;
   // Selected printer context (#1325). When provided for a process / filament
-  // slot, presets that resolve to a *different* printer (per uploaded Slicer
-  // Bundles + the @BBL name registry in compatIndex) move into a trailing
-  // "Other printers" group instead of the main tier list. Compatibility-
-  // unknown presets stay in their tier, so a custom / untagged preset is
-  // never hidden. Omitted (or printer slot) ⇒ no compatibility partition.
+  // slot, presets that resolve to a *different* printer (per the @BBL name
+  // registry in compatIndex, plus the slicer's own compatible_printers list)
+  // move into a trailing "Other printers" group instead of the main tier
+  // list. Compatibility-unknown presets stay in their tier, so a custom /
+  // untagged preset is never hidden. Omitted (or printer slot) ⇒ no
+  // compatibility partition.
   selectedPrinterName?: string | null;
   compatIndex?: PrinterCompatibilityIndex;
 }
@@ -66,8 +65,8 @@ export function PresetDropdown({
   // sections collapse out.
   const { sections, otherEntries } = useMemo(() => {
     const tiers: { key: keyof UnifiedPresetsResponse; label: string; fallback: string }[] = [
-      { key: 'orca_cloud', label: 'slice.tier.orcaCloud', fallback: 'Orca Cloud' },
       { key: 'local', label: 'slice.tier.local', fallback: 'Imported' },
+      { key: 'orca_cloud', label: 'slice.tier.orcaCloud', fallback: 'Orca Cloud' },
       { key: 'cloud', label: 'slice.tier.cloud', fallback: 'Bambu Cloud' },
       { key: 'standard', label: 'slice.tier.standard', fallback: 'Standard' },
     ];
@@ -154,105 +153,24 @@ export function PresetDropdown({
   );
 }
 
-interface BundleStringDropdownProps {
-  label: string;
-  options: string[];
-  value: string | null;
-  onChange: (next: string | null) => void;
-  disabled?: boolean;
-  swatchColor?: string;
-}
-
-/** Plain-string dropdown for bundle-mode process / filament selectors. */
-export function BundleStringDropdown({
-  label,
-  options,
-  value,
-  onChange,
-  disabled,
-  swatchColor,
-}: BundleStringDropdownProps) {
-  const { t } = useTranslation();
-  return (
-    <label className="block">
-      <span className="block text-sm text-bambu-gray mb-1 inline-flex items-center gap-1.5">
-        {swatchColor && (
-          <span
-            className="inline-block w-3 h-3 rounded-sm border border-black/20"
-            style={{ backgroundColor: swatchColor || 'transparent' }}
-            aria-hidden
-          />
-        )}
-        <span>{label}</span>
-      </span>
-      <select
-        value={value ?? ''}
-        onChange={(e) => onChange(e.target.value || null)}
-        disabled={disabled || options.length === 0}
-        className="w-full px-3 py-2 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-white text-sm focus:outline-none focus:border-bambu-gray disabled:opacity-50"
-      >
-        <option value="">
-          {options.length === 0
-            ? t('slice.noPresetsForSlot', 'No presets available')
-            : t('slice.selectPreset', '— Select a preset —')}
-        </option>
-        {options.map((name) => (
-          <option key={name} value={name}>
-            {name}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
 interface PresetSourceControlProps {
-  mode: 'manual' | 'bundle';
-  onModeChange: (next: 'manual' | 'bundle') => void;
   ownerFilter: OwnerFilter;
   onOwnerFilterChange: (next: OwnerFilter) => void;
-  bundles: SlicerBundle[];
-  selectedBundleId: string | null;
-  onBundleChange: (id: string | null) => void;
   disabled?: boolean;
 }
 
 /**
- * Top-level preset-source control — segmented Manual / Bundle picker
- * (only shown when bundles exist) plus mode-aware sub-control:
- * - Manual → 3-state owner segmented (All / My Presets / Built-in)
- * - Bundle → bundle dropdown
+ * Preset-source control — a 3-state owner segmented filter
+ * (All / My Presets / Built-in) applied across the cloud / local / standard
+ * tiers. The former Manual / Bundle mode toggle was removed with the
+ * slicer-bundle feature (#1712).
  */
 export function PresetSourceControl({
-  mode,
-  onModeChange,
   ownerFilter,
   onOwnerFilterChange,
-  bundles,
-  selectedBundleId,
-  onBundleChange,
   disabled,
 }: PresetSourceControlProps) {
   const { t } = useTranslation();
-  const hasBundles = bundles.length > 0;
-  const modeOptions: { key: 'manual' | 'bundle'; label: string; hint: string }[] = [
-    {
-      key: 'manual',
-      label: t('slice.presetSourceManual', 'Manual'),
-      hint: t(
-        'slice.presetSourceManualHint',
-        'Pick printer / process / filament from cloud, local imports, or built-in presets.',
-      ),
-    },
-    {
-      key: 'bundle',
-      label: t('slice.presetSourceBundle', 'Bundle'),
-      hint: t(
-        'slice.presetSourceBundleHint',
-        'Slice using a previously imported BambuStudio Printer Preset Bundle (.bbscfg).',
-      ),
-    },
-  ];
   const ownerOptions: { key: OwnerFilter; label: string }[] = [
     { key: 'all', label: t('profiles.cloudView.filters.all', 'All') },
     { key: 'custom', label: t('profiles.cloudView.filters.myPresets', 'My Presets') },
@@ -265,65 +183,23 @@ export function PresetSourceControl({
       <legend className="text-xs text-bambu-gray mb-1">
         {t('slice.presetSource', 'Preset source')}
       </legend>
-      {hasBundles && (
-        <div className="inline-flex rounded-md border border-bambu-dark-tertiary overflow-hidden">
-          {modeOptions.map((opt) => {
-            const selected = mode === opt.key;
-            return (
-              <button
-                key={opt.key}
-                type="button"
-                onClick={() => onModeChange(opt.key)}
-                disabled={disabled}
-                title={opt.hint}
-                className={`px-3 py-1.5 text-xs transition-colors disabled:opacity-50 ${segmentedClass(selected)}`}
-                aria-pressed={selected}
-              >
-                {opt.key === 'bundle' ? (
-                  <span className="inline-flex items-center gap-1.5">
-                    <Package className="w-3.5 h-3.5" />
-                    {opt.label}
-                  </span>
-                ) : (
-                  opt.label
-                )}
-              </button>
-            );
-          })}
-        </div>
-      )}
-      {mode === 'manual' || !hasBundles ? (
-        <div className="inline-flex rounded-md border border-bambu-dark-tertiary overflow-hidden">
-          {ownerOptions.map((opt) => {
-            const selected = ownerFilter === opt.key;
-            return (
-              <button
-                key={opt.key}
-                type="button"
-                onClick={() => onOwnerFilterChange(opt.key)}
-                disabled={disabled}
-                className={`px-3 py-1.5 text-xs transition-colors disabled:opacity-50 ${segmentedClass(selected)}`}
-                aria-pressed={selected}
-              >
-                {opt.label}
-              </button>
-            );
-          })}
-        </div>
-      ) : (
-        <select
-          value={selectedBundleId ?? ''}
-          onChange={(e) => onBundleChange(e.target.value || null)}
-          disabled={disabled || !hasBundles}
-          className="w-full px-3 py-2 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-white text-sm focus:outline-none focus:border-bambu-gray disabled:opacity-50"
-        >
-          {bundles.map((b) => (
-            <option key={b.id} value={b.id}>
-              {b.printer_preset_name}
-            </option>
-          ))}
-        </select>
-      )}
+      <div className="inline-flex rounded-md border border-bambu-dark-tertiary overflow-hidden">
+        {ownerOptions.map((opt) => {
+          const selected = ownerFilter === opt.key;
+          return (
+            <button
+              key={opt.key}
+              type="button"
+              onClick={() => onOwnerFilterChange(opt.key)}
+              disabled={disabled}
+              className={`px-3 py-1.5 text-xs transition-colors disabled:opacity-50 ${segmentedClass(selected)}`}
+              aria-pressed={selected}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
     </fieldset>
   );
 }

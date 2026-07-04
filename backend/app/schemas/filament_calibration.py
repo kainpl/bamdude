@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from backend.app.schemas.slicer import PresetRef, SliceBundleSpec
+from backend.app.schemas.slicer import PresetRef
 from backend.app.services.calibration_constants import CaliMethod, CaliMode
 
 # ---------- Capabilities ----------
@@ -124,11 +124,7 @@ class StartSessionIn(BaseModel):
     # start/end/step). Opaque to the route; per-mode builder validates.
     spec: dict[str, float | int | bool | str] | None = None
 
-    # Bundle path (sidecar materialises printer/process/filament from
-    # a stored .bbscfg).
-    bundle: SliceBundleSpec | None = None
-
-    # Manual path (resolver materialises each PresetRef into the JSON
+    # Preset path (resolver materialises each PresetRef into the JSON
     # the sidecar's --load-settings expects).
     printer_preset: PresetRef | None = None
     process_preset: PresetRef | None = None
@@ -162,15 +158,9 @@ class StartSessionIn(BaseModel):
         if self.method == CaliMethod.AUTO:
             return self
         # Manual modes that route through the sidecar pipeline need
-        # either a bundle or the full PresetRef triplet. Same contract
-        # as CalibSliceOnlyIn.
-        if self.bundle is not None:
-            return self
+        # the full PresetRef triplet. Same contract as CalibSliceOnlyIn.
         if not self.printer_preset or not self.process_preset or not self.filament_presets:
-            raise ValueError(
-                "Manual calibration needs either 'bundle' or all of "
-                "'printer_preset' + 'process_preset' + 'filament_presets'"
-            )
+            raise ValueError("Manual calibration needs all of 'printer_preset' + 'process_preset' + 'filament_presets'")
         return self
 
 
@@ -187,27 +177,22 @@ class CalibSliceOnlyIn(BaseModel):
     the route; the per-mode builder in ``calib_3mf_builder`` validates
     it against ``backend.app.schemas.calibration_spec``.
 
-    Mirrors :class:`backend.app.schemas.slicer.SliceRequest`'s two
-    preset shapes:
+    Mirrors :class:`backend.app.schemas.slicer.SliceRequest`'s preset
+    shape:
 
-    - **Bundle path** — ``bundle`` is set, the sidecar materialises
-      printer / process / filament JSONs from a stored ``.bbscfg``.
     - **Manual path** — ``printer_preset`` / ``process_preset`` /
       ``filament_presets`` carry source-aware :class:`PresetRef`
       pointers; the route resolves each through
       :mod:`backend.app.services.preset_resolver` and ships the JSON
       triplet to the sidecar's ``slice_with_profiles``.
 
-    Exactly one shape must be present; the validator enforces it.
+    The triplet is required; the validator enforces it.
     """
 
     cali_mode: CaliMode
     spec: dict[str, float | int | bool | str] | None = None
     extruder_count: int = 1
     pass_n: int = 1
-
-    # Bundle path
-    bundle: SliceBundleSpec | None = None
 
     # Manual path
     printer_preset: PresetRef | None = None
@@ -230,13 +215,8 @@ class CalibSliceOnlyIn(BaseModel):
 
     @model_validator(mode="after")
     def _require_one_preset_shape(self) -> CalibSliceOnlyIn:
-        if self.bundle is not None:
-            return self
         if not self.printer_preset or not self.process_preset or not self.filament_presets:
-            raise ValueError(
-                "slice-only body needs either 'bundle' or all of "
-                "'printer_preset' + 'process_preset' + 'filament_presets'"
-            )
+            raise ValueError("slice-only body needs all of 'printer_preset' + 'process_preset' + 'filament_presets'")
         return self
 
 

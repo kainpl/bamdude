@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 
@@ -9,13 +9,11 @@ import type {
   CaliMode,
   CalibSliceOnlyIn,
   PresetRef,
-  SlicerBundle,
   UnifiedPresetsResponse,
 } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { tempDefaultsForFilament } from '../../utils/calibrationTemp';
 import {
-  BundleStringDropdown,
   PresetDropdown,
   PresetSourceControl,
 } from '../preset-picker/PresetTripletPicker';
@@ -33,8 +31,6 @@ interface Props {
   onBack: () => void;
   onDone: () => void;
 }
-
-type PresetSource = 'manual' | 'bundle';
 
 function pickDefaultRef(
   data: UnifiedPresetsResponse | undefined,
@@ -54,24 +50,17 @@ function pickDefaultRef(
 /**
  * Verification-mode download page (W2 Phase 1+).
  *
- * Mirrors SliceModal's preset-source UX: a "Manual / Bundle" segmented
- * switch (shown only when bundles exist) sitting above the actual
- * picker. Manual mode renders the cloud / local / standard tiered
- * dropdowns with a 3-state owner filter; Bundle mode renders the bundle
- * dropdown + per-bundle process / filament name dropdowns. The PA Tower
- * spec form stays mode-agnostic at the bottom.
+ * Renders the cloud / local / standard tiered preset dropdowns with a
+ * 3-state owner filter; the PA Tower spec form stays below it. The
+ * slicer-bundle path was removed with the feature (#1712).
  *
- * The backend's slice-only route accepts both shapes (see
+ * The backend's slice-only route accepts the PresetRef triplet (see
  * ``backend/app/schemas/filament_calibration.py::CalibSliceOnlyIn``).
  */
 export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onDone }: Props) {
   const { t } = useTranslation();
   const { showToast } = useToast();
 
-  const bundlesQuery = useQuery<SlicerBundle[]>({
-    queryKey: ['slicer-bundles'],
-    queryFn: () => api.listSlicerBundles(),
-  });
   const presetsQuery = useQuery<UnifiedPresetsResponse>({
     queryKey: ['slicer-presets'],
     queryFn: () => api.getSlicerPresets(),
@@ -83,18 +72,12 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
     staleTime: 60_000,
   });
 
-  const bundles = bundlesQuery.data ?? [];
   const presets = presetsQuery.data;
 
-  const [presetSource, setPresetSource] = useState<PresetSource>('manual');
   const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>('all');
 
   // Calibration testing is per-filament — operator picks the cloud /
-  // local filament preset to characterise. Bundles roll all three slots
-  // together and aren't relevant to filament-side calibration; SliceModal
-  // auto-switches to bundle here, we don't. Default 'manual' is enough.
-
-  // ---- Manual mode state ----
+  // local filament preset to characterise.
   const [printerRef, setPrinterRef] = useState<PresetRef | null>(null);
   const [processRef, setProcessRef] = useState<PresetRef | null>(null);
   const [filamentRef, setFilamentRef] = useState<PresetRef | null>(null);
@@ -106,35 +89,6 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
     setProcessRef((cur) => cur ?? pickDefaultRef(presets, 'process', ownerFilter));
     setFilamentRef((cur) => cur ?? pickDefaultRef(presets, 'filament', ownerFilter));
   }, [presets, ownerFilter]);
-
-  // ---- Bundle mode state ----
-  const [bundleId, setBundleId] = useState<string | null>(null);
-  const selectedBundle = useMemo(
-    () => bundles.find((b) => b.id === bundleId) ?? null,
-    [bundles, bundleId],
-  );
-  const [bundlePrinterName, setBundlePrinterName] = useState<string | null>(null);
-  const [bundleProcessName, setBundleProcessName] = useState<string | null>(null);
-  const [bundleFilamentName, setBundleFilamentName] = useState<string | null>(null);
-
-  // Pre-select first bundle when list lands.
-  useEffect(() => {
-    if (!bundleId && bundles.length > 0) setBundleId(bundles[0].id);
-  }, [bundles, bundleId]);
-
-  // Default per-slot names when bundle changes.
-  useEffect(() => {
-    if (!selectedBundle) return;
-    setBundlePrinterName((p) =>
-      p && selectedBundle.printer.includes(p) ? p : selectedBundle.printer[0] ?? null,
-    );
-    setBundleProcessName((p) =>
-      p && selectedBundle.process.includes(p) ? p : selectedBundle.process[0] ?? null,
-    );
-    setBundleFilamentName((p) =>
-      p && selectedBundle.filament.includes(p) ? p : selectedBundle.filament[0] ?? null,
-    );
-  }, [selectedBundle]);
 
   // Per-job slicer picker. Default to global preferred_slicer when it
   // lands; user can override via the card-style picker below the
@@ -230,13 +184,13 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   const filamentInfoQuery = useQuery({
     queryKey: ['filament-preset-info', filamentRef?.source, filamentRef?.id],
     queryFn: () => api.getFilamentPresetInfo(filamentRef!),
-    enabled: isFlowRate && flowPassN === 1 && presetSource === 'manual' && !!filamentRef,
+    enabled: isFlowRate && flowPassN === 1 && !!filamentRef,
     staleTime: 60_000,
   });
 
   useEffect(() => {
     if (!isFlowRate || flowPassN !== 1) return;
-    if (presetSource !== 'manual' || !filamentRef) return;
+    if (!filamentRef) return;
     // Prefer the listing's cached value (free, no network) when present;
     // fall back to the on-demand resolver for cloud / standard presets.
     const listingRatio = presets?.[filamentRef.source]?.filament.find(
@@ -247,7 +201,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
     if (typeof ratio === 'number' && ratio > 0) {
       setBaselineFlowRatioInput(String(ratio));
     }
-  }, [isFlowRate, flowPassN, presetSource, filamentRef, presets, filamentInfoQuery.data]);
+  }, [isFlowRate, flowPassN, filamentRef, presets, filamentInfoQuery.data]);
 
   // Temp Tower: seed the start/end defaults from the selected filament's
   // type (BS picks them off its filament-type radio; we have a preset
@@ -257,9 +211,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   useEffect(() => {
     if (!isTemp) return;
     let filDesc = '';
-    if (presetSource === 'bundle') {
-      filDesc = bundleFilamentName ?? '';
-    } else if (presets && filamentRef) {
+    if (presets && filamentRef) {
       const p = presets[filamentRef.source]?.filament.find((x) => x.id === filamentRef.id);
       if (p) filDesc = `${p.filament_type ?? ''} ${p.name}`;
     }
@@ -267,7 +219,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
     const d = tempDefaultsForFilament(filDesc);
     setTempStart(d.start);
     setTempEnd(d.end);
-  }, [isTemp, presetSource, filamentRef, bundleFilamentName, presets]);
+  }, [isTemp, filamentRef, presets]);
 
   const triggerBlobDownload = (blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob);
@@ -390,35 +342,18 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   const canSubmit =
     !isDownloading &&
     specValid &&
-    (presetSource === 'bundle'
-      ? !!selectedBundle && !!bundlePrinterName && !!bundleProcessName && !!bundleFilamentName
-      : !!printerRef && !!processRef && !!filamentRef);
+    !!printerRef && !!processRef && !!filamentRef;
 
   const onSubmit = async () => {
-    let body: CalibSliceOnlyIn;
     const spec = buildSpec();
-    if (presetSource === 'bundle') {
-      if (!selectedBundle || !bundlePrinterName || !bundleProcessName || !bundleFilamentName) return;
-      body = {
-        cali_mode: caliMode,
-        spec,
-        bundle: {
-          bundle_id: selectedBundle.id,
-          printer_name: bundlePrinterName,
-          process_name: bundleProcessName,
-          filament_names: [bundleFilamentName],
-        },
-      };
-    } else {
-      if (!printerRef || !processRef || !filamentRef) return;
-      body = {
-        cali_mode: caliMode,
-        spec,
-        printer_preset: printerRef,
-        process_preset: processRef,
-        filament_presets: [filamentRef],
-      };
-    }
+    if (!printerRef || !processRef || !filamentRef) return;
+    const body: CalibSliceOnlyIn = {
+      cali_mode: caliMode,
+      spec,
+      printer_preset: printerRef,
+      process_preset: processRef,
+      filament_presets: [filamentRef],
+    };
     if (pickedSlicer) body.slicer = pickedSlicer;
     body.bed_type = bedType;
     if (isFlowRate) body.pass_n = flowPassN;
@@ -457,81 +392,48 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
         />
 
         <PresetSourceControl
-          mode={presetSource}
-          onModeChange={setPresetSource}
           ownerFilter={ownerFilter}
           onOwnerFilterChange={setOwnerFilter}
-          bundles={bundles}
-          selectedBundleId={bundleId}
-          onBundleChange={setBundleId}
           disabled={isDownloading}
         />
 
-        {presetSource === 'manual' && (
-          <div className="grid grid-cols-1 gap-2">
-            {presets ? (
-              <>
-                <PresetDropdown
-                  label={t('slice.printer', 'Printer profile')}
-                  slot="printer"
-                  data={presets}
-                  value={printerRef}
-                  onChange={setPrinterRef}
-                  disabled={isDownloading}
-                  ownerFilter={ownerFilter}
-                />
-                <PresetDropdown
-                  label={t('slice.process', 'Process profile')}
-                  slot="process"
-                  data={presets}
-                  value={processRef}
-                  onChange={setProcessRef}
-                  disabled={isDownloading}
-                  ownerFilter={ownerFilter}
-                />
-                <PresetDropdown
-                  label={t('slice.filament', 'Filament profile')}
-                  slot="filament"
-                  data={presets}
-                  value={filamentRef}
-                  onChange={setFilamentRef}
-                  disabled={isDownloading}
-                  ownerFilter={ownerFilter}
-                />
-              </>
-            ) : (
-              <div className="p-3 bg-bambu-dark rounded text-sm text-bambu-gray">
-                {t('filamentCali.verifyDownload.loadingPresets', 'Loading presets…')}
-              </div>
-            )}
-          </div>
-        )}
-
-        {presetSource === 'bundle' && selectedBundle && (
-          <div className="grid grid-cols-1 gap-2">
-            <BundleStringDropdown
-              label={t('slice.printer', 'Printer profile')}
-              options={selectedBundle.printer}
-              value={bundlePrinterName}
-              onChange={setBundlePrinterName}
-              disabled={isDownloading}
-            />
-            <BundleStringDropdown
-              label={t('slice.process', 'Process profile')}
-              options={selectedBundle.process}
-              value={bundleProcessName}
-              onChange={setBundleProcessName}
-              disabled={isDownloading}
-            />
-            <BundleStringDropdown
-              label={t('slice.filament', 'Filament profile')}
-              options={selectedBundle.filament}
-              value={bundleFilamentName}
-              onChange={setBundleFilamentName}
-              disabled={isDownloading}
-            />
-          </div>
-        )}
+        <div className="grid grid-cols-1 gap-2">
+          {presets ? (
+            <>
+              <PresetDropdown
+                label={t('slice.printer', 'Printer profile')}
+                slot="printer"
+                data={presets}
+                value={printerRef}
+                onChange={setPrinterRef}
+                disabled={isDownloading}
+                ownerFilter={ownerFilter}
+              />
+              <PresetDropdown
+                label={t('slice.process', 'Process profile')}
+                slot="process"
+                data={presets}
+                value={processRef}
+                onChange={setProcessRef}
+                disabled={isDownloading}
+                ownerFilter={ownerFilter}
+              />
+              <PresetDropdown
+                label={t('slice.filament', 'Filament profile')}
+                slot="filament"
+                data={presets}
+                value={filamentRef}
+                onChange={setFilamentRef}
+                disabled={isDownloading}
+                ownerFilter={ownerFilter}
+              />
+            </>
+          ) : (
+            <div className="p-3 bg-bambu-dark rounded text-sm text-bambu-gray">
+              {t('filamentCali.verifyDownload.loadingPresets', 'Loading presets…')}
+            </div>
+          )}
+        </div>
       </section>
 
       {isPaTower && (

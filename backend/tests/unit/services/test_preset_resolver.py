@@ -258,7 +258,15 @@ async def test_orca_cloud_unwraps_content():
             db, user, PresetRef(source="orca_cloud", id="abc"), slot="printer"
         )
     payload = json.loads(out)
-    assert payload == {"name": "X1C Custom", "nozzle_diameter": [0.4]}
+    # #1712: the resolver forces the CLI-accepted ``type`` (machine for the
+    # printer slot) and pins ``from: "system"`` so cloud-tier presets survive
+    # the BS/Orca ``--load-settings`` parser.
+    assert payload == {
+        "name": "X1C Custom",
+        "nozzle_diameter": [0.4],
+        "type": "machine",
+        "from": "system",
+    }
     svc_mock.close.assert_awaited_once()
 
 

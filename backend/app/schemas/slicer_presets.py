@@ -1,10 +1,11 @@
 """Pydantic schemas for the unified slicer-presets endpoint.
 
-The SliceModal pulls printer/process/filament options from three sources, in
-priority order: cloud (the user's Bambu Cloud account), local (DB-backed
-imported profiles), and standard (slicer-bundled stock profiles). The endpoint
-returns all three lists with name-based dedup applied so each preset appears
-exactly once across the response.
+The SliceModal pulls printer/process/filament options from four sources, in
+priority order: local (DB-backed imported profiles), orca_cloud, cloud (the
+user's Bambu Cloud account), and standard (slicer-bundled stock profiles).
+The endpoint returns every tier's full list — no cross-tier dedup — so a
+preset name that exists in several tiers appears in each group and the user
+can pick any source. The order only drives auto-pick and group rendering.
 """
 
 from typing import Literal
@@ -78,14 +79,14 @@ class FilamentPresetInfo(BaseModel):
 
 
 class UnifiedPresetsResponse(BaseModel):
-    """Each tier carries only the names that didn't appear in a higher tier.
+    """Every tier carries its full preset list — no cross-tier dedup.
 
-    Priority order: ``orca_cloud > cloud > local > standard``. Orca Cloud is
-    highest because it's the most-recently-explicitly-curated source for users
-    who set up Orca sync (they did it on purpose; their Orca picks should
-    outrank everything else). Bambu Cloud follows as the next-most-curated
-    tier. Local imports beat the slicer's stock fallback. A name that appears
-    in a higher tier is filtered out of every lower tier.
+    Priority order: ``local > orca_cloud > cloud > standard``. The order
+    drives auto-pick (first non-empty tier wins, name-lookup walks tiers in
+    this order, filament scoring tiebreaks by per-tier bonus) and determines
+    the visual rendering order of the SliceModal's optgroups, but a name that
+    exists in multiple tiers appears in EACH of their groups so the user can
+    pick any source.
 
     ``cloud_status`` / ``orca_cloud_status`` let the frontend show a banner
     explaining why a cloud tier is empty when the user expected to see it

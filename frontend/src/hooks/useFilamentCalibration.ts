@@ -14,7 +14,6 @@ import type {
   ManualResultIn,
   NozzleVolumeType,
   PresetRef,
-  SliceBundleSpec,
 } from '../api/client';
 
 const TOWER_MODES: CaliMode[] = [
@@ -103,9 +102,8 @@ interface WizardInput {
   filaments: CalibFilamentIn[];
   // Preset / slicer overrides (mirror CalibSliceOnlyIn). Manual modes
   // that route through the slicer sidecar (PA Tower + later phases)
-  // require either bundle OR full PresetRef triplet; AUTO modes ignore.
+  // require the full PresetRef triplet; AUTO modes ignore.
   spec?: Record<string, number | string | boolean>;
-  bundle?: SliceBundleSpec;
   printer_preset?: PresetRef;
   process_preset?: PresetRef;
   filament_presets?: PresetRef[];
@@ -192,7 +190,6 @@ export function useFilamentCalibration(printerId: number, enabled: boolean) {
         extruder_id: body.extruder_id,
         filaments: body.filaments,
         ...(body.spec ? { spec: body.spec } : {}),
-        ...(body.bundle ? { bundle: body.bundle } : {}),
         ...(body.printer_preset ? { printer_preset: body.printer_preset } : {}),
         ...(body.process_preset ? { process_preset: body.process_preset } : {}),
         ...(body.filament_presets ? { filament_presets: body.filament_presets } : {}),

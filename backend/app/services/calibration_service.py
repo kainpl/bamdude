@@ -306,19 +306,6 @@ def _hydrate_preset_ref(value):
     return value
 
 
-def _hydrate_slice_bundle(value):
-    """Symmetric to :func:`_hydrate_preset_ref` for the SliceBundleSpec."""
-    if value is None:
-        return None
-    from backend.app.schemas.slicer import SliceBundleSpec
-
-    if isinstance(value, SliceBundleSpec):
-        return value
-    if isinstance(value, dict):
-        return SliceBundleSpec(**value)
-    return value
-
-
 def _flow_rate_baseline_from_session(session) -> float:
     """Operator's filament_flow_ratio captured at session start.
 
@@ -384,7 +371,7 @@ class CalibrationService:
         :meth:`start_calibration` for stage-1 dispatch and by
         :meth:`_start_flow_rate_stage2` for Flow Rate's pass-2 dispatch.
         ``dispatch_args`` is the JSON-serialisable snapshot of the wizard
-        args (presets, bundle, bed_type, slicer, spec, print_options,
+        args (presets, bed_type, slicer, spec, print_options,
         swap_macros); it is persisted on the session row so a future
         stage-2 re-dispatch can re-run this method against the same
         configuration.
@@ -415,28 +402,21 @@ class CalibrationService:
         filament_presets = [
             r for r in (_hydrate_preset_ref(x) for x in (dispatch_args.get("filament_presets") or [])) if r is not None
         ]
-        bundle = _hydrate_slice_bundle(dispatch_args.get("bundle"))
         slicer = dispatch_args.get("slicer")
         bed_type = dispatch_args.get("bed_type")
         print_options = dispatch_args.get("print_options")
         swap_macros = dispatch_args.get("swap_macros")
 
-        # Preset-selection contract mirrors /slice-only: either bundle
-        # OR full PresetRef triplet must be present. The route's
-        # StartSessionIn validator already enforces this for non-AUTO
-        # methods, but re-check at the service level too so direct
-        # internal callers don't slip past.
-        if bundle is None and (printer_preset is None or process_preset is None or not filament_presets):
-            raise ValueError(
-                "Manual calibration needs either 'bundle' or all of "
-                "'printer_preset' + 'process_preset' + 'filament_presets'"
-            )
+        # Preset-selection contract mirrors /slice-only: the full PresetRef
+        # triplet must be present. The route's StartSessionIn validator
+        # already enforces this for non-AUTO methods, but re-check at the
+        # service level too so direct internal callers don't slip past.
+        if printer_preset is None or process_preset is None or not filament_presets:
+            raise ValueError("Manual calibration needs all of 'printer_preset' + 'process_preset' + 'filament_presets'")
 
         spec_with_bed = dict(spec or {})
         if bed_type and "bed_type" not in spec_with_bed:
             spec_with_bed["bed_type"] = bed_type
-        if bundle is not None and "target_printer_settings_id" not in spec_with_bed:
-            spec_with_bed["target_printer_settings_id"] = bundle.printer_name
         if slicer and "slicer" not in spec_with_bed:
             spec_with_bed["slicer"] = slicer
 
@@ -448,10 +428,7 @@ class CalibrationService:
         # Speed X-fits the tower to bed width. Resolve the printer
         # preset once here and pass the bbox via spec; the JSON is
         # reused below so the sidecar block doesn't pay for a second
-        # resolve. Bundle path can't see preset JSON until the
-        # sidecar materialises it, so it falls back to the builder's
-        # 256 default — fine for X1/A1/P1S, overflows an A1 mini
-        # (180 mm) bed until bundle introspection is added.
+        # resolve.
         pre_resolved_printer_json: str | None = None
         if cali_mode in (CaliMode.PA_LINE, CaliMode.VOL_SPEED_TOWER):
             from backend.app.models.printer import Printer as PrinterModel
@@ -461,7 +438,7 @@ class CalibrationService:
             )
 
             bed_bbox: tuple[float, float, float, float] | None = None
-            if bundle is None and printer_preset is not None:
+            if printer_preset is not None:
                 pre_resolved_printer_json = await resolve_preset_ref(db, user, printer_preset, "printer")
                 bed_bbox = parse_bed_bbox_from_printer_json(pre_resolved_printer_json)
             if bed_bbox is None:
@@ -500,92 +477,79 @@ class CalibrationService:
         model_filename = f"calibration_{cali_mode.value}.3mf"
         try:
             async with SlicerApiService(base_url=api_url) as svc:
-                if bundle is not None:
-                    slice_result = await svc.slice_with_bundle(
-                        model_bytes=bake_bytes,
-                        model_filename=model_filename,
-                        bundle_id=bundle.bundle_id,
-                        printer_name=bundle.printer_name,
-                        process_name=bundle.process_name,
-                        filament_names=bundle.filament_names,
-                        export_3mf=True,
-                    )
-                else:
-                    printer_json = pre_resolved_printer_json or await resolve_preset_ref(
-                        db, user, printer_preset, "printer"
-                    )
-                    process_json = await resolve_preset_ref(db, user, process_preset, "process")
-                    filament_jsons = [await resolve_preset_ref(db, user, ref, "filament") for ref in filament_presets]
-                    from backend.app.services.calib_preset_overrides import (
-                        apply_flow_rate_filament_overrides,
-                        apply_flow_rate_process_overrides,
-                        apply_pa_line_filament_overrides,
-                        apply_pa_line_printer_overrides,
-                        apply_pa_line_process_overrides,
-                        apply_pa_pattern_filament_overrides,
-                        apply_pa_pattern_printer_overrides,
-                        apply_pa_pattern_process_overrides,
-                        apply_pa_tower_filament_overrides,
-                        apply_pa_tower_process_overrides,
-                        apply_retraction_printer_overrides,
-                        apply_retraction_process_overrides,
-                        apply_temp_filament_overrides,
-                        apply_temp_printer_overrides,
-                        apply_temp_process_overrides,
-                        apply_vfa_filament_overrides,
-                        apply_vfa_printer_overrides,
-                        apply_vfa_process_overrides,
-                        apply_vol_speed_filament_overrides,
-                        apply_vol_speed_printer_overrides,
-                        apply_vol_speed_process_overrides,
-                    )
+                printer_json = pre_resolved_printer_json or await resolve_preset_ref(
+                    db, user, printer_preset, "printer"
+                )
+                process_json = await resolve_preset_ref(db, user, process_preset, "process")
+                filament_jsons = [await resolve_preset_ref(db, user, ref, "filament") for ref in filament_presets]
+                from backend.app.services.calib_preset_overrides import (
+                    apply_flow_rate_filament_overrides,
+                    apply_flow_rate_process_overrides,
+                    apply_pa_line_filament_overrides,
+                    apply_pa_line_printer_overrides,
+                    apply_pa_line_process_overrides,
+                    apply_pa_pattern_filament_overrides,
+                    apply_pa_pattern_printer_overrides,
+                    apply_pa_pattern_process_overrides,
+                    apply_pa_tower_filament_overrides,
+                    apply_pa_tower_process_overrides,
+                    apply_retraction_printer_overrides,
+                    apply_retraction_process_overrides,
+                    apply_temp_filament_overrides,
+                    apply_temp_printer_overrides,
+                    apply_temp_process_overrides,
+                    apply_vfa_filament_overrides,
+                    apply_vfa_printer_overrides,
+                    apply_vfa_process_overrides,
+                    apply_vol_speed_filament_overrides,
+                    apply_vol_speed_printer_overrides,
+                    apply_vol_speed_process_overrides,
+                )
 
-                    if cali_mode == CaliMode.PA_PATTERN:
-                        process_json = apply_pa_pattern_process_overrides(process_json, nozzle_diameter=nozzle_diameter)
-                        printer_json = apply_pa_pattern_printer_overrides(printer_json)
-                        filament_jsons = [apply_pa_pattern_filament_overrides(f) for f in filament_jsons]
-                    elif cali_mode == CaliMode.PA_TOWER:
-                        process_json = apply_pa_tower_process_overrides(process_json)
-                        filament_jsons = [apply_pa_tower_filament_overrides(f) for f in filament_jsons]
-                    elif cali_mode == CaliMode.PA_LINE:
-                        process_json = apply_pa_line_process_overrides(process_json, nozzle_diameter=nozzle_diameter)
-                        printer_json = apply_pa_line_printer_overrides(printer_json)
-                        filament_jsons = [apply_pa_line_filament_overrides(f) for f in filament_jsons]
-                    elif cali_mode == CaliMode.VOL_SPEED_TOWER:
-                        process_json = apply_vol_speed_process_overrides(process_json)
-                        printer_json = apply_vol_speed_printer_overrides(printer_json, nozzle_diameter=nozzle_diameter)
-                        filament_jsons = [apply_vol_speed_filament_overrides(f) for f in filament_jsons]
-                    elif cali_mode == CaliMode.VFA_TOWER:
-                        process_json = apply_vfa_process_overrides(process_json)
-                        printer_json = apply_vfa_printer_overrides(printer_json)
-                        filament_jsons = [apply_vfa_filament_overrides(f) for f in filament_jsons]
-                    elif cali_mode == CaliMode.TEMP_TOWER:
-                        process_json = apply_temp_process_overrides(process_json)
-                        printer_json = apply_temp_printer_overrides(printer_json)
-                        _temp_start = int(round(float(spec_with_bed.get("start", 0))))
+                if cali_mode == CaliMode.PA_PATTERN:
+                    process_json = apply_pa_pattern_process_overrides(process_json, nozzle_diameter=nozzle_diameter)
+                    printer_json = apply_pa_pattern_printer_overrides(printer_json)
+                    filament_jsons = [apply_pa_pattern_filament_overrides(f) for f in filament_jsons]
+                elif cali_mode == CaliMode.PA_TOWER:
+                    process_json = apply_pa_tower_process_overrides(process_json)
+                    filament_jsons = [apply_pa_tower_filament_overrides(f) for f in filament_jsons]
+                elif cali_mode == CaliMode.PA_LINE:
+                    process_json = apply_pa_line_process_overrides(process_json, nozzle_diameter=nozzle_diameter)
+                    printer_json = apply_pa_line_printer_overrides(printer_json)
+                    filament_jsons = [apply_pa_line_filament_overrides(f) for f in filament_jsons]
+                elif cali_mode == CaliMode.VOL_SPEED_TOWER:
+                    process_json = apply_vol_speed_process_overrides(process_json)
+                    printer_json = apply_vol_speed_printer_overrides(printer_json, nozzle_diameter=nozzle_diameter)
+                    filament_jsons = [apply_vol_speed_filament_overrides(f) for f in filament_jsons]
+                elif cali_mode == CaliMode.VFA_TOWER:
+                    process_json = apply_vfa_process_overrides(process_json)
+                    printer_json = apply_vfa_printer_overrides(printer_json)
+                    filament_jsons = [apply_vfa_filament_overrides(f) for f in filament_jsons]
+                elif cali_mode == CaliMode.TEMP_TOWER:
+                    process_json = apply_temp_process_overrides(process_json)
+                    printer_json = apply_temp_printer_overrides(printer_json)
+                    _temp_start = int(round(float(spec_with_bed.get("start", 0))))
+                    filament_jsons = [apply_temp_filament_overrides(f, start_temp=_temp_start) for f in filament_jsons]
+                elif cali_mode == CaliMode.RETRACTION_TOWER:
+                    process_json = apply_retraction_process_overrides(process_json)
+                    printer_json = apply_retraction_printer_overrides(printer_json)
+                elif cali_mode == CaliMode.FLOW_RATE:
+                    process_json = apply_flow_rate_process_overrides(process_json, nozzle_diameter=nozzle_diameter)
+                    if baseline_flow_ratio is not None and baseline_flow_ratio > 0:
                         filament_jsons = [
-                            apply_temp_filament_overrides(f, start_temp=_temp_start) for f in filament_jsons
+                            apply_flow_rate_filament_overrides(f, baseline_ratio=baseline_flow_ratio)
+                            for f in filament_jsons
                         ]
-                    elif cali_mode == CaliMode.RETRACTION_TOWER:
-                        process_json = apply_retraction_process_overrides(process_json)
-                        printer_json = apply_retraction_printer_overrides(printer_json)
-                    elif cali_mode == CaliMode.FLOW_RATE:
-                        process_json = apply_flow_rate_process_overrides(process_json, nozzle_diameter=nozzle_diameter)
-                        if baseline_flow_ratio is not None and baseline_flow_ratio > 0:
-                            filament_jsons = [
-                                apply_flow_rate_filament_overrides(f, baseline_ratio=baseline_flow_ratio)
-                                for f in filament_jsons
-                            ]
 
-                    slice_result = await svc.slice_with_profiles(
-                        model_bytes=bake_bytes,
-                        model_filename=model_filename,
-                        printer_profile_json=printer_json,
-                        process_profile_json=process_json,
-                        filament_profile_jsons=filament_jsons,
-                        export_3mf=True,
-                        bed_type=bed_type,
-                    )
+                slice_result = await svc.slice_with_profiles(
+                    model_bytes=bake_bytes,
+                    model_filename=model_filename,
+                    printer_profile_json=printer_json,
+                    process_profile_json=process_json,
+                    filament_profile_jsons=filament_jsons,
+                    export_3mf=True,
+                    bed_type=bed_type,
+                )
         except (SlicerInputError, SlicerApiUnavailableError, SlicerApiError) as exc:
             raise ValueError(f"Slicer sidecar failed for calibration slice: {exc}") from exc
 
@@ -704,7 +668,6 @@ class CalibrationService:
         user_id: int | None,
         user=None,  # User | None — needed for preset_resolver's cloud-permission gate
         spec=None,  # dict | None — per-mode opaque spec (PA Tower start/end/step)
-        bundle=None,  # SliceBundleSpec | None — sidecar bundle path
         printer_preset=None,  # PresetRef | None — manual-path triplet
         process_preset=None,  # PresetRef | None
         filament_presets=None,  # list[PresetRef] | None
@@ -802,7 +765,6 @@ class CalibrationService:
                 "printer_preset": printer_preset.model_dump() if printer_preset else None,
                 "process_preset": process_preset.model_dump() if process_preset else None,
                 "filament_presets": [r.model_dump() for r in (filament_presets or [])],
-                "bundle": bundle.model_dump() if bundle else None,
                 "slicer": slicer,
                 "bed_type": bed_type,
                 "print_options": print_options,

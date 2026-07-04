@@ -26,7 +26,6 @@ vi.mock('../../api/client', () => ({
     getColorCatalog: vi.fn(),
     resetAmsSlot: vi.fn(),
     getPrinterModels: vi.fn(),
-    listSlicerBundles: vi.fn(),
   },
 }));
 
@@ -100,7 +99,6 @@ describe('ConfigureAmsSlotModal', () => {
     (api.getColorCatalog as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     (api.resetAmsSlot as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, message: 'ok' });
     (api.getPrinterModels as ReturnType<typeof vi.fn>).mockResolvedValue(mockPrinterModels);
-    (api.listSlicerBundles as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   });
 
   it('renders nothing visible when closed', () => {
