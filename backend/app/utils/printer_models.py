@@ -23,6 +23,7 @@ PRINTER_MODEL_MAP = {
     "Bambu Lab H2C": "H2C",
     "Bambu Lab H2S": "H2S",
     "Bambu Lab X2D": "X2D",
+    "Bambu Lab A2L": "A2L",
 }
 
 # Map from printer_model_id (internal codes in slice_info.config) to short names
@@ -39,11 +40,16 @@ PRINTER_MODEL_ID_MAP = {
     "P2S": "P2S",
     # X2 series
     "N6": "X2D",
+    # A2 series (A2L is single-FDM + integrated cutter/plotter — single nozzle)
+    "N9": "A2L",
     # A1 series
     "A11": "A1",
     "A12": "A1 Mini",
-    "N1": "A1",
-    "N2S": "A1 Mini",
+    # N1 = A1 Mini, N2S = A1 — every other registry (firmware_check, VP manager
+    # model + serial-prefix maps, printer_manager A1_MODELS) agrees; this map was
+    # the lone outlier that had them flipped (surfaced scoping A2L, #1684).
+    "N1": "A1 Mini",
+    "N2S": "A1",
     "A04": "A1 Mini",
     # H2 series (Office/H series)
     "O1D": "H2D",
@@ -91,13 +97,15 @@ LINEAR_RAIL_MODELS = frozenset(
         # Display names (uppercase, no spaces)
         "A1",
         "A1MINI",
+        "A2L",
         "H2D",
         "H2DPRO",
         "H2C",
         "H2S",
         # Internal codes
-        "N1",  # A1
-        "N2S",  # A1 Mini
+        "N1",  # A1 Mini
+        "N2S",  # A1
+        "N9",  # A2L
         "A04",  # A1 Mini (alternate)
         "A11",  # A1
         "A12",  # A1 Mini

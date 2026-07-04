@@ -4835,3 +4835,60 @@ class TestNozzleOffsetCali:
 
         cmd = self._get_published_command(mqtt_client)
         assert cmd["nozzle_offset_cali"] == 1
+
+
+class TestDeviceIdentificationProbe:
+    """One-shot INFO log of any device.* identification fields the firmware
+    sends. Lets a new-model support bundle self-disclose the internal model
+    code (e.g. dev_model_name='N9' for A2L) without a separate debug build.
+    Ported from upstream Bambuddy e01d3a79 (surfaced by A2L #1684).
+    """
+
+    @pytest.fixture
+    def mqtt_client(self):
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        return BambuMQTTClient(
+            ip_address="192.168.1.100",
+            serial_number="TEST_PROBE",
+            access_code="12345678",
+        )
+
+    def _device_payload(self, device):
+        return {"print": {"device": device}}
+
+    def test_logs_known_id_fields_once(self, mqtt_client, caplog):
+        import logging
+
+        caplog.set_level(logging.INFO, logger="backend.app.services.bambu_mqtt")
+        mqtt_client._process_message(
+            self._device_payload({"dev_model_name": "N9", "dev_product_name": "Bambu Lab A2L"})
+        )
+        matches = [r for r in caplog.records if "Device identification" in r.getMessage()]
+        assert len(matches) == 1
+        msg = matches[0].getMessage()
+        assert "dev_model_name" in msg and "N9" in msg
+        assert "dev_product_name" in msg
+
+    def test_one_shot_does_not_repeat(self, mqtt_client, caplog):
+        import logging
+
+        caplog.set_level(logging.INFO, logger="backend.app.services.bambu_mqtt")
+        payload = self._device_payload({"dev_model_name": "N9"})
+        mqtt_client._process_message(payload)
+        mqtt_client._process_message(payload)
+        mqtt_client._process_message(payload)
+        matches = [r for r in caplog.records if "Device identification" in r.getMessage()]
+        assert len(matches) == 1
+
+    def test_fallback_dumps_keys_when_no_known_fields(self, mqtt_client, caplog):
+        """Future Bambu rename (e.g. model_name without dev_ prefix) still surfaces."""
+        import logging
+
+        caplog.set_level(logging.INFO, logger="backend.app.services.bambu_mqtt")
+        mqtt_client._process_message(self._device_payload({"model_name": "MysteryModel", "extruder": {"state": 0}}))
+        matches = [r for r in caplog.records if "Device identification" in r.getMessage()]
+        assert len(matches) == 1
+        msg = matches[0].getMessage()
+        assert "no known id fields" in msg
+        assert "model_name" in msg and "extruder" in msg

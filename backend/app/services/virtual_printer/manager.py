@@ -37,6 +37,8 @@ VIRTUAL_PRINTER_MODELS = {
     "C13": "X1E",  # X1E
     # X2 Series
     "N6": "X2D",  # X2D
+    # A2 Series (single-FDM + integrated cutter/plotter)
+    "N9": "A2L",  # A2L
     # P Series
     "C11": "P1P",  # P1P
     "C12": "P1S",  # P1S
@@ -72,6 +74,8 @@ MODEL_SERIAL_PREFIXES = {
     "C13": "03W00A",  # X1E
     # X2 Series
     "N6": "20P90A",  # X2D (first 4 chars "20P9" match real serials)
+    # A2 Series
+    "N9": "26A19A",  # A2L (first 5 chars "26A19" match real serials)
     # P Series
     "C11": "01S00A",  # P1P
     "C12": "01P00A",  # P1S

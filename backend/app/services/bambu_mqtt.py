@@ -2599,6 +2599,27 @@ class BambuMQTTClient:
         # bit 8 = 1 → LEFT extruder (active_extruder=1)
         if "device" in data and isinstance(data.get("device"), dict):
             device = data["device"]
+            # One-shot identification probe: surface whatever the firmware uses to
+            # name itself so an unknown model in a support bundle becomes self-
+            # diagnosing (A2L #1684 surfaced this — get_version had disconnected).
+            # INFO level so it lands in support bundles without debug. Falls back
+            # to device.keys() if none of the known fields are present (so a
+            # future Bambu rename like `model_name` is still observable).
+            if not getattr(self, "_device_id_logged", False):
+                id_fields = {
+                    k: device.get(k)
+                    for k in ("dev_model_name", "dev_product_name", "dev_id", "project_name")
+                    if k in device
+                }
+                if id_fields:
+                    logger.info("[%s] Device identification: %s", self.serial_number, id_fields)
+                else:
+                    logger.info(
+                        "[%s] Device identification: no known id fields; device.keys=%s",
+                        self.serial_number,
+                        sorted(device.keys()),
+                    )
+                self._device_id_logged = True
             if "extruder" in device and "state" in device["extruder"]:
                 state_val = device["extruder"]["state"]
                 # Extract bit 8 for extruder position

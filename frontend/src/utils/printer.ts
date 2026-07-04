@@ -1,6 +1,7 @@
 export function getPrinterImage(model: string | null | undefined): string {
   if (!model) return '/img/printers/default.png';
   const m = model.toLowerCase().replace(/\s+/g, '');
+  if (m.includes('a2l') || m === 'n9') return '/img/printers/a2l.png';
   if (m.includes('x2d') || m === 'n6') return '/img/printers/x2d.png';
   if (m.includes('x1e')) return '/img/printers/x1e.png';
   if (m.includes('x1c') || m.includes('x1carbon')) return '/img/printers/x1c.png';
@@ -55,6 +56,8 @@ const MODEL_DISPLAY_MAP: Record<string, string> = {
   'BL-P003': 'X1E',
   // X2 Series
   'N6': 'X2D',
+  // A2 Series
+  'N9': 'A2L',
   // P Series
   'C11': 'P1S',
   'C12': 'P1P',
@@ -72,6 +75,7 @@ const MODEL_DISPLAY_MAP: Record<string, string> = {
   'P2S': 'P2S',
   'A1': 'A1',
   'A1 Mini': 'A1 Mini',
+  'A2L': 'A2L',
   'H2D': 'H2D',
   'H2D Pro': 'H2D Pro',
   'H2C': 'H2C',

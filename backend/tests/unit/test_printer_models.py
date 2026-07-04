@@ -5,6 +5,7 @@ import pytest
 from backend.app.services.camera import get_camera_port, supports_rtsp
 from backend.app.utils.printer_models import (
     CARBON_ROD_MODELS,
+    LINEAR_RAIL_MODELS,
     STEEL_ROD_MODELS,
     get_rod_type,
     has_ethernet,
@@ -118,3 +119,73 @@ class TestX2DModel:
         assert "N6" not in CARBON_ROD_MODELS
         assert "X2D" in STEEL_ROD_MODELS
         assert "N6" in STEEL_ROD_MODELS
+
+
+class TestA2LModel:
+    """A2L printer support (#1684).
+
+    Hybrid 3D printer + cutter/plotter. Linear rails like the A1 family, NO
+    Ethernet (Wi-Fi 2.4 GHz only), low-rate chamber-image camera on port 6000
+    (no RTSP), single FDM extruder (the second "tool head" in BambuStudio's
+    profile is the cutter, not a second extruder — must NOT be dual-nozzle).
+    Internal SSDP/MQTT code "N9"; serials begin "26A19".
+    """
+
+    def test_a2l_is_linear_rail_display_name(self):
+        assert get_rod_type("A2L") == "linear_rail"
+
+    def test_a2l_is_linear_rail_internal_code(self):
+        assert get_rod_type("N9") == "linear_rail"
+
+    def test_a2l_model_id_map(self):
+        assert normalize_printer_model_id("N9") == "A2L"
+
+    def test_a2l_model_map(self):
+        assert normalize_printer_model("Bambu Lab A2L") == "A2L"
+
+    def test_a2l_has_no_ethernet_display_name(self):
+        assert has_ethernet("A2L") is False
+
+    def test_a2l_has_no_ethernet_internal_code(self):
+        assert has_ethernet("N9") is False
+
+    def test_a2l_does_not_support_rtsp_display_name(self):
+        assert supports_rtsp("A2L") is False
+
+    def test_a2l_does_not_support_rtsp_internal_code(self):
+        assert supports_rtsp("N9") is False
+
+    def test_a2l_camera_port_is_chamber_image(self):
+        assert get_camera_port("A2L") == 6000
+        assert get_camera_port("N9") == 6000
+
+    def test_a2l_is_not_dual_nozzle(self):
+        """Single FDM extruder + cutter head — must not land in the dual-nozzle
+        group or AMS routing targets the deputy slot (firmware rejects 07FF_8012)."""
+        assert is_dual_nozzle_model("A2L") is False
+        assert is_dual_nozzle_model("N9") is False
+
+    def test_a2l_in_linear_rail_set(self):
+        assert "A2L" in LINEAR_RAIL_MODELS
+        assert "N9" in LINEAR_RAIL_MODELS
+
+    def test_a2l_not_in_carbon_or_steel_rod_sets(self):
+        assert "A2L" not in CARBON_ROD_MODELS
+        assert "N9" not in CARBON_ROD_MODELS
+        assert "A2L" not in STEEL_ROD_MODELS
+        assert "N9" not in STEEL_ROD_MODELS
+
+
+class TestA1SeriesModelIds:
+    """Regression guard for the A1-family internal-code → display-name map.
+
+    N1 = A1 Mini, N2S = A1 — every other registry agrees; printer_models.py was
+    the lone outlier that had them flipped (fixed while scoping A2L, #1684). Pin
+    both directions so a future re-flip fails loudly.
+    """
+
+    def test_n2s_is_a1(self):
+        assert normalize_printer_model_id("N2S") == "A1"
+
+    def test_n1_is_a1_mini(self):
+        assert normalize_printer_model_id("N1") == "A1 Mini"

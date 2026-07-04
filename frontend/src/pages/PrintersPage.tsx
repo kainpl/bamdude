@@ -6253,6 +6253,9 @@ export function AddPrinterModal({
                       <option value="A1">A1</option>
                       <option value="A1 Mini">A1 Mini</option>
                     </optgroup>
+                    <optgroup label="A2 Series">
+                      <option value="A2L">A2L</option>
+                    </optgroup>
                   </select>
                 </div>
                 <div>
@@ -6920,6 +6923,9 @@ function EditPrinterModal({
                     <optgroup label="A1 Series">
                       <option value="A1">A1</option>
                       <option value="A1 Mini">A1 Mini</option>
+                    </optgroup>
+                    <optgroup label="A2 Series">
+                      <option value="A2L">A2L</option>
                     </optgroup>
                   </select>
                 </div>

@@ -51,6 +51,7 @@ MODEL_PRODUCT_NAMES = {
     "BL-P002": "X1",
     "C13": "X1E",
     "N6": "X2D",
+    "N9": "A2L",
     "C11": "P1P",
     "C12": "P1S",
     "N7": "P2S",

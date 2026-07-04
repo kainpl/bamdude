@@ -32,6 +32,21 @@ describe('getPrinterImage', () => {
     });
   });
 
+  describe('A2L (#1684)', () => {
+    it('resolves display name "A2L" to a2l.png', () => {
+      expect(getPrinterImage('A2L')).toBe('/img/printers/a2l.png');
+      expect(getPrinterImage('a2l')).toBe('/img/printers/a2l.png');
+    });
+
+    it('resolves the internal SSDP code "N9" to a2l.png', () => {
+      expect(getPrinterImage('N9')).toBe('/img/printers/a2l.png');
+    });
+
+    it('does not misclassify A2L as A1', () => {
+      expect(getPrinterImage('A2L')).not.toBe('/img/printers/a1.png');
+    });
+  });
+
   describe('regression: existing families unchanged', () => {
     it('X1C → x1c.png', () => {
       expect(getPrinterImage('X1C')).toBe('/img/printers/x1c.png');
