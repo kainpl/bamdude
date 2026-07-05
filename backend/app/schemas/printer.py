@@ -161,6 +161,23 @@ class HMSErrorResponse(BaseModel):
     attr: int = 0  # Attribute value for constructing wiki URL
     module: int
     severity: int  # 1=fatal, 2=serious, 3=common, 4=info
+    actions: list[str] = []  # User-facing action keys from the HMS catalog (e.g. "RESUME_PRINTING")
+    job_id: str | None = None  # subtask_id snapshot echoed back by HMS-aware commands
+    # Canonical hex identifier the firmware uses to match HMS-related commands: 16 chars
+    # for `hms[]`-array faults (full 64-bit attr+code), 8 chars for `print_error` faults.
+    # The frontend echoes this back as HmsActionBody.print_error so we send the
+    # firmware-recognised key, not the truncated short_code (#1830).
+    full_code: str = ""
+
+
+class HmsActionBody(BaseModel):
+    # Canonical hex identifier (HMSErrorResponse.full_code): 8 chars for `print_error`
+    # faults, 16 chars for `hms[]`-array faults. Length-bounded to those two valid shapes.
+    print_error: str = Field(..., min_length=8, max_length=16, pattern=r"^[0-9A-Fa-f]{8}([0-9A-Fa-f]{8})?$")
+    # One of the HMSAction enum values. Length-capped to keep stray input from the dispatcher.
+    action: str = Field(..., min_length=1, max_length=64)
+    # The subtask_id snapshot from the HMSError that surfaced this dialog. Optional.
+    job_id: str | None = Field(default=None, max_length=64)
 
 
 class AMSTray(BaseModel):

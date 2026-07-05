@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 
 import paho.mqtt.client as mqtt
 
+from backend.app.services.hms_actions import HMSAction, get_actions_for_error_code
+
 logger = logging.getLogger(__name__)
 
 
@@ -240,6 +242,20 @@ class HMSError:
     module: int
     severity: int  # 1=fatal, 2=serious, 3=common, 4=info
     message: str = ""
+    # User-facing remediation actions from the bundled HMS catalog (e.g. "RESUME_PRINTING",
+    # "CHECK_ASSISTANT"). Defaults to an empty list rather than None so the field always
+    # satisfies HMSErrorResponse.actions: list[str] — a code path that builds an HMSError
+    # without explicitly passing actions can't silently land None on the schema boundary.
+    actions: list[str] = field(default_factory=list)
+    # The `subtask_id` snapshotted from PrinterState when this error surfaced; Bambu's
+    # HMS-aware commands echo it back as `job_id`. None for idle errors with no job.
+    job_id: str | None = None
+    # Canonical hex identifier for the firmware's `err` matching: 16 chars for the
+    # 64-bit `hms[]` array path (`f"{attr:08X}{code:08X}"`), 8 chars for the 32-bit
+    # `print_error` path. The frontend echoes this back to execute_hms_action; the
+    # truncated 8-char short code the firmware silently rejects on H2C and hms[]-sourced
+    # faults (#1830).
+    full_code: str = ""
 
 
 # HMS short codes the firmware emits during normal user-cancel sequences.
@@ -3154,12 +3170,23 @@ class BambuMQTTClient:
                         short_code = f"{(attr >> 16) & 0xFFFF:04X}_{code & 0xFFFF:04X}"
                         if short_code in _HMS_USER_ACTION_CODES:
                             continue
+                        # Catalog has both 8-char keys (base class) and 16-char keys
+                        # (specific variants). The full 16-char identifier preserves the
+                        # 32 bits of attr_low + code_high that short_code discards — that's
+                        # the firmware's matching key, so try it first and fall back.
+                        full_code = f"{attr:08X}{code:08X}"
+                        actions = get_actions_for_error_code(self.serial_number[:3], full_code)
+                        if not actions:
+                            actions = get_actions_for_error_code(self.serial_number[:3], short_code.replace("_", ""))
                         self.state.hms_errors.append(
                             HMSError(
                                 code=f"0x{code:x}" if code else "0x0",
                                 attr=attr,
                                 module=module,
                                 severity=severity if severity > 0 else 2,
+                                actions=actions,
+                                job_id=self.state.subtask_id,
+                                full_code=full_code,
                             )
                         )
 
@@ -3206,12 +3233,21 @@ class BambuMQTTClient:
                             existing_short_codes.add(f"{e_module:04X}_{e_error:04X}")
 
                         if short_code not in existing_short_codes:
+                            # Bambu's HMS catalog keys by 3-letter device code (SN prefix)
+                            # and a 16-char short error code without the underscore.
+                            actions = get_actions_for_error_code(self.serial_number[:3], short_code.replace("_", ""))
+                            # print_error is already 32-bit — f"{print_error:08X}" is the
+                            # firmware's matching key with no truncation. Snapshot the live
+                            # subtask_id so later job changes don't invalidate the action.
                             self.state.hms_errors.append(
                                 HMSError(
                                     code=f"0x{error:x}",
                                     attr=print_error,  # Store full value for display
                                     module=module >> 8,  # High byte of module (e.g., 0x05)
                                     severity=3,  # Warning level for print_error
+                                    actions=actions,
+                                    job_id=self.state.subtask_id,
+                                    full_code=f"{print_error:08X}",
                                 )
                             )
 
@@ -5186,6 +5222,167 @@ class BambuMQTTClient:
         self._client.publish(self.topic_publish, json.dumps(command), qos=1)
         self.state.hms_errors = []
         logger.info("[%s] Sent clear HMS errors command", self.serial_number)
+        return True
+
+    def execute_hms_action(self, print_error: str, action: str, job_id: str | None = None) -> bool:
+        """Dispatch the user's choice from the HMS-error modal as a printer command.
+
+        Args:
+            print_error: Canonical hex identifier for the fault — 8 chars for the
+                32-bit `print_error` path, 16 chars for the 64-bit `hms[]` path
+                (HMSError.full_code). Only the `idle_ignore` branch puts it on the
+                wire; resume / stop use BambuStudio's plain shape (the `err`-bearing
+                shape is silently rejected by the firmware — verified on a live H2D).
+            action: One of HMSAction's string values.
+            job_id: The `subtask_id` snapshotted onto the HMSError at parse-time.
+                Preserved for symmetry with the catalog but no longer sent —
+                BambuStudio's resume/stop commands are plain and the firmware doesn't
+                echo `job_id` back on the response either.
+
+        Returns False when the MQTT client is offline or when `action` is unknown so
+        the route surfaces it as a 4xx rather than a silent no-op.
+        """
+        if not self._client or not self.state.connected:
+            logger.warning("[%s] Cannot execute HMS action: not connected", self.serial_number)
+            return False
+
+        # Always re-push the full state after a command so the modal's underlying
+        # status query reflects the new error list (or absence) on the next tick.
+        def publish(payload: dict):
+            self._client.publish(self.topic_publish, json.dumps(payload), qos=1)
+            self._client.publish(
+                self.topic_publish, json.dumps({"pushing": {"command": "pushall", "sequence_id": "0"}}), qos=1
+            )
+
+        def hms_resume():
+            # BambuStudio's actual shape — plain resume, no err / no job_id. The
+            # `err`-bearing shape is silently rejected by Bambu firmware on
+            # print_error- and hms[]-sourced faults alike (#1830 §(2)).
+            publish({"print": {"command": "resume", "param": "", "sequence_id": "0"}})
+
+        def hms_stop():
+            # Same as hms_resume — BambuStudio's actual shape is plain.
+            publish({"print": {"command": "stop", "param": "", "sequence_id": "0"}})
+
+        def hms_ignore(persistent: bool = False):
+            # `idle_ignore` is BambuStudio's "dismiss this warning" command for
+            # non-pause warnings. type=0 dismisses once, type=1 hides it permanently.
+            # For an HMS-paused print `idle_ignore` is silently rejected regardless of
+            # `err` (verified on a live H2D — #1830 §(2)); the user intent of "Ignore
+            # and resume" is to continue, so dispatch a plain resume there instead.
+            if self.state.state == "PAUSE":
+                hms_resume()
+                return
+            publish(
+                {
+                    "print": {
+                        "command": "idle_ignore",
+                        "err": print_error,
+                        "type": 1 if persistent else 0,
+                        "sequence_id": "0",
+                    }
+                }
+            )
+
+        def ams_control(param: str):
+            publish({"print": {"command": "ams_control", "param": param, "sequence_id": "0"}})
+
+        def clean_print_error():
+            # Matches the existing clear_hms_errors shape — Bambu does not expect
+            # print_error in the body; the command clears whatever dialog is active.
+            publish({"print": {"command": "clean_print_error", "sequence_id": "0"}})
+
+        def uiop_close():
+            # `err` is the 8-char hex short code, uppercased to match BambuStudio.
+            publish(
+                {
+                    "system": {
+                        "command": "uiop",
+                        "name": "print_error",
+                        "action": "close",
+                        "source": 1,
+                        "type": "dialog",
+                        "err": print_error.upper(),
+                        "sequence_id": "0",
+                    }
+                }
+            )
+
+        match action:
+            case (
+                HMSAction.RESUME_PRINTING
+                | HMSAction.RESUME_PRINTING_DEFECTS
+                | HMSAction.RESUME_PRINTING_PROBELM_SOLVED
+                | HMSAction.PROBLEM_SOLVED_RESUME
+                | HMSAction.FILAMENT_LOAD_RESUME
+                | HMSAction.PROCEED
+            ):
+                hms_resume()
+
+            case HMSAction.STOP_PRINTING:
+                hms_stop()
+
+            case HMSAction.IGNORE_RESUME | HMSAction.NO_REMINDER_NEXT_TIME:
+                hms_ignore(persistent=False)
+
+            case HMSAction.IGNORE_NO_REMINDER_NEXT_TIME | HMSAction.DONT_REMIND_NEXT_TIME:
+                hms_ignore(persistent=True)
+
+            case HMSAction.FILAMENT_EXTRUDED | HMSAction.DBL_CHECK_DONE:
+                ams_control("done")
+
+            case (
+                HMSAction.RETRY_FILAMENT_EXTRUDED
+                | HMSAction.CONTINUE
+                | HMSAction.RETRY_PROBLEM_SOLVED
+                | HMSAction.DBL_CHECK_RETRY
+            ):
+                ams_control("resume")
+
+            case HMSAction.ABORT:
+                ams_control("abort")
+
+            case HMSAction.OK_BUTTON:
+                clean_print_error()
+
+            case HMSAction.DBL_CHECK_OK:
+                clean_print_error()
+                uiop_close()
+
+            case HMSAction.DBL_CHECK_RESUME:
+                # Plain resume — not HMS-aware, no err/job_id.
+                publish({"print": {"command": "resume", "param": "", "sequence_id": "0"}})
+
+            case HMSAction.REFRESH_NOZZLE:
+                publish({"print": {"command": "refresh_nozzle", "sequence_id": "0"}})
+
+            case HMSAction.TURN_OFF_FIRE_ALARM:
+                publish({"print": {"command": "buzzer_ctrl", "mode": 0, "sequence_id": "0"}})
+
+            case HMSAction.STOP_DRYING:
+                publish({"print": {"command": "auto_stop_ams_dry", "sequence_id": "0"}})
+
+            case HMSAction.DISABLE_PURIFICATION:
+                publish({"print": {"command": "close_air_filt", "sequence_id": "0"}})
+
+            case (
+                HMSAction.CHECK_ASSISTANT
+                | HMSAction.JUMP_TO_LIVEVIEW
+                | HMSAction.OK_JUMP_RACK
+                | HMSAction.REMOVE_CLOSE_BTN
+                | HMSAction.LOAD_VIRTUAL_TRAY
+                | HMSAction.CANCLE
+                | HMSAction.DBL_CHECK_CANCEL
+            ):
+                # UI-only actions — the printer's own screen handles these; the modal
+                # still surfaces them so the user has parity with Studio.
+                pass
+
+            case _:
+                logger.warning("[%s] Unknown HMS action '%s'", self.serial_number, action)
+                return False
+
+        logger.info("[%s] Executed HMS action '%s' (err=%s)", self.serial_number, action, print_error)
         return True
 
     def skip_objects(self, object_ids: list[int]) -> bool:

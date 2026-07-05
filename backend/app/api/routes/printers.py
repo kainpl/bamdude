@@ -23,6 +23,7 @@ from backend.app.schemas.printer import (
     AMSUnit,
     DiagnosticRequest,
     FilaSwitchResponse,
+    HmsActionBody,
     HMSErrorResponse,
     NozzleInfoResponse,
     NozzleRackSlot,
@@ -405,7 +406,15 @@ async def get_printer_status(
 
     # Convert HMS errors to response format
     hms_errors = [
-        HMSErrorResponse(code=e.code, attr=e.attr, module=e.module, severity=e.severity)
+        HMSErrorResponse(
+            code=e.code,
+            attr=e.attr,
+            module=e.module,
+            severity=e.severity,
+            actions=e.actions,
+            job_id=e.job_id,
+            full_code=e.full_code,
+        )
         for e in (state.hms_errors or [])
     ]
 
@@ -2902,6 +2911,57 @@ async def clear_hms_errors(
         raise HTTPException(500, "Failed to clear HMS errors")
 
     return {"success": True, "message": "HMS errors cleared"}
+
+
+# Seconds the /hms/execute-action route waits for a printer status push before
+# deciding the firmware silently rejected the command (Bambu ACKs the QoS-1
+# publish at the broker but the printer can still drop a malformed HMS command).
+HMS_ACTION_ACK_WAIT_SECONDS = 2.5
+
+
+@router.post("/{printer_id}/hms/execute-action")
+async def execute_hms_action(
+    printer_id: int,
+    body: HmsActionBody,
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Execute an HMS action (resume / stop / ignore / …) on the printer."""
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    # re-Connect MQTT if stalled (same idiom as the clear route)
+    if not await printer_manager.ensure_fresh_connection_for_printer(printer):
+        raise HTTPException(500, "Can`t re-connect printer MQTT")
+
+    client = printer_manager.get_client(printer_id)
+    if not client:
+        raise HTTPException(400, "Printer not connected")
+
+    # Snapshot pre-state so we can verify the printer actually acted on the command.
+    # publish() success is NOT printer-ack: Bambu's firmware silently rejects malformed
+    # HMS commands at QoS 1 (the broker ACKs the publish, the printer drops it — #1830).
+    # Sample (gcode_state, hms_errors length) because every accepted HMS action mutates
+    # at least one of them. PrinterState.state carries the MQTT gcode_state verbatim.
+    pre_gcode = client.state.state
+    pre_hms_count = len(client.state.hms_errors)
+
+    success = client.execute_hms_action(body.print_error, body.action, body.job_id)
+    if not success:
+        raise HTTPException(400, "Failed to execute HMS action")
+
+    # Give the printer time to push a state update. execute_hms_action already publishes
+    # a pushall after every command, so a fresh status should arrive within ~1s; 2.5s
+    # covers slower firmware. Plain sleep is fine — paho's callback runs in its own thread.
+    await asyncio.sleep(HMS_ACTION_ACK_WAIT_SECONDS)
+
+    acked = client.state.state != pre_gcode or len(client.state.hms_errors) != pre_hms_count
+    if not acked:
+        raise HTTPException(502, "Printer did not acknowledge HMS action within 2.5s")
+
+    return {"success": True, "message": "HMS action executed"}
 
 
 @router.get("/{printer_id}/print/objects")

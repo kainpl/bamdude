@@ -388,6 +388,18 @@ export interface HMSError {
   attr: number;  // Attribute value for constructing wiki URL
   module: number;
   severity: number;  // 1=fatal, 2=serious, 3=common, 4=info
+  actions?: string[];  // User-facing action keys from the HMS catalog (e.g. "RESUME_PRINTING")
+  job_id?: string | null;  // subtask_id snapshot echoed back by HMS-aware commands
+  // Canonical hex identifier the firmware matches against — 8 chars for print_error
+  // faults, 16 chars for hms[]-array faults. Sent back as HmsActionBody.print_error so
+  // we don't truncate the 64-bit identifier into the silent-rejection short code (#1830).
+  full_code?: string;
+}
+
+export interface HMSActionBody {
+  print_error: string;  // full_code echoed back (8 or 16 hex chars)
+  action: string;  // one of the HMSAction values
+  job_id: string | null;  // subtask_id snapshot, optional
 }
 
 export interface AMSTray {
@@ -4477,6 +4489,12 @@ export const api = {
   // HMS Errors
   clearHMSErrors: (printerId: number) =>
     request<{ success: boolean; message: string }>(`/printers/${printerId}/hms/clear`, { method: 'POST' }),
+
+  executeHMSAction: (printerId: number, data: HMSActionBody) =>
+    request<{ success: boolean; message: string }>(`/printers/${printerId}/hms/execute-action`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
 
   // AMS Control
   refreshAmsSlot: (printerId: number, amsId: number, slotId: number) =>
