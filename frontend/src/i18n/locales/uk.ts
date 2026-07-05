@@ -617,7 +617,8 @@ export default {
       active: 'Сушіння',
       powerRequired: 'Підключіть адаптер живлення AMS для увімкнення сушіння',
       startingDrying: 'Запуск сушіння...',
-      rotateTray: 'Обертати котушку під час сушіння'
+      rotateTray: 'Обертати котушку під час сушіння',
+      rotateDisabledLoaded: 'Обертання котушки недоступне, поки в цьому AMS завантажено лоток'
     },
     // Filaments section
     filaments: 'Філамент',

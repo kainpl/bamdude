@@ -607,7 +607,8 @@ export default {
       active: 'Drying',
       powerRequired: 'Connect AMS power adapter to enable drying',
       startingDrying: 'Starting drying...',
-      rotateTray: 'Rotate spool during drying'
+      rotateTray: 'Rotate spool during drying',
+      rotateDisabledLoaded: 'Spool rotation is unavailable while a tray in this AMS is loaded'
     },
     // Filaments section
     filaments: 'Filaments',

@@ -127,6 +127,13 @@ import { computePopoverPosition } from '../utils/popoverPosition';
 // earlier); under-estimating leaves the popover clipped off the bottom (#1447).
 const DRYING_POPOVER_WIDTH = 240;
 const DRYING_POPOVER_ESTIMATED_HEIGHT = 320;
+// Bambu models with a chamber exhaust fan (big_fan2). Open-frame models
+// (P1P, A1, A1 Mini, A2L) have no chamber fan, so its badge is hidden for
+// them. Keyed by mapModelCode() display name — our printer.model is a raw
+// SSDP code that mapModelCode() normalises.
+const MODELS_WITH_CHAMBER_FAN: ReadonlySet<string> = new Set([
+  'X1C', 'X1', 'X1E', 'X2D', 'P1S', 'P2S', 'H2D', 'H2D Pro', 'H2C', 'H2S',
+]);
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
 import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors';
 import { formatSpoolDisplayName, DEFAULT_SPOOL_DISPLAY_TEMPLATE } from '../utils/spoolName';
@@ -3298,6 +3305,7 @@ function PrinterCard({
               const partFan = status.cooling_fan_speed;
               const auxFan = status.big_fan1_speed;
               const chamberFan = status.big_fan2_speed;
+              const hasChamberFan = MODELS_WITH_CHAMBER_FAN.has(mapModelCode(printer.model));
 
               return (
                 <div className="mt-3">
@@ -3334,16 +3342,18 @@ function PrinterCard({
                         </span>
                       </div>
 
-                      {/* Chamber Fan */}
-                      <div
-                        className={`flex items-center gap-1 px-1.5 py-1 rounded ${chamberFan && chamberFan > 0 ? 'bg-green-500/10' : 'bg-bambu-dark'}`}
-                        title={t('printers.fans.chamber')}
-                      >
-                        <AirVent className={`w-3.5 h-3.5 ${chamberFan && chamberFan > 0 ? 'text-green-400' : 'text-bambu-gray/50'}`} />
-                        <span className={`text-[10px] ${chamberFan && chamberFan > 0 ? 'text-green-400' : 'text-bambu-gray/50'}`}>
-                          {chamberFan ?? 0}%
-                        </span>
-                      </div>
+                      {/* Chamber Fan — only on models that physically have one */}
+                      {hasChamberFan && (
+                        <div
+                          className={`flex items-center gap-1 px-1.5 py-1 rounded ${chamberFan && chamberFan > 0 ? 'bg-green-500/10' : 'bg-bambu-dark'}`}
+                          title={t('printers.fans.chamber')}
+                        >
+                          <AirVent className={`w-3.5 h-3.5 ${chamberFan && chamberFan > 0 ? 'text-green-400' : 'text-bambu-gray/50'}`} />
+                          <span className={`text-[10px] ${chamberFan && chamberFan > 0 ? 'text-green-400' : 'text-bambu-gray/50'}`}>
+                            {chamberFan ?? 0}%
+                          </span>
+                        </div>
+                      )}
 
                       {/* Separator */}
                       <div className="w-px h-5 bg-bambu-gray/30" />
@@ -4524,7 +4534,7 @@ function PrinterCard({
                                     trayColor={extTray.tray_color}
                                     trayType={extTray.tray_type}
                                     isEmpty={isEmpty}
-                                    slotNumber={slotTrayId + 1}
+                                    slotNumber={isDualNozzle ? (extTrayId === 254 ? 'L' : 'R') : slotTrayId + 1}
                                   />
                                   <div className={`text-[9px] font-bold truncate ${isEmpty ? 'text-white/40' : 'text-white'}`}>
                                     {extTray.tray_type || '-'}
@@ -4540,7 +4550,6 @@ function PrinterCard({
                                       />
                                     )}
                                   </div>
-                                  {extLabel && <div className="text-[7px] text-white/40 mt-0.5 truncate">{extLabel}</div>}
                                 </div>
                               );
 
@@ -5633,6 +5642,11 @@ function PrinterCard({
         const maxTemp = dryingPopoverModuleType === 'n3s' ? 85 : 65;
         const sliderMin = 35;
         const sliderMax = maxTemp + 10;
+        // Firmware locks the whole AMS (and rejects rotate with dry_sf_reason=[3])
+        // when any tray in it is threaded/loaded (state 11). Disable the rotate
+        // option in that case so we don't send a command the printer will refuse.
+        const targetAms = amsData.find(a => a.id === dryingPopoverAmsId);
+        const anyTrayLoaded = targetAms?.tray?.some(tr => tr.state === 11) ?? false;
         return (
           <>
             {/* Backdrop */}
@@ -5742,13 +5756,17 @@ function PrinterCard({
                     <span>24h</span>
                   </div>
                 </div>
-                {/* Rotate tray */}
-                <label className="flex items-center gap-2 cursor-pointer">
+                {/* Rotate tray — unavailable while a tray in this AMS is loaded */}
+                <label
+                  className={`flex items-center gap-2 ${anyTrayLoaded ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+                  title={anyTrayLoaded ? t('printers.drying.rotateDisabledLoaded') : undefined}
+                >
                   <input
                     type="checkbox"
-                    checked={dryingRotateTray}
+                    checked={dryingRotateTray && !anyTrayLoaded}
+                    disabled={anyTrayLoaded}
                     onChange={e => setDryingRotateTray(e.target.checked)}
-                    className="w-3.5 h-3.5 accent-amber-500 rounded cursor-pointer"
+                    className="w-3.5 h-3.5 accent-amber-500 rounded cursor-pointer disabled:cursor-not-allowed"
                   />
                   <span className="text-[11px] text-bambu-gray">{t('printers.drying.rotateTray')}</span>
                 </label>
@@ -5758,7 +5776,7 @@ function PrinterCard({
                 <button
                   onClick={() => {
                     if (dryingPopoverAmsId !== null) {
-                      startDryingMutation.mutate({ amsId: dryingPopoverAmsId, temp: dryingTemp, duration: dryingDuration, filament: dryingFilament, rotateTray: dryingRotateTray });
+                      startDryingMutation.mutate({ amsId: dryingPopoverAmsId, temp: dryingTemp, duration: dryingDuration, filament: dryingFilament, rotateTray: dryingRotateTray && !anyTrayLoaded });
                     }
                   }}
                   disabled={startDryingMutation.isPending}

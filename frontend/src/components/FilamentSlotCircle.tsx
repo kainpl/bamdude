@@ -20,7 +20,7 @@ interface FilamentSlotCircleProps {
   trayColor?: string | null;
   trayType?: string | null;
   isEmpty: boolean;
-  slotNumber: number;
+  slotNumber: number | string;
   emptyKind?: 'physical' | 'reset' | null;
 }
 
