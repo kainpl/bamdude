@@ -66,6 +66,7 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **API keys with the Manage Library scope can now curate library files.** Such a key could upload and rename/delete its own files, but got a 403 ("administrative operation") when renaming, deleting, or moving any file — even though the scope is meant for full library management. Because API keys have no per-user identity, the all-ownership variants are the only ones that can ever work for a key, so they now ride the Manage-Library scope (matching how the Queue scope already behaves). Purging the library (which bypasses the recycle-bin window) still requires an admin.
 - **Assign-spool picker now shows the spool note on touch devices.** The note attached to a spool was only visible as a hover tooltip, so it was invisible on phones and tablets. It now renders as an inline muted line under the spool weight in both the built-in and Spoolman pickers.
 - **Assign to AMS keeps your custom Bambu Cloud filament preset instead of falling back to Generic.** When a spool carried a cloud user/shared preset (PFUS/PFCN), the AMS-change re-sync path could discard the slicer setting and reset the slot to "Generic <Material>". The custom preset id is now preserved, so the slicer loads your actual preset.
 - **Deleting a local slicer profile removes it from the list immediately.** The deleted preset lingered until the list refetched in the background, and a quick second click could open a delete dialog that then 404'd. The row now disappears the instant the delete succeeds.

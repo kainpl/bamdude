@@ -964,11 +964,19 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     Permission.PRINTERS_AMS_RFID: "can_control_printer",
     Permission.PRINTERS_CLEAR_PLATE: "can_control_printer",
     Permission.SMART_PLUGS_CONTROL: "can_control_printer",
-    # can_manage_library — file-manager scope (upload/rename/delete OWN entries +
-    # notes + MakerWorld import). Bulk/ALL-ownership ops stay admin-only.
+    # can_manage_library — file-manager scope (upload/rename/delete library
+    # entries + notes + MakerWorld import). OWN and ALL ownership variants map to
+    # the same scope so the ``require_ownership_permission`` checker (which gates
+    # API keys on ``all_perm``) passes a Manage-Library key through — API keys
+    # have no per-row ownership identity, so splitting OWN/ALL across
+    # allowlist/denylist made the whole library curation surface unreachable via
+    # API key (upstream Bambuddy #1832). Matches the ``can_queue`` precedent.
+    # LIBRARY_PURGE stays admin-only (bypasses the soft-delete window).
     Permission.LIBRARY_UPLOAD: "can_manage_library",
     Permission.LIBRARY_UPDATE_OWN: "can_manage_library",
+    Permission.LIBRARY_UPDATE_ALL: "can_manage_library",
     Permission.LIBRARY_DELETE_OWN: "can_manage_library",
+    Permission.LIBRARY_DELETE_ALL: "can_manage_library",
     Permission.LIBRARY_NOTES_WRITE: "can_manage_library",
     Permission.MAKERWORLD_IMPORT: "can_manage_library",
     # can_manage_inventory — inventory write scope (spool/catalog/forecast +
@@ -1025,8 +1033,10 @@ _APIKEY_DENIED_PERMISSIONS: frozenset[Permission] = frozenset(
         Permission.ARCHIVES_DELETE_OWN,
         Permission.ARCHIVES_DELETE_ALL,
         Permission.ARCHIVES_PURGE,
-        Permission.LIBRARY_UPDATE_ALL,
-        Permission.LIBRARY_DELETE_ALL,
+        # LIBRARY_UPDATE_ALL / LIBRARY_DELETE_ALL moved to the allowlist under
+        # can_manage_library (#1832) — splitting them across allow/deny made the
+        # library curation surface unreachable for API keys via
+        # require_ownership_permission. Purge stays denied (genuinely destructive).
         Permission.LIBRARY_PURGE,
         Permission.PROJECTS_CREATE,
         Permission.PROJECTS_UPDATE,

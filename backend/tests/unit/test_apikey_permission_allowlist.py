@@ -92,6 +92,21 @@ def test_library_and_inventory_scopes_are_independent():
         _check_apikey_permissions(inv, [Permission.LIBRARY_UPLOAD.value])
 
 
+def test_manage_library_key_can_curate_all_but_not_purge():
+    """#1832: a Manage-Library API key curates any user's library files —
+    LIBRARY_UPDATE_ALL / DELETE_ALL ride can_manage_library (API keys have no
+    per-row ownership identity, so require_ownership_permission gates them on the
+    ALL perm). LIBRARY_PURGE stays admin-only (bypasses the soft-delete window)."""
+    lib = _key(can_manage_library=True)
+    _check_apikey_permissions(lib, [Permission.LIBRARY_UPDATE_ALL.value])
+    _check_apikey_permissions(lib, [Permission.LIBRARY_DELETE_ALL.value])
+    with pytest.raises(HTTPException):
+        _check_apikey_permissions(lib, [Permission.LIBRARY_PURGE.value])
+    # A key without the library scope still can't curate.
+    with pytest.raises(HTTPException):
+        _check_apikey_permissions(_key(can_queue=True), [Permission.LIBRARY_UPDATE_ALL.value])
+
+
 def test_admin_permission_denied_even_with_all_flags():
     full = _key(**dict.fromkeys(_ALL_SCOPE_FLAGS, True))
     for admin in (
