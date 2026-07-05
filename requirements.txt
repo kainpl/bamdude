@@ -19,7 +19,7 @@ greenlet>=3.0.0
 
 # Pydantic
 pydantic>=2.0.0
-pydantic-settings>=2.0.0
+pydantic-settings>=2.14.2  # GHSA-4xgf-cpjx-pc3j (secrets-dir loader; precautionary)
 # Transitive of pydantic-settings, floor-pinned to patch CVE-2026-28684 (dotenv 1.2.1)
 python-dotenv>=1.2.2
 
@@ -29,7 +29,7 @@ aioftp>=0.22.0
 
 # Virtual Printer (emulates Bambu printer for slicer uploads)
 pyftpdlib>=2.0.0
-cryptography>=46.0.6  # CVE-2026-34073 (X.509 wildcard SAN validation bypass)
+cryptography>=48.0.1  # GHSA-537c-gmf6-5ccf (supersedes the CVE-2026-34073 floor)
 
 # 3MF Processing (standard zipfile is sufficient for Bambu 3MF files)
 defusedxml>=0.7.0  # Safe XML parsing (prevents XXE attacks)
@@ -41,7 +41,7 @@ openpyxl>=3.1.0
 pywebpush>=2.0.0
 
 # Utilities
-python-multipart>=0.0.27  # CVE-2026-42561 (parser-side; supersedes CVE-2026-40347 floor on 0.0.26)
+python-multipart>=0.0.31  # CVE-2026-53538/53539/53540 (supersedes CVE-2026-42561 floor on 0.0.27)
 aiofiles>=23.0.0
 
 # QR Code generation
@@ -94,10 +94,11 @@ idna>=3.15
 # would silently keep installing the vulnerable 2.6.x line.
 urllib3>=2.7.0
 
-# Transitive of fastapi: starlette 1.0.0 has PYSEC-2026-161; 1.0.1 is the
-# fixed release and fastapi's range still admits 1.0.0, so pin the floor
-# directly to stop the resolver from picking the vulnerable build.
-starlette>=1.0.1
+# Transitive of fastapi: floor-pinned to 1.3.1 for CVE-2026-54282/54283 (supersedes
+# the earlier 1.0.1 floor for PYSEC-2026-161). fastapi's <0.136.0 range still admits
+# a build that resolves against starlette 1.3.1 (upstream Bambuddy v0.2.4.8 ships the
+# identical fastapi cap + this floor).
+starlette>=1.3.1
 
 # Transitive of pywebpush (unpinned `aiohttp` requirement): aiohttp 3.13.5 has
 # CVE-2026-34993 and CVE-2026-47265, both fixed in 3.14.0. Floor-pin here so
