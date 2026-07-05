@@ -257,7 +257,12 @@ class ThreeMFParser:
                 # Get filament info from filaments ACTUALLY USED in the print
                 # slice_info has <filament id="1" type="PLA" color="#FFFFFF" used_g="100" />
                 # Only include filaments where used_g > 0
-                filaments = root.findall(".//filament")
+                # #1785: scope per-slot filament to the printed plate — the headline
+                # grams/time above already come from the matched <plate>; the per-slot
+                # breakdown (and the archive card's per-slot list) must match, or a
+                # multi-plate archive's notification shows other plates' filament rows.
+                # Falls back to document-wide when no plate matched.
+                filaments = plate.findall("filament") if plate is not None else root.findall(".//filament")
                 if filaments:
                     # Collect unique filament types and colors for filaments that are actually used
                     types = []
