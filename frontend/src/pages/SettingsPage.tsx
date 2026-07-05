@@ -229,6 +229,10 @@ export function SettingsPage() {
     setLightStyle, setLightBackground, setLightAccent,
   } = useTheme();
   const [localSettings, setLocalSettings] = useState<AppSettings | null>(null);
+  // Transient typed strings for the per-filament humidity threshold inputs
+  // (#1605). Committed back to localSettings.ams_humidity_thresholds on blur so
+  // intermediate values ("", "3", "5") aren't eaten by the [5, 95] clamp mid-type.
+  const [humidityDrafts, setHumidityDrafts] = useState<Record<string, string>>({});
   const [showPlugModal, setShowPlugModal] = useState(false);
   const [editingPlug, setEditingPlug] = useState<SmartPlug | null>(null);
   const [showNotificationModal, setShowNotificationModal] = useState(false);
@@ -1141,6 +1145,7 @@ export function SettingsPage() {
       (settings.queue_drying_block ?? false) !== (localSettings.queue_drying_block ?? false) ||
       (settings.ambient_drying_enabled ?? false) !== (localSettings.ambient_drying_enabled ?? false) ||
       (settings.drying_presets ?? '') !== (localSettings.drying_presets ?? '') ||
+      (settings.ams_humidity_thresholds ?? '') !== (localSettings.ams_humidity_thresholds ?? '') ||
       (settings.stagger_enabled ?? false) !== (localSettings.stagger_enabled ?? false) ||
       (settings.stagger_concurrent ?? 2) !== (localSettings.stagger_concurrent ?? 2) ||
       (settings.stagger_interval_minutes ?? 5) !== (localSettings.stagger_interval_minutes ?? 5) ||
@@ -1225,6 +1230,7 @@ export function SettingsPage() {
         queue_drying_block: localSettings.queue_drying_block,
         ambient_drying_enabled: localSettings.ambient_drying_enabled,
         drying_presets: localSettings.drying_presets,
+        ams_humidity_thresholds: localSettings.ams_humidity_thresholds,
         stagger_enabled: localSettings.stagger_enabled,
         stagger_concurrent: localSettings.stagger_concurrent,
         stagger_interval_minutes: localSettings.stagger_interval_minutes,
@@ -5010,6 +5016,108 @@ export function SettingsPage() {
                       />
                       <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
                     </label>
+                  </div>
+                  {/* Per-Filament Humidity Thresholds (#1605) */}
+                  <div className="space-y-2">
+                    <p className="text-sm text-white font-medium">{t('settings.humidityThresholds')}</p>
+                    <p className="text-xs text-bambu-gray">{t('settings.humidityThresholdsDescription')}</p>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="text-bambu-gray border-b border-bambu-dark-tertiary">
+                            <th className="text-left py-1.5">{t('settings.dryingFilament')}</th>
+                            <th className="text-right py-1.5 pr-2">{t('settings.humidityThresholdCol')}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(() => {
+                            const defaultFair = localSettings.ams_humidity_fair ?? 60;
+                            const filamentTypes = ['PLA', 'PETG', 'TPU', 'ABS', 'ASA', 'PA', 'PC', 'PVA'];
+                            let thresholds: Record<string, number> = {};
+                            try {
+                              if (localSettings.ams_humidity_thresholds) {
+                                const parsed = JSON.parse(localSettings.ams_humidity_thresholds);
+                                if (typeof parsed === 'object' && parsed !== null) {
+                                  thresholds = parsed;
+                                }
+                              }
+                            } catch { /* invalid → empty */ }
+
+                            const rows: Array<{ key: string; label: string; value: number; isDefault: boolean }> = [
+                              {
+                                key: 'default',
+                                label: t('settings.humidityThresholdDefault'),
+                                value: Number(thresholds.default ?? defaultFair),
+                                isDefault: true,
+                              },
+                              ...filamentTypes.map((fil) => ({
+                                key: fil,
+                                label: fil,
+                                value: Number(thresholds[fil] ?? thresholds.default ?? defaultFair),
+                                isDefault: false,
+                              })),
+                            ];
+
+                            const commitThreshold = (key: string, raw: string) => {
+                              // Empty / blank → drop the override, falling back to
+                              // the default (or to ams_humidity_fair for the
+                              // default row itself).
+                              if (raw.trim() === '') {
+                                const next = { ...thresholds };
+                                delete next[key];
+                                updateSetting('ams_humidity_thresholds', JSON.stringify(next));
+                                return;
+                              }
+                              const parsed = parseInt(raw, 10);
+                              if (Number.isNaN(parsed)) {
+                                return;
+                              }
+                              const clamped = Math.max(5, Math.min(95, parsed));
+                              const next = { ...thresholds, [key]: clamped };
+                              updateSetting('ams_humidity_thresholds', JSON.stringify(next));
+                            };
+
+                            return rows.map((row) => {
+                              // Show the draft string if the user is mid-edit;
+                              // otherwise fall through to the resolved row value.
+                              const draft = humidityDrafts[row.key];
+                              const displayValue = draft !== undefined ? draft : String(row.value);
+                              return (
+                                <tr key={row.key} className="border-b border-bambu-dark-tertiary/50">
+                                  <td className={`py-1.5 pr-2 font-medium ${row.isDefault ? 'text-bambu-gray italic' : 'text-white'}`}>{row.label}</td>
+                                  <td className="py-1 pr-2">
+                                    <div className="flex items-center justify-end gap-1">
+                                      <input
+                                        type="number"
+                                        min={5}
+                                        max={95}
+                                        value={displayValue}
+                                        onChange={(e) => setHumidityDrafts((prev) => ({ ...prev, [row.key]: e.target.value }))}
+                                        onBlur={(e) => {
+                                          commitThreshold(row.key, e.target.value);
+                                          setHumidityDrafts((prev) => {
+                                            const next = { ...prev };
+                                            delete next[row.key];
+                                            return next;
+                                          });
+                                        }}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') {
+                                            (e.currentTarget as HTMLInputElement).blur();
+                                          }
+                                        }}
+                                        className="w-14 px-1.5 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-center text-xs focus:border-amber-500/50 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                      />
+                                      <span className="text-bambu-gray">%</span>
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            });
+                          })()}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                   {/* Drying Presets Table - always visible since manual drying also uses these */}
                   <div className="space-y-2">

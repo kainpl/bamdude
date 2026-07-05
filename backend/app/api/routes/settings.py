@@ -328,6 +328,7 @@ _UI_PREFERENCE_FIELDS: tuple[str, ...] = (
     "check_printer_firmware",
     "use_slicer_api",
     "drying_presets",
+    "ams_humidity_thresholds",
     "ams_humidity_good",
     "ams_humidity_fair",
     "ams_temp_good",

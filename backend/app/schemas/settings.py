@@ -129,6 +129,14 @@ class AppSettings(BaseModel):
         default="",
         description="JSON blob of drying presets per filament type (empty = use built-in defaults)",
     )
+    ams_humidity_thresholds: str = Field(
+        default="",
+        description=(
+            "JSON blob of per-filament-type humidity trigger thresholds for auto-drying and alarms. "
+            'Shape: {"default": int, "PLA": int, "ASA": int, ...}. '
+            "Empty = fall back to ams_humidity_fair for all types."
+        ),
+    )
 
     # Scheduled local backup (upstream #884)
     local_backup_enabled: bool = Field(default=False, description="Enable scheduled local backups")
@@ -413,6 +421,7 @@ class AppSettingsUpdate(BaseModel):
     queue_drying_block: bool | None = None
     ambient_drying_enabled: bool | None = None
     drying_presets: str | None = None
+    ams_humidity_thresholds: str | None = None
     stagger_enabled: bool | None = None
     stagger_concurrent: int | None = None
     stagger_interval_minutes: int | None = None

@@ -1267,6 +1267,57 @@ class PrintScheduler:
             return None
         return (min_temp, max_hours or 12, filament_type)
 
+    async def _get_humidity_thresholds(self, db: AsyncSession) -> dict[str, int]:
+        """Per-filament humidity thresholds (#1605).
+
+        Returns the user-configured overrides map keyed by normalized filament
+        type (uppercase base, e.g. ``PLA``, ``ASA``) plus a ``default`` key for
+        unknown / unmapped types. Empty / unset → empty dict, in which case
+        callers fall back to ``ams_humidity_fair``.
+        """
+        result = await db.execute(select(Settings).where(Settings.key == "ams_humidity_thresholds"))
+        setting = result.scalar_one_or_none()
+        if not setting or not setting.value:
+            return {}
+        try:
+            data = json.loads(setting.value)
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        out: dict[str, int] = {}
+        for key, value in data.items():
+            try:
+                out[str(key).upper() if key != "default" else "default"] = int(value)
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    @staticmethod
+    def resolve_humidity_threshold(trays: list[dict], thresholds: dict[str, int], fallback: int) -> int:
+        """Resolve the effective humidity threshold for an AMS unit (#1605).
+
+        For mixed filament types loaded into one AMS, returns the most
+        restrictive (lowest) threshold across all loaded tray types — matches
+        the conservative-params strategy already used for drying temp/hours.
+        Empty / unloaded trays contribute no constraint. Unknown types use the
+        ``default`` key, falling through to ``fallback`` (= ``ams_humidity_fair``)
+        when no per-type map is configured at all.
+        """
+        default = thresholds.get("default", fallback)
+        if not thresholds:
+            return fallback
+        candidates: list[int] = []
+        for tray in trays:
+            tray_type = str(tray.get("tray_type") or "").strip()
+            if not tray_type:
+                continue
+            base_type = tray_type.split()[0].upper()
+            candidates.append(thresholds.get(base_type, default))
+        if not candidates:
+            return default
+        return min(candidates)
+
     async def _check_auto_drying(self, db: AsyncSession, queue_items: list[PrintQueueItem], busy_printers: set[int]):
         """Start drying on idle printers based on humidity.
 
@@ -1303,10 +1354,14 @@ class PrintScheduler:
                 await self._stop_drying(pid)
             return
 
-        # Get humidity threshold
+        # Get humidity threshold (global fallback)
         result = await db.execute(select(Settings).where(Settings.key == "ams_humidity_fair"))
         setting = result.scalar_one_or_none()
-        humidity_threshold = int(setting.value) if setting else 60
+        global_humidity_threshold = int(setting.value) if setting else 60
+
+        # Per-filament humidity threshold overrides (#1605). Empty → fall back
+        # to the global threshold for every AMS unit.
+        per_type_thresholds = await self._get_humidity_thresholds(db)
 
         # Get drying presets
         presets = await self._get_drying_presets(db)
@@ -1379,6 +1434,15 @@ class PrintScheduler:
                             humidity = int(h_idx)
                         except (ValueError, TypeError):
                             pass
+
+                # Resolve per-filament humidity threshold for this AMS unit (#1605).
+                # Most-restrictive of all loaded tray types; falls back to the
+                # global threshold when no overrides are configured.
+                trays = ams_data.get("tray", []) or []
+                humidity_threshold = self.resolve_humidity_threshold(
+                    trays, per_type_thresholds, global_humidity_threshold
+                )
+
                 # Already drying - check if humidity dropped below threshold (with minimum drying time)
                 if dry_time > 0:
                     if pid not in self._drying_in_progress:

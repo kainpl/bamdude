@@ -1827,6 +1827,10 @@ export default {
     dryingPresets: 'Drying Presets',
     dryingPresetsDescription: 'Temperature and duration per filament type. AMS 2 Pro uses lower temps, AMS-HT supports higher temps.',
     dryingFilament: 'Filament',
+    humidityThresholds: 'Per-Filament Humidity Thresholds',
+    humidityThresholdsDescription: 'Humidity level (%) that triggers auto-drying and alarms, per filament type. Leave a row blank to use the default. Lower is stricter (e.g. Nylon wants drier air than PLA).',
+    humidityThresholdCol: 'Trigger at',
+    humidityThresholdDefault: 'Default (all others)',
     // Staggered start
     staggeredStart: 'Staggered Start',
     staggeredStartDescription: 'Spread printer startups over time to reduce electrical load. Useful for large farms where simultaneous bed heating can trip breakers.',

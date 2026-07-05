@@ -1355,6 +1355,7 @@ export interface AppSettings {
   queue_drying_block: boolean;  // Block queue until drying completes
   ambient_drying_enabled: boolean;  // Auto-dry idle printers based on humidity regardless of queue
   drying_presets: string;  // JSON blob of drying presets per filament type
+  ams_humidity_thresholds: string;  // JSON blob of per-filament humidity thresholds (#1605)
   // Auto-queue routing
   queue_shortest_first: boolean;  // SJF + been_jumped guard for the auto-queue scheduler
   // Print modal settings
