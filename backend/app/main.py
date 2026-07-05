@@ -356,6 +356,14 @@ _active_prints: dict[tuple[int, str], int] = {}
 # nozzle parking on slicer profiles with Timelapse Type = Smooth).
 _stage22_finish_frames: dict[int, bytes] = {}
 
+# #1790: per-printer producer-done event. Set by `on_finish_photo_moment` in its
+# `finally` (whether or not a frame was captured). The consumer in
+# `_background_finish_photo` waits on it before reading `_stage22_finish_frames`, so
+# the FINISH-state fallback path (moment + completion dispatched back-to-back) can't
+# race past the producer with an empty pop, and the consumer's RTSP fallback can't
+# collide with the producer's in-flight grab (Bambu allows one RTSP client).
+_stage22_finish_in_flight: dict[int, asyncio.Event] = {}
+
 # Track expected prints from reprint/scheduled (skip auto-archiving for these)
 # {(printer_id, filename): archive_id}
 _expected_prints: dict[tuple[int, str], int] = {}
@@ -962,6 +970,19 @@ _last_printer_state: dict[int, str] = {}
 _pause_started_at: dict[int, float] = {}
 _expected_pause_reasons: dict[int, str] = {}
 
+# Offline-notification edge (#1752): fire on_printer_offline exactly once on the
+# connected→disconnected transition. _printer_last_connected holds the previous
+# observation (only True→False notifies; False→False repeats + an initial startup
+# False do not). _printer_offline_notify_tasks holds the per-printer pending
+# debounce task, cancelled if the printer reconnects before the window elapses so
+# transient MQTT blips don't flood the user.
+_printer_last_connected: dict[int, bool] = {}
+_printer_offline_notify_tasks: dict[int, asyncio.Task] = {}
+# Sized against the staleness path (bambu_mqtt.py STALE_RECONNECT_COOLDOWN=30s +
+# STALE_TIMEOUT=60s) so a single stale-reconnect cooldown can't fire — only an
+# offline that survives a reconnect attempt notifies.
+_PRINTER_OFFLINE_NOTIFY_DEBOUNCE_SECONDS = 60.0
+
 
 def set_expected_pause_reason(printer_id: int, reason_code: str) -> None:
     """Plant a reason hint for the next observed RUNNING→PAUSE edge.
@@ -1083,6 +1104,42 @@ async def _handle_resume_edge(printer_id: int, state: PrinterState):
         logging.getLogger(__name__).warning("resume edge handler failed for printer %s: %s", printer_id, e)
 
 
+async def _maybe_notify_printer_offline(printer_id: int) -> None:
+    """Wait the debounce window, then fire on_printer_offline if still offline (#1752).
+
+    Scheduled by ``on_printer_status_change`` on the connected→disconnected edge;
+    cancelled by the same handler if the printer reconnects within the window, so a
+    single MQTT blip + recovery doesn't notify. Both the staleness-detector path
+    (``bambu_mqtt.py::check_staleness``) and the smart-plug power-off path
+    (``printer_manager.mark_printer_offline``) route through the same status-change
+    callback, so this covers both.
+    """
+    logger = logging.getLogger(__name__)
+    try:
+        await asyncio.sleep(_PRINTER_OFFLINE_NOTIFY_DEBOUNCE_SECONDS)
+        if printer_manager.is_connected(printer_id):
+            return
+        async with async_session() as db:
+            from backend.app.models.printer import Printer
+
+            result = await db.execute(select(Printer).where(Printer.id == printer_id))
+            printer = result.scalar_one_or_none()
+            if printer is None:
+                return
+            logger.info(
+                "[#1752] Dispatching on_printer_offline for printer %s (%s)",
+                printer_id,
+                printer.name,
+            )
+            await notification_service.on_printer_offline(printer_id, printer.name, db)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # noqa: BLE001 — a background notify must never crash the loop
+        logger.warning("Printer offline notification failed for printer %s: %s", printer_id, e)
+    finally:
+        _printer_offline_notify_tasks.pop(printer_id, None)
+
+
 async def on_printer_status_change(printer_id: int, state: PrinterState):
     """Handle printer status changes - broadcast via WebSocket."""
     # Only broadcast if something meaningful changed (reduce WebSocket spam)
@@ -1158,6 +1215,25 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         elif prev_state == "PAUSE" and current_state == "RUNNING":
             await _handle_resume_edge(printer_id, state)
     _last_printer_state[printer_id] = current_state
+
+    # Offline-notification edge (#1752): schedule on_printer_offline on the
+    # connected→disconnected transition. "Back online" is already covered by the
+    # print-failure notification on the firmware FAILED report, so no symmetric
+    # online event is fired here. Uses spawn_background_task (the only sanctioned
+    # create_task wrapper, #1648); the lifespan shutdown cancels any pending task.
+    prev_connected = _printer_last_connected.get(printer_id)
+    _printer_last_connected[printer_id] = state.connected
+    if prev_connected is True and not state.connected:
+        existing = _printer_offline_notify_tasks.get(printer_id)
+        if existing is None or existing.done():
+            _printer_offline_notify_tasks[printer_id] = spawn_background_task(
+                _maybe_notify_printer_offline(printer_id),
+                name=f"printer-offline-notify-{printer_id}",
+            )
+    elif state.connected:
+        pending = _printer_offline_notify_tasks.pop(printer_id, None)
+        if pending is not None and not pending.done():
+            pending.cancel()
 
     if _last_status_broadcast.get(printer_id) == status_key:
         return  # No change, skip WebSocket broadcast
@@ -2950,7 +3026,13 @@ async def on_print_start(printer_id: int, data: dict):
                     break
             # Backfill subtask_id onto an archive that matched by name only —
             # next restart can then use the faster subtask_id pre-check path.
-            if existing_archive and subtask_id and existing_archive.subtask_id is None:
+            # Compare for inequality (not "is empty") so a reprint that adopts a
+            # leftover "printing" row also picks up its fresh dispatch id: leaving
+            # the FIRST run's id lets print_reconciliation._subtask_stale flag the
+            # live print as changed on the next MQTT reconnect and false-close it
+            # (#1807). Equal id ⇒ no write/commit, so this stays a no-op on stable
+            # pushes.
+            if existing_archive and subtask_id and existing_archive.subtask_id != subtask_id:
                 existing_archive.subtask_id = subtask_id
                 await db.commit()
         if existing_archive:
@@ -3171,7 +3253,11 @@ async def on_print_start(printer_id: int, data: dict):
                     hash_match.id,
                 )
                 # Backfill subtask_id so the next restart skips the content_hash path.
-                if subtask_id and hash_match.subtask_id is None:
+                # Inequality (not "is empty") so a reprint adopting this in-flight row
+                # also picks up its fresh dispatch id — keeping the FIRST run's id lets
+                # the reconciler false-close the live print on MQTT reconnect (#1807).
+                # Equal id ⇒ no write/commit (no-op on stable pushes).
+                if subtask_id and hash_match.subtask_id != subtask_id:
                     hash_match.subtask_id = subtask_id
                     await db.commit()
                 _active_prints[(printer_id, hash_match.filename)] = hash_match.id
@@ -3870,6 +3956,13 @@ async def on_finish_photo_moment(printer_id: int, data: dict):
         )
         return
 
+    # #1790: register producer-done BEFORE the first await so the back-to-back
+    # consumer sees it immediately. The finally below guarantees set() on every exit
+    # (captured / gave up / errored / disabled-setting early-return). Kept AFTER the
+    # timelapse return so the timelapse branch stays event-free.
+    producer_done = asyncio.Event()
+    _stage22_finish_in_flight[printer_id] = producer_done
+
     try:
         async with async_session() as db:
             from backend.app.api.routes.settings import get_setting
@@ -3926,6 +4019,9 @@ async def on_finish_photo_moment(printer_id: int, data: dict):
             )
     except Exception as e:
         logger.warning("[FINISH-PHOTO-MOMENT] pre-capture failed for printer %s: %s", printer_id, e)
+    finally:
+        # #1790: always unblock the consumer's bounded wait — captured / gave up / errored.
+        producer_done.set()
 
 
 async def on_print_complete(printer_id: int, data: dict):
@@ -5284,6 +5380,24 @@ async def on_print_complete(printer_id: int, data: dict):
                             # has the better framing instead of the post-bed-drop angle
                             # the live-camera fallback below would give.
                             if not photo_filename:
+                                # #1790: the producer (on_finish_photo_moment) is dispatched
+                                # back-to-back with this consumer on the FINISH fallback path;
+                                # wait for it to store its frame (or give up) before touching
+                                # the cache, so the pop can't lose the race and the RTSP
+                                # fallback below can't collide with the producer's in-flight
+                                # grab (single-client RTSP on Bambu). The `is not None` guard
+                                # skips timelapse / external-cam branches where the producer
+                                # never registered, so those can't hang.
+                                in_flight = _stage22_finish_in_flight.pop(printer_id, None)
+                                if in_flight is not None:
+                                    try:
+                                        await asyncio.wait_for(in_flight.wait(), timeout=20.0)
+                                    except asyncio.TimeoutError:
+                                        logger.warning(
+                                            "[PHOTO-BG] timed out waiting for stage-22 producer "
+                                            "for printer %s — proceeding to fallback",
+                                            printer_id,
+                                        )
                                 cached_frame = _stage22_finish_frames.pop(printer_id, None)
                                 if cached_frame:
                                     photos_dir = archive_dir / "photos"
@@ -6711,6 +6825,12 @@ async def lifespan(app: FastAPI):
     stop_printer_sensor_history_recording()
     stop_runtime_tracking()
     stop_camera_cleanup()
+    # Cancel any pending offline-notification debounce tasks (#1752) so the 60s
+    # sleep doesn't outlive the asyncio loop on shutdown.
+    for _t in list(_printer_offline_notify_tasks.values()):
+        if not _t.done():
+            _t.cancel()
+    _printer_offline_notify_tasks.clear()
     from backend.app.services.loop_watchdog import stop_loop_watchdog
 
     stop_loop_watchdog()
