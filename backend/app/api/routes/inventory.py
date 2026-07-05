@@ -2683,3 +2683,87 @@ async def clear_shopping_list(
     deleted = len(result.fetchall())
     await db.commit()
     return {"deleted": deleted}
+
+
+class CreateSpoolFromSlotRequest(BaseModel):
+    printer_id: int
+    ams_id: int
+    tray_id: int
+
+
+@router.post("/spools/from-slot", response_model=SpoolResponse)
+async def create_spool_from_slot(
+    req: CreateSpoolFromSlotRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
+):
+    """Explicit user action: create an inventory spool from an AMS slot's current tray data.
+
+    Used by the "+ Add to inventory" affordance when auto_add_unknown_rfid is disabled —
+    the user looked at the slot and chose to register it. Also assigns the new spool
+    to the slot in the same call.
+    """
+    from backend.app.services.printer_manager import printer_manager
+    from backend.app.services.spool_tag_matcher import auto_assign_spool, create_spool_from_tray
+
+    state = printer_manager.get_status(req.printer_id)
+    if not state or not state.raw_data:
+        raise HTTPException(status_code=404, detail="Printer not connected or no state available")
+
+    ams_data = state.raw_data.get("ams")
+    ams_units: list[dict] = []
+    if isinstance(ams_data, list):
+        ams_units = ams_data
+    elif isinstance(ams_data, dict):
+        if "ams" in ams_data and isinstance(ams_data["ams"], list):
+            ams_units = ams_data["ams"]
+        elif "tray" in ams_data:
+            ams_units = [{"id": 0, "tray": ams_data.get("tray", [])}]
+
+    tray: dict | None = None
+    for unit in ams_units:
+        if not isinstance(unit, dict):
+            continue
+        if int(unit.get("id", -1)) != req.ams_id:
+            continue
+        for t in unit.get("tray", []):
+            if isinstance(t, dict) and int(t.get("id", -1)) == req.tray_id:
+                tray = t
+                break
+        if tray:
+            break
+
+    if not tray or not tray.get("tray_type"):
+        raise HTTPException(status_code=400, detail="Slot is empty or has no readable tray data")
+
+    # Guard against ghost-spool creation: a slot without any RFID tag has no
+    # stable identity, so creating an inventory row would just duplicate on
+    # every confirm and never re-link to the physical spool.
+    from backend.app.services.spool_tag_matcher import is_valid_tag
+
+    if not is_valid_tag(tray.get("tag_uid", ""), tray.get("tray_uuid", "")):
+        raise HTTPException(status_code=400, detail="Slot has no RFID tag")
+
+    spool = await create_spool_from_tray(db, tray)
+    await auto_assign_spool(
+        req.printer_id,
+        req.ams_id,
+        req.tray_id,
+        spool,
+        printer_manager,
+        db,
+        tray_info_idx=tray.get("tray_info_idx", ""),
+    )
+    await db.commit()
+    await ws_manager.broadcast({"type": "inventory_changed"})
+    await ws_manager.broadcast(
+        {
+            "type": "spool_auto_assigned",
+            "printer_id": req.printer_id,
+            "ams_id": req.ams_id,
+            "tray_id": req.tray_id,
+            "spool_id": spool.id,
+        }
+    )
+    result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == spool.id))
+    return result.scalar_one()

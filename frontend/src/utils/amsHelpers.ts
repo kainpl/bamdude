@@ -33,6 +33,23 @@ export function normalizeColorForCompare(color: string | undefined): string {
 }
 
 /**
+ * AMS unit label using the codebase convention: "AMS-A / AMS-B / ..." for
+ * regular AMS, "HT-A / HT-B / ..." for AMS-HT (single-tray modules with
+ * IDs starting at 128). `trayCount` is required because the type can't be
+ * inferred from the id alone — regular AMS IDs 0-3 can collide with the
+ * normalized HT range otherwise.
+ */
+export function getAmsLabel(amsId: number | string, trayCount: number): string {
+  const id = typeof amsId === 'string' ? parseInt(amsId, 10) : amsId;
+  const safeId = isNaN(id) ? 0 : id;
+  if (safeId === 255) return 'External';
+  const isHt = trayCount === 1;
+  const normalizedId = safeId >= 128 ? safeId - 128 : safeId;
+  const letter = String.fromCharCode(65 + normalizedId);
+  return isHt ? `HT-${letter}` : `AMS-${letter}`;
+}
+
+/**
  * Filament type equivalence groups.
  * Types within the same group are interchangeable on the printer side
  * (e.g., Bambu Lab firmware treats PA-CF and PA12-CF as compatible).

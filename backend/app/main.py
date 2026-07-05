@@ -514,6 +514,76 @@ def _get_ams_assignment_lock(printer_id: int) -> asyncio.Lock:
     return lock
 
 
+# Per-printer dedup for unknown_tag WS broadcasts. Keyed by
+# (ams_id, tray_id) -> (tag_uid, tray_uuid); we only re-broadcast when the
+# tag tuple changes for the slot. Cleared when the slot is reported empty
+# so remove + reinsert reliably re-prompts the UI.
+_unknown_tag_last_broadcast: dict[int, dict[tuple[int, int], tuple[str, str]]] = {}
+
+
+async def _broadcast_unknown_tag(
+    *,
+    printer_id: int,
+    ams_id: int,
+    tray_id: int,
+    tag_uid: str,
+    tray_uuid: str,
+    tray_type: str | None = None,
+    tray_color: str | None = None,
+    tray_sub_brands: str | None = None,
+    tray_count: int | None = None,
+) -> None:
+    """Broadcast unknown_tag, deduped so repeated MQTT pushes for the same slot+tag don't spam the UI."""
+    _logger = logging.getLogger(__name__)
+    slot_key = (ams_id, tray_id)
+    tag_key = (tag_uid or "", tray_uuid or "")
+    per_printer = _unknown_tag_last_broadcast.setdefault(printer_id, {})
+    if per_printer.get(slot_key) == tag_key:
+        _logger.debug(
+            "unknown_tag deduped for printer=%d AMS=%d slot=%d tag=%s",
+            printer_id,
+            ams_id,
+            tray_id,
+            tag_key[0][:8] or tag_key[1][:8] or "(none)",
+        )
+        return
+    _logger.info(
+        "unknown_tag broadcast: printer=%d AMS=%d slot=%d type=%r color=%r tag=%s",
+        printer_id,
+        ams_id,
+        tray_id,
+        tray_type,
+        tray_color,
+        tag_key[0][:8] or tag_key[1][:8] or "(none)",
+    )
+    # Broadcast first; only commit the dedup if the WS write succeeds.
+    # If broadcast raises, the next MQTT push retries instead of being
+    # permanently silenced by a poisoned dedup entry.
+    await ws_manager.broadcast(
+        {
+            "type": "unknown_tag",
+            "printer_id": printer_id,
+            "ams_id": ams_id,
+            "tray_id": tray_id,
+            "tag_uid": tag_uid,
+            "tray_uuid": tray_uuid,
+            "tray_type": tray_type,
+            "tray_color": tray_color,
+            "tray_sub_brands": tray_sub_brands,
+            "tray_count": tray_count,
+        }
+    )
+    per_printer[slot_key] = tag_key
+
+
+def _clear_unknown_tag_dedup(printer_id: int, ams_id: int, tray_id: int) -> None:
+    """Drop the cached last-broadcast tag for a slot (called when slot reports empty or gets matched)."""
+    per_printer = _unknown_tag_last_broadcast.get(printer_id)
+    if per_printer is None:
+        return
+    per_printer.pop((ams_id, tray_id), None)
+
+
 async def _get_plug_energy(plug, db) -> dict | None:
     """Get energy from plug regardless of type (Tasmota, Home Assistant, MQTT, or REST).
 
@@ -1510,6 +1580,8 @@ async def on_ams_change(printer_id: int, ams_data: list):
             )
 
             _spoolman_on = await get_setting(db, "spoolman_enabled")
+            _auto_add_raw = await get_setting(db, "auto_add_unknown_rfid")
+            _auto_add_unknown = _auto_add_raw is None or _auto_add_raw.lower() == "true"
             if not _spoolman_on or _spoolman_on.lower() != "true":
                 for ams_unit in ams_data:
                     if not isinstance(ams_unit, dict):
@@ -1523,6 +1595,9 @@ async def on_ams_change(printer_id: int, ams_data: list):
                         tray_uuid = tray.get("tray_uuid", "")
                         tray_info_idx = tray.get("tray_info_idx", "")
                         if not tray.get("tray_type"):
+                            # Slot reported empty — drop any cached unknown-tag
+                            # broadcast so reinserting the same spool re-prompts.
+                            _clear_unknown_tag_dedup(printer_id, ams_id, tray_id)
                             continue  # Empty slot
                         # Check if assignment already exists for this slot
                         existing = await db.execute(
@@ -1652,8 +1727,27 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                 spool = await find_matching_untagged_spool(db, tray)
                                 if spool:
                                     await link_tag_to_inventory_spool(db, spool, tray)
-                                else:
+                                elif _auto_add_unknown:
                                     spool = await create_spool_from_tray(db, tray)
+                                else:
+                                    # Auto-add disabled: surface the slot so the
+                                    # user can add it manually via the UI.
+                                    await _broadcast_unknown_tag(
+                                        printer_id=printer_id,
+                                        ams_id=ams_id,
+                                        tray_id=tray_id,
+                                        tag_uid=tag_uid,
+                                        tray_uuid=tray_uuid,
+                                        tray_type=tray.get("tray_type"),
+                                        tray_color=tray.get("tray_color"),
+                                        tray_sub_brands=tray.get("tray_sub_brands"),
+                                        tray_count=len(ams_unit.get("tray", [])),
+                                    )
+                                    continue
+                            # Slot matched (existing tag, untagged inventory
+                            # match, or freshly auto-created spool) — drop any
+                            # stale dedup so a future tag swap re-prompts.
+                            _clear_unknown_tag_dedup(printer_id, ams_id, tray_id)
                             await auto_assign_spool(
                                 printer_id,
                                 ams_id,
@@ -1682,28 +1776,20 @@ async def on_ams_change(printer_id: int, ams_data: list):
                             )
                         elif is_valid_tag(tag_uid, tray_uuid):
                             # Non-BL spool with some tag - let user choose
-                            await ws_manager.broadcast(
-                                {
-                                    "type": "unknown_tag",
-                                    "printer_id": printer_id,
-                                    "ams_id": ams_id,
-                                    "tray_id": tray_id,
-                                    "tag_uid": tag_uid,
-                                    "tray_uuid": tray_uuid,
-                                }
+                            await _broadcast_unknown_tag(
+                                printer_id=printer_id,
+                                ams_id=ams_id,
+                                tray_id=tray_id,
+                                tag_uid=tag_uid,
+                                tray_uuid=tray_uuid,
+                                tray_type=tray.get("tray_type"),
+                                tray_color=tray.get("tray_color"),
+                                tray_sub_brands=tray.get("tray_sub_brands"),
+                                tray_count=len(ams_unit.get("tray", [])),
                             )
-                        else:
-                            # No tag at all - let user choose from inventory
-                            await ws_manager.broadcast(
-                                {
-                                    "type": "unknown_tag",
-                                    "printer_id": printer_id,
-                                    "ams_id": ams_id,
-                                    "tray_id": tray_id,
-                                    "tag_uid": "",
-                                    "tray_uuid": "",
-                                }
-                            )
+                        # No-tag slots (generic non-RFID filament) are left alone:
+                        # nothing to identify, prompting "+ Add" would just create
+                        # ghost spools with empty tags on every confirm.
     except Exception as e:
         logger.warning("RFID spool auto-assign failed: %s", e, exc_info=True)
 
@@ -1721,6 +1807,9 @@ async def on_ams_change(printer_id: int, ams_data: list):
             sync_mode = await get_setting(db, "spoolman_sync_mode")
             if sync_mode and sync_mode != "auto":
                 return  # Only sync on auto mode
+
+            _auto_add_raw_sm = await get_setting(db, "auto_add_unknown_rfid")
+            auto_add_unknown_rfid = _auto_add_raw_sm is None or _auto_add_raw_sm.lower() == "true"
 
             # ``spoolman_disable_weight_sync`` is deprecated (#1119) — weight
             # is now always owned by per-print 3MF tracking (mirrors the
@@ -1794,6 +1883,9 @@ async def on_ams_change(printer_id: int, ams_data: list):
                 for tray_data in trays:
                     tray = client.parse_ams_tray(ams_id, tray_data)
                     if not tray:
+                        # Empty tray slot — drop any cached unknown-tag broadcast
+                        # so a reinserted spool re-prompts.
+                        _clear_unknown_tag_dedup(printer_id, ams_id, int(tray_data.get("id", 0)))
                         continue  # Empty tray
 
                     # Track this spool's UUID as currently present in the AMS so that
@@ -1817,7 +1909,24 @@ async def on_ams_change(printer_id: int, ams_data: list):
                             disable_weight_sync=True,
                             cached_spools=cached_spools,
                             inventory_remaining=inv_remaining,
+                            auto_add_unknown_rfid=auto_add_unknown_rfid,
                         )
+                        if result is None and spool_tag and not auto_add_unknown_rfid:
+                            # Spoolman skipped auto-create per user setting — surface
+                            # the slot so the UI can offer "+ Add to inventory".
+                            await _broadcast_unknown_tag(
+                                printer_id=printer_id,
+                                ams_id=ams_id,
+                                tray_id=tray.tray_id,
+                                tag_uid=tray.tag_uid or "",
+                                tray_uuid=tray.tray_uuid or "",
+                                tray_type=tray.tray_type,
+                                tray_color=tray.tray_color,
+                                tray_sub_brands=tray.tray_sub_brands,
+                                tray_count=len(trays),
+                            )
+                        elif result:
+                            _clear_unknown_tag_dedup(printer_id, ams_id, tray.tray_id)
                         if result:
                             synced += 1
                             # E8: keep the AMS slot card's preset name in sync with

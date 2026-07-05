@@ -1645,6 +1645,8 @@ export default {
     // Filament Tracking Mode
     filamentTracking: 'Відстеження філаменту',
     filamentTrackingDesc: 'Оберіть спосіб відстеження котушок. Можна використовувати вбудований інвентар або підключити зовнішній сервер Spoolman.',
+    autoAddUnknownRfid: 'Автододавання котушок з невідомим RFID',
+    autoAddUnknownRfidDesc: 'Автоматично створювати запис в інвентарі, коли виявлено котушку з невідомою RFID-міткою. Вимкніть, якщо ви реєструєте нові котушки вручну, щоб уникнути дублікатів.',
     filamentChecks: 'Перевірки філаменту',
     spoolDisplayName: {
       title: 'Відображувана назва котушки',
@@ -4178,6 +4180,13 @@ export default {
 
   // Inventory
   inventory: {
+    addToInventory: 'Додати в інвентар',
+    addToInventoryPending: 'Додавання...',
+    addToInventorySuccess: 'Котушку додано в інвентар',
+    addToInventoryFailed: 'Не вдалося додати котушку в інвентар',
+    unknownSpoolTitle: 'Виявлено новий філамент',
+    unknownSpoolMessage: 'У слоті {{location}} виявлено котушку з невідомою RFID-міткою. Додати її в інвентар зараз?',
+    unknownSpoolSlot: 'Слот',
     csv: {
       importButton: 'Імпорт CSV',
       exportButton: 'Експорт CSV',

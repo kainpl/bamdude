@@ -22,6 +22,7 @@ interface ConfirmModalProps {
   variant?: 'danger' | 'warning' | 'default';
   isLoading?: boolean;
   loadingText?: string;
+  children?: React.ReactNode;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -37,6 +38,7 @@ export function ConfirmModal({
   variant = 'default',
   isLoading = false,
   loadingText,
+  children,
   onConfirm,
   onCancel,
 }: ConfirmModalProps) {
@@ -87,6 +89,7 @@ export function ConfirmModal({
             <div className="flex-1">
               <h3 className="text-lg font-semibold text-white mb-2">{title}</h3>
               <p className="text-bambu-gray text-sm whitespace-pre-line">{message}</p>
+              {children && <div className="mt-3">{children}</div>}
             </div>
           </div>
           <div className="flex gap-3 mt-6">

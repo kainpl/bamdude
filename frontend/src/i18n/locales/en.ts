@@ -1631,6 +1631,8 @@ export default {
     // Filament Tracking Mode
     filamentTracking: 'Filament Tracking',
     filamentTrackingDesc: 'Choose how to track your filament spools. You can use the built-in inventory or connect an external Spoolman server.',
+    autoAddUnknownRfid: 'Auto-add unknown RFID spools',
+    autoAddUnknownRfidDesc: 'Automatically create an inventory entry when a spool with an unknown RFID tag is detected. Turn off if you pre-register new spools manually to avoid duplicates.',
     filamentChecks: 'Filament checks',
     spoolDisplayName: {
       title: 'Spool display name',
@@ -4174,6 +4176,13 @@ export default {
 
   // Inventory
   inventory: {
+    addToInventory: 'Add to Inventory',
+    addToInventoryPending: 'Adding...',
+    addToInventorySuccess: 'Spool added to inventory',
+    addToInventoryFailed: 'Failed to add spool to inventory',
+    unknownSpoolTitle: 'New filament detected',
+    unknownSpoolMessage: 'A spool with an unknown RFID tag was detected at {{location}}. Add it to your inventory now?',
+    unknownSpoolSlot: 'Slot',
     csv: {
       importButton: 'Import CSV',
       exportButton: 'Export CSV',

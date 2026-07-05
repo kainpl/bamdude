@@ -47,6 +47,10 @@ class AppSettings(BaseModel):
         default=True,
         description="Report Partial Usage for Failed Prints. When a print fails or is cancelled, report the estimated filament used up to that point based on layer progress.",
     )
+    auto_add_unknown_rfid: bool = Field(
+        default=True,
+        description="Automatically add spools with unknown RFID tags to inventory. Disable if you pre-create inventory entries manually to avoid duplicates.",
+    )
     disable_filament_warnings: bool = Field(
         default=False,
         description="Disable insufficient filament warnings when printing or queueing prints",
@@ -401,6 +405,7 @@ class AppSettingsUpdate(BaseModel):
     spoolman_sync_mode: str | None = None
     spoolman_disable_weight_sync: bool | None = None
     spoolman_report_partial_usage: bool | None = None
+    auto_add_unknown_rfid: bool | None = None
     disable_filament_warnings: bool | None = None
     spool_display_template: str | None = None
     check_updates: bool | None = None

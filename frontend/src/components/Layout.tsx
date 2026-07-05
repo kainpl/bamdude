@@ -12,6 +12,8 @@ import { api, supportApi, type Permission } from '../api/client';
 import { getIconByName } from './IconPicker';
 import { useIsSidebarCompact } from '../hooks/useIsSidebarCompact';
 import { useColorCatalogVersion } from '../hooks/useColorCatalogVersion';
+import { useUnknownTagPrompt } from '../hooks/useUnknownTagPrompt';
+import { UnknownSpoolModal } from './UnknownSpoolModal';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { Card, CardHeader, CardContent } from './Card';
@@ -155,6 +157,9 @@ export function Layout() {
   // Re-render Layout (and downstream pages) when the color catalog finishes loading
   // so cached getColorName() results refresh from HSL fallback to catalog names.
   useColorCatalogVersion();
+  // Unknown-spool prompt — surfaces a confirmation modal when the AMS reports a
+  // tag with no inventory match (only when `auto_add_unknown_rfid` is off).
+  const unknownSpool = useUnknownTagPrompt();
   const { user, authEnabled, logout, hasPermission } = useAuth();
   const { showToast } = useToast();
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
@@ -1227,6 +1232,13 @@ export function Layout() {
         )}
         <Outlet />
       </main>
+
+      <UnknownSpoolModal
+        prompt={unknownSpool.prompt}
+        isPending={unknownSpool.isPending}
+        onConfirm={unknownSpool.confirm}
+        onCancel={unknownSpool.cancel}
+      />
 
       {/* Keyboard Shortcuts Modal */}
       {showShortcuts && (
