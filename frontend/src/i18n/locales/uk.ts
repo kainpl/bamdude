@@ -5912,6 +5912,8 @@ export default {
     progressMilestonesDescription: 'Сповіщати при 25%, 50%, 75%',
     printerOffline: 'Принтер офлайн',
     printerError: 'Помилка принтера',
+    aiFailureDetection: 'Виявлення збою ШІ',
+    aiFailureDetectionDescription: 'Сповіщати, коли ШІ Obico виявляє можливий збій друку',
     lowFilamentLabel: 'Мало філаменту',
     maintenanceDue: 'Потрібне обслуговування',
     maintenanceDueDescription: 'Сповіщати, коли потрібне обслуговування',

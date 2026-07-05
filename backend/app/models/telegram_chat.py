@@ -37,6 +37,7 @@ ALL_NOTIFY_EVENTS = [
     # Printer status
     "printer_offline",
     "printer_error",
+    "ai_failure_detection",
     "filament_low",
     "maintenance_due",
     # AMS environmental

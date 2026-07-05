@@ -142,6 +142,7 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
     print_missing_spool_assignment: 'notifications.missingSpoolAssignmentLabel',
     printer_offline: 'notifications.printerOffline',
     printer_error: 'notifications.printerError',
+    ai_failure_detection: 'notifications.aiFailureDetection',
     filament_low: 'notifications.lowFilamentLabel',
     maintenance_due: 'notifications.maintenanceDue',
     ams_humidity_high: 'notifications.amsHumidityHigh',

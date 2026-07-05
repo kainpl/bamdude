@@ -5910,6 +5910,8 @@ export default {
     progressMilestonesDescription: 'Notify at 25%, 50%, 75%',
     printerOffline: 'Printer Offline',
     printerError: 'Printer Error',
+    aiFailureDetection: 'AI Failure Detection',
+    aiFailureDetectionDescription: 'Notify when Obico AI detects a possible print failure',
     lowFilamentLabel: 'Low Filament',
     maintenanceDue: 'Maintenance Due',
     maintenanceDueDescription: 'Notify when maintenance is needed',

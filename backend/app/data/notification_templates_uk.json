@@ -49,6 +49,11 @@
     "title_template": "Помилка принтера: {error_type}",
     "body_template": "{printer}\n{error_detail}"
   },
+  "ai_failure_detection": {
+    "name": "Виявлення збою ШІ",
+    "title_template": "Виявлено можливий збій друку",
+    "body_template": "{printer}: {task_name}\nВпевненість: {confidence}\nВиконана дія: {action}"
+  },
   "plate_not_empty": {
     "name": "Платформа не порожня",
     "title_template": "Платформа не порожня - друк призупинено",
@@ -145,22 +150,22 @@
     "body_template": "{material} ({brand}) закінчиться до прибуття поповнення.\nЗалишок: {stock_g}г | Темп: {rate_g_day}г/день | Термін постачання: {lead_time_days}д\nЛишилось лише {days_left}д запасу — замовляй негайно."
   },
   "user_print_start": {
-    "name": "Друк користувача розпочато",
+    "name": "Друк користувача розпочато (лист)",
     "title_template": "Ваш друк розпочато",
     "body_template": "Привіт, {username}!\n\nВаше завдання друку розпочато на {printer}.\n\nФайл: {filename}\n\nВи отримаєте сповіщення після завершення."
   },
   "user_print_complete": {
-    "name": "Друк користувача завершено",
+    "name": "Друк користувача завершено (лист)",
     "title_template": "Ваш друк завершено",
     "body_template": "Привіт, {username}!\n\nВаше завдання друку завершено на {printer}.\n\nФайл: {filename}"
   },
   "user_print_failed": {
-    "name": "Друк користувача не вдався",
+    "name": "Друк користувача не вдався (лист)",
     "title_template": "Ваш друк не вдався",
     "body_template": "Привіт, {username}!\n\nВаше завдання друку не вдалося на {printer}.\n\nФайл: {filename}"
   },
   "user_print_stopped": {
-    "name": "Друк користувача зупинено",
+    "name": "Друк користувача зупинено (лист)",
     "title_template": "Ваш друк зупинено",
     "body_template": "Привіт, {username}!\n\nВаше завдання друку зупинено на {printer}.\n\nФайл: {filename}"
   }

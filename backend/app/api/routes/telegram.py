@@ -69,6 +69,7 @@ EVENT_CATEGORIES = {
         "events": [
             "printer_offline",
             "printer_error",
+            "ai_failure_detection",
             "filament_low",
             "maintenance_due",
         ],
@@ -115,6 +116,7 @@ EVENT_LABELS = {
     "print_missing_spool_assignment": "Missing spool assignment",
     "printer_offline": "Printer offline",
     "printer_error": "Printer error",
+    "ai_failure_detection": "AI failure detection",
     "filament_low": "Filament low",
     "maintenance_due": "Maintenance due",
     "ams_humidity_high": "AMS humidity high",
