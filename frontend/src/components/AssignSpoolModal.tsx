@@ -479,7 +479,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                             }`}
                           >
                             <p className="text-white text-sm font-medium truncate">
-                              {spool.brand ? `${spool.brand} ` : ''}{spool.material}{spool.subtype ? ` ${spool.subtype}` : ''}
+                              {formatSpoolDisplayName(spool, spoolDisplayTemplate)}
                             </p>
                             <div className="flex items-center gap-1.5 mt-1">
                               {spool.rgba && (

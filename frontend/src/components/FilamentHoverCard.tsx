@@ -36,13 +36,12 @@ interface InventoryConfig {
     remainingWeightGrams?: number | null;
     /**
      * Pre-formatted display name from the user's spool-name template
-     * (`Settings → Inventory → Spool display name`). When present, the
-     * hover card shows it verbatim — same string the operator sees in the
-     * inventory list and the assign-spool picker, so they recognise the
-     * spool without mental translation. Falls back to a brand/material/colour
-     * concatenation when the caller hasn't supplied one (older callers, tests).
+     * (`Settings → Inventory → Spool display name`). Required — every caller
+     * must route the spool through ``formatSpoolDisplayName`` so the hover card
+     * shows the same string the operator sees in the inventory list and the
+     * assign-spool picker, never an ad-hoc brand/material/colour concatenation.
      */
-    displayName?: string;
+    displayName: string;
   } | null;
   isAssigned?: boolean;
 }
@@ -375,15 +374,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                       </div>
                       <div className="flex items-baseline gap-1.5 min-w-0">
                         <p className="text-xs text-white truncate" title={inventory.assignedSpool.displayName}>
-                          {inventory.assignedSpool.displayName ? (
-                            inventory.assignedSpool.displayName
-                          ) : (
-                            <>
-                              {inventory.assignedSpool.brand ? `${inventory.assignedSpool.brand} ` : ''}
-                              {inventory.assignedSpool.material}
-                              {inventory.assignedSpool.color_name ? ` - ${inventory.assignedSpool.color_name}` : ''}
-                            </>
-                          )}
+                          {inventory.assignedSpool.displayName}
                         </p>
                         {/* Spool ID next to the display name so operators
                             can reference it without opening the edit modal
