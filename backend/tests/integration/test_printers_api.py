@@ -1299,3 +1299,169 @@ class TestClearHMSErrorsAPI:
         assert response.status_code == 200
         result = response.json()
         assert result["fila_switch"] is None
+
+
+class TestPrinterAccessCodeVisibility:
+    """access_code (the printer's MQTT credential) must only reach callers holding
+    PRINTERS_UPDATE (Admin / Operator JWTs). Viewers and read-scoped API keys pass
+    PRINTERS_READ but must get the field redacted — otherwise a read-only caller
+    could talk to the printer's MQTT directly and bypass RBAC (upstream
+    8283b175 / 9a432f00)."""
+
+    @pytest.fixture
+    async def rbac_tokens(self, async_client: AsyncClient):
+        """Mint operator (holds PRINTERS_UPDATE) + viewer (read-only) JWTs using
+        the pre-seeded admin + default groups."""
+        from backend.app.core.auth import create_access_token
+
+        admin_token = create_access_token(data={"sub": "test_admin"})
+
+        groups = (
+            await async_client.get(
+                "/api/v1/groups/",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+        ).json()
+        operators_group = next(g for g in groups if g["name"] == "Operators")
+        viewers_group = next(g for g in groups if g["name"] == "Viewers")
+
+        await async_client.post(
+            "/api/v1/users/",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "username": "secret_operator",
+                "password": "OperatorPass123!",
+                "group_ids": [operators_group["id"]],
+            },
+        )
+        operator_token = (
+            await async_client.post(
+                "/api/v1/auth/login",
+                json={"username": "secret_operator", "password": "OperatorPass123!"},
+            )
+        ).json()["access_token"]
+
+        await async_client.post(
+            "/api/v1/users/",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "username": "secret_viewer",
+                "password": "ViewerPass123!",
+                "group_ids": [viewers_group["id"]],
+            },
+        )
+        viewer_token = (
+            await async_client.post(
+                "/api/v1/auth/login",
+                json={"username": "secret_viewer", "password": "ViewerPass123!"},
+            )
+        ).json()["access_token"]
+
+        return {
+            "admin_token": admin_token,
+            "operator_token": operator_token,
+            "viewer_token": viewer_token,
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_admin_sees_access_code(self, async_client: AsyncClient, rbac_tokens, printer_factory, db_session):
+        """Admin (PRINTERS_UPDATE via Administrators) sees access_code on list + detail."""
+        printer = await printer_factory(name="Secret Printer", access_code="SECRET-CODE")
+        headers = {"Authorization": f"Bearer {rbac_tokens['admin_token']}"}
+
+        listing = await async_client.get("/api/v1/printers/", headers=headers)
+        assert listing.status_code == 200
+        row = next(p for p in listing.json() if p["id"] == printer.id)
+        assert row["access_code"] == "SECRET-CODE"
+
+        detail = await async_client.get(f"/api/v1/printers/{printer.id}", headers=headers)
+        assert detail.status_code == 200
+        assert detail.json()["access_code"] == "SECRET-CODE"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_sees_access_code(self, async_client: AsyncClient, rbac_tokens, printer_factory, db_session):
+        """Operator holds PRINTERS_UPDATE, so access_code is present on list + detail."""
+        printer = await printer_factory(name="Secret Printer", access_code="SECRET-CODE")
+        headers = {"Authorization": f"Bearer {rbac_tokens['operator_token']}"}
+
+        listing = await async_client.get("/api/v1/printers/", headers=headers)
+        assert listing.status_code == 200
+        row = next(p for p in listing.json() if p["id"] == printer.id)
+        assert row["access_code"] == "SECRET-CODE"
+
+        detail = await async_client.get(f"/api/v1/printers/{printer.id}", headers=headers)
+        assert detail.status_code == 200
+        assert detail.json()["access_code"] == "SECRET-CODE"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_viewer_cannot_see_access_code(
+        self, async_client: AsyncClient, rbac_tokens, printer_factory, db_session
+    ):
+        """Viewer passes PRINTERS_READ but lacks PRINTERS_UPDATE — access_code must be
+        redacted on list + detail, while non-secret fields stay visible."""
+        printer = await printer_factory(name="Secret Printer", access_code="SECRET-CODE")
+        headers = {"Authorization": f"Bearer {rbac_tokens['viewer_token']}"}
+
+        listing = await async_client.get("/api/v1/printers/", headers=headers)
+        assert listing.status_code == 200
+        row = next(p for p in listing.json() if p["id"] == printer.id)
+        assert row.get("access_code") is None
+        # Non-secret fields still reach the viewer.
+        assert row["name"] == "Secret Printer"
+        assert row["serial_number"] == printer.serial_number
+
+        detail = await async_client.get(f"/api/v1/printers/{printer.id}", headers=headers)
+        assert detail.status_code == 200
+        body = detail.json()
+        assert body.get("access_code") is None
+        assert body["name"] == "Secret Printer"
+        assert body["serial_number"] == printer.serial_number
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_read_scoped_api_key_cannot_see_access_code(
+        self, async_client: AsyncClient, printer_factory, db_session
+    ):
+        """A read-scoped API key (can_read_status) passes PRINTERS_READ but resolves to
+        no user, so it can never hold PRINTERS_UPDATE — access_code must be redacted on
+        list + detail. The inherited admin Authorization header is cleared so the request
+        is genuinely API-key-only."""
+        from backend.app.core.auth import create_access_token, generate_api_key
+        from backend.app.core.database import async_session
+        from backend.app.models.api_key import APIKey
+
+        printer = await printer_factory(name="Secret Printer", access_code="SECRET-CODE")
+
+        raw_key, key_hash, key_prefix = generate_api_key()
+        async with async_session() as db:
+            db.add(
+                APIKey(
+                    name="read-only-key",
+                    key_hash=key_hash,
+                    key_prefix=key_prefix,
+                    can_read_status=True,
+                )
+            )
+            await db.commit()
+
+        # Drop the fixture's admin JWT so the request authenticates ONLY via the key.
+        del async_client.headers["Authorization"]
+        try:
+            listing = await async_client.get("/api/v1/printers/", headers={"X-API-Key": raw_key})
+            detail = await async_client.get(f"/api/v1/printers/{printer.id}", headers={"X-API-Key": raw_key})
+        finally:
+            async_client.headers["Authorization"] = f"Bearer {create_access_token(data={'sub': 'test_admin'})}"
+
+        assert listing.status_code == 200
+        row = next(p for p in listing.json() if p["id"] == printer.id)
+        assert row.get("access_code") is None
+        assert row["name"] == "Secret Printer"
+        assert row["serial_number"] == printer.serial_number
+
+        assert detail.status_code == 200
+        body = detail.json()
+        assert body.get("access_code") is None
+        assert body["name"] == "Secret Printer"

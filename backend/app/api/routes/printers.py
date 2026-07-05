@@ -17,6 +17,7 @@ from backend.app.core.tasks import spawn_background_task
 from backend.app.models.ams_label import AmsLabel
 from backend.app.models.printer import Printer
 from backend.app.models.slot_preset import SlotPresetMapping
+from backend.app.models.user import User
 from backend.app.schemas.printer import (
     AmsLabelBody,
     AMSTray,
@@ -30,6 +31,7 @@ from backend.app.schemas.printer import (
     PrinterCreate,
     PrinterDiagnosticResult,
     PrinterResponse,
+    PrinterResponseWithSecret,
     PrinterStatus,
     PrinterUpdate,
     PrintOptionsResponse,
@@ -58,14 +60,38 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/printers", tags=["printers"])
 
 
-@router.get("/", response_model=list[PrinterResponse])
+def _caller_can_view_printer_secrets(user: User | None) -> bool:
+    """Fail-closed. Always-on auth: only a JWT user holding PRINTERS_UPDATE (Admin /
+    Operator) may see access_code. API keys resolve to None and can never hold
+    PRINTERS_UPDATE (admin-only), so they never see it."""
+    if user is None:
+        return False
+    return user.has_permission(Permission.PRINTERS_UPDATE.value)
+
+
+def _serialize_printer(printer: Printer, *, include_secret: bool):
+    """Serialize a printer, including the access_code MQTT credential only when the
+    caller holds PRINTERS_UPDATE (see ``_caller_can_view_printer_secrets``)."""
+    if include_secret:
+        return PrinterResponseWithSecret.model_validate(printer)
+    return PrinterResponse.model_validate(printer)
+
+
+@router.get("/")
 async def list_printers(
-    _=RequirePermission(Permission.PRINTERS_READ),
+    user: User | None = RequirePermission(Permission.PRINTERS_READ),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all configured printers."""
+    """List all configured printers.
+
+    ``access_code`` is redacted for callers without PRINTERS_UPDATE (Viewers and
+    read-scoped API keys) so a read-only caller can't harvest the MQTT credential
+    and bypass RBAC (upstream 8283b175 / 9a432f00).
+    """
     result = await db.execute(select(Printer).order_by(Printer.name))
-    return list(result.scalars().all())
+    printers = list(result.scalars().all())
+    include_secret = _caller_can_view_printer_secrets(user)
+    return [_serialize_printer(p, include_secret=include_secret) for p in printers]
 
 
 @router.post("/", response_model=PrinterResponse)
@@ -266,18 +292,23 @@ async def get_developer_mode_warnings(
     return warnings
 
 
-@router.get("/{printer_id}", response_model=PrinterResponse)
+@router.get("/{printer_id}")
 async def get_printer(
     printer_id: int,
-    _=RequirePermission(Permission.PRINTERS_READ),
+    user: User | None = RequirePermission(Permission.PRINTERS_READ),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a specific printer."""
+    """Get a specific printer.
+
+    ``access_code`` is redacted for callers without PRINTERS_UPDATE (Viewers and
+    read-scoped API keys) so a read-only caller can't harvest the MQTT credential
+    and bypass RBAC (upstream 8283b175 / 9a432f00).
+    """
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     printer = result.scalar_one_or_none()
     if not printer:
         raise HTTPException(404, "Printer not found")
-    return printer
+    return _serialize_printer(printer, include_secret=_caller_can_view_printer_secrets(user))
 
 
 @router.patch("/{printer_id}", response_model=PrinterResponse)

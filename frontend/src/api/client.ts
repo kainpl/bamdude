@@ -360,7 +360,10 @@ export interface Printer {
   name: string;
   serial_number: string;
   ip_address: string;
-  access_code: string;
+  // Redacted for callers without printers:update (Viewers / read-scoped API
+  // keys) — the backend omits the MQTT credential from GET /printers responses
+  // so it can't be harvested to bypass RBAC (upstream 8283b175 / 9a432f00).
+  access_code?: string;
   model: string | null;
   location: string | null;  // Group/location name
   nozzle_count: number;  // 1 or 2, auto-detected from MQTT
