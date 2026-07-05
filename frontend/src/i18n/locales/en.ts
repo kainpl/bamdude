@@ -4147,6 +4147,31 @@ export default {
     unexpectedError: 'An unexpected error occurred',
   },
 
+  // Storage locations catalog (upstream #1505)
+  locations: {
+    title: 'Storage Locations',
+    subtitle: 'Manage shelves, drawers, and other physical storage spots for your spools',
+    add: 'Add Location',
+    addShort: 'Add',
+    edit: 'Edit Location',
+    name: 'Name',
+    spools: 'Spools',
+    empty: 'No storage locations yet. Create your first shelf or drawer.',
+    manage: 'Locations',
+    createPlaceholder: 'e.g. Shelf A, Drawer 1',
+    nameRequired: 'Location name is required',
+    created: 'Location created',
+    updated: 'Location updated',
+    deleted: 'Location deleted',
+    saveFailed: 'Failed to save location',
+    deleteFailed: 'Failed to delete location',
+    deleteBlocked: 'Remove all spools from this location before deleting',
+    confirmDelete: 'Delete "{{name}}"?',
+    confirmDeleteMessage: 'This location will be removed from the catalog. Spools must be moved first.',
+    editAria: 'Edit {{name}}',
+    deleteAria: 'Delete {{name}}',
+  },
+
   // Inventory
   inventory: {
     csv: {

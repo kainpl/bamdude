@@ -13,6 +13,7 @@ from backend.app.models.kprofile_note import KProfileNote
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.library_file_note import LibraryFileNote
 from backend.app.models.local_preset import LocalPreset
+from backend.app.models.location import Location
 from backend.app.models.macro import Macro
 from backend.app.models.maintenance import MaintenanceHistory, MaintenanceType, PrinterMaintenance
 from backend.app.models.notification import NotificationLog
@@ -68,6 +69,7 @@ __all__ = [
     "GitBackupConfig",
     "GitBackupLog",
     "LocalPreset",
+    "Location",
     "OrcaBaseProfile",
     "Spool",
     "SpoolKProfile",

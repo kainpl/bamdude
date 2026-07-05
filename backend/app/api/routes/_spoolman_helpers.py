@@ -58,6 +58,7 @@ class MappedSpoolFields(TypedDict):
     updated_at: str | None
     cost_per_kg: float | None
     storage_location: str | None
+    location_id: int | None
     k_profiles: list[Any]
 
 
@@ -315,5 +316,6 @@ def _map_spoolman_spool(spool: dict) -> MappedSpoolFields:
         "updated_at": created_at,
         "cost_per_kg": _safe_optional_float(spool.get("price")),
         "storage_location": spool.get("location") or None,
+        "location_id": None,
         "k_profiles": [],
     }

@@ -433,8 +433,19 @@ async def update_spoolman_settings(
     if "spoolman_report_partial_usage" in settings:
         await set_setting(db, "spoolman_report_partial_usage", settings["spoolman_report_partial_usage"])
 
+    spoolman_changed = "spoolman_enabled" in settings or "spoolman_url" in settings
+
     await db.commit()
     db.expire_all()
+
+    # When the integration was toggled on or repointed, import Spoolman's
+    # distinct location strings into the local catalog so the new store's
+    # locations show up immediately (upstream #1505).
+    if spoolman_changed:
+        from backend.app.services.location_service import maybe_sync_spoolman_locations
+
+        if await maybe_sync_spoolman_locations(db):
+            await db.commit()
 
     # Return updated settings
     return await get_spoolman_settings(db)

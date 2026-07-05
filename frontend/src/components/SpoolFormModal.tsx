@@ -16,6 +16,10 @@ import { AdditionalSection } from './spool-form/AdditionalSection';
 import { SpoolmanFilamentPicker } from './spool-form/SpoolmanFilamentPicker';
 import { PAProfileSection } from './spool-form/PAProfileSection';
 import { SpoolUsageHistory } from './SpoolUsageHistory';
+import {
+  invalidateInventoryLocations,
+  invalidateSpoolAndLocationQueries,
+} from '../utils/inventoryQueries';
 
 type TabId = 'filament' | 'pa-profile';
 
@@ -56,6 +60,9 @@ export function SpoolFormModal({
   const queryClient = useQueryClient();
   const { showToast } = useToast();
 
+  const refreshSpoolQueries = () =>
+    invalidateSpoolAndLocationQueries(queryClient, spoolsQueryKey);
+
   // Resolve the operating mode. The `mode` prop wins; absent that we fall
   // back to the pre-feature shape (spool present → edit, otherwise create).
   const resolvedMode: SpoolFormMode = mode ?? (spool ? 'edit' : 'create');
@@ -67,7 +74,7 @@ export function SpoolFormModal({
   const [errors, setErrors] = useState<Partial<Record<keyof SpoolFormData, string>>>({});
   const [activeTab, setActiveTab] = useState<TabId>('filament');
   const [weightTouched, setWeightTouched] = useState(false);
-  const [storageLocationTouched, setStorageLocationTouched] = useState(false);
+  const [locationIdTouched, setLocationIdTouched] = useState(false);
   const [quickAdd, setQuickAdd] = useState(false);
   const [quantity, setQuantity] = useState(1);
 
@@ -79,6 +86,8 @@ export function SpoolFormModal({
 
   // Spool catalog
   const [spoolCatalog, setSpoolCatalog] = useState<SpoolCatalogEntry[]>([]);
+  // Structured storage-location catalog (upstream #1505).
+  const [storageLocations, setStorageLocations] = useState<{ id: number; name: string }[]>([]);
 
   // Local presets (OrcaSlicer imports)
   const [localPresets, setLocalPresets] = useState<LocalPreset[]>([]);
@@ -178,6 +187,7 @@ export function SpoolFormModal({
       api.getColorCatalog().then(setColorCatalog).catch(console.error);
       api.getLocalPresets().then(r => setLocalPresets(r.filament)).catch(console.error);
       api.getBuiltinFilaments().then(setBuiltinFilaments).catch(console.error);
+      api.getLocations().then((locs) => setStorageLocations(locs.map((l) => ({ id: l.id, name: l.name })))).catch(console.error);
 
       // Fetch printer calibrations if not provided via props
       if (printersWithCalibrations.length === 0) {
@@ -364,7 +374,7 @@ export function SpoolFormModal({
           effect_type: spool.effect_type || '',
           category: spool.category || '',
           low_stock_threshold_pct: spool.low_stock_threshold_pct != null ? String(spool.low_stock_threshold_pct) : '',
-          storage_location: spool.storage_location || '',
+          location_id: spool.location_id ?? null,
           purchase_location: spool.purchase_location || '',
           spoolman_filament_id: null,
         });
@@ -404,7 +414,7 @@ export function SpoolFormModal({
       setErrors({});
       setActiveTab('filament');
       setWeightTouched(false);
-      setStorageLocationTouched(false);
+      setLocationIdTouched(false);
     }
     // filamentOptions is read for its value at open time (the initial preset
     // label) but must NOT be a dependency, or the form would reset whenever the
@@ -412,6 +422,17 @@ export function SpoolFormModal({
     // options load, so omitting it here is intentional.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, spool, resolvedMode, isCopying]);
+
+  // Legacy rows may have storage_location text but no location_id yet — link when catalog loads.
+  useEffect(() => {
+    if (!isOpen || !spool || locationIdTouched || formData.location_id != null) return;
+    const legacy = spool.storage_location?.trim();
+    if (!legacy || storageLocations.length === 0) return;
+    const match = storageLocations.find((l) => l.name.toLowerCase() === legacy.toLowerCase());
+    if (match) {
+      setFormData((prev) => (prev.location_id === match.id ? prev : { ...prev, location_id: match.id }));
+    }
+  }, [isOpen, spool, storageLocations, formData.location_id, locationIdTouched]);
 
   // Keep the preset input in sync with the resolved preset once options load.
   // The reset effect above runs before the async preset queries settle, so on
@@ -445,7 +466,7 @@ export function SpoolFormModal({
         : {}),
     }));
     if (key === 'weight_used') setWeightTouched(true);
-    if (key === 'storage_location') setStorageLocationTouched(true);
+    if (key === 'location_id') setLocationIdTouched(true);
     if (errors[key]) {
       setErrors(prev => ({ ...prev, [key]: undefined }));
     }
@@ -489,7 +510,7 @@ export function SpoolFormModal({
         const ok = await saveKProfiles(newSpool.id);
         if (!ok) return;
       }
-      await queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+      await refreshSpoolQueries();
       if (onSpoolsCreated) onSpoolsCreated([newSpool]);
       showToast(t('inventory.spoolCreated'), 'success');
       onClose();
@@ -527,7 +548,7 @@ export function SpoolFormModal({
           await saveKProfiles(s.id);
         }
       }
-      await queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+      await refreshSpoolQueries();
       if (onSpoolsCreated) onSpoolsCreated(createdSpools);
       if (spoolmanResult && spoolmanResult.failed_count > 0) {
         showToast(
@@ -561,7 +582,7 @@ export function SpoolFormModal({
         const ok = await saveKProfiles(spool.id);
         if (!ok) return;
       }
-      await queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+      await refreshSpoolQueries();
       showToast(t('inventory.spoolUpdated'), 'success');
       onClose();
     },
@@ -582,7 +603,7 @@ export function SpoolFormModal({
       return api.updateSpool(spool!.id, CLEAR_TAG_PAYLOAD as Parameters<typeof api.updateSpool>[1]);
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+      await refreshSpoolQueries();
       showToast(t('inventory.rfidCleared', 'RFID tag cleared'), 'success');
       onClose();
     },
@@ -790,7 +811,6 @@ export function SpoolFormModal({
       low_stock_threshold_pct: formData.low_stock_threshold_pct.trim()
         ? parseInt(formData.low_stock_threshold_pct, 10)
         : null,
-      storage_location: formData.storage_location.trim() || null,
       purchase_location: formData.purchase_location.trim() || null,
       ...(spoolmanMode ? { spoolman_filament_id: formData.spoolman_filament_id } : {}),
     };
@@ -801,11 +821,11 @@ export function SpoolFormModal({
       data.weight_used = formData.weight_used;
     }
 
-    // Only send storage_location when creating or when explicitly changed by the user.
-    // This prevents the modal round-trip from overwriting the Spoolman location field
-    // with a stale cached value when the user saves without touching this field.
-    if (!isEditing || storageLocationTouched) {
-      data.storage_location = formData.storage_location || null;
+    // Only send location_id when creating or when explicitly changed by the user.
+    // Backend derives the denormalized storage_location string; omitting on an
+    // untouched edit avoids stale overwrites of the Spoolman location field.
+    if (!isEditing || locationIdTouched) {
+      data.location_id = formData.location_id;
     }
 
     if (isEditing) {
@@ -978,6 +998,23 @@ export function SpoolFormModal({
                   currencySymbol={currencySymbol}
                   quickAdd={quickAdd}
                   categories={knownCategories}
+                  availableLocations={storageLocations}
+                  onCreateLocation={async (name) => {
+                    try {
+                      const created = await api.createLocation({ name });
+                      setStorageLocations((prev) => [...prev, { id: created.id, name: created.name }].sort((a, b) => a.name.localeCompare(b.name)));
+                      await invalidateInventoryLocations(queryClient);
+                      return { id: created.id, name: created.name };
+                    } catch (e) {
+                      // Surface the backend's actual error so the user can
+                      // distinguish 409 duplicate / 400 validation / 500 from
+                      // a generic "save failed" message.
+                      console.error(e);
+                      const message = e instanceof Error ? e.message : t('locations.saveFailed');
+                      showToast(message || t('locations.saveFailed'), 'error');
+                      return null;
+                    }
+                  }}
                   errors={errors}
                   spoolmanMode={spoolmanMode}
                 />

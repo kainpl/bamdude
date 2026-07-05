@@ -4,6 +4,7 @@ import { api } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { useConnection } from '../contexts/ConnectionContext';
 import { useTranslation } from 'react-i18next';
+import { inventoryLocationsQueryKey } from '../utils/inventoryQueries';
 
 interface WebSocketMessage {
   type: string;
@@ -445,6 +446,14 @@ export function useWebSocket() {
       case 'spool_usage_logged':
         // Filament consumption recorded - refresh spool data
         debouncedInvalidate('inventory-spools');
+        break;
+
+      case 'inventory_changed':
+        // Spool/location created/updated/deleted/archived/restored - refresh
+        // inventory across all tabs plus the storage-location catalog counts.
+        debouncedInvalidate('inventory-spools');
+        debouncedInvalidate('spoolman-inventory-spools');
+        debouncedInvalidate(inventoryLocationsQueryKey[0]);
         break;
 
       case 'macro_executed': {

@@ -51,8 +51,9 @@ export interface SpoolFormData {
   // B.8 — per-spool override of the global low-stock threshold (1..99).
   // Empty string = NULL (use global).
   low_stock_threshold_pct: string;
-  // Spoolman inventory UI (upstream PR #1241): free-form storage label.
-  storage_location: string;
+  // Structured storage-location catalog FK (upstream #1505). The backend
+  // derives the denormalized free-text ``storage_location`` from this id.
+  location_id: number | null;
   purchase_location: string;
   // Spoolman inventory UI: when set the spool links to a specific Spoolman
   // filament catalog entry; backend skips find_or_create_filament() and uses
@@ -81,7 +82,7 @@ export const defaultFormData: SpoolFormData = {
   effect_type: '',
   category: '',
   low_stock_threshold_pct: '',
-  storage_location: '',
+  location_id: null,
   purchase_location: '',
   spoolman_filament_id: null,
 };
@@ -170,6 +171,11 @@ export interface AdditionalSectionProps extends SectionProps {
   // B.8 — categories already in use across the inventory; the form
   // autocompletes from this list so users converge on consistent labels.
   categories?: string[];
+  // Structured storage-location catalog (upstream #1505). The Additional
+  // section renders a dropdown over these plus an inline "create location"
+  // affordance backed by ``onCreateLocation``.
+  availableLocations?: { id: number; name: string }[];
+  onCreateLocation?: (name: string) => Promise<{ id: number; name: string } | null>;
   errors?: Partial<Record<keyof SpoolFormData, string>>;
   // Spoolman inventory UI (upstream PR #1241): when true the empty-spool
   // weight is managed by Spoolman on the filament object, so

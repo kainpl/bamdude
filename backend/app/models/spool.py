@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -68,6 +68,9 @@ class Spool(Base):
     storage_location: Mapped[str | None] = mapped_column(
         String(255)
     )  # Free-form storage label for inventory UI ("Drybox 3", "Shelf A4", etc.)
+    # Structured catalog FK (upstream #1505). Kept alongside the denormalized
+    # free-text ``storage_location`` above (Spoolman round-trip + display).
+    location_id: Mapped[int | None] = mapped_column(ForeignKey("locations.id"), index=True)
     purchase_location: Mapped[str | None] = mapped_column(
         String(255)
     )  # Where it was bought ("AliExpress", "3DPlast", etc.) — distinct from storage_location
@@ -101,7 +104,9 @@ class Spool(Base):
 
     k_profiles: Mapped[list["SpoolKProfile"]] = relationship(back_populates="spool", cascade="all, delete-orphan")
     assignments: Mapped[list["SpoolAssignment"]] = relationship(back_populates="spool", cascade="all, delete-orphan")
+    location: Mapped["Location | None"] = relationship(back_populates="spools")
 
 
+from backend.app.models.location import Location  # noqa: E402
 from backend.app.models.spool_assignment import SpoolAssignment  # noqa: E402
 from backend.app.models.spool_k_profile import SpoolKProfile  # noqa: E402
