@@ -7,6 +7,7 @@ import { useToast } from '../contexts/ToastContext';
 import { MATERIALS, KNOWN_VARIANTS } from './spool-form/constants';
 import { buildFilamentOptions, extractBrandsFromPresets } from './spool-form/utils';
 import { FILAMENT_EFFECT_OPTIONS } from './filamentSwatchHelpers';
+import { formatSpoolDisplayName } from '../utils/spoolName';
 
 interface Props {
   isOpen: boolean;
@@ -16,6 +17,9 @@ interface Props {
    *  brand/material/etc. that none of the filtered candidates currently use). */
   allSpools: InventorySpool[];
   catalogEntries: SpoolCatalogEntry[];
+  /** The user's spool-name template (settings.spool_display_template), so the
+   *  selection pane renders the same synthesised name as the inventory table. */
+  spoolDisplayTemplate: string;
   onClose: () => void;
   onSaved: () => void;
 }
@@ -107,7 +111,7 @@ function Combobox({ value, options, onChange, disabled, placeholder }: {
  *  autocomplete from existing data, not plain text). A field pre-fills when the
  *  selection shares one value, else shows "— varies —"; only ticked fields are
  *  sent. Consumed weight + RFID are never touched. Internal inventory only. */
-export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries, onClose, onSaved }: Props) {
+export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries, spoolDisplayTemplate, onClose, onSaved }: Props) {
   const { t } = useTranslation();
   const { showToast } = useToast();
 
@@ -252,6 +256,13 @@ export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries,
           fields.core_weight_catalog_id = id;
           const entry = catalogEntries.find((c) => c.id === id);
           if (entry) fields.core_weight = entry.weight; // keep core weight in sync with the picked spool
+        } else if (f.type === 'preset') {
+          // Write the denormalized display name alongside the code so it can't
+          // go stale (the single-spool edit dialog reads slicer_filament_name).
+          const code = raw || null;
+          fields.slicer_filament = code;
+          const opt = code ? presetOptions.find((o) => o.code === code) : null;
+          fields.slicer_filament_name = opt?.displayName ?? code;
         } else if (f.type === 'datalist') {
           // Not pre-filled → empty means "leave unchanged" (skip), so an enabled
           // brand/material/etc. with no pick doesn't wipe the column.
@@ -353,7 +364,9 @@ export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries,
     }
   };
 
-  const spoolLabel = (s: InventorySpool) => [s.brand, s.material, s.color_name].filter(Boolean).join(' ') || `#${s.id}`;
+  // Same synthesised display name as the inventory table / assign dialog —
+  // driven by the user's spool-name template, not an ad-hoc brand/material join.
+  const spoolLabel = (s: InventorySpool) => formatSpoolDisplayName(s, spoolDisplayTemplate) || `#${s.id}`;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={onClose}>

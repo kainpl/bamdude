@@ -368,7 +368,19 @@ export function SpoolFormModal({
           purchase_location: spool.purchase_location || '',
           spoolman_filament_id: null,
         });
-        setPresetInputValue(spool.slicer_filament_name || spool.slicer_filament || '');
+        // Resolve the display name from the current preset CODE (the source of
+        // truth), not the denormalized ``slicer_filament_name``. That stored
+        // name goes stale when the preset is changed elsewhere (e.g. bulk edit
+        // updates the code but not the name), so trusting it showed the old
+        // preset's name while "Selected: <code>" showed the right one. Falls
+        // back to the stored name if the code isn't among the loaded options
+        // yet — the sync effect below corrects it once presets finish loading.
+        setPresetInputValue(
+          findPresetOption(spool.slicer_filament || '', filamentOptions)?.displayName ||
+            spool.slicer_filament_name ||
+            spool.slicer_filament ||
+            '',
+        );
 
         // Load K-profiles for this spool
         if (spool.k_profiles && spool.k_profiles.length > 0) {
@@ -394,7 +406,23 @@ export function SpoolFormModal({
       setWeightTouched(false);
       setStorageLocationTouched(false);
     }
+    // filamentOptions is read for its value at open time (the initial preset
+    // label) but must NOT be a dependency, or the form would reset whenever the
+    // preset queries refetch. The sync effect below refreshes the label once
+    // options load, so omitting it here is intentional.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, spool, resolvedMode, isCopying]);
+
+  // Keep the preset input in sync with the resolved preset once options load.
+  // The reset effect above runs before the async preset queries settle, so on
+  // open the code may not resolve to an option yet; when it does, show the real
+  // name (the denormalized ``slicer_filament_name`` can be stale). Depends only
+  // on the resolved option, so it never clobbers the user's live search text
+  // (typing changes the input, not ``slicer_filament`` → not this option).
+  useEffect(() => {
+    if (!isOpen || !spool || !selectedPresetOption) return;
+    setPresetInputValue(selectedPresetOption.displayName);
+  }, [isOpen, spool, selectedPresetOption]);
 
   // Expand all printers in PA profile section when calibrations are available
   useEffect(() => {

@@ -35,7 +35,7 @@ describe('BulkEditSpoolsModal', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('sends only enabled fields and never usage', async () => {
-    render(<BulkEditSpoolsModal isOpen spools={spools} allSpools={spools} catalogEntries={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+    render(<BulkEditSpoolsModal isOpen spools={spools} allSpools={spools} catalogEntries={[]} spoolDisplayTemplate="{brand} {material} {color_name}" onClose={vi.fn()} onSaved={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByText('Bulk edit spools')).toBeInTheDocument());
 
@@ -55,7 +55,7 @@ describe('BulkEditSpoolsModal', () => {
   });
 
   it('shows "— varies —" for fields that differ across the selection', async () => {
-    render(<BulkEditSpoolsModal isOpen spools={spools} allSpools={spools} catalogEntries={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+    render(<BulkEditSpoolsModal isOpen spools={spools} allSpools={spools} catalogEntries={[]} spoolDisplayTemplate="{brand} {material} {color_name}" onClose={vi.fn()} onSaved={vi.fn()} />);
     await waitFor(() => expect(screen.getByText('Bulk edit spools')).toBeInTheDocument());
     // color_name differs (Red vs Blue) → its input placeholder is the "varies" marker.
     expect(screen.getAllByPlaceholderText('— varies —').length).toBeGreaterThan(0);

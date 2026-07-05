@@ -2229,6 +2229,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           spools={filteredSpools}
           allSpools={spools || []}
           catalogEntries={catalogEntries || []}
+          spoolDisplayTemplate={spoolDisplayTemplate}
           onClose={() => setShowBulkEdit(false)}
           onSaved={() => queryClient.invalidateQueries({ queryKey: spoolsQueryKey })}
         />
