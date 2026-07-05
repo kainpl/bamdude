@@ -273,6 +273,21 @@ export default {
       error: 'Failed to load history',
       empty: 'No data recorded yet'
     },
+    maintenance: {
+      menuEnter: 'Enter maintenance mode',
+      menuExit: 'Exit maintenance mode',
+      toastEntered: '{{name}} is now in maintenance mode',
+      toastExited: '{{name}} is back in service',
+      pillLabel: 'Maintenance',
+      title: 'Maintenance mode',
+      subtitle: 'Excluded from the print queue and disconnected until you exit.',
+      statusHeader: 'Status',
+      exitButton: 'Exit',
+      confirmMidPrintTitle: 'Printer is currently printing',
+      confirmMidPrintMessage: 'Entering maintenance mode disconnects {{name}} and stops progress tracking for the running print. Continue?',
+      editFieldLabel: 'Out of service (maintenance mode)',
+      editFieldHelp: 'Excludes this printer from the queue without deleting it. It stays disconnected until you turn this off.'
+    },
     // Sort options
     sort: {
       name: 'Name',

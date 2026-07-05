@@ -608,6 +608,10 @@ export interface PrinterCreate {
   model?: string;
   location?: string;
   auto_archive?: boolean;
+  // Maintenance Mode (#1476). Backend already gates MQTT, queue dispatch,
+  // scheduler, metrics and the print picker on this; PATCH /printers/{id}
+  // disconnects or reconnects MQTT accordingly.
+  is_active?: boolean;
   cleanup_after_print?: boolean;
   mqtt_connection_timeout?: number;
   external_camera_url?: string | null;
