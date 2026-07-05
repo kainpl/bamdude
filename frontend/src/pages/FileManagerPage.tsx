@@ -2023,6 +2023,30 @@ export function FileManagerPage() {
     setShowUploadModal(true);
   };
 
+  // Harden the drag overlay against the cancel paths the counter alone misses:
+  // Escape mid-drag, or a drop/dragend that lands outside the drop area (drag
+  // back out of the window, release off-page). Without these the overlay stays
+  // stuck until a refresh (upstream Bambuddy #1510). Listeners only live while
+  // the overlay is showing, so they never interfere with normal interaction.
+  useEffect(() => {
+    if (!isPageDragging) return;
+    const reset = () => {
+      dragCounterRef.current = 0;
+      setIsPageDragging(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') reset();
+    };
+    document.addEventListener('drop', reset);
+    document.addEventListener('dragend', reset);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('drop', reset);
+      document.removeEventListener('dragend', reset);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [isPageDragging]);
+
   const handleDownload = (id: number) => {
     api.downloadLibraryFile(id).catch((err) => {
       console.error('Library file download failed:', err);
