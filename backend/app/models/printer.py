@@ -73,6 +73,9 @@ class Printer(Base):
         back_populates="printer", cascade="all, delete-orphan"
     )
     ams_history: Mapped[list["AMSSensorHistory"]] = relationship(back_populates="printer", cascade="all, delete-orphan")
+    sensor_history: Mapped[list["PrinterSensorHistory"]] = relationship(
+        back_populates="printer", cascade="all, delete-orphan"
+    )
     queue: Mapped["PrinterQueue | None"] = relationship(  # noqa: F821
         back_populates="printer", uselist=False, cascade="all, delete-orphan"
     )
@@ -82,4 +85,5 @@ from backend.app.models.ams_history import AMSSensorHistory  # noqa: E402
 from backend.app.models.archive import PrintArchive  # noqa: E402
 from backend.app.models.maintenance import PrinterMaintenance  # noqa: E402
 from backend.app.models.notification import NotificationProvider  # noqa: E402
+from backend.app.models.printer_sensor_history import PrinterSensorHistory  # noqa: E402, F401
 from backend.app.models.smart_plug import SmartPlug  # noqa: E402

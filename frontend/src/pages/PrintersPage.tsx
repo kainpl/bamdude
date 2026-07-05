@@ -62,6 +62,7 @@ import {
   Cable,
   Flame,
   Gauge,
+  LineChart,
   ArrowLeftRight,
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -75,7 +76,7 @@ import { api, discoveryApi, firmwareApi, macrosApi, withStreamToken } from '../a
 import { BulkPrinterToolbar } from '../components/BulkPrinterToolbar';
 import { PauseChip } from '../components/PauseChip';
 import { formatDateOnly, formatETA, formatDuration } from '../utils/date';
-import type { Printer, PrinterCreate, PrinterStatus, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro, InventorySpool, SmartPlug, PrinterDiagnosticResult } from '../api/client';
+import type { Printer, PrinterCreate, PrinterStatus, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro, InventorySpool, SmartPlug, PrinterDiagnosticResult, HeaterSensorKind } from '../api/client';
 
 // Source of truth for Spoolman ↔ AMS slot binding (upstream PR #1241).
 // Mirrors backend `spoolman_slot_assignments` rows; PrintersPage subscribes to
@@ -97,6 +98,7 @@ import { CalibrationModal } from '../components/CalibrationModal';
 import { HMSErrorModal, filterKnownHMSErrors } from '../components/HMSErrorModal';
 import { PrinterQueueWidget } from '../components/PrinterQueueWidget';
 import { AMSHistoryModal } from '../components/AMSHistoryModal';
+import { HeaterHistoryModal } from '../components/HeaterHistoryModal';
 import { FilamentHoverCard, EmptySlotHoverCard } from '../components/FilamentHoverCard';
 import { LinkSpoolModal } from '../components/LinkSpoolModal';
 import { AssignSpoolModal } from '../components/AssignSpoolModal';
@@ -1502,6 +1504,7 @@ function PrinterCard({
     mode: 'humidity' | 'temperature';
   } | null>(null);
   const [amsSettingsOpen, setAmsSettingsOpen] = useState(false);
+  const [heaterHistoryOpen, setHeaterHistoryOpen] = useState(false);
   const [printerSettingsOpen, setPrinterSettingsOpen] = useState(false);
   const [filamentCaliOpen, setFilamentCaliOpen] = useState(false);
   const [calibrationHistoryOpen, setCalibrationHistoryOpen] = useState(false);
@@ -3225,6 +3228,16 @@ function PrinterCard({
                       </p>
                     </div>
                   )}
+                  {/* Heater history — opens the nozzle/bed/chamber temperature chart */}
+                  <button
+                    type="button"
+                    onClick={() => setHeaterHistoryOpen(true)}
+                    className="px-2 py-1.5 bg-bambu-dark rounded-lg flex flex-col justify-center items-center text-bambu-gray hover:text-white transition-colors"
+                    title={t('printers.heaterHistory.title')}
+                    aria-label={t('printers.heaterHistory.title')}
+                  >
+                    <LineChart className="w-3.5 h-3.5" />
+                  </button>
                   {/* Active nozzle indicator for dual-nozzle printers */}
                   {isDualNozzle && (
                     <DualNozzleHoverCard
@@ -5487,6 +5500,23 @@ function PrinterCard({
           hasPermission={hasPermission}
         />
       )}
+
+      {/* Heater History Modal */}
+      {heaterHistoryOpen && (() => {
+        const kinds: HeaterSensorKind[] = ['nozzle'];
+        if (status?.temperatures?.nozzle_2 !== undefined) kinds.push('nozzle_2');
+        kinds.push('bed');
+        if (status?.temperatures?.chamber !== undefined) kinds.push('chamber');
+        return (
+          <HeaterHistoryModal
+            isOpen
+            onClose={() => setHeaterHistoryOpen(false)}
+            printerId={printer.id}
+            printerName={printer.name}
+            availableKinds={kinds}
+          />
+        );
+      })()}
 
       {/* AMS History Modal */}
       {amsHistoryModal && (

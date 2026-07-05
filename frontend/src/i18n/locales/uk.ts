@@ -272,6 +272,15 @@ export default {
       bed: 'Стіл',
       chamber: 'Камера'
     },
+    heaterHistory: {
+      title: 'Історія нагрівачів',
+      nozzle: 'Сопло',
+      nozzle2: 'Сопло 2',
+      bed: 'Стіл',
+      chamber: 'Камера',
+      error: 'Не вдалося завантажити історію',
+      empty: 'Ще немає записаних даних'
+    },
     // Sort options
     sort: {
       name: 'Назва',

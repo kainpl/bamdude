@@ -264,6 +264,15 @@ export default {
       bed: 'Bed',
       chamber: 'Chamber'
     },
+    heaterHistory: {
+      title: 'Heater History',
+      nozzle: 'Nozzle',
+      nozzle2: 'Nozzle 2',
+      bed: 'Bed',
+      chamber: 'Chamber',
+      error: 'Failed to load history',
+      empty: 'No data recorded yet'
+    },
     // Sort options
     sort: {
       name: 'Name',

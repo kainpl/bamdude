@@ -52,6 +52,7 @@ from backend.app.api.routes import (
     print_options_preferences,
     print_queue,
     printer_queues,
+    printer_sensor_history,
     printer_settings as printer_settings_routes,
     printers,
     projects,
@@ -5776,6 +5777,135 @@ def stop_ams_history_recording():
         logging.getLogger(__name__).info("AMS history recording stopped")
 
 
+# Printer heater (nozzle / bed / chamber) sensor history recording
+_printer_sensor_history_task: asyncio.Task | None = None
+PRINTER_SENSOR_HISTORY_INTERVAL = 60  # Record every minute — heaters move faster than AMS humidity
+PRINTER_SENSOR_HISTORY_RETENTION_DAYS = 30
+_printer_sensor_cleanup_counter = 0
+# Sensor kinds tracked in state.temperatures — these are the normalised keys the
+# MQTT parser writes, so we don't need to handle per-model field aliases here
+# (nozzle_temper / left_nozzle_temper / right_nozzle_temper / chamber_temper
+# are all collapsed by services/bambu_mqtt.py before they reach this loop).
+_SENSOR_KINDS = ("nozzle", "nozzle_2", "bed", "chamber")
+_SENSOR_TARGET_KEYS = {
+    "nozzle": "nozzle_target",
+    "nozzle_2": "nozzle_2_target",
+    "bed": "bed_target",
+    "chamber": "chamber_target",
+}
+
+
+async def record_printer_sensor_history():
+    """Background task to record nozzle / bed / chamber readings.
+
+    Pulls from ``state.temperatures`` (already normalised across all printer
+    models by the MQTT parser) rather than re-parsing raw_data, so we get
+    free coverage of dual-nozzle H2D, sensor-only X1C chamber, etc.
+    """
+    logger = logging.getLogger(__name__)
+
+    await asyncio.sleep(10)
+
+    while True:
+        try:
+            from backend.app.models.printer import Printer
+            from backend.app.models.printer_sensor_history import PrinterSensorHistory
+            from backend.app.models.settings import Settings
+
+            async with async_session() as db:
+                result = await db.execute(select(Printer).where(Printer.is_active.is_(True)))
+                printers = result.scalars().all()
+
+                recorded_count = 0
+                for printer in printers:
+                    state = printer_manager.get_status(printer.id)
+                    if not state or not state.connected:
+                        continue
+
+                    temps = getattr(state, "temperatures", None) or {}
+                    if not isinstance(temps, dict):
+                        continue
+
+                    for kind in _SENSOR_KINDS:
+                        if kind not in temps:
+                            continue
+                        try:
+                            value = float(temps[kind])
+                        except (ValueError, TypeError):
+                            continue
+
+                        target_raw = temps.get(_SENSOR_TARGET_KEYS[kind])
+                        target_val: float | None = None
+                        if target_raw is not None:
+                            try:
+                                target_val = float(target_raw)
+                            except (ValueError, TypeError):
+                                target_val = None
+
+                        db.add(
+                            PrinterSensorHistory(
+                                printer_id=printer.id,
+                                sensor_kind=kind,
+                                value=value,
+                                target=target_val,
+                            )
+                        )
+                        recorded_count += 1
+
+                await db.commit()
+                if recorded_count > 0:
+                    logger.debug("Recorded %s printer sensor history entries", recorded_count)
+
+                # Periodic cleanup — once every ~24h at this interval.
+                global _printer_sensor_cleanup_counter
+                _printer_sensor_cleanup_counter += 1
+                cleanup_every = max(1, (24 * 60 * 60) // PRINTER_SENSOR_HISTORY_INTERVAL)
+                if _printer_sensor_cleanup_counter >= cleanup_every:
+                    _printer_sensor_cleanup_counter = 0
+                    result = await db.execute(
+                        select(Settings).where(Settings.key == "printer_sensor_history_retention_days")
+                    )
+                    setting = result.scalar_one_or_none()
+                    retention_days = int(setting.value) if setting else PRINTER_SENSOR_HISTORY_RETENTION_DAYS
+
+                    cutoff = datetime.utcnow() - timedelta(days=retention_days)
+                    cleanup = await db.execute(
+                        delete(PrinterSensorHistory).where(PrinterSensorHistory.recorded_at < cutoff)
+                    )
+                    await db.commit()
+                    if cleanup.rowcount > 0:
+                        logger.info(
+                            "Cleaned up %s old printer sensor history entries (older than %s days)",
+                            cleanup.rowcount,
+                            retention_days,
+                        )
+
+            await asyncio.sleep(PRINTER_SENSOR_HISTORY_INTERVAL)
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning("Printer sensor history recording failed: %s", e)
+            await asyncio.sleep(60)
+
+
+def start_printer_sensor_history_recording():
+    """Start the printer heater history recording background task."""
+    global _printer_sensor_history_task
+    if _printer_sensor_history_task is None:
+        _printer_sensor_history_task = asyncio.create_task(record_printer_sensor_history())
+        logging.getLogger(__name__).info("Printer sensor history recording started")
+
+
+def stop_printer_sensor_history_recording():
+    """Stop the printer heater history recording background task."""
+    global _printer_sensor_history_task
+    if _printer_sensor_history_task:
+        _printer_sensor_history_task.cancel()
+        _printer_sensor_history_task = None
+        logging.getLogger(__name__).info("Printer sensor history recording stopped")
+
+
 # Printer runtime tracking
 _runtime_tracking_task: asyncio.Task | None = None
 RUNTIME_TRACKING_INTERVAL = 30  # Update every 30 seconds
@@ -6281,6 +6411,9 @@ async def lifespan(app: FastAPI):
     # Start AMS history recording
     start_ams_history_recording()
 
+    # Start printer heater (nozzle/bed/chamber) history recording
+    start_printer_sensor_history_recording()
+
     # Start printer runtime tracking
     start_runtime_tracking()
 
@@ -6413,6 +6546,7 @@ async def lifespan(app: FastAPI):
     git_backup_service.stop_scheduler()
     local_backup_service.stop_scheduler()
     stop_ams_history_recording()
+    stop_printer_sensor_history_recording()
     stop_runtime_tracking()
     stop_camera_cleanup()
     from backend.app.services.loop_watchdog import stop_loop_watchdog
@@ -6954,6 +7088,7 @@ app.include_router(library_trash.router, prefix=app_settings.api_prefix)
 app.include_router(api_keys.router, prefix=app_settings.api_prefix)
 app.include_router(webhook.router, prefix=app_settings.api_prefix)
 app.include_router(ams_history.router, prefix=app_settings.api_prefix)
+app.include_router(printer_sensor_history.router, prefix=app_settings.api_prefix)
 app.include_router(ams_settings_routes.router, prefix=app_settings.api_prefix)
 app.include_router(printer_settings_routes.router, prefix=app_settings.api_prefix)
 app.include_router(filament_calibration_routes.router, prefix=app_settings.api_prefix)

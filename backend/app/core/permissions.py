@@ -143,6 +143,9 @@ class Permission(StrEnum):
     # AMS History
     AMS_HISTORY_READ = "ams_history:read"
 
+    # Printer Heater History
+    PRINTER_SENSOR_HISTORY_READ = "printer_sensor_history:read"
+
     # Stats/Metrics
     STATS_READ = "stats:read"
     STATS_FILTER_BY_USER = "stats:filter_by_user"
@@ -299,6 +302,7 @@ PERMISSION_CATEGORIES = {
     ],
     "Stats & History": [
         Permission.AMS_HISTORY_READ,
+        Permission.PRINTER_SENSOR_HISTORY_READ,
         Permission.STATS_READ,
         Permission.STATS_FILTER_BY_USER,
     ],
@@ -443,6 +447,7 @@ DEFAULT_GROUPS = {
             Permission.FIRMWARE_READ.value,
             # Stats & History
             Permission.AMS_HISTORY_READ.value,
+            Permission.PRINTER_SENSOR_HISTORY_READ.value,
             Permission.STATS_READ.value,
             Permission.STATS_FILTER_BY_USER.value,
             Permission.SYSTEM_READ.value,
@@ -480,6 +485,7 @@ DEFAULT_GROUPS = {
             Permission.EXTERNAL_LINKS_READ.value,
             Permission.FIRMWARE_READ.value,
             Permission.AMS_HISTORY_READ.value,
+            Permission.PRINTER_SENSOR_HISTORY_READ.value,
             Permission.STATS_READ.value,
             Permission.SYSTEM_READ.value,
             Permission.SETTINGS_READ.value,
