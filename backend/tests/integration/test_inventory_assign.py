@@ -94,8 +94,10 @@ class TestAssignSpoolTrayInfoIdx:
         self, async_client: AsyncClient, printer_factory, spool_factory
     ):
         """PFUS* setting-ids are not valid tray_info_idx. With no cloud/printer_kp
-        realignment, the PFUS is discarded and an empty slot falls back to the
-        generic id for the spool's material (#1387)."""
+        realignment, the PFUS *tray_info_idx* is discarded and an empty slot falls
+        back to the generic id for the spool's material (#1387) — but the PFUS
+        *setting_id* is preserved so the slicer still loads the user's custom cloud
+        preset instead of the Generic fallback setting (#1815)."""
         printer = await printer_factory(name="H2D")
         spool = await spool_factory(slicer_filament="PFUS9ac902733670a9", material="PLA")
 
@@ -117,6 +119,9 @@ class TestAssignSpoolTrayInfoIdx:
             assert response.status_code == 200
             call_kwargs = mock_client.ams_set_filament_setting.call_args
             assert call_kwargs.kwargs["tray_info_idx"] == "GFL99"
+            # #1815: PFUS is a valid *slicer* setting_id even when it's not a valid
+            # tray_info_idx — preserve it instead of overwriting with GFSL99.
+            assert call_kwargs.kwargs["setting_id"] == "PFUS9ac902733670a9"
 
     @pytest.mark.asyncio
     @pytest.mark.integration

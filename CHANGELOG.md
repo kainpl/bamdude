@@ -62,6 +62,9 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **Assign-spool picker now shows the spool note on touch devices.** The note attached to a spool was only visible as a hover tooltip, so it was invisible on phones and tablets. It now renders as an inline muted line under the spool weight in both the built-in and Spoolman pickers.
+- **Assign to AMS keeps your custom Bambu Cloud filament preset instead of falling back to Generic.** When a spool carried a cloud user/shared preset (PFUS/PFCN), the AMS-change re-sync path could discard the slicer setting and reset the slot to "Generic <Material>". The custom preset id is now preserved, so the slicer loads your actual preset.
+- **Deleting a local slicer profile removes it from the list immediately.** The deleted preset lingered until the list refetched in the background, and a quick second click could open a delete dialog that then 404'd. The row now disappears the instant the delete succeeds.
 - **Chamber-fan badge no longer shows on printers that have no chamber fan.** Open-frame models (P1P, A1, A1 Mini, A2L) were still displaying a chamber-fan status pill stuck at 0%. The pill now appears only on models that physically have a chamber exhaust fan.
 - **"Rotate spool during drying" is disabled when a tray in that AMS is loaded.** The firmware locks the whole AMS while any tray is threaded and rejects a rotate request outright — the option is now greyed out (with a tooltip) in that state and never sent, instead of silently failing.
 - **Dual-nozzle external spools show L / R inside the colour circle.** On H2D / H2C the two external feeds now label the colour circle directly with L / R instead of a separate caption line below it, matching the AMS slot layout.

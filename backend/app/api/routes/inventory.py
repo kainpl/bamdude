@@ -289,7 +289,17 @@ async def apply_spool_to_slot_via_mqtt(
         or tray_info_idx.startswith("PFCN")
     ):
         tray_info_idx = ""
-        setting_id = ""
+        # Preserve ``setting_id`` when it's still a valid slicer reference: PFUS /
+        # PFCN (cloud user/shared preset) or GFS (Bambu official). The slicer
+        # accepts these as ``setting_id`` even though they're rejected as
+        # ``tray_info_idx``. Without this, the generic-material fallback below
+        # overwrites ``setting_id`` with a "GFS…99" and the slicer shows
+        # "Generic <Material>" instead of the user's custom preset — happens on
+        # the ``on_ams_change`` replay path where the cloud detail lookup is
+        # skipped (upstream Bambuddy #1815). Material-name leaks (e.g.
+        # setting_id="PETG") are still cleared — never valid slicer references.
+        if not (setting_id and (setting_id.startswith(("PFUS", "PFCN", "GFS")))):
+            setting_id = ""
 
     if not tray_info_idx:
         # Fallback: reuse slot's existing tray_info_idx (only if it's a specific
