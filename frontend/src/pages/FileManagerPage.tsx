@@ -44,6 +44,7 @@ import {
   ListCollapse,
   Layers,
   Cog,
+  Tag as TagIcon,
 } from 'lucide-react';
 import { api } from '../api/client';
 import type {
@@ -75,6 +76,9 @@ import { formatDateTime, formatDuration, parseUTCDate, type TimeFormat, type Dat
 import { formatFileSize } from '../utils/file';
 import { FileTagBadges } from '../components/FileTagBadges';
 import { KNOWN_FILE_TAGS, getTagStyle, isSliced, isSliceable, isMultiPlate } from '../lib/fileTags';
+import { LibraryTagsModal } from '../components/LibraryTagsModal';
+import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
+import { libraryTagsQueryKey } from '../utils/libraryTagsQuery';
 
 type SortField = 'name' | 'date' | 'size' | 'type';
 type SortDirection = 'asc' | 'desc';
@@ -906,6 +910,8 @@ interface FileCardProps {
   onLink?: (file: LibraryFileListItem) => void;
   onGenerateThumbnail?: (file: LibraryFileListItem) => void;
   onPlateGallery?: (file: LibraryFileListItem) => void;
+  /** #1268 — click a user-tag chip to toggle it in the filter rail. */
+  onTagClick?: (tagId: number) => void;
   thumbnailVersion?: number;
   /** True while a thumbnail-regeneration mutation is in flight for THIS
    *  file. Drives the loading overlay on the card thumbnail so the
@@ -1081,7 +1087,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, useSlicerApi, onPreview3d, onRename, onLink, onGenerateThumbnail, onPlateGallery, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, useSlicerApi, onPreview3d, onRename, onLink, onGenerateThumbnail, onPlateGallery, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   const [showActions, setShowActions] = useState(false);
   // Portal-rendered dropdown — the card root has `overflow-hidden` for the
   // thumbnail crop, which clips an absolute-positioned menu against the card
@@ -1258,6 +1264,25 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
           <div className="mt-0.5 text-xs text-bambu-gray flex items-center gap-1">
             <User className="w-3 h-3" />
             {file.created_by_username}
+          </div>
+        )}
+        {/* #1268 — user-authored tag chips (green). DISTINCT from the
+            computed FileTagBadges overlay on the thumbnail. Click toggles
+            the tag in the cross-cutting filter rail; stopPropagation keeps
+            the click off card selection. */}
+        {(file.tags ?? []).length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1" onClick={(e) => e.stopPropagation()}>
+            {(file.tags ?? []).map((tag) => (
+              <button
+                key={tag.id}
+                type="button"
+                onClick={() => onTagClick?.(tag.id)}
+                className="text-[11px] px-1.5 py-0.5 rounded-full bg-bambu-green/15 text-bambu-green border border-bambu-green/30 hover:bg-bambu-green/25 transition-colors max-w-full truncate"
+                title={tag.name}
+              >
+                {tag.name}
+              </button>
+            ))}
           </div>
         )}
       </div>
@@ -1464,6 +1489,14 @@ export function FileManagerPage() {
   // Per-plate gallery modal — opened from list-mode "plates" button. Null when closed.
   const [galleryFile, setGalleryFile] = useState<LibraryFileListItem | null>(null);
 
+  // #1268 — user-authored tags (SYSTEM C). Completely separate from the
+  // computed-tag chip-row `filterTags` (SYSTEM B) above: this drives a
+  // server-side cross-cutting AND filter, a catalog CRUD modal, and a
+  // bulk-tag picker. `selectedTagIds` are tag row ids, not tag strings.
+  const [showTagsModal, setShowTagsModal] = useState(false);
+  const [showBulkTagsModal, setShowBulkTagsModal] = useState(false);
+  const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
+
   const [viewMode, setViewMode] = useState<'grid' | 'list'>(() => {
     return (localStorage.getItem('library-view-mode') as 'grid' | 'list') || 'grid';
   });
@@ -1592,9 +1625,38 @@ export function FileManagerPage() {
     staleTime: 30_000,
   });
 
+  // #1268 — user-tag catalog. Loaded once; drives the filter rail, the
+  // per-file chip labels, and the two tag modals. `tagFilterKey` is the
+  // sorted id list so the library-files query cache is stable regardless
+  // of the order tags were toggled in.
+  const tagFilterKey = useMemo(() => [...selectedTagIds].sort((a, b) => a - b), [selectedTagIds]);
+  const { data: tagCatalog = [] } = useQuery({
+    queryKey: libraryTagsQueryKey,
+    queryFn: api.getLibraryTags,
+  });
+  const tagsById = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const tag of tagCatalog) m.set(tag.id, tag.name);
+    return m;
+  }, [tagCatalog]);
+  // Prune selected tag ids that no longer exist (a tag was deleted from the
+  // catalog) so the filter never strands on a phantom id.
+  useEffect(() => {
+    if (tagCatalog.length === 0) return;
+    setSelectedTagIds((prev) => {
+      const next = prev.filter((id) => tagsById.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [tagCatalog.length, tagsById]);
+  const toggleTagFilter = useCallback((tagId: number) => {
+    setSelectedTagIds((prev) =>
+      prev.includes(tagId) ? prev.filter((id) => id !== tagId) : [...prev, tagId],
+    );
+  }, []);
+
   const allFilesRecursive = settings?.library_all_files_recursive ?? false;
   const { data: files, isLoading: filesLoading } = useQuery({
-    queryKey: ['library-files', selectedFolderId, allFilesRecursive, topLevelView],
+    queryKey: ['library-files', selectedFolderId, allFilesRecursive, topLevelView, tagFilterKey],
     // "All Files" (selectedFolderId === null): include_root=false lists every
     // file across all subfolders recursively (#1499), include_root=true scopes
     // to root-level files only. Gated on the library_all_files_recursive
@@ -1603,12 +1665,15 @@ export function FileManagerPage() {
     // At the top level, topLevelView scopes the result to internal managed
     // storage vs the union of every external folder (#1621); per-folder
     // selection passes no scope.
+    // #1268: a non-empty tagFilterKey makes the backend bypass folder/root
+    // scoping entirely (tags are cross-cutting).
     queryFn: () =>
       api.getLibraryFiles(
         selectedFolderId,
         selectedFolderId === null ? !allFilesRecursive : true,
         undefined,
         selectedFolderId === null ? topLevelView : undefined,
+        tagFilterKey,
       ),
   });
 
@@ -2162,6 +2227,15 @@ export function FileManagerPage() {
             {t('fileManager.newFolder')}
           </Button>
           <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowTagsModal(true)}
+            title={t('fileManager.tags.manageTitle')}
+          >
+            <TagIcon className="w-4 h-4 mr-2" />
+            {t('fileManager.tags.manage')}
+          </Button>
+          <Button
             onClick={() => setShowUploadModal(true)}
             disabled={!hasPermission('library:upload')}
             title={!hasPermission('library:upload') ? t('fileManager.noPermissionUpload') : undefined}
@@ -2664,6 +2738,16 @@ export function FileManagerPage() {
                       <span className="hidden sm:inline">{t('common.move')}</span>
                     </Button>
                     <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => setShowBulkTagsModal(true)}
+                      disabled={!hasAnyPermission('library:update_own', 'library:update_all')}
+                      title={!hasAnyPermission('library:update_own', 'library:update_all') ? t('fileManager.tags.noPermission') : t('fileManager.tags.bulkTooltip')}
+                    >
+                      <TagIcon className="w-4 h-4 sm:mr-1" />
+                      <span className="hidden sm:inline">{t('fileManager.tags.tagAction')}</span>
+                    </Button>
+                    <Button
                       variant="danger"
                       size="sm"
                       onClick={() => {
@@ -2692,6 +2776,47 @@ export function FileManagerPage() {
               )}
               </div>
             )}
+            </div>
+          )}
+
+          {/* #1268 user-tag filter rail — SYSTEM C. Intentionally its own
+              block below the toolbar panel and VISUALLY SEPARATE from the
+              computed-tag chip-row (SYSTEM B) above. Green chips = catalog
+              tags; active = filled with an X. Hidden entirely when the
+              catalog is empty. Server-side AND filter. */}
+          {tagCatalog.length > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap mb-3">
+              <span className="text-xs text-bambu-gray mr-1 inline-flex items-center gap-1">
+                <TagIcon className="w-3.5 h-3.5" />
+                {t('fileManager.tags.filterLabel')}
+              </span>
+              {tagCatalog.map((tag) => {
+                const active = selectedTagIds.includes(tag.id);
+                return (
+                  <button
+                    key={tag.id}
+                    type="button"
+                    onClick={() => toggleTagFilter(tag.id)}
+                    className={`text-xs px-2 py-0.5 rounded-full font-medium transition-colors inline-flex items-center gap-1 ${
+                      active
+                        ? 'bg-bambu-green text-white'
+                        : 'bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-green/60'
+                    }`}
+                  >
+                    {tag.name}
+                    {active && <X className="w-3 h-3" />}
+                  </button>
+                );
+              })}
+              {selectedTagIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedTagIds([])}
+                  className="text-xs px-2 py-0.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
+                >
+                  {t('fileManager.tags.clearAll')}
+                </button>
+              )}
             </div>
           )}
 
@@ -2770,6 +2895,7 @@ export function FileManagerPage() {
                     onLink={setLinkFile}
                     onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
                     onPlateGallery={setGalleryFile}
+                    onTagClick={toggleTagFilter}
                     thumbnailVersion={thumbnailVersions[file.id]}
                     isRegeneratingThumbnail={regeneratingFileId === file.id}
                     hasPermission={hasPermission}
@@ -2900,6 +3026,20 @@ export function FileManagerPage() {
                         grid card's right-anchored layout). */}
                     <div className="flex items-center gap-1 flex-wrap">
                       <FileTagBadges tags={file.file_tags} compact direction="ltr" />
+                      {/* #1268 — user-authored tag chips, inline in the same
+                          cell (NOT a new subgrid column). Green pills, click
+                          toggles the cross-cutting filter. */}
+                      {(file.tags ?? []).map((tag) => (
+                        <button
+                          key={tag.id}
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); toggleTagFilter(tag.id); }}
+                          className="text-[11px] px-1.5 py-0.5 rounded-full bg-bambu-green/15 text-bambu-green border border-bambu-green/30 hover:bg-bambu-green/25 transition-colors max-w-full truncate"
+                          title={tag.name}
+                        >
+                          {tag.name}
+                        </button>
+                      ))}
                     </div>
                     {/* Size — right-aligned, same convention as the
                         Archives list. */}
@@ -3076,6 +3216,18 @@ export function FileManagerPage() {
       {showPurgeModal && (
         <PurgeOldFilesModal onClose={() => setShowPurgeModal(false)} />
       )}
+
+      {/* #1268 — user-authored tag catalog CRUD + bulk-tag picker. */}
+      <LibraryTagsModal
+        open={showTagsModal}
+        onClose={() => setShowTagsModal(false)}
+        onPickTag={(tagId) => { if (!selectedTagIds.includes(tagId)) toggleTagFilter(tagId); }}
+      />
+      <BulkTagsPickerModal
+        open={showBulkTagsModal}
+        fileIds={selectedFiles}
+        onClose={() => setShowBulkTagsModal(false)}
+      />
 
       {linkFolder && (
         <LinkFolderModal

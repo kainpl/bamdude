@@ -16,7 +16,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse as FastAPIFileResponse
-from sqlalchemy import func, select, update
+from sqlalchemy import distinct, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -30,7 +30,7 @@ from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.archive import PrintArchive
-from backend.app.models.library import LibraryFile, LibraryFolder
+from backend.app.models.library import LibraryFile, LibraryFileTag, LibraryFolder
 from backend.app.models.library_project_links import library_file_projects, library_folder_projects
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.project import Project
@@ -58,6 +58,7 @@ from backend.app.schemas.library import (
     FolderTreeItem,
     FolderUpdate,
     ProjectRef,
+    TagSummary,
     ZipExtractError,
     ZipExtractResponse,
     ZipExtractResult,
@@ -1682,6 +1683,10 @@ async def list_files(
     include_root: bool = True,
     internal_only: bool = False,
     external_only: bool = False,
+    # #1268 — cross-cutting user-tag filter. AND semantics: a file must
+    # carry EVERY selected tag. Non-empty tag_ids bypasses the
+    # folder / project / include_root scope (tags are orthogonal).
+    tag_ids: list[int] = Query(default_factory=list),
     db: AsyncSession = Depends(get_db),
     auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
@@ -1717,11 +1722,26 @@ async def list_files(
     query = LibraryFile.active().options(
         selectinload(LibraryFile.created_by),
         selectinload(LibraryFile.projects),
+        selectinload(LibraryFile.tags),
     )
     if user is not None and not can_read_all:
         query = query.where(LibraryFile.created_by_id == user.id)
 
-    if folder_id is not None:
+    if tag_ids:
+        # #1268 — cross-cutting AND filter. JOIN the association table and
+        # require the file to match every requested tag via
+        # COUNT(DISTINCT tag_id). This branch intentionally IGNORES
+        # folder_id / project_id / include_root (tags are orthogonal to
+        # hierarchy). The ownership .where(created_by_id) above still
+        # applies so a *_OWN caller only ever sees their own files.
+        unique_tag_ids = list(dict.fromkeys(tag_ids))
+        query = (
+            query.join(LibraryFileTag, LibraryFileTag.file_id == LibraryFile.id)
+            .where(LibraryFileTag.tag_id.in_(unique_tag_ids))
+            .group_by(LibraryFile.id)
+            .having(func.count(distinct(LibraryFileTag.tag_id)) == len(unique_tag_ids))
+        )
+    elif folder_id is not None:
         query = query.where(LibraryFile.folder_id == folder_id)
     elif project_id is not None:
         # m044: a file participates in a project either via the direct
@@ -1746,7 +1766,10 @@ async def list_files(
 
     query = query.order_by(LibraryFile.filename)
     result = await db.execute(query)
-    files = result.scalars().all()
+    # The tag-filter branch JOINs the association table, which can yield
+    # duplicate LibraryFile rows before GROUP BY collapses them at the SQL
+    # level; ``.unique()`` guards the ORM identity map either way.
+    files = result.scalars().unique().all() if tag_ids else result.scalars().all()
 
     # Get duplicate counts
     hash_counts = {}
@@ -1852,6 +1875,7 @@ async def list_files(
                 source_type=f.source_type,
                 source_url=f.source_url,
                 notes_count=notes_counts.get(f.id, 0),
+                tags=[TagSummary(id=t.id, name=t.name) for t in f.tags],
             )
         )
 

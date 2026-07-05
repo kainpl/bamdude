@@ -203,6 +203,61 @@ class FileResponse(BaseModel):
         from_attributes = True
 
 
+class TagSummary(BaseModel):
+    """Minimal tag reference embedded in file list responses (#1268).
+
+    DISTINCT from ``FileListResponse.file_tags`` (list[str] of computed
+    system badges, m036) — this carries user-authored tag rows.
+    """
+
+    id: int
+    name: str
+
+    class Config:
+        from_attributes = True
+
+
+class TagResponse(BaseModel):
+    """A library tag catalog row with its file usage count (#1268)."""
+
+    id: int
+    name: str
+    file_count: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class TagCreate(BaseModel):
+    """Create a new library tag."""
+
+    name: str = Field(..., min_length=1, max_length=64)
+
+
+class TagUpdate(BaseModel):
+    """Rename an existing library tag."""
+
+    name: str = Field(..., min_length=1, max_length=64)
+
+
+class TagBulkAssignRequest(BaseModel):
+    """Add / remove / replace tag assignments across multiple files (#1268)."""
+
+    file_ids: list[int] = Field(..., min_length=1)
+    tag_ids: list[int] = Field(default_factory=list)
+    action: str = Field("add", pattern="^(add|remove|replace)$")
+
+
+class TagBulkAssignResponse(BaseModel):
+    """Result of a bulk tag-assignment operation (#1268)."""
+
+    files_updated: int
+    associations_added: int
+    associations_removed: int
+
+
 class FileListResponse(BaseModel):
     """Schema for file list item (lighter than full response)."""
 
@@ -240,6 +295,9 @@ class FileListResponse(BaseModel):
     # Number of notes attached (gh#3) - drives the card icon variant
     # (MessageSquarePlus when 0, MessageSquare when >0).
     notes_count: int = 0
+    # #1268 — user-authored tags (M2M). DISTINCT from ``file_tags`` above,
+    # which is the computed system-badge array (m036).
+    tags: list["TagSummary"] = []
 
     class Config:
         from_attributes = True

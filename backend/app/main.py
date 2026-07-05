@@ -37,6 +37,7 @@ from backend.app.api.routes import (
     labels,
     library,
     library_notes,
+    library_tags,
     library_trash,
     local_backup,
     local_presets,
@@ -7244,6 +7245,7 @@ app.include_router(external_links.router, prefix=app_settings.api_prefix)
 app.include_router(projects.router, prefix=app_settings.api_prefix)
 app.include_router(library.router, prefix=app_settings.api_prefix)
 app.include_router(library_notes.router, prefix=app_settings.api_prefix)
+app.include_router(library_tags.router, prefix=app_settings.api_prefix)
 app.include_router(library_trash.router, prefix=app_settings.api_prefix)
 # archive_purge router is registered above before archives.router (route order).
 app.include_router(api_keys.router, prefix=app_settings.api_prefix)

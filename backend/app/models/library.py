@@ -146,6 +146,13 @@ class LibraryFile(Base):
         back_populates="library_files",
     )
     created_by: Mapped["User | None"] = relationship()
+    # #1268 — user-authored cross-cutting tags (M2M). DISTINCT from the
+    # ``file_tags`` JSON column above (m036 system-computed badges): this
+    # relationship is the user-editable label catalog. Never conflate them.
+    tags: Mapped[list["LibraryTag"]] = relationship(
+        secondary="library_file_tags",
+        back_populates="files",
+    )
     # gh#3 - delete notes alongside the file at the ORM level; the DB FK also
     # has ON DELETE CASCADE for direct SQL deletes, but ORM cascade covers
     # in-session `db.delete(file)` calls regardless of SQLite pragma state.
@@ -167,6 +174,32 @@ class LibraryFile(Base):
         passive_deletes=False,
         uselist=False,
     )
+
+
+class LibraryTag(Base):
+    """User-authored cross-cutting label for library files (#1268). name_key =
+    LOWER(TRIM(name)) so case/space variants collide on the UNIQUE index → 409.
+    NOT the same as LibraryFile.file_tags (computed system badges, m036)."""
+
+    __tablename__ = "library_tags"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    name_key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    files: Mapped[list["LibraryFile"]] = relationship(secondary="library_file_tags", back_populates="tags")
+
+
+class LibraryFileTag(Base):
+    """Association between library files and user tags (#1268). Composite PK
+    prevents dup (file,tag); both FKs ON DELETE CASCADE."""
+
+    __tablename__ = "library_file_tags"
+
+    file_id: Mapped[int] = mapped_column(ForeignKey("library_files.id", ondelete="CASCADE"), primary_key=True)
+    tag_id: Mapped[int] = mapped_column(ForeignKey("library_tags.id", ondelete="CASCADE"), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 from backend.app.models.archive import PrintArchive  # noqa: E402, F811

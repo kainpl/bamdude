@@ -6882,6 +6882,7 @@ export const api = {
     includeRoot = true,
     projectId?: number,
     scope?: 'internal' | 'external',
+    tagIds: number[] = [],
   ) => {
     const params = new URLSearchParams();
     if (folderId !== undefined && folderId !== null) {
@@ -6894,8 +6895,34 @@ export const api = {
     // #1621: scope the top-level view to managed vs external storage.
     if (scope === 'internal') params.set('internal_only', 'true');
     else if (scope === 'external') params.set('external_only', 'true');
+    // #1268: cross-cutting user-tag AND filter (repeatable query param).
+    for (const tagId of tagIds) params.append('tag_ids', String(tagId));
     return request<LibraryFileListItem[]>(`/library/files?${params}`);
   },
+
+  // #1268 — user-authored library tag catalog + assignment.
+  getLibraryTags: () => request<LibraryTag[]>('/library/tags'),
+  createLibraryTag: (name: string) =>
+    request<LibraryTag>('/library/tags', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+  updateLibraryTag: (id: number, name: string) =>
+    request<LibraryTag>(`/library/tags/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    }),
+  deleteLibraryTag: (id: number) =>
+    request<void>(`/library/tags/${id}`, { method: 'DELETE' }),
+  bulkAssignLibraryTags: (
+    fileIds: number[],
+    tagIds: number[],
+    action: 'add' | 'remove' | 'replace',
+  ) =>
+    request<LibraryTagBulkAssignResult>('/library/tags/bulk-assign', {
+      method: 'POST',
+      body: JSON.stringify({ file_ids: fileIds, tag_ids: tagIds, action }),
+    }),
   getLibraryFile: (id: number) => request<LibraryFile>(`/library/files/${id}`),
   uploadLibraryFile: async (
     file: File,
@@ -7800,6 +7827,32 @@ export interface LibraryFileListItem {
   source_type?: string | null;
   source_url?: string | null;
   notes_count: number;
+  // #1268 — user-authored tags (M2M). DISTINCT from ``file_tags`` above,
+  // which is the computed system-badge array. OPTIONAL because legacy msw
+  // mocks build partial file shapes; read sites use ``file.tags ?? []``.
+  tags?: LibraryTagSummary[];
+}
+
+// #1268 — user-authored library tags. Cross-cutting labels applied to
+// files, DISTINCT from the computed ``file_tags`` system badges and from
+// archive CSV tags. See backend/app/api/routes/library_tags.py.
+export interface LibraryTagSummary {
+  id: number;
+  name: string;
+}
+
+export interface LibraryTag {
+  id: number;
+  name: string;
+  file_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LibraryTagBulkAssignResult {
+  files_updated: number;
+  associations_added: number;
+  associations_removed: number;
 }
 
 // gh#3 - User-authored notes attached to library files
