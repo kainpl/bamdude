@@ -348,7 +348,12 @@ class PrinterManager:
 
             await ws_manager.send_printer_status(
                 printer_id,
-                printer_state_to_dict(state, printer_id, self.get_model(printer_id)),
+                printer_state_to_dict(
+                    state,
+                    printer_id,
+                    self.get_model(printer_id),
+                    self.get_drying_targets(printer_id),
+                ),
             )
         except Exception as e:
             logger.warning(
@@ -609,6 +614,16 @@ class PrinterManager:
     def get_model(self, printer_id: int) -> str | None:
         """Get the cached model for a printer."""
         return self._models.get(printer_id)
+
+    def get_drying_targets(self, printer_id: int) -> dict[int, dict] | None:
+        """Get cached active drying target params keyed by AMS id.
+
+        Returned shape: ``{ams_id: {"filament": str, "temp": int}}``. Returns
+        ``None`` when the printer is not connected. Seeded by
+        ``send_drying_command(mode=1)`` and cleared when drying stops.
+        """
+        client = self._clients.get(printer_id)
+        return client._drying_targets if client else None
 
     def get_all_statuses(self) -> dict[int, PrinterState]:
         """Get status of all connected printers (checks for stale connections)."""
@@ -1078,13 +1093,21 @@ def resolve_plate_id(state: PrinterState) -> int | None:
     return parse_plate_id(state.gcode_file)
 
 
-def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, model: str | None = None) -> dict:
+def printer_state_to_dict(
+    state: PrinterState,
+    printer_id: int | None = None,
+    model: str | None = None,
+    drying_targets: dict[int, dict] | None = None,
+) -> dict:
     """Convert PrinterState to a JSON-serializable dict.
 
     Args:
         state: The printer state to convert
         printer_id: Optional printer ID for generating cover URLs
         model: Optional printer model for filtering unsupported features
+        drying_targets: Optional per-AMS active-cycle params
+            (``{ams_id: {"filament": str, "temp": int}}``) from the
+            BambuMQTTClient cache so the badge can display "PETG @ 65°C".
     """
     # Parse AMS data from raw_data
     ams_units = []
@@ -1175,9 +1198,39 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
             # AMS-HT has 1 tray, regular AMS has 4 trays
             is_ams_ht = len(trays) == 1
 
+            # Active-cycle filament + target temperature for the drying badge.
+            # Bambu doesn't echo the chosen filament/temp on the per-tick AMS
+            # push, so prefer the cached target from the last send_drying_command;
+            # fall back to the first loaded tray's tray_type + RFID drying_temp.
+            ams_id_int = int(ams_data.get("id", 0))
+            target = (drying_targets or {}).get(ams_id_int)
+            dry_target_temp: int | None = None
+            dry_filament: str | None = None
+            if target:
+                temp_val = target.get("temp")
+                fil_val = target.get("filament") or ""
+                if temp_val is not None:
+                    try:
+                        dry_target_temp = int(temp_val)
+                    except (TypeError, ValueError):
+                        dry_target_temp = None
+                if fil_val:
+                    dry_filament = str(fil_val)
+            if dry_target_temp is None or not dry_filament:
+                for tray in trays:
+                    if tray.get("tray_type"):
+                        if not dry_filament:
+                            dry_filament = str(tray["tray_type"])
+                        if dry_target_temp is None and tray.get("drying_temp"):
+                            try:
+                                dry_target_temp = int(tray["drying_temp"])
+                            except (TypeError, ValueError):
+                                pass
+                        break
+
             ams_units.append(
                 {
-                    "id": int(ams_data.get("id", 0)),
+                    "id": ams_id_int,
                     "humidity": humidity_value,
                     "temp": ams_data.get("temp"),
                     "is_ams_ht": is_ams_ht,
@@ -1193,6 +1246,9 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
                     "dry_sub_status": int(ams_data.get("dry_sub_status") or 0),
                     # Cannot-dry reasons from firmware (e.g. 1=InsufficientPower, 8=NeedPluginPower)
                     "dry_sf_reason": list(ams_data.get("dry_sf_reason") or []),
+                    # Active-cycle filament name + target temperature for the badge
+                    "dry_target_temp": dry_target_temp,
+                    "dry_filament": dry_filament,
                     # Module type: "ams", "n3f", "n3s" (from get_version)
                     "module_type": str(ams_data.get("module_type") or ""),
                 }

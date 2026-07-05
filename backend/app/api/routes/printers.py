@@ -434,6 +434,11 @@ async def get_printer_status(
             except (ValueError, TypeError):
                 pass  # Skip K-profile entries with unparseable values
 
+    # Cached active-cycle drying params (filament + target temp) we sent last;
+    # Bambu doesn't echo them on the per-tick AMS push, so the badge needs the
+    # cache to render "<filament> @ <temp>°C".
+    drying_targets = printer_manager.get_drying_targets(printer_id) or {}
+
     if "ams" in raw_data and isinstance(raw_data["ams"], list):
         ams_exists = True
         for ams_data in raw_data["ams"]:
@@ -495,9 +500,36 @@ async def get_printer_status(
             # AMS-HT has 1 tray, regular AMS has 4 trays
             is_ams_ht = len(trays) == 1
 
+            # Active-cycle filament + target temperature for the drying badge
+            # (cache first, then first-loaded-tray fallback — see printer_manager).
+            ams_id_int = int(ams_data.get("id", 0))
+            target = drying_targets.get(ams_id_int) or {}
+            dry_target_temp: int | None = None
+            dry_filament: str | None = None
+            target_temp_val = target.get("temp")
+            target_fil_val = target.get("filament") or ""
+            if target_temp_val is not None:
+                try:
+                    dry_target_temp = int(target_temp_val)
+                except (TypeError, ValueError):
+                    dry_target_temp = None
+            if target_fil_val:
+                dry_filament = str(target_fil_val)
+            if dry_target_temp is None or not dry_filament:
+                for tray in trays:
+                    if tray.tray_type:
+                        if not dry_filament:
+                            dry_filament = str(tray.tray_type)
+                        if dry_target_temp is None and tray.drying_temp:
+                            try:
+                                dry_target_temp = int(tray.drying_temp)
+                            except (TypeError, ValueError):
+                                pass
+                        break
+
             ams_units.append(
                 AMSUnit(
-                    id=ams_data.get("id", 0),
+                    id=ams_id_int,
                     humidity=humidity_value,
                     temp=ams_data.get("temp"),
                     is_ams_ht=is_ams_ht,
@@ -508,6 +540,8 @@ async def get_printer_status(
                     sw_ver=str(ams_data.get("sw_ver") or ""),
                     # Drying: dry_time > 0 means drying is active (minutes remaining)
                     dry_time=int(ams_data.get("dry_time") or 0),
+                    dry_target_temp=dry_target_temp,
+                    dry_filament=dry_filament,
                     module_type=str(ams_data.get("module_type") or ""),
                 )
             )

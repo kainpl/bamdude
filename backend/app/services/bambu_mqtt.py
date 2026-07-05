@@ -764,6 +764,11 @@ class BambuMQTTClient:
         # Per-AMS previous ``dry_time``, used to detect the falling edge.
         # Seeded lazily as we observe each AMS unit.
         self._previous_dry_times: dict[int, int] = {}
+        # Per-AMS active-cycle target params (filament + temp) we sent on the
+        # last drying start. Bambu does not echo these on the per-tick AMS push
+        # — only the dry_time countdown — so we cache what we sent to drive the
+        # UI badge. Cleared on stop (mode=0) or when dry_time returns to 0.
+        self._drying_targets: dict[int, dict[str, object]] = {}
         # Fires when the printer's K-profile push contains content that
         # differs from the last seen hash — covers MQTT (re)connect (first
         # push fills empty hash), set/edit/delete from extrusion_cali_*
@@ -2405,6 +2410,21 @@ class BambuMQTTClient:
                         previous,
                     )
                     self.on_drying_complete(ams_id)
+
+        # Drop cached drying-target params for any AMS that has stopped drying
+        # (dry_time back to 0), so the badge stops advertising a finished cycle.
+        # Runs independently of the on_drying_complete callback above — the badge
+        # already hides itself once dry_time hits 0, this is cache hygiene.
+        if self._drying_targets:
+            for ams_unit in merged_ams:
+                raw_dry = ams_unit.get("dry_time")
+                if raw_dry is None:
+                    continue
+                try:
+                    if int(raw_dry) == 0:
+                        self._drying_targets.pop(int(ams_unit.get("id", -1)), None)
+                except (TypeError, ValueError):
+                    continue
 
         # Apply cached AMS firmware/SN from get_version (handles ordering and id type mismatches)
         self._apply_ams_version_cache(merged_ams)
@@ -4725,6 +4745,12 @@ class BambuMQTTClient:
             self.serial_number,
             wire_json,
         )
+        # Cache the active-cycle target so the badge can show "PETG @ 65°C"
+        # while drying — Bambu only echoes dry_time on subsequent pushes.
+        if mode == 1:
+            self._drying_targets[ams_id] = {"filament": filament or "", "temp": int(temp)}
+        else:
+            self._drying_targets.pop(ams_id, None)
         return True
 
     def _handle_extrusion_cali_history(self, data: dict) -> None:
