@@ -202,6 +202,34 @@ export default {
     cleanupAfterPrint: 'Очищення після друку',
     mqttConnectionTimeout: 'Тайм-аут з\'єднання MQTT',
     swapMode: 'Swap Mode увімкнено',
+    pageView: {
+      cards: 'Картки',
+      camWall: 'Стіна камер'
+    },
+    camWall: {
+      noPrinters: 'Немає принтерів для показу',
+      noSignal: 'Немає сигналу',
+      live: 'Наживо',
+      snap: 'Знімок',
+      off: 'Вимк',
+      summary: '{{live}} наживо, {{snap}} знімків, {{total}} всього',
+      layer: 'Шар {{cur}}/{{total}}',
+      timeLeft: 'залишилось {{time}}',
+      statusMode: {
+        off: 'Вимкнено',
+        compact: 'Компактно',
+        full: 'Повністю'
+      },
+      settings: {
+        title: 'Налаштування стіни камер',
+        maxLive: 'Макс. потоків наживо',
+        maxLiveHint: 'Скільки плиток транслюють наживо одночасно. Решта оновлюються знімками.',
+        snapshotInterval: 'Інтервал знімків (секунди)',
+        snapshotIntervalHint: 'Як часто плитки без потоку отримують свіжий знімок.',
+        statusOverlay: 'Накладка статусу',
+        statusOverlayHint: 'Компактно: лише бейдж стану. Повністю: + прогрес, шар, час до завершення.'
+      }
+    },
     status: {
       available: 'Доступний',
       idle: 'Очікування',

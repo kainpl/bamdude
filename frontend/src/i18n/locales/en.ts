@@ -202,6 +202,34 @@ export default {
     cleanupAfterPrint: 'Cleanup After Print',
     mqttConnectionTimeout: 'MQTT Connection Timeout',
     swapMode: 'Swap Mode enabled',
+    pageView: {
+      cards: 'Cards',
+      camWall: 'Cam wall'
+    },
+    camWall: {
+      noPrinters: 'No printers to show',
+      noSignal: 'No signal',
+      live: 'Live',
+      snap: 'Snap',
+      off: 'Off',
+      summary: '{{live}} live, {{snap}} snapshots, {{total}} total',
+      layer: 'Layer {{cur}}/{{total}}',
+      timeLeft: '{{time}} left',
+      statusMode: {
+        off: 'Off',
+        compact: 'Compact',
+        full: 'Full'
+      },
+      settings: {
+        title: 'Cam wall settings',
+        maxLive: 'Max live streams',
+        maxLiveHint: 'How many tiles stream live at once. Others refresh as snapshots.',
+        snapshotInterval: 'Snapshot interval (seconds)',
+        snapshotIntervalHint: 'How often non-live tiles fetch a fresh snapshot.',
+        statusOverlay: 'Status overlay',
+        statusOverlayHint: 'Compact: state badge only. Full: + progress, layer, time left.'
+      }
+    },
     status: {
       available: 'Available',
       idle: 'Idle',

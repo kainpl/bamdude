@@ -29,6 +29,8 @@ import {
   MoreHorizontal,
   SlidersHorizontal,
   Stethoscope,
+  LayoutGrid,
+  MonitorPlay,
   Pencil,
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
@@ -88,6 +90,7 @@ import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { FileManagerModal } from '../components/FileManagerModal';
 import { EmbeddedCameraViewer } from '../components/EmbeddedCameraViewer';
+import { CameraWall } from '../components/CameraWall';
 import { MQTTDebugModal } from '../components/MQTTDebugModal';
 import { CalibrationModal } from '../components/CalibrationModal';
 import { HMSErrorModal, filterKnownHMSErrors } from '../components/HMSErrorModal';
@@ -7182,6 +7185,27 @@ export function PrintersPage() {
     const saved = localStorage.getItem('printerCardSize');
     return saved ? parseInt(saved, 10) : 2; // Default to medium
   });
+  // Page view: 'cards' = printer cards (default), 'camwall' = grid of live camera tiles (#451)
+  const [pageView, setPageView] = useState<'cards' | 'camwall'>(() => {
+    return localStorage.getItem('printerPageView') === 'camwall' ? 'camwall' : 'cards';
+  });
+  // Cam-wall settings — per-user localStorage, no backend write (a Pi 4 install caps the
+  // live count lower than a NUC; default 4 is the documented Pi 4 ceiling).
+  const [camWallMaxLive, setCamWallMaxLive] = useState<number>(() => {
+    const saved = parseInt(localStorage.getItem('camWallMaxLive') || '', 10);
+    return Number.isFinite(saved) && saved > 0 ? saved : 4;
+  });
+  const [camWallSnapshotSec, setCamWallSnapshotSec] = useState<number>(() => {
+    const saved = parseInt(localStorage.getItem('camWallSnapshotSec') || '', 10);
+    return Number.isFinite(saved) && saved > 0 ? saved : 8;
+  });
+  // 'off' hides the printer-state overlay; 'compact' shows only a state chip; 'full' adds
+  // progress, layer, and time-left on printing/paused tiles. Default 'full' — cards already
+  // show this, so cam-wall users still want to glance the same details.
+  const [camWallStatusMode, setCamWallStatusMode] = useState<'off' | 'compact' | 'full'>(() => {
+    const saved = localStorage.getItem('camWallStatusMode');
+    return saved === 'off' || saved === 'compact' || saved === 'full' ? saved : 'full';
+  });
   // Derive viewMode from cardSize: S=compact, M/L/XL=expanded
   const viewMode: ViewMode = cardSize === 1 ? 'compact' : 'expanded';
   // Search/filter state (upstream #852)
@@ -7909,8 +7933,43 @@ export function PrintersPage() {
         </button>
       </div>
 
-      {/* Card size selector */}
+      {/* Page view toggle: Cards / Cam Wall (#451) */}
       <div className={`flex h-8 items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary ${inMenu ? 'w-full' : ''}`}>
+        <button
+          type="button"
+          onClick={() => {
+            setPageView('cards');
+            localStorage.setItem('printerPageView', 'cards');
+          }}
+          className={`flex h-full items-center gap-1 rounded-l-lg px-2 text-xs font-medium transition-colors ${inMenu ? 'flex-1 justify-center' : ''} ${
+            pageView === 'cards' ? 'bg-bambu-green text-white' : 'text-white hover:bg-bambu-dark-tertiary'
+          }`}
+          title={t('printers.pageView.cards')}
+          aria-pressed={pageView === 'cards'}
+        >
+          <LayoutGrid className="w-3.5 h-3.5" />
+          {inMenu && <span>{t('printers.pageView.cards')}</span>}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setPageView('camwall');
+            localStorage.setItem('printerPageView', 'camwall');
+          }}
+          className={`flex h-full items-center gap-1 rounded-r-lg px-2 text-xs font-medium transition-colors ${inMenu ? 'flex-1 justify-center' : ''} ${
+            pageView === 'camwall' ? 'bg-bambu-green text-white' : 'text-white hover:bg-bambu-dark-tertiary'
+          }`}
+          title={t('printers.pageView.camWall')}
+          aria-pressed={pageView === 'camwall'}
+          disabled={!hasPermission('camera:view')}
+        >
+          <MonitorPlay className="w-3.5 h-3.5" />
+          {inMenu && <span>{t('printers.pageView.camWall')}</span>}
+        </button>
+      </div>
+
+      {/* Card size selector */}
+      <div className={`flex h-8 items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary ${pageView === 'camwall' ? 'opacity-40 pointer-events-none' : ''} ${inMenu ? 'w-full' : ''}`}>
         {cardSizeLabels.map((label, index) => {
           const size = index + 1;
           const isSelected = cardSize === size;
@@ -8137,6 +8196,42 @@ export function PrintersPage() {
             <p className="text-bambu-gray">{t('printers.noSearchResults')}</p>
           </CardContent>
         </Card>
+      ) : pageView === 'camwall' ? (
+        <CameraWall
+          printers={sortedPrinters}
+          maxLive={camWallMaxLive}
+          snapshotIntervalSec={camWallSnapshotSec}
+          statusMode={camWallStatusMode}
+          onTileClick={(id, name) => {
+            const cameraMode = settings?.camera_view_mode || 'window';
+            if (cameraMode === 'embedded') {
+              setEmbeddedCameraPrinters(prev => new Map(prev).set(id, { id, name }));
+            } else {
+              const saved = localStorage.getItem('cameraWindowState');
+              const state = saved ? JSON.parse(saved) : { width: 640, height: 400 };
+              const features = [
+                `width=${state.width}`,
+                `height=${state.height}`,
+                state.left !== undefined ? `left=${state.left}` : '',
+                state.top !== undefined ? `top=${state.top}` : '',
+                'menubar=no,toolbar=no,location=no,status=no',
+              ].filter(Boolean).join(',');
+              window.open(`/camera/${id}`, `camera-${id}`, features);
+            }
+          }}
+          onChangeMaxLive={(next) => {
+            setCamWallMaxLive(next);
+            localStorage.setItem('camWallMaxLive', String(next));
+          }}
+          onChangeSnapshotIntervalSec={(next) => {
+            setCamWallSnapshotSec(next);
+            localStorage.setItem('camWallSnapshotSec', String(next));
+          }}
+          onChangeStatusMode={(next) => {
+            setCamWallStatusMode(next);
+            localStorage.setItem('camWallStatusMode', next);
+          }}
+        />
       ) : groupedPrinters ? (
         /* Grouped by location view */
         <div className="space-y-6">
