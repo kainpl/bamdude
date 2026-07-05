@@ -117,6 +117,18 @@ function getArchiveFileType(filename: string | null | undefined): string | undef
   return lower.split('.').pop();
 }
 
+/**
+ * Client-side download filename for an archive. Only a fallback for when the
+ * server's Content-Disposition is unreadable (e.g. hidden across an origin
+ * boundary a proxy didn't expose). Prefers the human-friendly print name, but
+ * must not double the extension when it falls back to a filename that already
+ * ends in .3mf (``foo.gcode.3mf`` → ``foo.gcode.3mf``, not ``…3mf.3mf``).
+ */
+function archiveDownloadName(archive: { print_name?: string | null; filename?: string | null }): string {
+  const base = archive.print_name || archive.filename || 'archive';
+  return base.toLowerCase().endsWith('.3mf') ? base : `${base}.3mf`;
+}
+
 // formatDate imported from '../utils/date' - handles UTC conversion
 
 /**
@@ -573,7 +585,7 @@ function ArchiveCard({
       label: t('archives.menu.download'),
       icon: <Download className="w-4 h-4" />,
       onClick: () => {
-        api.downloadArchive(archive.id, `${archive.print_name || archive.filename}.3mf`).catch((err) => {
+        api.downloadArchive(archive.id, archiveDownloadName(archive)).catch((err) => {
           console.error('Archive download failed:', err);
         });
       },
@@ -1249,7 +1261,7 @@ function ArchiveCard({
             size="sm"
             className="min-w-0 p-1 sm:p-1.5"
             onClick={() => {
-              api.downloadArchive(archive.id, `${archive.print_name || archive.filename}.3mf`).catch((err) => {
+              api.downloadArchive(archive.id, archiveDownloadName(archive)).catch((err) => {
                 console.error('Archive download failed:', err);
               });
             }}
@@ -1914,7 +1926,7 @@ function ArchiveListRow({
       label: t('archives.menu.download'),
       icon: <Download className="w-4 h-4" />,
       onClick: () => {
-        api.downloadArchive(archive.id, `${archive.print_name || archive.filename}.3mf`).catch((err) => {
+        api.downloadArchive(archive.id, archiveDownloadName(archive)).catch((err) => {
           console.error('Archive download failed:', err);
         });
       },
@@ -2239,7 +2251,7 @@ function ArchiveListRow({
             variant="ghost"
             size="sm"
             onClick={() => {
-              api.downloadArchive(archive.id, `${archive.print_name || archive.filename}.3mf`).catch((err) => {
+              api.downloadArchive(archive.id, archiveDownloadName(archive)).catch((err) => {
                 console.error('Archive download failed:', err);
               });
             }}
