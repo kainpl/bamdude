@@ -65,6 +65,7 @@ import { PrintModal } from '../components/PrintModal';
 import { SliceModal } from '../components/SliceModal';
 import { ModelViewerModal } from '../components/ModelViewerModal';
 import { FileUploadModal } from '../components/FileUploadModal';
+import { FolderReadmePanel } from '../components/FolderReadmePanel';
 import { LibraryFileNotesButton } from '../components/LibraryFileNotesButton';
 import { PurgeOldFilesModal } from '../components/PurgeOldFilesModal';
 import { TrashSplitButton } from '../components/TrashSplitButton';
@@ -1506,6 +1507,15 @@ export function FileManagerPage() {
   const [collapseFoldersByDefault, setCollapseFoldersByDefault] = useState(() => {
     return localStorage.getItem('library-collapse-folders') === 'true';
   });
+  // Folder tree sort (#1770). 'activity' = most recent file activity inside
+  // the folder first. Persisted independently from the file-side sort so each
+  // can be tuned to taste.
+  const [folderSortField, setFolderSortField] = useState<'name' | 'activity'>(() =>
+    localStorage.getItem('library-folder-sort-field') === 'activity' ? 'activity' : 'name',
+  );
+  const [folderSortDirection, setFolderSortDirection] = useState<'asc' | 'desc'>(() =>
+    localStorage.getItem('library-folder-sort-direction') === 'desc' ? 'desc' : 'asc',
+  );
 
   // Resizable sidebar state
   const [sidebarWidth, setSidebarWidth] = useState(() => {
@@ -1610,6 +1620,38 @@ export function FileManagerPage() {
     queryFn: () => api.getLibraryFolders(),
   });
 
+  // Recursive folder tree sort (#1770). Applies the same comparator to the
+  // top-level list AND to each level of `children`, so sort order is uniform
+  // at every depth of nesting. When sorting by activity, folders with no file
+  // activity (`latest_activity_at` is null) fall back to name and are pushed
+  // to the end so an empty folder doesn't elbow a recently-used one.
+  const sortedFolders = useMemo(() => {
+    if (!folders) return folders;
+    const sortLevel = (items: LibraryFolderTree[]): LibraryFolderTree[] => {
+      const sorted = [...items].sort((a, b) => {
+        let comparison = 0;
+        if (folderSortField === 'name') {
+          comparison = a.name.localeCompare(b.name);
+        } else {
+          const aTs = a.latest_activity_at ? new Date(a.latest_activity_at).getTime() : null;
+          const bTs = b.latest_activity_at ? new Date(b.latest_activity_at).getTime() : null;
+          if (aTs === null && bTs === null) {
+            comparison = a.name.localeCompare(b.name);
+          } else if (aTs === null) {
+            return 1;
+          } else if (bTs === null) {
+            return -1;
+          } else {
+            comparison = aTs - bTs;
+          }
+        }
+        return folderSortDirection === 'asc' ? comparison : -comparison;
+      });
+      return sorted.map((f) => ({ ...f, children: sortLevel(f.children) }));
+    };
+    return sortLevel(folders);
+  }, [folders, folderSortField, folderSortDirection]);
+
   // Trash count for the header badge (#1008). Empty/error treated as zero so a
   // broken trash endpoint doesn't break the File Manager.
   const { data: trashCount } = useQuery({
@@ -1655,8 +1697,15 @@ export function FileManagerPage() {
   }, []);
 
   const allFilesRecursive = settings?.library_all_files_recursive ?? false;
+  // #1268: when a folder is selected and the user has typed a search query,
+  // ask the server to expand the result to every descendant folder so the
+  // client-side filter can match files in subfolders too. Without this the
+  // listing is just the immediate children and "robot.3mf" two levels deep
+  // is invisible from the parent. Only kicks in for folder-scoped views —
+  // root and the internal/external pseudo-nodes already return the union.
+  const searchExpandsSubfolders = selectedFolderId !== null && searchQuery.trim().length > 0;
   const { data: files, isLoading: filesLoading } = useQuery({
-    queryKey: ['library-files', selectedFolderId, allFilesRecursive, topLevelView, tagFilterKey],
+    queryKey: ['library-files', selectedFolderId, allFilesRecursive, topLevelView, tagFilterKey, searchExpandsSubfolders],
     // "All Files" (selectedFolderId === null): include_root=false lists every
     // file across all subfolders recursively (#1499), include_root=true scopes
     // to root-level files only. Gated on the library_all_files_recursive
@@ -1674,6 +1723,7 @@ export function FileManagerPage() {
         undefined,
         selectedFolderId === null ? topLevelView : undefined,
         tagFilterKey,
+        searchExpandsSubfolders,
       ),
   });
 
@@ -2318,7 +2368,7 @@ export function FileManagerPage() {
             {folders?.some((f) => f.is_external) && (
               <option value="__top:external">🔗 {t('fileManager.allExternal')}</option>
             )}
-            {folders && (() => {
+            {sortedFolders && (() => {
               // Flatten folder tree for mobile selector
               const flattenFolders = (items: LibraryFolderTree[], depth = 0): { id: number; name: string; fileCount: number; depth: number }[] => {
                 const result: { id: number; name: string; fileCount: number; depth: number }[] = [];
@@ -2330,7 +2380,7 @@ export function FileManagerPage() {
                 }
                 return result;
               };
-              return flattenFolders(folders).map((folder) => (
+              return flattenFolders(sortedFolders).map((folder) => (
                 <option key={folder.id} value={folder.id}>
                   {'│ '.repeat(folder.depth)}📂 {folder.name} {folder.fileCount > 0 ? `(${folder.fileCount})` : ''}
                 </option>
@@ -2370,6 +2420,39 @@ export function FileManagerPage() {
           <div className="p-3 border-b border-bambu-dark-tertiary flex items-center justify-between">
             <h2 className="text-sm font-medium text-white">{t('fileManager.folders')}</h2>
             <div className="flex items-center gap-1">
+              {/* Folder tree sort (#1770). Dropdown drives the comparator;
+                  direction button flips asc/desc. Both persist to localStorage
+                  on change so the choice survives reloads. */}
+              <select
+                value={folderSortField}
+                onChange={(e) => {
+                  const v = e.target.value === 'activity' ? 'activity' : 'name';
+                  setFolderSortField(v);
+                  localStorage.setItem('library-folder-sort-field', v);
+                }}
+                className="text-xs px-1 py-0.5 rounded bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray focus:outline-none focus:border-bambu-green"
+                title={t('fileManager.folderSort')}
+                aria-label={t('fileManager.folderSort')}
+              >
+                <option value="name">{t('fileManager.folderSortByName')}</option>
+                <option value="activity">{t('fileManager.folderSortByActivity')}</option>
+              </select>
+              <button
+                onClick={() => {
+                  const newValue = folderSortDirection === 'asc' ? 'desc' : 'asc';
+                  setFolderSortDirection(newValue);
+                  localStorage.setItem('library-folder-sort-direction', newValue);
+                }}
+                className="text-bambu-gray hover:text-white hover:bg-bambu-dark p-1.5 rounded transition-colors"
+                title={folderSortDirection === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
+                aria-label={folderSortDirection === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
+              >
+                {folderSortDirection === 'asc' ? (
+                  <ArrowUpNarrowWide className="w-4 h-4" />
+                ) : (
+                  <ArrowDownWideNarrow className="w-4 h-4" />
+                )}
+              </button>
               <button
                 onClick={() => {
                   const newValue = !collapseFoldersByDefault;
@@ -2446,7 +2529,7 @@ export function FileManagerPage() {
             {/* Folder tree — re-key on the collapse toggle so flipping it
                 remounts every FolderTreeItem, which re-reads defaultExpanded
                 and makes the preference take effect immediately. */}
-            {folders?.map((folder) => (
+            {sortedFolders?.map((folder) => (
               <FolderTreeItem
                 key={`${folder.id}-${collapseFoldersByDefault ? 'c' : 'e'}`}
                 folder={folder}
@@ -2481,6 +2564,9 @@ export function FileManagerPage() {
               </div>
             </div>
           )}
+          {/* Markdown description panel (#1268) — auto-hides if the folder
+              has no README/description.md so non-users pay no UI cost. */}
+          {selectedFolder && <FolderReadmePanel folderId={selectedFolder.id} />}
           {/* External folder info bar */}
           {selectedFolder?.is_external && (
             <div className="flex items-center gap-3 mb-4 p-3 bg-purple-500/10 border border-purple-500/30 rounded-lg">
@@ -2613,6 +2699,15 @@ export function FileManagerPage() {
                 </button>
               </div>
             </div>
+
+            {/* #1268: recursive-search hint — placed below the toolbar row
+                (not floating under the input) so it never overlaps wrapped
+                filters on narrow breakpoints. */}
+            {searchExpandsSubfolders && (
+              <span className="text-[10px] text-bambu-gray whitespace-nowrap">
+                {t('fileManager.searchSubfoldersHint')}
+              </span>
+            )}
 
             {/* Tag chip-row — additive multi-select on top of the type
                 dropdown. Each chip toggles AND-membership so users can

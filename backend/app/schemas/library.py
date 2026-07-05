@@ -73,11 +73,30 @@ class FolderResponse(BaseModel):
     external_readonly: bool = False
     external_show_hidden: bool = False
     file_count: int = 0  # Computed field
+    # max(folder.updated_at, max(immediate-child file.updated_at)). Used by the
+    # File Manager folder tree's "sort by recent activity" mode (#1770) so that
+    # adding a file inside a folder bubbles it up — folder.updated_at alone only
+    # tracks rename/move events. Recursion across subfolders is intentionally
+    # left out to keep the route a single GROUP BY rather than a recursive CTE.
+    latest_activity_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
     class Config:
         from_attributes = True
+
+
+class FolderReadmeResponse(BaseModel):
+    """Markdown sidebar payload for a folder (#1268).
+
+    ``filename`` is the on-disk name (so the UI can show "README.md") and
+    ``content`` is the raw markdown — the FE renders it. ``truncated`` is
+    True when the source file was clipped at the size cap.
+    """
+
+    filename: str
+    content: str
+    truncated: bool
 
 
 class FolderTreeItem(BaseModel):
@@ -93,6 +112,8 @@ class FolderTreeItem(BaseModel):
     external_path: str | None = None
     external_readonly: bool = False
     file_count: int = 0
+    # See FolderResponse.latest_activity_at — #1770 folder sort source.
+    latest_activity_at: datetime | None = None
     children: list["FolderTreeItem"] = []
 
     class Config:

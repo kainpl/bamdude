@@ -6883,6 +6883,7 @@ export const api = {
     projectId?: number,
     scope?: 'internal' | 'external',
     tagIds: number[] = [],
+    recursive = false,
   ) => {
     const params = new URLSearchParams();
     if (folderId !== undefined && folderId !== null) {
@@ -6897,8 +6898,15 @@ export const api = {
     else if (scope === 'external') params.set('external_only', 'true');
     // #1268: cross-cutting user-tag AND filter (repeatable query param).
     for (const tagId of tagIds) params.append('tag_ids', String(tagId));
+    // #1268: recursive=true expands the folder_id filter to include every
+    // descendant folder. Only meaningful when folder_id is set; ignored
+    // server-side otherwise. Off by default so non-search callers keep
+    // folder-scoped behavior.
+    if (recursive) params.set('recursive', 'true');
     return request<LibraryFileListItem[]>(`/library/files?${params}`);
   },
+  getLibraryFolderReadme: (folderId: number) =>
+    request<FolderReadmeResponse>(`/library/folders/${folderId}/readme`),
 
   // #1268 — user-authored library tag catalog + assignment.
   getLibraryTags: () => request<LibraryTag[]>('/library/tags'),
@@ -7622,6 +7630,9 @@ export interface LibraryFolderTree {
   external_path: string | null;
   external_readonly: boolean;
   file_count: number;
+  // #1770: max(folder.updated_at, newest immediate-child file.updated_at).
+  // Drives the folder tree's "sort by recent activity" mode.
+  latest_activity_at: string | null;
   children: LibraryFolderTree[];
 }
 
@@ -7637,8 +7648,16 @@ export interface LibraryFolder {
   external_readonly: boolean;
   external_show_hidden: boolean;
   file_count: number;
+  // #1770: see LibraryFolderTree.latest_activity_at.
+  latest_activity_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface FolderReadmeResponse {
+  filename: string;
+  content: string;
+  truncated: boolean;
 }
 
 export interface LibraryFolderCreate {

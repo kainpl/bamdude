@@ -54,6 +54,7 @@ from backend.app.schemas.library import (
     FileUpdate,
     FileUploadResponse,
     FolderCreate,
+    FolderReadmeResponse,
     FolderResponse,
     FolderTreeItem,
     FolderUpdate,
@@ -725,11 +726,24 @@ async def list_folders(
     )
     file_counts = dict(file_counts_result.all())
 
+    # Latest immediate-child file activity per folder (#1770). Sibling of the
+    # file_counts subquery — same WHERE clause, MAX(updated_at) instead of
+    # COUNT(id). Subfolder descent is not aggregated here; the frontend's
+    # "sort by recent activity" mode is satisfied by immediate-parent bubble.
+    latest_file_activity_result = await db.execute(
+        select(LibraryFile.folder_id, func.max(LibraryFile.updated_at))
+        .where(LibraryFile.folder_id.isnot(None), LibraryFile.deleted_at.is_(None))
+        .group_by(LibraryFile.folder_id)
+    )
+    latest_file_activity = dict(latest_file_activity_result.all())
+
     # Build tree structure
     folder_map = {}
     root_folders = []
 
     for folder, archive_name in rows:
+        latest_file = latest_file_activity.get(folder.id)
+        latest_activity_at = max(folder.updated_at, latest_file) if latest_file is not None else folder.updated_at
         folder_item = FolderTreeItem(
             id=folder.id,
             name=folder.name,
@@ -741,6 +755,7 @@ async def list_folders(
             external_path=folder.external_path,
             external_readonly=folder.external_readonly,
             file_count=file_counts.get(folder.id, 0),
+            latest_activity_at=latest_activity_at,
             children=[],
         )
         folder_map[folder.id] = folder_item
@@ -779,10 +794,19 @@ async def get_folders_by_project(
 
     folders = []
     for folder in folders_orm:
-        file_count_result = await db.execute(
-            select(func.count(LibraryFile.id)).where(LibraryFile.folder_id == folder.id)
+        # Get file count + latest file activity (#1770) in one trip
+        agg_result = await db.execute(
+            select(
+                func.count(LibraryFile.id),
+                func.max(LibraryFile.updated_at),
+            ).where(
+                LibraryFile.folder_id == folder.id,
+                LibraryFile.deleted_at.is_(None),
+            )
         )
-        file_count = file_count_result.scalar() or 0
+        file_count, latest_file = agg_result.one()
+        file_count = file_count or 0
+        latest_activity_at = max(folder.updated_at, latest_file) if latest_file is not None else folder.updated_at
 
         folders.append(
             FolderResponse(
@@ -797,6 +821,7 @@ async def get_folders_by_project(
                 external_readonly=folder.external_readonly,
                 external_show_hidden=folder.external_show_hidden,
                 file_count=file_count,
+                latest_activity_at=latest_activity_at,
                 created_at=folder.created_at,
                 updated_at=folder.updated_at,
             )
@@ -828,11 +853,19 @@ async def get_folders_by_archive(
 
     folders = []
     for folder, archive_name in rows:
-        # Get file count
-        file_count_result = await db.execute(
-            select(func.count(LibraryFile.id)).where(LibraryFile.folder_id == folder.id)
+        # Get file count + latest file activity (#1770) in one trip
+        agg_result = await db.execute(
+            select(
+                func.count(LibraryFile.id),
+                func.max(LibraryFile.updated_at),
+            ).where(
+                LibraryFile.folder_id == folder.id,
+                LibraryFile.deleted_at.is_(None),
+            )
         )
-        file_count = file_count_result.scalar() or 0
+        file_count, latest_file = agg_result.one()
+        file_count = file_count or 0
+        latest_activity_at = max(folder.updated_at, latest_file) if latest_file is not None else folder.updated_at
 
         folders.append(
             FolderResponse(
@@ -847,6 +880,7 @@ async def get_folders_by_archive(
                 external_readonly=folder.external_readonly,
                 external_show_hidden=folder.external_show_hidden,
                 file_count=file_count,
+                latest_activity_at=latest_activity_at,
                 created_at=folder.created_at,
                 updated_at=folder.updated_at,
             )
@@ -907,6 +941,9 @@ async def create_folder(
         external_readonly=folder.external_readonly,
         external_show_hidden=folder.external_show_hidden,
         file_count=0,
+        # New folder has no files yet — fall back to the folder's own
+        # updated_at so this matches the list-route semantics (#1770).
+        latest_activity_at=folder.updated_at,
         created_at=folder.created_at,
         updated_at=folder.updated_at,
     )
@@ -937,9 +974,19 @@ async def get_folder(
 
     folder, archive_name = row
 
-    # Get file count
-    file_count_result = await db.execute(select(func.count(LibraryFile.id)).where(LibraryFile.folder_id == folder_id))
-    file_count = file_count_result.scalar() or 0
+    # Get file count + latest file activity (#1770) in one trip
+    agg_result = await db.execute(
+        select(
+            func.count(LibraryFile.id),
+            func.max(LibraryFile.updated_at),
+        ).where(
+            LibraryFile.folder_id == folder_id,
+            LibraryFile.deleted_at.is_(None),
+        )
+    )
+    file_count, latest_file = agg_result.one()
+    file_count = file_count or 0
+    latest_activity_at = max(folder.updated_at, latest_file) if latest_file is not None else folder.updated_at
 
     return FolderResponse(
         id=folder.id,
@@ -953,9 +1000,76 @@ async def get_folder(
         external_readonly=folder.external_readonly,
         external_show_hidden=folder.external_show_hidden,
         file_count=file_count,
+        latest_activity_at=latest_activity_at,
         created_at=folder.created_at,
         updated_at=folder.updated_at,
     )
+
+
+_README_BYTES_CAP = 512 * 1024  # 512 KiB — model descriptions don't need more
+_README_PREFERRED_STEMS = ("readme", "description")
+
+
+@router.get("/folders/{folder_id}/readme", response_model=FolderReadmeResponse)
+async def get_folder_readme(
+    folder_id: int,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_READ_ALL,
+            Permission.LIBRARY_READ_OWN,
+        )
+    ),
+):
+    """Return the first markdown description file for a folder (#1268).
+
+    Picks ``README.md`` / ``readme.md`` / ``description.md`` first (any case),
+    otherwise the alphabetically-first ``*.md`` in the folder. 404 when no
+    markdown file is present so the FE can hide the side panel.
+    """
+    user, can_read_all = auth_result
+
+    folder_row = await db.execute(select(LibraryFolder.id).where(LibraryFolder.id == folder_id))
+    if folder_row.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    query = LibraryFile.active().where(
+        LibraryFile.folder_id == folder_id,
+        func.lower(LibraryFile.filename).like("%.md"),
+    )
+    if user is not None and not can_read_all:
+        query = query.where(LibraryFile.created_by_id == user.id)
+    result = await db.execute(query)
+    candidates = result.scalars().all()
+    if not candidates:
+        raise HTTPException(status_code=404, detail="No markdown description in folder")
+
+    def sort_key(f: LibraryFile) -> tuple[int, str]:
+        stem = os.path.splitext(f.filename.lower())[0]
+        try:
+            return (_README_PREFERRED_STEMS.index(stem), f.filename.lower())
+        except ValueError:
+            return (len(_README_PREFERRED_STEMS), f.filename.lower())
+
+    pick = sorted(candidates, key=sort_key)[0]
+
+    abs_path = to_absolute_path(pick.file_path)
+    if not abs_path or not abs_path.exists():
+        raise HTTPException(status_code=404, detail="Markdown file missing on disk")
+
+    try:
+        raw = abs_path.read_bytes()
+    except OSError as e:
+        logger.warning("Folder readme read failed for %s: %s", abs_path, e)
+        raise HTTPException(status_code=500, detail="Could not read markdown file") from None
+
+    truncated = len(raw) > _README_BYTES_CAP
+    if truncated:
+        raw = raw[:_README_BYTES_CAP]
+    # `errors="replace"` so a single bad byte never blanks the panel.
+    content = raw.decode("utf-8", errors="replace")
+
+    return FolderReadmeResponse(filename=pick.filename, content=content, truncated=truncated)
 
 
 @router.put("/folders/{folder_id}", response_model=FolderResponse)
@@ -1056,8 +1170,19 @@ async def update_folder(
         )
     ).scalar_one()
 
-    file_count_result = await db.execute(select(func.count(LibraryFile.id)).where(LibraryFile.folder_id == folder_id))
-    file_count = file_count_result.scalar() or 0
+    # Get file count + latest file activity (#1770) in one trip
+    agg_result = await db.execute(
+        select(
+            func.count(LibraryFile.id),
+            func.max(LibraryFile.updated_at),
+        ).where(
+            LibraryFile.folder_id == folder_id,
+            LibraryFile.deleted_at.is_(None),
+        )
+    )
+    file_count, latest_file = agg_result.one()
+    file_count = file_count or 0
+    latest_activity_at = max(refreshed.updated_at, latest_file) if latest_file is not None else refreshed.updated_at
 
     archive_name = None
     if refreshed.archive_id:
@@ -1078,6 +1203,7 @@ async def update_folder(
         external_readonly=refreshed.external_readonly,
         external_show_hidden=refreshed.external_show_hidden,
         file_count=file_count,
+        latest_activity_at=latest_activity_at,
         created_at=refreshed.created_at,
         updated_at=refreshed.updated_at,
     )
@@ -1336,6 +1462,9 @@ async def create_external_folder(
         external_readonly=folder.external_readonly,
         external_show_hidden=folder.external_show_hidden,
         file_count=0,
+        # Newly-created external folder hasn't been scanned yet — fall back
+        # to the folder's own updated_at (#1770).
+        latest_activity_at=folder.updated_at,
         created_at=folder.created_at,
         updated_at=folder.updated_at,
     )
@@ -1683,6 +1812,7 @@ async def list_files(
     include_root: bool = True,
     internal_only: bool = False,
     external_only: bool = False,
+    recursive: bool = False,
     # #1268 — cross-cutting user-tag filter. AND semantics: a file must
     # carry EVERY selected tag. Non-empty tag_ids bypasses the
     # folder / project / include_root scope (tags are orthogonal).
@@ -1708,6 +1838,11 @@ async def list_files(
         external_only: Restrict the result to files under external folders
                        (`is_external=True`) — the symmetric combined view for users with
                        multiple linked external sources (#1621).
+        recursive: When combined with ``folder_id``, also include files in every
+                   descendant subfolder (#1268). Implemented via a recursive CTE
+                   that walks ``library_folders.parent_id``. Default off so
+                   existing callers (folder browsing, etc.) keep their narrow
+                   single-folder semantics.
     """
     if internal_only and external_only:
         raise HTTPException(
@@ -1741,6 +1876,15 @@ async def list_files(
             .group_by(LibraryFile.id)
             .having(func.count(distinct(LibraryFileTag.tag_id)) == len(unique_tag_ids))
         )
+    elif folder_id is not None and recursive:
+        # Walk the subtree starting at folder_id and collect every descendant
+        # id. Recursive CTE works on both SQLite (>=3.8.3, shipped 2014) and
+        # Postgres without dialect branching.
+        roots = (
+            select(LibraryFolder.id).where(LibraryFolder.id == folder_id).cte(name="folder_descendants", recursive=True)
+        )
+        descendants = roots.union_all(select(LibraryFolder.id).join(roots, LibraryFolder.parent_id == roots.c.id))
+        query = query.where(LibraryFile.folder_id.in_(select(descendants.c.id)))
     elif folder_id is not None:
         query = query.where(LibraryFile.folder_id == folder_id)
     elif project_id is not None:
