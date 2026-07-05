@@ -5533,6 +5533,10 @@ export default {
       title: 'Force colour match',
       description: 'Pin per-slot type+colour from each 3MF so the auto-queue router refuses printers loaded with the right material in the wrong colour.'
     },
+    gcodeInjection: {
+      title: 'G-code injection',
+      description: 'Apply the per-model G-code snippets (Settings → Printers → G-code Snippets) to jobs this VP queues. Off by default; no-op unless snippets exist for the target model.'
+    },
     setupRequired: {
       title: 'Setup Required',
       description: 'The virtual printer feature requires additional system configuration before it will work. This includes port forwarding, firewall rules, and platform-specific settings.',

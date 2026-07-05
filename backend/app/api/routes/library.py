@@ -4145,6 +4145,7 @@ async def print_library_file(
             use_ams=body.use_ams,
             nozzle_offset_cali=body.nozzle_offset_cali,
             mesh_mode_fast_check=body.mesh_mode_fast_check,
+            gcode_injection=body.gcode_injection,
             execute_swap_macros=body.execute_swap_macros,
             swap_macro_events=body.swap_macro_events,
             created_by_id=current_user.id if current_user else None,

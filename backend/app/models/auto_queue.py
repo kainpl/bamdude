@@ -63,6 +63,10 @@ class AutoQueueItem(Base):
     timelapse: Mapped[bool] = mapped_column(Boolean, default=False)
     use_ams: Mapped[bool] = mapped_column(Boolean, default=True)
     mesh_mode_fast_check: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Per-VP auto-print G-code injection opt-in (#1516). Copied from the source
+    # VP onto this router row, then onto the per-printer print_queue item at
+    # promotion. Default off; no-op unless snippets exist for the target model.
+    gcode_injection: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     execute_swap_macros: Mapped[bool] = mapped_column(Boolean, default=True)
     swap_macro_events: Mapped[str | None] = mapped_column(Text, nullable=True)
 

@@ -24,6 +24,11 @@ class VirtualPrinter(Base):
     # compatibility — existing AutoQueue installs keep the legacy
     # types-only matching unless the operator flips this on per-VP.
     queue_force_color_match: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # Per-VP opt-in for auto-print G-code injection (#1516). When True, files this
+    # VP queues (print_queue or auto_queue mode) carry gcode_injection=True so the
+    # dispatcher splices the per-model start/end snippets. Default off; no-op unless
+    # gcode_snippets exist for the target model.
+    gcode_injection: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     model: Mapped[str | None] = mapped_column(String(50), nullable=True)  # SSDP model code (server mode)
     access_code: Mapped[str | None] = mapped_column(String(8), nullable=True)  # 8 chars (server mode)
     target_printer_id: Mapped[int | None] = mapped_column(

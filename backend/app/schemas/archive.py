@@ -302,6 +302,11 @@ class ReprintRequest(BaseModel):
     use_ams: bool = True  # Not exposed in UI, but needed for API
     nozzle_offset_cali: bool = True  # Dual-nozzle printers only — MQTT-gated (#1682)
     mesh_mode_fast_check: bool = True
+    # Opt this reprint into per-model auto-print G-code injection (#1516). When
+    # on with quantity > 1, ALL copies queue so every one is injected by the
+    # scheduler (the direct first-copy path bypasses injection). No-op unless
+    # snippets exist for the target model.
+    gcode_injection: bool = False
     execute_swap_macros: bool = True
     swap_macro_events: list[str] | None = None
     # Batch: first copy dispatches now, remaining (quantity-1) queue up

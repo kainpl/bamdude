@@ -229,6 +229,7 @@ class AutoQueueScheduler:
             timelapse=item.timelapse,
             use_ams=item.use_ams,
             mesh_mode_fast_check=item.mesh_mode_fast_check,
+            gcode_injection=item.gcode_injection,
             execute_swap_macros=item.execute_swap_macros,
             swap_macro_events=item.swap_macro_events,
             status="pending",

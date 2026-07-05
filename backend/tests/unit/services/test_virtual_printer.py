@@ -400,6 +400,55 @@ class TestVirtualPrinterInstance:
         assert queue_item.queue_id == 1
 
     @pytest.mark.asyncio
+    async def test_add_to_print_queue_stamps_gcode_injection(self, tmp_path):
+        """#1516: print_queue items opt into injection when the VP has it on;
+        default off otherwise."""
+        from backend.app.services.virtual_printer.manager import VirtualPrinterInstance
+
+        async def _run(gcode_injection: bool):
+            mock_db = AsyncMock()
+            added_items = []
+            mock_db.add = MagicMock(side_effect=lambda i: added_items.append(i))
+            mock_db.commit = AsyncMock()
+            mock_db.execute = AsyncMock()
+
+            mock_session_factory = MagicMock()
+            mock_session_ctx = AsyncMock()
+            mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
+            mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
+            mock_session_factory.return_value = mock_session_ctx
+
+            inst = VirtualPrinterInstance(
+                vp_id=31,
+                name="InjPQ",
+                mode="print_queue",
+                model="C11",
+                access_code="12345678",
+                serial_suffix="391800031",
+                target_printer_id=1,
+                auto_dispatch=True,
+                gcode_injection=gcode_injection,
+                base_dir=tmp_path,
+                session_factory=mock_session_factory,
+            )
+            file_path = tmp_path / "test.3mf"
+            file_path.write_bytes(b"fake3mf")
+            fake_lib = MagicMock(
+                id=77, filename="test.3mf", file_metadata={"sliced_for_model": "P1P", "plates": [{"index": 1}]}
+            )
+            mock_queue = MagicMock(id=1, printer_id=1)
+            with (
+                patch.object(inst, "_save_to_library", new_callable=AsyncMock, return_value=fake_lib),
+                patch.object(inst, "_find_best_queue", new_callable=AsyncMock, return_value=mock_queue),
+            ):
+                await inst._add_to_print_queue(file_path, "192.168.1.100")
+            assert len(added_items) == 1
+            return added_items[0]
+
+        assert (await _run(True)).gcode_injection is True
+        assert (await _run(False)).gcode_injection is False
+
+    @pytest.mark.asyncio
     async def test_add_to_print_queue_with_auto_dispatch_off(self, tmp_path):
         """``auto_dispatch=False`` → ``manual_start=True`` on the queue item."""
         from backend.app.services.virtual_printer.manager import VirtualPrinterInstance
@@ -579,6 +628,65 @@ class TestVirtualPrinterInstance:
         # target_printer_id on VP must NOT bleed into the auto-queue item;
         # the router decides routing, not the VP config.
         assert not hasattr(item, "printer_id") or getattr(item, "printer_id", None) is None
+        # gcode_injection defaults off (VP created without it) — auto_queue parity.
+        assert item.gcode_injection is False
+
+    @pytest.mark.asyncio
+    async def test_add_to_auto_queue_stamps_gcode_injection(self, tmp_path):
+        """#1516 auto_queue parity: the auto-queue router row carries the VP's
+        gcode_injection so the promotion copies it onto the print_queue item."""
+        from backend.app.services.auto_queue_threemf import AutoQueueRequirements
+        from backend.app.services.virtual_printer.manager import VirtualPrinterInstance
+
+        mock_db = AsyncMock()
+        added_items = []
+        mock_db.add = MagicMock(side_effect=lambda i: added_items.append(i))
+        mock_db.commit = AsyncMock()
+        mock_db.scalar = AsyncMock(return_value=0)
+
+        mock_session_factory = MagicMock()
+        mock_session_ctx = AsyncMock()
+        mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_session_factory.return_value = mock_session_ctx
+
+        inst = VirtualPrinterInstance(
+            vp_id=32,
+            name="InjAQ",
+            mode="auto_queue",
+            model="C12",
+            access_code="12345678",
+            serial_suffix="391800032",
+            auto_dispatch=True,
+            gcode_injection=True,
+            base_dir=tmp_path,
+            session_factory=mock_session_factory,
+        )
+        file_path = tmp_path / "test.3mf"
+        file_path.write_bytes(b"fake3mf")
+        fake_lib = MagicMock(
+            id=42,
+            filename="test.3mf",
+            file_path="library/files/x.3mf",
+            file_metadata={"sliced_for_model": "P1S", "plates": [{"index": 1}]},
+        )
+        fake_reqs = AutoQueueRequirements(
+            target_model="P1S",
+            required_filament_types=["PLA"],
+            print_time_seconds=3600,
+            filament_slots=[],
+        )
+        with (
+            patch.object(inst, "_save_to_library", new_callable=AsyncMock, return_value=fake_lib),
+            patch(
+                "backend.app.services.auto_queue_threemf.extract_auto_queue_requirements",
+                return_value=fake_reqs,
+            ),
+        ):
+            await inst._add_to_auto_queue(file_path, "192.168.1.100")
+
+        assert len(added_items) == 1
+        assert added_items[0].gcode_injection is True
 
     @pytest.mark.asyncio
     async def test_add_to_auto_queue_with_force_color_match_pins_overrides(self, tmp_path):
@@ -1030,6 +1138,10 @@ class TestVirtualPrinterManager:
             # m050 (#1188): default False to match the running instance's
             # default so unchanged-instance sync tests don't see a diff.
             "queue_force_color_match": False,
+            # m099 (#1516): default False for the same reason — otherwise a
+            # MagicMock attribute is truthy and every unchanged-instance sync
+            # test would see a spurious gcode_injection diff → restart.
+            "gcode_injection": False,
             "tailscale_disabled": True,
             "position": 0,
         }

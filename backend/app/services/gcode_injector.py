@@ -11,9 +11,13 @@ well-defined anchors:
   would, so a "set lid LED to red" or "park to back-left" snippet can't
   crash into a not-yet-homed head (A.17 anchor fix).
 
-* **End snippets** are appended after the last gcode line. The printer's
-  own end-gcode (cooldown, tool retract) has already executed, so end
-  snippets typically run after the print is structurally done.
+* **End snippets** are spliced in just before the ``; EXECUTABLE_BLOCK_END``
+  marker so they run inside the executable block — Bambu firmware (P1S)
+  ignores g-code placed after that marker, which would silently drop the
+  snippet (#1516). The printer's own end-gcode (cooldown, tool retract) has
+  already executed at that point, so end snippets run after the print is
+  structurally done. Falls back to end-of-file append when the marker is
+  absent (older / non-Bambu slicers).
 
 Snippets support ``{placeholder}`` substitution against values parsed from
 the 3MF gcode-header block (``; HEADER_BLOCK_START`` … ``; HEADER_BLOCK_END``).
@@ -29,6 +33,7 @@ is never modified so dedup hash math stays sane.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import tempfile
@@ -51,6 +56,7 @@ _HEADER_PLACEHOLDER_ALIASES = {
 _HEADER_KEY_RE = re.compile(r"^;\s*([^:]+?)\s*:\s*(.+?)\s*$")
 _PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 _START_GCODE_END_MARKER = "; MACHINE_START_GCODE_END"
+_EXECUTABLE_BLOCK_END_MARKER = "; EXECUTABLE_BLOCK_END"
 
 
 def _parse_3mf_gcode_header(content: str) -> dict[str, str]:
@@ -124,6 +130,29 @@ def _inject_start_at_marker(content: str, snippet: str) -> str:
     return content[:line_start] + snippet.rstrip("\n") + "\n" + content[line_start:]
 
 
+def _inject_end_before_marker(content: str, snippet: str) -> str:
+    """Insert ``snippet`` immediately before ``; EXECUTABLE_BLOCK_END``.
+
+    The end snippet must run *inside* the executable block. Bambu firmware
+    (verified on a P1S) does not execute G-code that sits after
+    ``; EXECUTABLE_BLOCK_END``, so appending to the file end silently drops the
+    snippet — auto-eject / plate-clear moves never fire. Inserting before the
+    marker places the snippet after the printer's own machine-end sequence but
+    still within the executed block. Falls back to appending at the file end if
+    the marker isn't present (older 3MFs / non-Bambu slicers).
+    """
+    marker_idx = content.find(_EXECUTABLE_BLOCK_END_MARKER)
+    if marker_idx == -1:
+        logger.warning(
+            "G-code injection: '%s' not found, appending end snippet to file end",
+            _EXECUTABLE_BLOCK_END_MARKER,
+        )
+        return content.rstrip("\n") + "\n" + snippet.rstrip("\n") + "\n"
+    line_start = content.rfind("\n", 0, marker_idx)
+    line_start = 0 if line_start == -1 else line_start + 1
+    return content[:line_start] + snippet.rstrip("\n") + "\n" + content[line_start:]
+
+
 def inject_gcode_into_3mf(
     source_path: Path,
     plate_id: int,
@@ -163,16 +192,32 @@ def inject_gcode_into_3mf(
                 gcode_content = _inject_start_at_marker(gcode_content, resolved)
             if end_gcode:
                 resolved = _substitute_placeholders(end_gcode, header)
-                gcode_content = gcode_content.rstrip("\n") + "\n" + resolved + "\n"
+                gcode_content = _inject_end_before_marker(gcode_content, resolved)
+
+            # The printer validates the plate gcode against an embedded
+            # ``<plate>.gcode.md5`` sidecar (uppercase hex, no trailing newline).
+            # Rewriting the gcode without refreshing this hash makes firmware
+            # reject the file at load (P1S: HMS 0500-4003 "unable to parse"), so
+            # recompute it from the exact bytes we're about to write. Not a
+            # security hash — flag it non-security for the linters (ruff S324).
+            gcode_bytes = gcode_content.encode("utf-8")
+            md5_name = target_gcode + ".md5"
+            md5_value = hashlib.md5(gcode_bytes, usedforsecurity=False).hexdigest().upper().encode("ascii")
 
             with tempfile.NamedTemporaryFile(delete=False, suffix=".3mf") as tmp:
                 tmp_path = Path(tmp.name)
 
+            # Preserve each member's original ZipInfo (compress_type included) so
+            # STORE'd members — e.g. embedded preview PNGs — aren't re-DEFLATEd,
+            # which the P1S preview parser rejects. Only invent an md5 member
+            # when the source already carried one.
             with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf_write:
                 for item in zf.namelist():
                     info = zf.getinfo(item)
                     if item == target_gcode:
-                        zf_write.writestr(info, gcode_content.encode("utf-8"))
+                        zf_write.writestr(info, gcode_bytes)
+                    elif item == md5_name:
+                        zf_write.writestr(info, md5_value)
                     else:
                         zf_write.writestr(info, zf.read(item))
         return tmp_path

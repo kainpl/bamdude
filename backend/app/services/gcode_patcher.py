@@ -103,8 +103,12 @@ def _comment_m970(gcode: str) -> tuple[str, int]:
 
 
 def _md5_bytes(data: bytes) -> str:
-    """Compute MD5 hex digest (used by Bambu firmware for gcode verification)."""
-    return hashlib.md5(data, usedforsecurity=False).hexdigest()
+    """MD5 hex digest, UPPERCASE — matches Bambu firmware's ``.gcode.md5`` sidecar
+    format (P1S rejects a case/stale-mismatched hash with HMS 0500-4003). Shared
+    with the mesh_mode_fast_check patch; Bambu's on-disk sidecars are uppercase so
+    this is canonical for both (lowercase worked only because the compare is
+    case-insensitive). Not a security hash — flagged non-security for ruff S324."""
+    return hashlib.md5(data, usedforsecurity=False).hexdigest().upper()
 
 
 def patch_mesh_mode_fast_check(source_3mf: Path) -> tuple[Path, list[str]]:
@@ -242,6 +246,11 @@ def apply_3mf_transforms(
         with zipfile.ZipFile(source_3mf, "r") as zf_read:
             all_entries = zf_read.namelist()
             entry_data: dict[str, bytes] = {name: zf_read.read(name) for name in all_entries}
+            # Capture the source ZipInfos so the rewrite preserves each member's
+            # original compress_type — the P1S preview parser rejects a
+            # re-DEFLATE'd STORE'd PNG thumbnail (#1516). Grabbing them here
+            # avoids a second open of the (50+ MB) file.
+            source_infos: dict[str, zipfile.ZipInfo] = {i.filename: i for i in zf_read.infolist()}
     except (zipfile.BadZipFile, OSError) as e:
         logger.warning("[PATCHER] Cannot read 3MF %s: %s", source_3mf, e)
         return source_3mf, []
@@ -277,6 +286,7 @@ def apply_3mf_transforms(
         # itself doesn't depend on gcode_patcher, but tests stub the
         # injector and we don't want patcher import to drag it in).
         from backend.app.services.gcode_injector import (
+            _inject_end_before_marker,
             _inject_start_at_marker,
             _parse_3mf_gcode_header,
             _substitute_placeholders,
@@ -297,7 +307,11 @@ def apply_3mf_transforms(
                 if start_gc:
                     content = _inject_start_at_marker(content, _substitute_placeholders(start_gc, header))
                 if end_gc:
-                    content = content.rstrip("\n") + "\n" + _substitute_placeholders(end_gc, header) + "\n"
+                    # Anchor the end snippet BEFORE ``; EXECUTABLE_BLOCK_END`` —
+                    # Bambu firmware (P1S) ignores g-code after that marker, so
+                    # appending to EOF silently drops auto-eject / plate-clear
+                    # moves (#1516). Falls back to EOF append when absent.
+                    content = _inject_end_before_marker(content, _substitute_placeholders(end_gc, header))
                 entry_data[target_name] = content.encode("utf-8")
                 modified_plates.add(target_name)
                 applied.append({"name": "gcode_injection", "plate_id": gcode_injection.plate_id})
@@ -323,12 +337,16 @@ def apply_3mf_transforms(
     temp_dir = tempfile.mkdtemp(prefix="bamdude_patch_")
     temp_path = Path(temp_dir) / source_3mf.name
     try:
-        # Copy first so non-deflate metadata (timestamps etc.) lines up
-        # with the original; then rewrite with mutated entry_data.
-        shutil.copy2(source_3mf, temp_path)
-        with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as zf_write:
+        # Rewrite preserving each member's original ZipInfo (compress_type +
+        # date_time) rather than re-DEFLATEing everything by name — a file-level
+        # ZIP_DEFLATED override re-compresses STORE'd preview PNGs, which the P1S
+        # preview parser then can't read (#1516). ``writestr(info, data)``
+        # recomputes size/CRC for the (possibly mutated) bytes while honouring
+        # ``info.compress_type``.
+        with zipfile.ZipFile(temp_path, "w") as zf_write:
             for name in all_entries:
-                zf_write.writestr(name, entry_data[name])
+                info = source_infos.get(name)
+                zf_write.writestr(info if info is not None else name, entry_data[name])
     except Exception:
         logger.exception("[PATCHER] Failed to write transformed 3MF %s", source_3mf.name)
         shutil.rmtree(temp_dir, ignore_errors=True)

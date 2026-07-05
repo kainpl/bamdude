@@ -8182,6 +8182,10 @@ export interface VirtualPrinterConfig {
    *  as `force_color_match` overrides so the eligibility scheduler refuses printers
    *  loaded with the right material in the wrong colour (#1188). */
   queue_force_color_match: boolean;
+  /** Per-VP opt-in for auto-print G-code injection (#1516). When on, files this VP
+   *  queues (print_queue or auto_queue mode) carry gcode_injection=True so the
+   *  dispatcher splices the per-model start/end snippets. No-op unless snippets exist. */
+  gcode_injection: boolean;
   bind_ip: string | null;
   remote_interface_ip: string | null;
   /** Tailscale per-VP cert provisioning (#1070) — defaults to true (off). */
@@ -8236,6 +8240,7 @@ export const multiVirtualPrinterApi = {
     target_folder_id?: number;
     auto_dispatch?: boolean;
     queue_force_color_match?: boolean;
+    gcode_injection?: boolean;
     bind_ip?: string;
     remote_interface_ip?: string;
     tailscale_disabled?: boolean;
@@ -8259,6 +8264,7 @@ export const multiVirtualPrinterApi = {
     clear_target_folder?: boolean;
     auto_dispatch?: boolean;
     queue_force_color_match?: boolean;
+    gcode_injection?: boolean;
     bind_ip?: string;
     remote_interface_ip?: string;
     tailscale_disabled?: boolean;

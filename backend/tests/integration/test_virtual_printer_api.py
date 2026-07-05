@@ -242,6 +242,67 @@ class TestVirtualPrinterAutoDispatchAPI:
         assert get_resp.json()["auto_dispatch"] is False
 
 
+class TestVirtualPrinterGcodeInjectionAPI:
+    """Integration tests for gcode_injection (#1516) on /api/v1/virtual-printers.
+
+    The toggle applies to BOTH VP dispatch modes (print_queue AND auto_queue) —
+    full-parity port of upstream Bambuddy b414af6b.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_defaults_off(self, async_client: AsyncClient):
+        """Creating a VP without gcode_injection defaults to false (opt-in)."""
+        response = await async_client.post(
+            "/api/v1/virtual-printers",
+            json={"name": "InjDefault", "mode": "auto_queue", "access_code": "12345678"},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["gcode_injection"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_update_round_trip_auto_queue(self, async_client: AsyncClient):
+        """gcode_injection toggles via PUT and persists in auto_queue mode."""
+        create_resp = await async_client.post(
+            "/api/v1/virtual-printers",
+            json={"name": "InjAutoQueue", "mode": "auto_queue", "access_code": "12345678"},
+        )
+        assert create_resp.status_code == 200
+        vp_id = create_resp.json()["id"]
+        assert create_resp.json()["gcode_injection"] is False
+
+        update_resp = await async_client.put(f"/api/v1/virtual-printers/{vp_id}", json={"gcode_injection": True})
+        assert update_resp.status_code == 200
+        assert update_resp.json()["gcode_injection"] is True
+
+        get_resp = await async_client.get(f"/api/v1/virtual-printers/{vp_id}")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["gcode_injection"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_update_round_trip_print_queue(self, async_client: AsyncClient):
+        """gcode_injection toggles via PUT and persists in print_queue mode."""
+        create_resp = await async_client.post(
+            "/api/v1/virtual-printers",
+            json={
+                "name": "InjPrintQueue",
+                "mode": "print_queue",
+                "access_code": "12345678",
+                "auto_dispatch": False,
+                "gcode_injection": True,
+            },
+        )
+        assert create_resp.status_code == 200, create_resp.text
+        vp_id = create_resp.json()["id"]
+        assert create_resp.json()["gcode_injection"] is True
+
+        update_resp = await async_client.put(f"/api/v1/virtual-printers/{vp_id}", json={"gcode_injection": False})
+        assert update_resp.status_code == 200
+        assert update_resp.json()["gcode_injection"] is False
+
+
 class TestVirtualPrinterAutoQueueModeAPI:
     """Integration tests for the new auto_queue mode + auto-dispatch validation."""
 

@@ -5,6 +5,8 @@ open/mutate/write cycle. Without this, dispatching a job that needs
 both transforms would unzip + rezip a 50+ MB 3MF twice.
 """
 
+import hashlib
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -12,6 +14,17 @@ from backend.app.services.gcode_patcher import (
     GcodeInjectionSpec,
     apply_3mf_transforms,
 )
+
+# Plate gcode carrying the ``; EXECUTABLE_BLOCK_END`` marker (#1516) — end
+# snippets must land before it, not at EOF.
+_PLATE_GCODE_WITH_BLOCK_END = """; HEADER_BLOCK_START
+; max_z_height: 16.00
+; HEADER_BLOCK_END
+; MACHINE_START_GCODE_END
+G1 X10 Y10 F3000
+M104 S0 ; printer machine-end
+; EXECUTABLE_BLOCK_END
+"""
 
 _PLATE_GCODE = """; HEADER_BLOCK_START
 ; max_z_height: 16.00
@@ -177,6 +190,95 @@ class TestPlateFallback:
             assert out != src
             assert "; X\n; MACHINE_START_GCODE_END" in _read_plate(out, "Metadata/plate_5.gcode")
         finally:
-            import shutil
+            shutil.rmtree(out.parent, ignore_errors=True)
 
+
+class TestP1SEndAnchor:
+    """#1516: end snippets land before ``; EXECUTABLE_BLOCK_END`` (P1S ignores
+    g-code after that marker), with an EOF fallback when the marker is absent."""
+
+    def test_end_lands_before_executable_block_end(self, tmp_path: Path):
+        src = tmp_path / "src.3mf"
+        _build_3mf(src, {"Metadata/plate_1.gcode": _PLATE_GCODE_WITH_BLOCK_END})
+        spec = GcodeInjectionSpec(plate_id=1, start_gcode=None, end_gcode="; EJECT-SWEEP")
+        out, applied = apply_3mf_transforms(src, gcode_injection=spec)
+        try:
+            patched = _read_plate(out, "Metadata/plate_1.gcode")
+            assert patched.index("; EJECT-SWEEP") < patched.index("; EXECUTABLE_BLOCK_END")
+            assert patched.index("M104 S0 ; printer machine-end") < patched.index("; EJECT-SWEEP")
+            # Nothing executable remains after the marker.
+            assert patched[patched.index("; EXECUTABLE_BLOCK_END") :].strip() == "; EXECUTABLE_BLOCK_END"
+        finally:
+            shutil.rmtree(out.parent, ignore_errors=True)
+
+    def test_end_falls_back_to_eof_without_marker(self, tmp_path: Path):
+        src = tmp_path / "src.3mf"
+        _build_3mf(src, {"Metadata/plate_1.gcode": _PLATE_GCODE})  # no EXECUTABLE_BLOCK_END
+        spec = GcodeInjectionSpec(plate_id=1, start_gcode=None, end_gcode="; BYE")
+        out, applied = apply_3mf_transforms(src, gcode_injection=spec)
+        try:
+            patched = _read_plate(out, "Metadata/plate_1.gcode")
+            assert patched.rstrip().endswith("; BYE")
+        finally:
+            shutil.rmtree(out.parent, ignore_errors=True)
+
+
+class TestP1SMd5Sidecar:
+    """#1516: recomputed ``.gcode.md5`` matches Bambu's on-disk format —
+    uppercase, 32 hex chars, no trailing newline — and is never invented."""
+
+    def test_md5_uppercase_32char_no_newline_and_matches(self, tmp_path: Path):
+        src = tmp_path / "src.3mf"
+        _build_3mf(src, {"Metadata/plate_1.gcode": _PLATE_GCODE})
+        spec = GcodeInjectionSpec(plate_id=1, start_gcode="; HELLO\n", end_gcode=None)
+        out, applied = apply_3mf_transforms(src, gcode_injection=spec)
+        try:
+            with zipfile.ZipFile(out) as zf:
+                gcode = zf.read("Metadata/plate_1.gcode")
+                sidecar = zf.read("Metadata/plate_1.gcode.md5")
+            assert sidecar != b"deadbeef"
+            assert len(sidecar) == 32
+            assert sidecar == sidecar.upper()
+            assert not sidecar.endswith(b"\n")
+            expected = hashlib.md5(gcode, usedforsecurity=False).hexdigest().upper().encode("ascii")
+            assert sidecar == expected
+        finally:
+            shutil.rmtree(out.parent, ignore_errors=True)
+
+    def test_md5_not_invented_when_absent(self, tmp_path: Path):
+        """A plate without a sidecar shouldn't gain one after a transform."""
+        src = tmp_path / "src.3mf"
+        with zipfile.ZipFile(src, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("[Content_Types].xml", "<Types/>")
+            zf.writestr("Metadata/plate_1.gcode", _PLATE_GCODE)  # no .md5 member
+        spec = GcodeInjectionSpec(plate_id=1, start_gcode="; X\n", end_gcode=None)
+        out, applied = apply_3mf_transforms(src, gcode_injection=spec)
+        try:
+            with zipfile.ZipFile(out) as zf:
+                names = zf.namelist()
+            assert "Metadata/plate_1.gcode.md5" not in names
+        finally:
+            shutil.rmtree(out.parent, ignore_errors=True)
+
+
+class TestP1SCompressionPreserved:
+    """#1516: the rewrite keeps each member's original compress_type — the P1S
+    preview parser rejects a re-DEFLATE'd STORE'd preview PNG."""
+
+    def test_stored_member_stays_stored(self, tmp_path: Path):
+        src = tmp_path / "src.3mf"
+        with zipfile.ZipFile(src, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("Metadata/plate_1.gcode", _PLATE_GCODE)
+            zf.writestr("Metadata/plate_1.gcode.md5", "deadbeef")
+            stored = zipfile.ZipInfo("Metadata/plate_1.png")
+            stored.compress_type = zipfile.ZIP_STORED
+            zf.writestr(stored, b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+        spec = GcodeInjectionSpec(plate_id=1, start_gcode="; X\n", end_gcode=None)
+        out, applied = apply_3mf_transforms(src, gcode_injection=spec)
+        try:
+            with zipfile.ZipFile(out) as zf:
+                assert zf.getinfo("Metadata/plate_1.png").compress_type == zipfile.ZIP_STORED
+                # The gcode plate keeps its DEFLATE compression.
+                assert zf.getinfo("Metadata/plate_1.gcode").compress_type == zipfile.ZIP_DEFLATED
+        finally:
             shutil.rmtree(out.parent, ignore_errors=True)

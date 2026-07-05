@@ -175,6 +175,7 @@ class VirtualPrinterInstance:
         target_folder_id: int | None = None,
         auto_dispatch: bool = True,
         queue_force_color_match: bool = False,
+        gcode_injection: bool = False,
         bind_ip: str = "",
         remote_interface_ip: str = "",
         tailscale_disabled: bool = True,
@@ -196,6 +197,7 @@ class VirtualPrinterInstance:
         self.target_folder_id = target_folder_id
         self.auto_dispatch = auto_dispatch
         self.queue_force_color_match = queue_force_color_match
+        self.gcode_injection = gcode_injection
         self.bind_ip = bind_ip
         self.remote_interface_ip = remote_interface_ip
         self.tailscale_disabled = tailscale_disabled
@@ -943,6 +945,11 @@ class VirtualPrinterInstance:
                         # of a multi-plate Send All so each plate replays the
                         # same pick (mirrors the #1697 / #1733 per-plate loop).
                         nozzle_mapping=nozzle_mapping_json,
+                        # Per-VP opt-in for auto-print G-code injection (#1516).
+                        # Default off; when on, the dispatcher still no-ops unless
+                        # gcode_snippets are configured for the target model, so
+                        # it's effectively "inject when enabled AND snippets exist".
+                        gcode_injection=self.gcode_injection,
                     )
                     db.add(queue_item)
                     await db.flush()  # populate queue_item.id before logging
@@ -1137,6 +1144,10 @@ class VirtualPrinterInstance:
                     position=next_pos,
                     status="pending",
                     manual_start=not self.auto_dispatch,
+                    # Per-VP auto-print G-code injection opt-in (#1516). Copied
+                    # onto the per-printer print_queue item when the scheduler
+                    # promotes this router row. No-op unless snippets exist.
+                    gcode_injection=self.gcode_injection,
                 )
                 db.add(item)
                 await db.commit()
@@ -1787,6 +1798,7 @@ class VirtualPrinterManager:
                 or instance.target_folder_id != vp.target_folder_id
                 or instance.auto_dispatch != vp.auto_dispatch
                 or instance.queue_force_color_match != vp.queue_force_color_match
+                or instance.gcode_injection != vp.gcode_injection
                 or proxy_target_changed
                 # tailscale_disabled is informational only (#1070 post-rip-out):
                 # the toggle decides whether the VP card surfaces the host's
@@ -1827,6 +1839,7 @@ class VirtualPrinterManager:
                     target_printer_serial=target_serial,
                     auto_dispatch=vp.auto_dispatch,
                     queue_force_color_match=vp.queue_force_color_match,
+                    gcode_injection=vp.gcode_injection,
                     bind_ip=vp.bind_ip or "",
                     remote_interface_ip=vp.remote_interface_ip or "",
                     tailscale_disabled=vp.tailscale_disabled,
@@ -1849,6 +1862,7 @@ class VirtualPrinterManager:
                     target_folder_id=vp.target_folder_id,
                     auto_dispatch=vp.auto_dispatch,
                     queue_force_color_match=vp.queue_force_color_match,
+                    gcode_injection=vp.gcode_injection,
                     bind_ip=vp.bind_ip or "",
                     remote_interface_ip=vp.remote_interface_ip or "",
                     tailscale_disabled=vp.tailscale_disabled,
