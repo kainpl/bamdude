@@ -165,6 +165,16 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         except json.JSONDecodeError:
             ams_mapping_parsed = None
 
+    # Parse nozzle_mapping from JSON string (#1780 — H2C rack slicer-pick
+    # preservation). Nullable opaque JSON blob stored verbatim from
+    # BambuStudio's project_file; surface it parsed for the response model.
+    nozzle_mapping_parsed = None
+    if item.nozzle_mapping:
+        try:
+            nozzle_mapping_parsed = json.loads(item.nozzle_mapping)
+        except json.JSONDecodeError:
+            nozzle_mapping_parsed = None
+
     # Create response with parsed ams_mapping
     item_dict = {
         "id": item.id,
@@ -190,6 +200,8 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         "execute_swap_macros": item.execute_swap_macros,
         "swap_macro_events": json.loads(item.swap_macro_events) if item.swap_macro_events else None,
         "gcode_injection": item.gcode_injection,
+        # H2C rack-swap nozzle pick (#1780)
+        "nozzle_mapping": nozzle_mapping_parsed,
         "status": item.status,
         "started_at": item.started_at,
         "completed_at": item.completed_at,
@@ -705,6 +717,13 @@ async def update_queue_item(
     # Serialize ams_mapping to JSON for TEXT column storage
     if "ams_mapping" in update_data:
         update_data["ams_mapping"] = json.dumps(update_data["ams_mapping"]) if update_data["ams_mapping"] else None
+
+    # Serialize H2C rack-swap nozzle pick (#1780) to JSON for TEXT column
+    # storage; same opaque-blob convention as ams_mapping above.
+    if "nozzle_mapping" in update_data:
+        update_data["nozzle_mapping"] = (
+            json.dumps(update_data["nozzle_mapping"]) if update_data["nozzle_mapping"] else None
+        )
 
     # swap_macro_events is stored as a JSON-encoded TEXT column.
     if "swap_macro_events" in update_data:
@@ -1463,6 +1482,11 @@ async def update_batch(
     update_data = data.model_dump(exclude_unset=True)
     if "ams_mapping" in update_data:
         update_data["ams_mapping"] = json.dumps(update_data["ams_mapping"]) if update_data["ams_mapping"] else None
+    # Serialize H2C rack-swap nozzle pick (#1780); mirrors ams_mapping above.
+    if "nozzle_mapping" in update_data:
+        update_data["nozzle_mapping"] = (
+            json.dumps(update_data["nozzle_mapping"]) if update_data["nozzle_mapping"] else None
+        )
     if "swap_macro_events" in update_data:
         events = update_data["swap_macro_events"]
         update_data["swap_macro_events"] = json.dumps(events) if events else None

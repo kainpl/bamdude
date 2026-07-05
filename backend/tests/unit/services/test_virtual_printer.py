@@ -4,6 +4,7 @@ Tests the virtual printer manager, FTP server, and SSDP server components.
 """
 
 import asyncio
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -2629,3 +2630,249 @@ class TestExtractPlateIndices:
     def test_mixed_valid_and_invalid_keeps_only_valid(self):
         md = {"plates": [{"index": 1}, {"no_index": 9}, {"index": 3}]}
         assert self._extract(md) == [1, 3]
+
+
+class TestVirtualPrinterSlicerIntake:
+    """#1780 trio — VP slicer-option intake correlation, retroactive stamp,
+    and H2C ``nozzle_mapping`` forwarding.
+
+    Sub-fix 2 (root cause): options are stashed under the FTP filename (with
+    extension), not the bare ``subtask_name``, so ``_add_to_print_queue``'s
+    ``file_path.name`` lookup correlates and the slicer's flags win over the
+    column defaults. Sub-fix 1: a 5 s wait + retroactive stamp on the late
+    MQTT path (omitting ``vibration_cali`` — no column). Sub-fix 3: the
+    slicer's ``nozzle_mapping`` list rides through to every per-plate queue
+    item.
+    """
+
+    def _mock_session_factory(self, mock_db):
+        factory = MagicMock()
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=mock_db)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        factory.return_value = ctx
+        return factory
+
+    def _make_inst(self, tmp_path, added_items):
+        from backend.app.services.virtual_printer.manager import VirtualPrinterInstance
+
+        mock_db = AsyncMock()
+        mock_db.add = MagicMock(side_effect=lambda i: added_items.append(i))
+        mock_db.commit = AsyncMock()
+        mock_db.flush = AsyncMock()
+        inst = VirtualPrinterInstance(
+            vp_id=21,
+            name="Intake",
+            mode="print_queue",
+            model="O1C2",  # H2C dual-nozzle-rack variant
+            access_code="12345678",
+            serial_suffix="094000021",
+            target_printer_id=1,
+            auto_dispatch=True,
+            base_dir=tmp_path,
+            session_factory=self._mock_session_factory(mock_db),
+        )
+        # No MQTT server attached — ``_add_to_print_queue`` skips the wait.
+        return inst, mock_db
+
+    async def _run_add(self, inst, tmp_path, fake_lib, mock_queue):
+        file_path = tmp_path / "test.3mf"
+        file_path.write_bytes(b"fake3mf")
+        with (
+            patch.object(inst, "_save_to_library", new_callable=AsyncMock, return_value=fake_lib),
+            patch.object(inst, "_find_best_queue", new_callable=AsyncMock, return_value=mock_queue),
+            patch.object(inst, "_load_system_print_options", new_callable=AsyncMock, return_value=None),
+        ):
+            await inst._add_to_print_queue(file_path, "192.168.1.100")
+
+    # constants (sub-fix 1)
+
+    def test_wait_timeout_and_ttl_constants(self):
+        from backend.app.services.virtual_printer import manager as m
+
+        assert m._SLICER_OPTIONS_WAIT_TIMEOUT == 5.0
+        assert m._RECENT_QUEUE_ITEM_TTL == 30.0
+
+    # stash key (sub-fix 2 root cause)
+
+    @pytest.mark.asyncio
+    async def test_on_print_command_stashes_under_file_key_not_subtask(self, tmp_path):
+        """Root cause: stash under the FTP filename (``data['file']``), not the
+        bare ``subtask_name`` — otherwise ``_add_to_print_queue`` never finds it."""
+        inst, _ = self._make_inst(tmp_path, [])
+        await inst.on_print_command(
+            "BareModel",
+            {"command": "project_file", "file": "BareModel.gcode.3mf", "bed_leveling": False},
+        )
+        assert "BareModel.gcode.3mf" in inst._slicer_print_options
+        assert "BareModel" not in inst._slicer_print_options
+
+    @pytest.mark.asyncio
+    async def test_stash_falls_back_to_subtask_when_no_file(self, tmp_path):
+        """Legacy slicers / non-3MF uploads omit ``file`` -> fall back to filename."""
+        inst, _ = self._make_inst(tmp_path, [])
+        await inst.on_print_command("LegacyModel", {"command": "project_file"})
+        assert "LegacyModel" in inst._slicer_print_options
+
+    # correlation applies flags (sub-fix 2)
+
+    @pytest.mark.asyncio
+    async def test_slicer_flags_applied_not_defaults(self, tmp_path):
+        """Once correlated, the slicer's flags win over the column defaults."""
+        added = []
+        inst, _ = self._make_inst(tmp_path, added)
+        # Simulate on_print_command having stashed under the FTP filename.
+        inst._slicer_print_options["test.3mf"] = {
+            "bed_leveling": False,  # column default True
+            "flow_cali": False,  # column default True
+            "timelapse": True,  # column default False
+            "layer_inspect": True,  # column default False
+            "use_ams": False,  # column default True
+        }
+        fake_lib = MagicMock(id=90, filename="test.3mf", file_metadata={"plates": [{"index": 1}]})
+        await self._run_add(inst, tmp_path, fake_lib, MagicMock(id=1, printer_id=1))
+
+        assert len(added) == 1
+        qi = added[0]
+        assert qi.bed_levelling is False
+        assert qi.flow_cali is False
+        assert qi.timelapse is True
+        assert qi.layer_inspect is True
+        assert qi.use_ams is False
+
+    # nozzle_mapping capture (sub-fix 3)
+
+    @pytest.mark.asyncio
+    async def test_nozzle_mapping_captured_onto_queue_item(self, tmp_path):
+        added = []
+        inst, _ = self._make_inst(tmp_path, added)
+        inst._slicer_print_options["test.3mf"] = {"nozzle_mapping": [2, 4]}
+        fake_lib = MagicMock(id=91, filename="test.3mf", file_metadata={"plates": [{"index": 1}]})
+        await self._run_add(inst, tmp_path, fake_lib, MagicMock(id=1, printer_id=1))
+        assert added[0].nozzle_mapping == "[2, 4]"
+
+    @pytest.mark.asyncio
+    async def test_nozzle_mapping_bad_json_dropped(self, tmp_path):
+        """Fail-open: an unparseable stringified nozzle_mapping is dropped (NULL)."""
+        added = []
+        inst, _ = self._make_inst(tmp_path, added)
+        inst._slicer_print_options["test.3mf"] = {"nozzle_mapping": "not-json{"}
+        fake_lib = MagicMock(id=92, filename="test.3mf", file_metadata={"plates": [{"index": 1}]})
+        await self._run_add(inst, tmp_path, fake_lib, MagicMock(id=1, printer_id=1))
+        assert added[0].nozzle_mapping is None
+
+    @pytest.mark.asyncio
+    async def test_nozzle_mapping_stamped_on_every_plate(self, tmp_path):
+        """Multi-plate Send-All: each per-plate item carries the same pick."""
+        added = []
+        inst, _ = self._make_inst(tmp_path, added)
+        inst._slicer_print_options["test.3mf"] = {"nozzle_mapping": [1, 0]}
+        fake_lib = MagicMock(
+            id=93,
+            filename="test.3mf",
+            file_metadata={"plates": [{"index": 1}, {"index": 2}, {"index": 3}]},
+        )
+        await self._run_add(inst, tmp_path, fake_lib, MagicMock(id=1, printer_id=1))
+        assert len(added) == 3
+        assert all(qi.nozzle_mapping == "[1, 0]" for qi in added)
+
+    @pytest.mark.asyncio
+    async def test_no_nozzle_mapping_leaves_column_null(self, tmp_path):
+        added = []
+        inst, _ = self._make_inst(tmp_path, added)
+        # No slicer options stashed -> nothing to capture.
+        fake_lib = MagicMock(id=94, filename="test.3mf", file_metadata={"plates": [{"index": 1}]})
+        await self._run_add(inst, tmp_path, fake_lib, MagicMock(id=1, printer_id=1))
+        assert added[0].nozzle_mapping is None
+
+    # retroactive stamp (sub-fix 1)
+
+    @pytest.mark.asyncio
+    async def test_restamp_updates_pending_items_omits_vibration_cali(self, tmp_path):
+        inst, mock_db = self._make_inst(tmp_path, [])
+        executed = []
+
+        def _exec(stmt):
+            executed.append(stmt)
+            res = MagicMock()
+            res.all.return_value = [(5,), (6,)]  # both still pending
+            return res
+
+        mock_db.execute = AsyncMock(side_effect=_exec)
+        inst._recent_queue_items["late.3mf"] = ([5, 6], time.monotonic())
+
+        await inst._restamp_recent_queue_item(
+            "late.3mf",
+            {
+                "bed_leveling": False,
+                "flow_cali": False,
+                "vibration_cali": True,  # must be ignored — no such column
+                "timelapse": True,
+                "use_ams": False,
+                "nozzle_mapping": [2, 4],
+            },
+        )
+
+        # Two statements: SELECT eligible pending ids, then the UPDATE.
+        assert len(executed) == 2
+        params = executed[1].compile().params
+        assert params["bed_levelling"] is False
+        assert params["flow_cali"] is False
+        assert params["timelapse"] is True
+        assert params["use_ams"] is False
+        assert params["nozzle_mapping"] == "[2, 4]"
+        # vibration_cali has NO column and must never be written.
+        assert "vibration_cali" not in params
+        # Entry evicted after processing.
+        assert "late.3mf" not in inst._recent_queue_items
+
+    @pytest.mark.asyncio
+    async def test_restamp_skips_when_ttl_expired(self, tmp_path):
+        inst, mock_db = self._make_inst(tmp_path, [])
+        mock_db.execute = AsyncMock()
+        inst._recent_queue_items["old.3mf"] = ([5], time.monotonic() - 999)
+        await inst._restamp_recent_queue_item("old.3mf", {"bed_leveling": False})
+        mock_db.execute.assert_not_called()
+        assert "old.3mf" not in inst._recent_queue_items
+
+    @pytest.mark.asyncio
+    async def test_restamp_skips_when_no_pending_items(self, tmp_path):
+        """Never race the dispatcher: nothing pending -> no UPDATE issued."""
+        inst, mock_db = self._make_inst(tmp_path, [])
+        executed = []
+
+        def _exec(stmt):
+            executed.append(stmt)
+            res = MagicMock()
+            res.all.return_value = []  # already dispatched / not pending
+            return res
+
+        mock_db.execute = AsyncMock(side_effect=_exec)
+        inst._recent_queue_items["gone.3mf"] = ([5], time.monotonic())
+        await inst._restamp_recent_queue_item("gone.3mf", {"bed_leveling": False})
+        assert len(executed) == 1  # only the SELECT
+        assert "gone.3mf" not in inst._recent_queue_items
+
+    @pytest.mark.asyncio
+    async def test_on_print_command_late_mqtt_triggers_restamp(self, tmp_path):
+        """Late MQTT (no event waiting) retroactively stamps a recent pending row."""
+        inst, mock_db = self._make_inst(tmp_path, [])
+        executed = []
+
+        def _exec(stmt):
+            executed.append(stmt)
+            res = MagicMock()
+            res.all.return_value = [(7,)]
+            return res
+
+        mock_db.execute = AsyncMock(side_effect=_exec)
+        # Queue item already committed for this FTP filename; no event waiting.
+        inst._recent_queue_items["m.gcode.3mf"] = ([7], time.monotonic())
+        await inst.on_print_command(
+            "m",
+            {"command": "project_file", "file": "m.gcode.3mf", "nozzle_mapping": [3, 1], "bed_leveling": False},
+        )
+        assert len(executed) == 2
+        params = executed[1].compile().params
+        assert params["nozzle_mapping"] == "[3, 1]"
+        assert params["bed_levelling"] is False

@@ -1809,6 +1809,11 @@ class PrintScheduler:
             "timelapse": item.timelapse,
             "use_ams": item.use_ams,
             "nozzle_offset_cali": item.nozzle_offset_cali,
+            # H2C rack-swap nozzle pick (#1780) — opaque JSON string captured
+            # from Bambu Studio's project_file on VP intake; the MQTT layer
+            # parses + injects it only for dual-nozzle models, so a null on
+            # every other model is a transparent pass-through.
+            "nozzle_mapping": item.nozzle_mapping,
             "execute_swap_macros": item.execute_swap_macros,
             "swap_macro_events": swap_events,
             "gcode_injection": item.gcode_injection,

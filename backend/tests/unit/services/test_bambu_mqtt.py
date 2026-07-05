@@ -3840,6 +3840,78 @@ class TestStartPrintAmsMapping:
         assert "ams_mapping2" not in cmd
 
 
+class TestStartPrintNozzleMapping:
+    """H2C rack-swap ``nozzle_mapping`` injection in start_print() (#1780).
+
+    The slicer's per-filament physical nozzle position IDs ride through the
+    dispatch chain as a JSON string; start_print parses + injects it into
+    ``command["print"]["nozzle_mapping"]`` only on dual-nozzle machines, and
+    fails open (omit) on malformed JSON so the firmware auto-picks.
+    """
+
+    @pytest.fixture
+    def mqtt_client(self):
+        from unittest.mock import MagicMock
+
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        client = BambuMQTTClient(
+            ip_address="192.168.1.100",
+            serial_number="TEST123",
+            access_code="12345678",
+        )
+        client._client = MagicMock()
+        client.state.connected = True
+        client.state.raw_data["ams"] = {"ams": [{"id": "0"}]}
+        return client
+
+    def _get_published_command(self, mqtt_client):
+        call_args = mqtt_client._client.publish.call_args
+        return json.loads(call_args[0][1])["print"]
+
+    def test_injected_for_dual_nozzle(self, mqtt_client):
+        """H2C (dual-nozzle): valid JSON string is parsed into an array on the wire."""
+        mqtt_client.model = "H2C"
+        mqtt_client.start_print("test.3mf", nozzle_mapping="[2, 4]")
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["nozzle_mapping"] == [2, 4]
+
+    def test_omitted_for_single_nozzle(self, mqtt_client):
+        """Single-nozzle printer: nozzle_mapping is never emitted, even if set."""
+        mqtt_client.model = "P1S"
+        mqtt_client._is_dual_nozzle = False
+        mqtt_client.start_print("test.3mf", nozzle_mapping="[2, 4]")
+
+        cmd = self._get_published_command(mqtt_client)
+        assert "nozzle_mapping" not in cmd
+
+    def test_bad_json_omitted_fail_open(self, mqtt_client):
+        """Malformed JSON is dropped (fail-open) so the firmware auto-picks."""
+        mqtt_client.model = "H2C"
+        mqtt_client.start_print("test.3mf", nozzle_mapping="not-json{")
+
+        cmd = self._get_published_command(mqtt_client)
+        assert "nozzle_mapping" not in cmd
+
+    def test_none_omitted(self, mqtt_client):
+        """Null nozzle_mapping (every non-O1C2 upload) emits no field."""
+        mqtt_client.model = "H2C"
+        mqtt_client.start_print("test.3mf", nozzle_mapping=None)
+
+        cmd = self._get_published_command(mqtt_client)
+        assert "nozzle_mapping" not in cmd
+
+    def test_dual_nozzle_flag_gates_when_model_generic(self, mqtt_client):
+        """``_is_dual_nozzle`` runtime flag alone gates the injection."""
+        mqtt_client.model = "X1C"  # single-nozzle model name
+        mqtt_client._is_dual_nozzle = True  # but device.extruder.info said dual
+        mqtt_client.start_print("test.3mf", nozzle_mapping="[1, 0]")
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["nozzle_mapping"] == [1, 0]
+
+
 class TestStaleReconnect:
     """Tests for stale connection detection and reconnect without UI bouncing."""
 

@@ -62,6 +62,10 @@ class PrintQueueItemUpdate(BaseModel):
     execute_swap_macros: bool | None = None
     swap_macro_events: list[str] | None = None
     gcode_injection: bool | None = None
+    # H2C dual-nozzle-rack slicer pick (#1780). The slicer's per-filament
+    # physical nozzle position IDs — an opaque list[int] BambuStudio sends in
+    # its project_file MQTT body; replayed to the printer verbatim on dispatch.
+    nozzle_mapping: list[int] | None = None
 
 
 class PrintQueueItemResponse(BaseModel):
@@ -91,6 +95,10 @@ class PrintQueueItemResponse(BaseModel):
     execute_swap_macros: bool = True
     swap_macro_events: list[str] | None = None
     gcode_injection: bool = False
+    # H2C dual-nozzle-rack slicer pick (#1780). Surface for any future
+    # "edit print → choose nozzle" UI; null on every model except O1C2
+    # uploads from BambuStudio.
+    nozzle_mapping: list[int] | None = None
     status: Literal["pending", "printing", "completed", "failed", "skipped", "cancelled"]
     started_at: UTCDatetime
     completed_at: UTCDatetime

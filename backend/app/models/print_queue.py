@@ -77,6 +77,21 @@ class PrintQueueItem(Base):
     # custom-start-gcode semantics, not "before homing/bed-mesh".
     gcode_injection: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
 
+    # H2C dual-nozzle-rack slicer pick preservation (#1780). BambuStudio's
+    # project_file MQTT command for rack-swap-capable models (O1C2 today)
+    # carries the slicer's per-filament physical nozzle position IDs — a
+    # ``list[int]`` straight off the wire — in ``nozzle_mapping``. Stored here
+    # as an opaque JSON string, forwarded verbatim through the dispatch chain
+    # and replayed into ``command["print"]["nozzle_mapping"]`` (dual-nozzle
+    # only) so the firmware honours the user's pick instead of falling back to
+    # "last matching nozzle type" auto-pick. NULL on every other model.
+    #
+    # DISTINCT from ``utils/threemf_tools.extract_nozzle_mapping_from_3mf``,
+    # which returns a server-derived slot→physical-extruder ``dict[int, int]``
+    # that feeds per-filament ``nozzle_id`` and never reaches
+    # command["print"]. Keep the two strictly separate.
+    nozzle_mapping: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Status: pending, printing, completed, failed, skipped, cancelled
     status: Mapped[str] = mapped_column(String(20), default="pending")
 

@@ -4086,6 +4086,7 @@ class BambuMQTTClient:
         timelapse: bool = False,
         use_ams: bool = True,
         nozzle_offset_cali: bool = False,
+        nozzle_mapping: str | None = None,
     ):
         """Start a print job on the printer.
 
@@ -4103,6 +4104,13 @@ class BambuMQTTClient:
             use_ams: Use AMS for automatic filament changes
             nozzle_offset_cali: Run nozzle offset calibration before print
                 (dual-nozzle printers only — silently forced off on single-nozzle)
+            nozzle_mapping: Opaque JSON string captured from BambuStudio's
+                project_file for H2C rack-swap (O1C2) (#1780). When non-null
+                AND the printer is dual-nozzle, parsed and injected as the
+                ``nozzle_mapping`` array on the dispatched project_file so the
+                firmware honours the user's slicer pick instead of falling
+                back to "last matching nozzle" auto-pick. Silently ignored on
+                single-nozzle printers; fail-open on malformed JSON.
 
         Note: the ``vibration_cali`` field in the MQTT payload is kept for
         firmware compatibility but hardcoded to False. Upstream Bambu Studio
@@ -4273,6 +4281,25 @@ class BambuMQTTClient:
                 command["print"]["ams_mapping"] = flat_ams_mapping
                 if not no_ams_printer:
                     command["print"]["ams_mapping2"] = ams_mapping2
+
+            # H2C dual-nozzle-rack slicer-pick preservation (#1780).
+            # ``nozzle_mapping`` carries the slicer's per-filament physical
+            # nozzle position IDs (``list[int]``), JSON-string-encoded when it
+            # leaves the queue item; parse here so the wire ships the array,
+            # matching BambuStudio's project_file shape. Gate on
+            # ``is_dual_nozzle`` — single-nozzle firmwares would ignore it and
+            # we err on the side of not emitting unrecognised fields. A parse
+            # failure is logged but never blocks the dispatch (fail-open — the
+            # firmware falls back to its auto-pick path, i.e. pre-fix behaviour).
+            if is_dual_nozzle and nozzle_mapping:
+                try:
+                    command["print"]["nozzle_mapping"] = json.loads(nozzle_mapping)
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "[%s] Invalid nozzle_mapping JSON on dispatch, omitting (firmware auto-picks): %r",
+                        self.serial_number,
+                        nozzle_mapping,
+                    )
 
             logger.info("[%s] Sending print command: %s", self.serial_number, json.dumps(command))
             self._client.publish(self.topic_publish, json.dumps(command), qos=1)

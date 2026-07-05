@@ -6,6 +6,7 @@ bound to its dedicated IP address, regardless of mode.
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -104,6 +105,22 @@ DEFAULT_VIRTUAL_PRINTER_MODEL = "BL-P001"  # X1C
 # (slicer cancels, filename mismatch) would linger forever. FIFO-evict the
 # oldest when over the cap so the dict stays bounded (upstream v0.2.4.5).
 _SLICER_OPTIONS_CACHE_LIMIT = 128
+
+# How long ``_add_to_print_queue`` waits for the slicer's MQTT ``project_file``
+# after the FTP upload completes (#1780 round 3). Bambu Studio sends FTP first,
+# then the MQTT command immediately after — but on wireless / loaded-Pi setups
+# the MQTT command can land 2+ s after FTP, which used to time the wait out and
+# silently drop ``nozzle_mapping`` + the other slicer-driven flags. The bumped
+# window covers the observed worst case in the field; the late-MQTT fallback in
+# ``on_print_command`` covers the rest.
+_SLICER_OPTIONS_WAIT_TIMEOUT = 5.0
+
+# How long ``on_print_command`` will retroactively stamp slicer fields onto a
+# recently-committed queue item when the MQTT print command arrives after
+# ``_SLICER_OPTIONS_WAIT_TIMEOUT`` expired. Covers extra-late MQTT (slow
+# wireless slicer, NIC drop+retry) and the scheduler tick interval before
+# dispatch picks the item up.
+_RECENT_QUEUE_ITEM_TTL = 30.0
 
 
 def _get_serial_for_model(model: str, serial_suffix: str) -> str:
@@ -218,6 +235,16 @@ class VirtualPrinterInstance:
         self._slicer_print_options: dict[str, dict] = {}
         self._slicer_print_options_events: dict[str, asyncio.Event] = {}
 
+        # Queue items recently committed by ``_add_to_print_queue``, keyed by
+        # FTP filename. Used by ``on_print_command`` to retroactively stamp the
+        # slicer's ``nozzle_mapping`` (and the other slicer-driven flags) onto a
+        # queue item when the MQTT ``project_file`` arrives after the queue-add
+        # wait timed out — the #1780 round-3 race. Value is
+        # (queue_item_ids, monotonic_committed_at); entries older than
+        # ``_RECENT_QUEUE_ITEM_TTL`` are evicted opportunistically on each
+        # queue-add.
+        self._recent_queue_items: dict[str, tuple[list[int], float]] = {}
+
         # Per-instance services
         self._proxy: SlicerProxyManager | None = None
         self._ftp: VirtualPrinterFTPServer | None = None
@@ -327,24 +354,43 @@ class VirtualPrinterInstance:
         """Handle print command from MQTT.
 
         Captures the slicer's ``project_file`` options (``timelapse``,
-        ``bed_leveling``, ``flow_cali``, ``layer_inspect``, ``use_ams``)
-        so the VP-queue path can inherit them when adding the item to
-        the queue, rather than falling back to the model's column
-        defaults (upstream Bambuddy #1403). Only ``print_queue`` mode
-        consumes the capture; other modes ignore the print command, so
-        we skip the stash there to keep the dict from accumulating one
-        entry per print over the VP's uptime.
+        ``bed_leveling``, ``flow_cali``, ``layer_inspect``, ``use_ams``,
+        plus the H2C rack-pick ``nozzle_mapping``) so the VP-queue path
+        can inherit them when adding the item to the queue, rather than
+        falling back to the model's column defaults (upstream Bambuddy
+        #1403, #1780). Only ``print_queue`` mode consumes the capture;
+        other modes ignore the print command, so we skip the stash there
+        to keep the dict from accumulating one entry per print over the
+        VP's uptime.
 
         Also schedules the #1658 follow-up that re-fires gcode_state=FINISH a
         moment after the synthetic project_file ack — for every non-proxy mode
         — so the slicer's "Downloading" UI releases on Bambu Studio 2.7.x's
         FTP-first-then-MQTT send order.
+
+        ``filename`` is the slicer's ``subtask_name`` (bare model name, no
+        extension) — used verbatim for ``_schedule_finish_release`` because
+        push_status echoes it back to the slicer as gcode_file / subtask_name.
+        The queue-side stash key is derived from ``data["file"]`` (the FTP
+        filename WITH extension) so ``_add_to_print_queue``'s ``file_path.name``
+        lookup matches; falls back to ``filename`` when ``data["file"]`` is
+        absent (legacy slicers / non-3MF uploads). Stash/lookup mismatch was
+        the #1780 root cause — every captured field silently fell back to
+        settings defaults on every Bambu Studio "Send".
         """
         logger.info("[VP %s] Print command for: %s", self.name, filename)
         if not self.is_proxy and filename and self._mqtt is not None:
             self._schedule_finish_release(filename)
         if self.mode != "print_queue":
             return
+        # Stash key must match ``_add_to_print_queue``'s lookup, which uses
+        # ``file_path.name`` (the FTP filename WITH extension). The slicer's
+        # ``subtask_name`` (== this method's ``filename`` arg) is the bare
+        # model name, no extension — using it as the stash key silently
+        # dropped every captured slicer field (#1780 root cause). The FTP
+        # filename rides in ``data["file"]``; fall back to ``filename`` for
+        # legacy slicers / non-3MF uploads that omit it.
+        stash_key = data.get("file") or filename
         # FIFO-evict the oldest entry when at the cap so a stream of
         # never-consumed project_file captures can't grow unbounded. Dicts
         # preserve insertion order, so iter() yields the oldest key first.
@@ -352,10 +398,117 @@ class VirtualPrinterInstance:
             stale_key = next(iter(self._slicer_print_options))
             self._slicer_print_options.pop(stale_key, None)
             self._slicer_print_options_events.pop(stale_key, None)
-        self._slicer_print_options[filename] = dict(data)
-        event = self._slicer_print_options_events.get(filename)
+        self._slicer_print_options[stash_key] = dict(data)
+        event = self._slicer_print_options_events.get(stash_key)
         if event:
             event.set()
+            return
+        # No consumer waiting: ``_add_to_print_queue`` either already gave up
+        # (wait_for timed out) or hasn't started yet (FTP still uploading). If
+        # a queue item was committed within the last ``_RECENT_QUEUE_ITEM_TTL``,
+        # the wait timed out and the row holds settings defaults instead of the
+        # slicer's pick — retroactively stamp the slicer-driven fields so the
+        # dispatcher honours the user's choice. Covers the #1780 round-3 race
+        # where Bambu Studio's MQTT lands just past the bumped wait ceiling.
+        await self._restamp_recent_queue_item(stash_key, data)
+
+    async def _restamp_recent_queue_item(self, stash_key: str, data: dict) -> None:
+        """Patch slicer-driven fields onto a queue item the MQTT command missed.
+
+        ``_add_to_print_queue`` waits up to ``_SLICER_OPTIONS_WAIT_TIMEOUT``
+        for the slicer's MQTT ``project_file`` before committing the queue
+        item. If the MQTT command arrives after that window — observed in the
+        field at ~2.1 s on H2C / wireless setups (#1780 round 3) — the row was
+        already written with settings defaults. This method runs on the late
+        MQTT path: it looks up the most recent queue items committed for this
+        filename and patches in the slicer's ``nozzle_mapping`` + workflow
+        flags, but only while the items are still ``pending`` (the scheduler
+        hasn't dispatched them yet), so we never race the dispatcher.
+        """
+        if not self._session_factory:
+            return
+        entry = self._recent_queue_items.get(stash_key)
+        if entry is None:
+            return
+        queue_item_ids, committed_at = entry
+        if time.monotonic() - committed_at > _RECENT_QUEUE_ITEM_TTL:
+            self._recent_queue_items.pop(stash_key, None)
+            return
+
+        import json
+
+        # Mirror the field set ``_add_to_print_queue`` reads off slicer_opts.
+        # MQTT sends ``bed_leveling`` (single L); our column is ``bed_levelling``.
+        # ``vibration_cali`` is intentionally NOT stamped — PrintQueueItem has
+        # no such column (dispatch hardcodes vibration_cali=False in
+        # bambu_mqtt.start_print), so writing it would raise.
+        patch: dict = {}
+        for mqtt_field, column in (
+            ("bed_leveling", "bed_levelling"),
+            ("flow_cali", "flow_cali"),
+            ("layer_inspect", "layer_inspect"),
+            ("timelapse", "timelapse"),
+            ("use_ams", "use_ams"),
+        ):
+            if mqtt_field in data:
+                patch[column] = bool(data[mqtt_field])
+
+        raw = data.get("nozzle_mapping")
+        if raw is not None:
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "[VP %s] Late MQTT nozzle_mapping is unparseable JSON, dropping: %r",
+                        self.name,
+                        raw,
+                    )
+                    raw = None
+            if raw is not None:
+                patch["nozzle_mapping"] = json.dumps(raw)
+
+        if not patch:
+            self._recent_queue_items.pop(stash_key, None)
+            return
+
+        from sqlalchemy import select, update
+
+        from backend.app.models.print_queue import PrintQueueItem
+
+        try:
+            async with self._session_factory() as db:
+                # Only stamp items still pending; once the scheduler has picked
+                # the row up we can't safely race the dispatcher.
+                result = await db.execute(
+                    select(PrintQueueItem.id).where(
+                        PrintQueueItem.id.in_(queue_item_ids),
+                        PrintQueueItem.status == "pending",
+                    )
+                )
+                eligible_ids = [row[0] for row in result.all()]
+                if not eligible_ids:
+                    self._recent_queue_items.pop(stash_key, None)
+                    return
+                await db.execute(update(PrintQueueItem).where(PrintQueueItem.id.in_(eligible_ids)).values(**patch))
+                await db.commit()
+                logger.info(
+                    "[VP %s] Late slicer MQTT for %s — retroactively stamped %s onto queue item(s) %s",
+                    self.name,
+                    stash_key,
+                    sorted(patch.keys()),
+                    eligible_ids,
+                )
+        except Exception as e:
+            logger.error(
+                "[VP %s] Failed to retroactively stamp queue item(s) %s for %s: %s",
+                self.name,
+                queue_item_ids,
+                stash_key,
+                e,
+            )
+        finally:
+            self._recent_queue_items.pop(stash_key, None)
 
     def _schedule_finish_release(self, filename: str, delay: float = 1.5) -> None:
         """Re-set gcode_state=FINISH on the VP after the project_file ack.
@@ -623,26 +776,42 @@ class VirtualPrinterInstance:
         # Wait briefly for the slicer's MQTT ``project_file`` command so
         # the queue item can inherit the slicer-side print options the
         # user picked (timelapse, bed_leveling, etc.). Slicers send the
-        # FTP upload first and the MQTT command immediately after, so
-        # the typical lag is a few hundred ms; 2 s is conservative
-        # without making every VP-queue add visibly slow. Falls back to
-        # the model's column defaults if MQTT doesn't arrive in time
-        # (legacy behaviour for users on a slicer that doesn't send a
-        # print command — upstream Bambuddy #1403). The wait is skipped
-        # when there's no MQTT server attached — covers unit tests that
-        # invoke ``_add_to_print_queue`` directly without going through
-        # ``on_print_command``, so they don't pay the 2 s tax.
+        # FTP upload first and the MQTT command immediately after, so the
+        # typical lag is a few hundred ms. The window is generous enough
+        # to absorb wireless / loaded-Pi jitter without making every
+        # VP-queue add visibly slow — the observed worst case in #1780
+        # round 3 was 2.085 s, just past the previous 2.0 s ceiling. Falls
+        # back to the model's column defaults if MQTT doesn't arrive in
+        # time (legacy behaviour for users on a slicer that doesn't send a
+        # print command — upstream Bambuddy #1403); a late MQTT that lands
+        # after the wait is caught by ``on_print_command``'s retroactive
+        # stamp path. The wait is skipped when there's no MQTT server
+        # attached — covers unit tests that invoke ``_add_to_print_queue``
+        # directly without going through ``on_print_command``, so they
+        # don't pay the wait tax.
         slicer_opts = self._slicer_print_options.pop(file_path.name, None)
         if slicer_opts is None and self._mqtt is not None:
             event = asyncio.Event()
             self._slicer_print_options_events[file_path.name] = event
             try:
-                await asyncio.wait_for(event.wait(), timeout=2.0)
+                await asyncio.wait_for(event.wait(), timeout=_SLICER_OPTIONS_WAIT_TIMEOUT)
                 slicer_opts = self._slicer_print_options.pop(file_path.name, None)
             except asyncio.TimeoutError:
                 slicer_opts = None
             finally:
                 self._slicer_print_options_events.pop(file_path.name, None)
+        # If the cache still misses, queued workflow flags / nozzle pick will
+        # silently fall back to settings defaults. Surface the missed key so a
+        # future stash/lookup mismatch (the #1780 root cause) is obvious in the
+        # log instead of needing a wire capture to diagnose.
+        if slicer_opts is None:
+            logger.debug(
+                "[VP %s] No slicer options cached for %r (cache keys: %s); "
+                "workflow flags + nozzle pick will fall back to settings defaults.",
+                self.name,
+                file_path.name,
+                sorted(self._slicer_print_options.keys()),
+            )
 
         try:
             # Step 1: save to library (handles file copy + metadata extraction
@@ -715,6 +884,46 @@ class VirtualPrinterInstance:
                 # toggles don't carry it) — slicer value or column default only.
                 use_ams = bool(slicer_opts["use_ams"]) if slicer_opts and "use_ams" in slicer_opts else True
 
+                # H2C dual-nozzle-rack slicer-pick preservation (#1780).
+                # BambuStudio's project_file MQTT command for rack-swap models
+                # (O1C2 today) carries ``nozzle_mapping`` — the slicer's
+                # per-filament array of physical nozzle position IDs
+                # (``list[int]``) straight off the wire. Forward it verbatim
+                # onto the queue item so the dispatcher can replay it in its
+                # own project_file command; without it the H2C firmware falls
+                # back to "last matching nozzle" auto-pick and ignores the
+                # user's Bambu Studio choice. Every other model has it absent
+                # from slicer_opts, so this is a transparent no-op there.
+                #
+                # DISTINCT from ``utils/threemf_tools.extract_nozzle_mapping_from_3mf``
+                # (a server-derived slot→physical-extruder ``dict[int, int]``
+                # that feeds per-filament nozzle_id and never reaches
+                # command["print"]). Do not conflate the two.
+                import json
+
+                nozzle_mapping_json: str | None = None
+                if slicer_opts is not None:
+                    raw_nozzle_mapping = slicer_opts.get("nozzle_mapping")
+                    if raw_nozzle_mapping is not None:
+                        # BambuStudio's NetworkAgent embeds this as parsed JSON
+                        # in the project_file body (matching the ams_mapping
+                        # shape we already consume as list[int]). Accept a
+                        # JSON-encoded string defensively; fail-open (drop) on
+                        # bad JSON so the firmware auto-picks rather than the
+                        # dispatch breaking.
+                        if isinstance(raw_nozzle_mapping, str):
+                            try:
+                                raw_nozzle_mapping = json.loads(raw_nozzle_mapping)
+                            except json.JSONDecodeError:
+                                logger.warning(
+                                    "[VP %s] Slicer nozzle_mapping is unparseable JSON, dropping: %r",
+                                    self.name,
+                                    raw_nozzle_mapping,
+                                )
+                                raw_nozzle_mapping = None
+                        if raw_nozzle_mapping is not None:
+                            nozzle_mapping_json = json.dumps(raw_nozzle_mapping)
+
                 queue_item_ids: list[int] = []
                 for offset, plate_id in enumerate(plate_ids, start=1):
                     queue_item = PrintQueueItem(
@@ -730,11 +939,41 @@ class VirtualPrinterInstance:
                         layer_inspect=layer_inspect,
                         timelapse=timelapse,
                         use_ams=use_ams,
+                        # Stamp the slicer's H2C rack nozzle pick on every plate
+                        # of a multi-plate Send All so each plate replays the
+                        # same pick (mirrors the #1697 / #1733 per-plate loop).
+                        nozzle_mapping=nozzle_mapping_json,
                     )
                     db.add(queue_item)
                     await db.flush()  # populate queue_item.id before logging
                     queue_item_ids.append(queue_item.id)
                 await db.commit()
+                # Track the freshly-committed queue items so ``on_print_command``
+                # can retroactively stamp slicer-side fields if the MQTT
+                # ``project_file`` lands AFTER the ``_SLICER_OPTIONS_WAIT_TIMEOUT``
+                # window expired — the #1780 round-3 race. Eviction of stale
+                # entries here keeps the dict bounded; the queue path is the only
+                # writer, so doing it on commit is enough.
+                now = time.monotonic()
+                cutoff = now - _RECENT_QUEUE_ITEM_TTL
+                self._recent_queue_items = {k: v for k, v in self._recent_queue_items.items() if v[1] > cutoff}
+                self._recent_queue_items[file_path.name] = (list(queue_item_ids), now)
+                # Last-chance check: MQTT for this filename could have arrived
+                # during ANY await between the initial pop and now — wait_for
+                # itself, _save_to_library, db.flush, db.commit. In all those
+                # cases ``on_print_command`` stashed its data but neither the
+                # event-signal path nor the retroactive ``_recent_queue_items``
+                # path was in place to consume it. Pop any late stash and apply
+                # inline so the late MQTT never leaks past the queue-add.
+                late_opts = self._slicer_print_options.pop(file_path.name, None)
+                if late_opts is not None:
+                    logger.info(
+                        "[VP %s] Late slicer MQTT detected for %s during queue-add — "
+                        "applying inline (race vs commit/flush/save yield)",
+                        self.name,
+                        file_path.name,
+                    )
+                    await self._restamp_recent_queue_item(file_path.name, late_opts)
                 if len(queue_item_ids) == 1:
                     logger.info(
                         "[VP %s] Added to queue %s (printer %s): item %s, library_file=%s",
