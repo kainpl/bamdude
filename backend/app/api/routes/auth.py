@@ -36,6 +36,7 @@ from backend.app.core.auth import (
     has_any_admin,
     is_jti_revoked,
     refresh_cookie_secure_flag,
+    resolve_session_max_hours,
     revoke_all_refresh_tokens_for_user,
     revoke_jti,
     revoke_refresh_family,
@@ -117,14 +118,23 @@ async def _issue_refresh_cookie(
       ``AUTH_REFRESH_COOKIE_SECURE`` env forces the polarity.
     - ``Path=/api/v1/auth`` — cookie is only transmitted to auth endpoints,
       trimming the attack surface against CSRF on unrelated routes.
-    - ``Max-Age`` — set only when ``remember_me=True`` (30 d). Without it
-      the cookie is a session cookie that dies with the browser process.
+    - ``Max-Age`` — set only when ``remember_me=True`` (30 d, clamped to the
+      admin session ceiling #1706). Without it the cookie is a session cookie
+      that dies with the browser process.
+
+    Session ceiling (#1706): the admin-configurable ``session_max_hours`` is
+    resolved once here and threaded into both the DB-side refresh TTL and the
+    cookie Max-Age so the two never drift. This is the single choke point for
+    every login flavour (password, /auth/refresh, 2FA, OIDC) — the short-lived
+    access token is left untouched.
     """
+    ceiling_hours = await resolve_session_max_hours(db)
     raw_refresh, resolved_family, expires_at = await create_refresh_token(
         db,
         username=username,
         remember_me=remember_me,
         family_id=family_id,
+        ceiling_hours=ceiling_hours,
     )
     cookie_kwargs: dict = {
         "key": REFRESH_TOKEN_COOKIE_NAME,
@@ -135,8 +145,10 @@ async def _issue_refresh_cookie(
         "path": REFRESH_TOKEN_COOKIE_PATH,
     }
     if remember_me:
-        # 30 d in seconds. Browser persists across restarts; matches DB TTL.
-        cookie_kwargs["max_age"] = REFRESH_TOKEN_EXPIRE_DAYS_REMEMBER * 24 * 3600
+        # 30 d in seconds, clamped to the admin session ceiling (#1706).
+        # Browser persists across restarts; matches DB TTL.
+        remember_hours = min(REFRESH_TOKEN_EXPIRE_DAYS_REMEMBER * 24, ceiling_hours)
+        cookie_kwargs["max_age"] = remember_hours * 3600
     response.set_cookie(**cookie_kwargs)
     _ = resolved_family, expires_at  # logged by the helpers; not needed here
 

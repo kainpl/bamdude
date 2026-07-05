@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from './api/client';
@@ -93,6 +93,7 @@ function LanguageSync({ children }: { children: React.ReactNode }) {
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { loading, user, requiresSetup } = useAuth();
+  const location = useLocation();
 
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
@@ -107,7 +108,9 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   }
 
   if (!user) {
-    return <Navigate to="/login" replace />;
+    // Carry the requested location so LoginPage can send the user back to
+    // their deep link after auth (#1750).
+    return <Navigate to="/login" replace state={{ from: location }} />;
   }
 
   return <>{children}</>;
@@ -121,6 +124,7 @@ function PermissionRoute({ permission, children }: { permission: string; childre
   // settings:read grants read-only Settings, groups:create lets a delegated
   // user open the new-group form, etc.
   const { loading, user, hasPermission, requiresSetup } = useAuth();
+  const location = useLocation();
 
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
@@ -131,7 +135,9 @@ function PermissionRoute({ permission, children }: { permission: string; childre
   }
 
   if (!user) {
-    return <Navigate to="/login" replace />;
+    // Carry the requested location so LoginPage can send the user back to
+    // their deep link after auth (#1750).
+    return <Navigate to="/login" replace state={{ from: location }} />;
   }
 
   if (!hasPermission(permission as Parameters<typeof hasPermission>[0])) {

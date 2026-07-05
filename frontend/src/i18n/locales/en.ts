@@ -2363,6 +2363,16 @@ export default {
       linkedAccountsDesc: 'These external identity providers are linked to your account.',
       oidcUnlinked: 'Account unlinked.'
     },
+    sessionPolicy: {
+      title: 'Session Policy',
+      description: 'Maximum session lifetime for user logins. Applies to new logins and on token refresh; existing sessions shorten on their next refresh.',
+      preset24h: '24 hours',
+      preset7d: '7 days',
+      preset30d: '30 days',
+      customHoursLabel: 'Custom session lifetime in hours',
+      hoursSuffix: 'hours',
+      warning: 'Long persistent sessions reduce automatic-logout protection. Shorten this for shared or public farm terminals.',
+    },
     oidc: {
       title: 'SSO / OIDC Providers',
       desc: 'Configure OpenID Connect providers to allow single sign-on via external identity providers.',

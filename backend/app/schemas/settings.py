@@ -309,6 +309,18 @@ class AppSettings(BaseModel):
         description="Low stock threshold percentage (%) for inventory filtering and display",
     )
 
+    # Session policy (#1706, adapted) — admin ceiling on effective session lifetime
+    # (our refresh-token TTL). Default 720 preserves remember-me (30 d).
+    session_max_hours: int = Field(
+        default=720,
+        ge=1,
+        le=720,
+        description=(
+            "Maximum session lifetime in hours for user logins (default 720 = 30 days, max 720). "
+            "Caps how long a login stays valid before re-authentication; applies to new logins and on refresh."
+        ),
+    )
+
     # Forecasting (upstream #1184): floor applied on top of each SKU's
     # lead-time. Lets the operator set a uniform default ("everything from
     # this supplier takes at least N days") without touching individual SKUs.
@@ -486,6 +498,7 @@ class AppSettingsUpdate(BaseModel):
     prometheus_enabled: bool | None = None
     prometheus_token: str | None = None
     low_stock_threshold: float | None = Field(default=None, ge=0.1, le=99.9)
+    session_max_hours: int | None = Field(default=None, ge=1, le=720)
     forecast_global_lead_time_days: int | None = Field(default=None, ge=0)
     user_notifications_enabled: bool | None = None
     ldap_enabled: bool | None = None

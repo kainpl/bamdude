@@ -73,6 +73,7 @@ registerSettingsSearch({ labelKey: 'failureDetection.perPrinterTitle', labelFall
 registerSettingsSearch({ labelKey: 'failureDetection.statusTitle', labelFallback: 'Detection Status', tab: 'failure-detection', keywords: 'failure detection status running connection', anchor: 'card-fd-status' });
 registerSettingsSearch({ labelKey: 'failureDetection.historyTitle', labelFallback: 'Detection History', tab: 'failure-detection', keywords: 'failure detection history log events', anchor: 'card-fd-history' });
 registerSettingsSearch({ labelKey: 'settings.tabs.users', tab: 'users', subTab: 'users', keywords: 'users accounts list groups roles permissions administrators operators viewers current user profile password change', anchor: 'tab-users-users' });
+registerSettingsSearch({ labelKey: 'settings.sessionPolicy.title', labelFallback: 'Session Policy', tab: 'users', subTab: 'users', keywords: 'session timeout expiry logout remember me jwt token lifetime', anchor: 'card-session-policy' });
 registerSettingsSearch({ labelKey: 'settings.email.smtpSettings', labelFallback: 'SMTP Configuration', tab: 'users', subTab: 'email', keywords: 'smtp email send server port password auth starttls ssl', anchor: 'tab-users-email' });
 registerSettingsSearch({ labelKey: 'settings.ldap.title', labelFallback: 'LDAP Authentication', tab: 'users', subTab: 'ldap', keywords: 'ldap active directory ad authentication bind dn search base group mapping', anchor: 'tab-users-ldap' });
 registerSettingsSearch({ labelKey: 'settings.tabs.backup', tab: 'backup', keywords: 'backup github gitlab restore download cloud sync profiles archives schedule', anchor: 'tab-backup' });
@@ -1181,6 +1182,7 @@ export function SettingsPage() {
       (settings.bambu_studio_api_url ?? '') !== (localSettings.bambu_studio_api_url ?? '') ||
       settings.prometheus_enabled !== localSettings.prometheus_enabled ||
       settings.prometheus_token !== localSettings.prometheus_token ||
+      (settings.session_max_hours ?? 720) !== (localSettings.session_max_hours ?? 720) ||
       (settings.user_notifications_enabled ?? true) !== (localSettings.user_notifications_enabled ?? true);
 
     if (!hasChanges) {
@@ -1267,6 +1269,7 @@ export function SettingsPage() {
         bambu_studio_api_url: localSettings.bambu_studio_api_url,
         prometheus_enabled: localSettings.prometheus_enabled,
         prometheus_token: localSettings.prometheus_token,
+        session_max_hours: localSettings.session_max_hours,
         user_notifications_enabled: localSettings.user_notifications_enabled,
       };
       updateMutation.mutate(settingsToSave);
@@ -5531,6 +5534,86 @@ export function SettingsPage() {
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
               {/* Left Column: Current User + User List */}
               <div className="space-y-4">
+                {/* Session Policy (#1706, adapted) — admin ceiling on the effective
+                    session lifetime (our refresh-token TTL). Presets + custom hours,
+                    hard-capped at 720h (30d). Read-only for non-settings:update users. */}
+                <Card id="card-session-policy" className="scroll-mt-24">
+                  <CardHeader>
+                    <h3 className="text-lg font-semibold text-white flex items-center gap-2">
+                      <Lock className="w-5 h-5 text-bambu-green" />
+                      {t('settings.sessionPolicy.title')}
+                    </h3>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-sm text-bambu-gray mb-4">
+                      {t('settings.sessionPolicy.description')}
+                    </p>
+                    {(() => {
+                      const sessionDisabled = authEnabled && !hasPermission('settings:update');
+                      const currentHours = localSettings?.session_max_hours ?? 720;
+                      const presets: { hours: number; labelKey: string }[] = [
+                        { hours: 24, labelKey: 'settings.sessionPolicy.preset24h' },
+                        { hours: 168, labelKey: 'settings.sessionPolicy.preset7d' },
+                        { hours: 720, labelKey: 'settings.sessionPolicy.preset30d' },
+                      ];
+                      return (
+                        <>
+                          <div className="flex flex-wrap gap-2 mb-4">
+                            {presets.map((preset) => (
+                              <button
+                                key={preset.hours}
+                                type="button"
+                                disabled={sessionDisabled}
+                                onClick={() => updateSetting('session_max_hours', preset.hours)}
+                                className={`px-3 py-2 rounded-lg text-sm font-medium border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                                  currentHours === preset.hours
+                                    ? 'bg-bambu-green/20 border-bambu-green text-bambu-green'
+                                    : 'bg-bambu-dark border-bambu-dark-tertiary text-bambu-gray hover:text-white'
+                                }`}
+                              >
+                                {t(preset.labelKey)}
+                              </button>
+                            ))}
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <label htmlFor="session-max-hours-input" className="text-sm text-white">
+                              {t('settings.sessionPolicy.customHoursLabel')}
+                            </label>
+                            <div className="flex items-center gap-1">
+                              <input
+                                id="session-max-hours-input"
+                                type="number"
+                                min={1}
+                                max={720}
+                                step={1}
+                                disabled={sessionDisabled}
+                                value={currentHours}
+                                onChange={(e) => {
+                                  const raw = parseInt(e.target.value, 10);
+                                  if (Number.isNaN(raw)) return;
+                                  updateSetting('session_max_hours', Math.min(720, Math.max(1, raw)));
+                                }}
+                                className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center disabled:opacity-50 disabled:cursor-not-allowed"
+                              />
+                              <span className="text-bambu-gray text-sm">
+                                {t('settings.sessionPolicy.hoursSuffix')}
+                              </span>
+                            </div>
+                          </div>
+                          {currentHours > 168 && (
+                            <div className="mt-4 flex items-start gap-2 rounded-lg bg-yellow-500/10 border border-yellow-500/30 p-3">
+                              <AlertTriangle className="w-5 h-5 text-yellow-500 flex-shrink-0 mt-0.5" />
+                              <p className="text-sm text-yellow-200/90">
+                                {t('settings.sessionPolicy.warning')}
+                              </p>
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </CardContent>
+                </Card>
+
                 {/* Current User Card */}
                 {user && (
                   <Card>

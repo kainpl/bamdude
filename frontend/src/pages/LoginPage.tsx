@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
+import { Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../contexts/AuthContext';
@@ -12,13 +12,64 @@ import { Button } from '../components/Button';
 
 type LoginStep = 'credentials' | '2fa' | 'reset-password';
 
+// Survives the OIDC provider round-trip (window.location.href kills React
+// router state), so the post-login deep link is preserved across SSO (#1750).
+const POST_LOGIN_REDIRECT_KEY = 'auth_post_login_redirect';
+
+// Only accept same-origin internal paths. Rejects protocol-relative (`//evil.com`),
+// absolute URLs, and the login page itself (would loop). Anything else falls
+// back to `/` so a tampered sessionStorage entry can't open-redirect.
+function sanitizeRedirectTarget(target: string | null | undefined): string | null {
+  if (!target) return null;
+  if (!target.startsWith('/')) return null;
+  if (target.startsWith('//')) return null;
+  if (target.startsWith('/login')) return null;
+  return target;
+}
+
+function stashPostLoginRedirect(target: string): void {
+  const safe = sanitizeRedirectTarget(target);
+  if (!safe) return;
+  try {
+    sessionStorage.setItem(POST_LOGIN_REDIRECT_KEY, safe);
+  } catch (err) {
+    console.warn('stashPostLoginRedirect: sessionStorage unavailable, post-login target will be lost across OIDC redirect', err);
+  }
+}
+
+function consumePostLoginRedirect(): string | null {
+  try {
+    const saved = sessionStorage.getItem(POST_LOGIN_REDIRECT_KEY);
+    sessionStorage.removeItem(POST_LOGIN_REDIRECT_KEY);
+    return sanitizeRedirectTarget(saved);
+  } catch (err) {
+    console.warn('consumePostLoginRedirect: sessionStorage unavailable', err);
+    return null;
+  }
+}
+
 export function LoginPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
   const { t } = useTranslation();
   const { login, loginWithToken, requiresSetup, loading: authLoading } = useAuth();
   const { showToast } = useToast();
   const { mode } = useTheme();
+
+  // Resolve the post-login destination, preferring router state (set by
+  // ProtectedRoute / PermissionRoute when they redirect an unauthed visit)
+  // over the sessionStorage stash (used to survive the OIDC provider
+  // round-trip, which kills React state). Falls back to `/` and rejects unsafe
+  // targets via sanitize (#1750).
+  function resolvePostLoginRedirect(): string {
+    const fromState = (location.state as { from?: { pathname?: string; search?: string } } | null)?.from;
+    if (fromState?.pathname) {
+      const safe = sanitizeRedirectTarget(`${fromState.pathname}${fromState.search ?? ''}`);
+      if (safe) return safe;
+    }
+    return consumePostLoginRedirect() ?? '/';
+  }
 
   // Credentials step state
   const [username, setUsername] = useState('');
@@ -125,7 +176,7 @@ export function LoginPage() {
         } else if (resp.access_token && resp.user) {
           loginWithToken(resp.access_token, resp.user);
           showToast(t('login.loginSuccess'));
-          navigate('/', { replace: true });
+          navigate(resolvePostLoginRedirect(), { replace: true });
         }
       }).catch((err: Error) => {
         showToast(err.message || t('login.oidcLoginFailed'), 'error');
@@ -153,6 +204,15 @@ export function LoginPage() {
     if (hash.startsWith('#oidc_token=') || searchParams.get('oidc_error')) return;
     autologinAttemptedRef.current = true;
 
+    // Preserve the deep link across the autologin SSO round-trip (#1750). Same
+    // stash the manual OIDC button uses — autologin redirects unauthed visitors
+    // straight to the provider, so without this a QR/deep link would still land
+    // on `/` after SSO.
+    const fromState = (location.state as { from?: { pathname?: string; search?: string } } | null)?.from;
+    if (fromState?.pathname) {
+      stashPostLoginRedirect(`${fromState.pathname}${fromState.search ?? ''}`);
+    }
+
     const providerId = advancedAuthStatus.autologin_provider_id;
     const timeoutPromise = new Promise<never>((_resolve, reject) =>
       setTimeout(() => reject(new Error('autologin timeout')), 5000),
@@ -164,7 +224,7 @@ export function LoginPage() {
       .catch(() => {
         setAutologinFailed(true);
       });
-  }, [advancedAuthStatus, searchParams]);
+  }, [advancedAuthStatus, searchParams, location]);
 
   const localLoginEnabled = advancedAuthStatus?.local_login_enabled !== false;
   const showAutologinBanner = autologinFailed && advancedAuthStatus?.autologin_provider_id != null;
@@ -185,7 +245,7 @@ export function LoginPage() {
         setStep('2fa');
       } else if (resp.access_token && resp.user) {
         showToast(t('login.loginSuccess'));
-        navigate('/');
+        navigate(resolvePostLoginRedirect(), { replace: true });
       }
     },
     onError: (error: Error) => {
@@ -241,7 +301,7 @@ export function LoginPage() {
       if (resp.access_token && resp.user) {
         loginWithToken(resp.access_token, resp.user);
         showToast(t('login.loginSuccess'));
-        navigate('/');
+        navigate(resolvePostLoginRedirect(), { replace: true });
       }
     },
     onError: (error: Error) => {
@@ -254,6 +314,13 @@ export function LoginPage() {
   const oidcLoginMutation = useMutation({
     mutationFn: (providerId: number) => api.getOIDCAuthorizeUrl(providerId),
     onSuccess: (data) => {
+      // Stash the post-login destination from router state so it survives the
+      // provider round-trip (window.location.href kills React state). If the
+      // user landed on /login directly, fromState is absent and we don't stash.
+      const fromState = (location.state as { from?: { pathname?: string; search?: string } } | null)?.from;
+      if (fromState?.pathname) {
+        stashPostLoginRedirect(`${fromState.pathname}${fromState.search ?? ''}`);
+      }
       window.location.href = data.auth_url;
     },
     onError: (error: Error) => {

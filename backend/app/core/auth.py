@@ -21,6 +21,7 @@ from backend.app.core.permissions import Permission
 from backend.app.models.api_key import APIKey
 from backend.app.models.auth_ephemeral import AuthEphemeralToken, TokenType
 from backend.app.models.group import Group, user_groups
+from backend.app.models.settings import Settings
 from backend.app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,37 @@ REFRESH_TOKEN_COOKIE_NAME = "bamdude_refresh"
 # The refresh cookie is only ever sent on these paths — narrows the CSRF
 # surface and keeps unrelated routes from seeing the cookie in their logs.
 REFRESH_TOKEN_COOKIE_PATH = "/api/v1/auth"
+
+# Admin-configurable ceiling on effective session lifetime (#1706, adapted).
+# Upstream clamps the 24 h ACCESS token; our access token is deliberately short
+# (1 h) and auto-refreshes, so the real session lifetime is the REFRESH token
+# TTL. The ceiling therefore clamps the refresh TTL (+ its cookie Max-Age) at
+# login and rotation. 720 h (30 d) matches remember-me + the Pydantic le=720
+# bound; default 720 preserves existing remember-me sessions on upgrade.
+SESSION_MAX_HOURS_HARD_CEILING = 720
+SESSION_MAX_HOURS_DEFAULT = 720
+
+
+async def resolve_session_max_hours(db: AsyncSession) -> int:
+    """Resolve the admin-set session-lifetime ceiling in hours (#1706).
+
+    Reads ``session_max_hours`` from the settings table, clamps to
+    [1, HARD_CEILING], and falls back to DEFAULT on a missing/blank/
+    unparseable/<1 value. DB errors are NOT caught — a broken DB must abort
+    login rather than silently change the session lifetime.
+    """
+    result = await db.execute(select(Settings).where(Settings.key == "session_max_hours"))
+    row = result.scalar_one_or_none()
+    if row is None or not row.value:
+        return SESSION_MAX_HOURS_DEFAULT
+    try:
+        hours = int(row.value)
+    except (TypeError, ValueError):
+        return SESSION_MAX_HOURS_DEFAULT
+    if hours < 1:
+        return SESSION_MAX_HOURS_DEFAULT
+    return min(hours, SESSION_MAX_HOURS_HARD_CEILING)
+
 
 # HTTP Bearer token
 security = HTTPBearer(auto_error=False)
@@ -363,17 +395,24 @@ def _hash_refresh_token(raw: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def refresh_token_ttl(remember_me: bool) -> timedelta:
+def refresh_token_ttl(remember_me: bool, ceiling_hours: int = SESSION_MAX_HOURS_HARD_CEILING) -> timedelta:
     """Absolute DB-side TTL for a refresh token.
 
     Without ``remember_me`` the cookie is a session cookie (closes with the
     browser), but a session-cookie alone doesn't stop a server-side replay
     if the user just locks the screen and leaves the tab open — hence the
     separate 12 h DB-cap that kicks in even if the browser stays open.
+
+    ``ceiling_hours`` clamps the resulting TTL to the admin-configured session
+    ceiling (#1706). Defaults to the hard ceiling so callers that don't pass it
+    keep the pre-#1706 behaviour.
     """
-    if remember_me:
-        return timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS_REMEMBER)
-    return timedelta(hours=REFRESH_TOKEN_EXPIRE_HOURS_SESSION)
+    base = (
+        timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS_REMEMBER)
+        if remember_me
+        else timedelta(hours=REFRESH_TOKEN_EXPIRE_HOURS_SESSION)
+    )
+    return min(base, timedelta(hours=ceiling_hours))
 
 
 async def create_refresh_token(
@@ -382,6 +421,7 @@ async def create_refresh_token(
     username: str,
     remember_me: bool,
     family_id: str | None = None,
+    ceiling_hours: int | None = None,
 ) -> tuple[str, str, datetime]:
     """Mint a refresh token and persist its hash.
 
@@ -391,14 +431,20 @@ async def create_refresh_token(
     ``family_id`` links every rotation descended from one /login. Pass the
     existing id when rotating (so reuse detection can see the lineage);
     leave it None for fresh logins so a new family is created.
+
+    ``ceiling_hours`` is the admin-configured session ceiling (#1706); when
+    None it is resolved from settings here so every call path is clamped even
+    if the caller forgets to thread it.
     """
     from backend.app.models.auth_ephemeral import AuthEphemeralToken
 
+    if ceiling_hours is None:
+        ceiling_hours = await resolve_session_max_hours(db)
     raw_token = secrets.token_urlsafe(48)
     token_hash = _hash_refresh_token(raw_token)
     if family_id is None:
         family_id = secrets.token_hex(16)
-    expires_at = datetime.now(timezone.utc) + refresh_token_ttl(remember_me)
+    expires_at = datetime.now(timezone.utc) + refresh_token_ttl(remember_me, ceiling_hours)
 
     row = AuthEphemeralToken.new_refresh(
         token_hash=token_hash,

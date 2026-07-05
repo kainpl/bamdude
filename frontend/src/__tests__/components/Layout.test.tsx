@@ -261,4 +261,79 @@ describe('Layout', () => {
       });
     });
   });
+
+  describe('Sidebar gate accepts granular read tiers (#1755)', () => {
+    // The default Operators group is seeded with `*:read_own` only (A2 m091) —
+    // never the legacy `*:read`. Before H6 the sidebar gated Archives / Queue /
+    // Files on the legacy flag alone, so those entries hid from every non-admin
+    // even though the underlying API accepted their requests. These pin that the
+    // gate now accepts ANY of the three tiers (legacy / _own / _all).
+    const enableAuthWithUser = (permissions: string[]) => {
+      server.use(
+        http.get('/api/v1/auth/status', () =>
+          HttpResponse.json({ auth_enabled: true, requires_setup: false }),
+        ),
+        http.get('/api/v1/auth/me', () =>
+          HttpResponse.json({
+            id: 1,
+            username: 'tester',
+            role: 'user',
+            is_active: true,
+            is_admin: false,
+            groups: [{ id: 2, name: 'Operators' }],
+            permissions,
+            created_at: '2026-01-01T00:00:00Z',
+          }),
+        ),
+      );
+      window.localStorage.setItem('auth_token', 'test-token');
+    };
+
+    const sidebarLink = (href: string) =>
+      document.querySelector(`aside a[href="${href}"]`);
+
+    it('shows Files in the sidebar when the user only has library:read_own', async () => {
+      enableAuthWithUser(['library:read_own']);
+      render(<Layout />);
+      await waitFor(() => {
+        expect(document.querySelector('aside')).toBeInTheDocument();
+        expect(sidebarLink('/files')).toBeInTheDocument();
+      });
+    });
+
+    it('shows Files in the sidebar when the user only has library:read_all', async () => {
+      enableAuthWithUser(['library:read_all']);
+      render(<Layout />);
+      await waitFor(() => {
+        expect(sidebarLink('/files')).toBeInTheDocument();
+      });
+    });
+
+    it('shows Archives in the sidebar when the user only has archives:read_own', async () => {
+      enableAuthWithUser(['archives:read_own']);
+      render(<Layout />);
+      await waitFor(() => {
+        expect(sidebarLink('/archives')).toBeInTheDocument();
+      });
+    });
+
+    it('shows Queue in the sidebar when the user only has queue:read_own', async () => {
+      enableAuthWithUser(['queue:read_own']);
+      render(<Layout />);
+      await waitFor(() => {
+        expect(sidebarLink('/queue')).toBeInTheDocument();
+      });
+    });
+
+    it('still hides Files/Archives/Queue with none of the three read tiers', async () => {
+      enableAuthWithUser(['printers:read']);
+      render(<Layout />);
+      await waitFor(() => {
+        expect(document.querySelector('aside')).toBeInTheDocument();
+      });
+      expect(sidebarLink('/files')).toBeNull();
+      expect(sidebarLink('/archives')).toBeNull();
+      expect(sidebarLink('/queue')).toBeNull();
+    });
+  });
 });
