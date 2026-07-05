@@ -104,10 +104,31 @@ function buildQueueTimeline({
     const staggerMs = Math.max(0, (printer?.stagger_interval_minutes ?? 0)) * 60 * 1000;
     const rawItems = itemsByQueue.get(queue.id) ?? [];
 
+    // Committed-only forecast (upstream #1743-timeline): the timeline shows what
+    // is really going to run next, not everything parked in the queue. Keep the
+    // actively-printing item, pending items pinned to a future scheduled_time,
+    // and ASAP items chained behind an active print. Drop staged (manual_start —
+    // won't auto-dispatch), waiting (waiting_reason — blocked), and ASAP jobs on
+    // an idle printer (they'd dispatch immediately, so a future bar is fiction).
+    // Filtering up-front so the cursor chaining only accounts for committed work.
+    // (We deliberately do NOT add upstream's per-target_model / "unassigned"
+    // lanes: in our fork those live in the separate AutoQueueItem staging area,
+    // which is by definition uncommitted and doesn't belong on this view.)
+    const printerActive = rawItems.some(it => it.status === 'printing');
+    const committedItems = rawItems.filter(item => {
+      if (item.status === 'printing') return true;
+      if (item.status !== 'pending') return false;
+      if (item.manual_start) return false;
+      if (item.waiting_reason) return false;
+      const sched = item.scheduled_time ? Date.parse(item.scheduled_time) : NaN;
+      if (Number.isFinite(sched) && sched > now) return true;
+      return printerActive; // ASAP: only committed when queued behind an active print
+    });
+
     let cursor = now;
     const slots: TimelineSlot[] = [];
 
-    for (const item of rawItems) {
+    for (const item of committedItems) {
       if (item.status !== 'pending' && item.status !== 'printing') continue;
 
       const duration = (item.print_time_seconds ?? 0) > 0

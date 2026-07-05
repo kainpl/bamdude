@@ -1031,7 +1031,7 @@ function StatusSummaryBar({ printers }: { printers: Printer[] | undefined }) {
   );
 }
 
-type SortOption = 'name' | 'status' | 'model' | 'location';
+type SortOption = 'name' | 'status' | 'model' | 'location' | 'eta';
 type ViewMode = 'expanded' | 'compact';
 
 // Toolbar building blocks (upstream PR #1203). The Printers page header
@@ -7699,6 +7699,33 @@ export function PrintersPage() {
           return getPriority(statusA) - getPriority(statusB);
         });
         break;
+      case 'eta':
+        // Sort by remaining print time so the printer finishing next sits on
+        // top (stage the next job's filament ahead). Tiers: printing-with-ETA
+        // (asc by remaining minutes) > printing-without-ETA-yet > idle > offline.
+        // Data is the cached remaining_time already read by the per-card ETA
+        // label — no new backend round-trip.
+        sorted.sort((a, b) => {
+          const statusA = queryClient.getQueryData<{ connected: boolean; state: string | null; remaining_time: number | null }>(['printerStatus', a.id]);
+          const statusB = queryClient.getQueryData<{ connected: boolean; state: string | null; remaining_time: number | null }>(['printerStatus', b.id]);
+
+          const tier = (s: typeof statusA) => {
+            if (!s?.connected) return 3; // offline last
+            if (s.state === 'RUNNING' && s.remaining_time != null && s.remaining_time > 0) return 0; // printing with ETA
+            if (s.state === 'RUNNING') return 1; // printing without an ETA yet
+            return 2; // idle / finished
+          };
+
+          const ta = tier(statusA);
+          const tb = tier(statusB);
+          if (ta !== tb) return ta - tb;
+          if (ta === 0) {
+            const diff = (statusA!.remaining_time ?? 0) - (statusB!.remaining_time ?? 0);
+            if (diff !== 0) return diff;
+          }
+          return a.name.localeCompare(b.name);
+        });
+        break;
     }
 
     // Apply ascending/descending
@@ -7865,6 +7892,7 @@ export function PrintersPage() {
             { value: 'status', label: t('printers.sort.status') },
             { value: 'model', label: t('printers.sort.model') },
             { value: 'location', label: t('printers.sort.location') },
+            { value: 'eta', label: t('printers.sort.eta') },
           ]}
         />
         <button

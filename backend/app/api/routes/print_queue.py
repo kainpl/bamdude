@@ -9,7 +9,7 @@ from pathlib import Path
 
 import defusedxml.ElementTree as ET
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -25,6 +25,7 @@ from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.project import Project
 from backend.app.models.user import User
 from backend.app.schemas.print_queue import (
+    PrintQueueBatchCreate,
     PrintQueueBulkUpdate,
     PrintQueueBulkUpdateResponse,
     PrintQueueItemCreate,
@@ -411,6 +412,21 @@ async def add_to_queue(
             validate_print_filename(library_file.filename)
         except InvalidFilenameError as e:
             raise HTTPException(400, str(e))
+
+    # Serialize concurrent inserts into the same queue so two appends can't both
+    # read the same MAX(position) and land on a duplicate position in an empty
+    # scope (upstream #1625-followup TOCTOU fix). A transaction-scoped Postgres
+    # advisory lock keyed on the queue closes the window and releases at
+    # commit/rollback; different queues don't contend. SQLite serialises writes
+    # implicitly so this is a no-op there. The dialect is read from the live
+    # session binding (not settings/is_sqlite()) because a test fixture can bind
+    # SQLite while settings.database_url still points at Postgres.
+    bind = db.get_bind()
+    if bind.dialect.name == "postgresql":
+        scope_key = data.queue_id if data.queue_id is not None else 0
+        # classid 1625 namespaces the lock so it can't collide with other
+        # advisory locks elsewhere in the codebase.
+        await db.execute(text("SELECT pg_advisory_xact_lock(1625, :k)"), {"k": scope_key})
 
     # Get next position for this queue
     result = await db.execute(
@@ -818,17 +834,36 @@ async def cancel_queue_item(
 async def stop_queue_item(
     item_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.QUEUE_UPDATE_ALL,
+            Permission.QUEUE_UPDATE_OWN,
+        )
+    ),
 ):
-    """Stop an actively printing queue item."""
+    """Stop an actively printing queue item.
+
+    Ownership-scoped (upstream #1625-followup): QUEUE_UPDATE_OWN holders can stop
+    their own items, QUEUE_UPDATE_ALL any item — mirrors /cancel. Pre-fix this
+    required QUEUE_UPDATE_ALL, so an operator holding only _OWN got a 403 when
+    calling the queue-stop API for their own item. Ownerless items require _ALL:
+    stop is destructive and an _OWN holder can't claim it the way /start does.
+    """
     from backend.app.models.smart_plug import SmartPlug
     from backend.app.services.printer_manager import printer_manager
     from backend.app.services.tasmota import tasmota_service
+
+    user, can_modify_all = auth_result
 
     result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))
     item = result.scalar_one_or_none()
     if not item:
         raise HTTPException(404, "Queue item not found")
+
+    # Ownership check — mirrors /cancel. Ownerless items require _ALL.
+    if not can_modify_all and user is not None:
+        if item.created_by_id is None or item.created_by_id != user.id:
+            raise HTTPException(403, "You can only stop your own queue items")
 
     if item.status != "printing":
         raise HTTPException(400, f"Can only stop items that are printing, current status: '{item.status}'")
@@ -914,13 +949,26 @@ async def stop_queue_item(
 async def start_queue_item(
     item_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.QUEUE_UPDATE_OWN),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.QUEUE_UPDATE_ALL,
+            Permission.QUEUE_UPDATE_OWN,
+        )
+    ),
 ):
     """Manually start a staged (manual_start) queue item.
+
+    Ownership-scoped (upstream #1625-followup): QUEUE_UPDATE_OWN holders can
+    start their own items + claim NULL-owner items (VP-uploaded items arrive
+    unattributed, #1670); QUEUE_UPDATE_ALL can start any item. Pre-fix this
+    required QUEUE_UPDATE_OWN with no ownership check, so _OWN holders could
+    start anyone's queue items via direct API.
 
     This clears the manual_start flag so the scheduler will pick it up,
     or starts immediately if the printer is ready.
     """
+    user, can_modify_all = auth_result
+
     result = await db.execute(
         select(PrintQueueItem)
         .options(
@@ -933,6 +981,13 @@ async def start_queue_item(
     if not item:
         raise HTTPException(404, "Queue item not found")
 
+    # Ownership check — softer than /stop because /start is the entry point for
+    # #1670's VP-import flow: a NULL-owner item is claimable by the first _OWN
+    # holder who clicks ▶ (credited as owner below). A different owner → 403.
+    if not can_modify_all and user is not None:
+        if item.created_by_id is not None and item.created_by_id != user.id:
+            raise HTTPException(403, "You can only start your own queue items")
+
     if item.status != "pending":
         raise HTTPException(400, f"Can only start pending items, current status: '{item.status}'")
 
@@ -943,8 +998,8 @@ async def start_queue_item(
     # its uploader in created_by_id — preserve that; only fill the gap for
     # otherwise-unattributed items so the dispatched archive (our print log)
     # isn't left with an empty User column when auth is on.
-    if item.created_by_id is None and current_user is not None:
-        item.created_by_id = current_user.id
+    if item.created_by_id is None and user is not None:
+        item.created_by_id = user.id
     await db.commit()
 
     # Re-query with full eager loading (queue→printer chain)
@@ -1219,6 +1274,69 @@ async def retry_failed_item(
 # ============================================================================
 # Batch-level operations
 # ============================================================================
+
+
+@router.post("/batch")
+async def group_items_into_batch(
+    data: PrintQueueBatchCreate,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
+):
+    """Group 2+ pending queue items into a new shared batch (upstream #1743
+    "Group as batch"). All items must be pending and in the same printer queue —
+    a batch is a per-queue block. Returns the generated batch_id."""
+    if len(set(data.item_ids)) < 2:
+        raise HTTPException(400, "A batch needs at least 2 items")
+
+    result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id.in_(data.item_ids)))
+    items = result.scalars().all()
+    if len(items) != len(set(data.item_ids)):
+        raise HTTPException(404, "One or more queue items not found")
+    if any(it.status != "pending" for it in items):
+        raise HTTPException(400, "Only pending items can be grouped into a batch")
+    queue_ids = {it.queue_id for it in items}
+    if len(queue_ids) != 1:
+        raise HTTPException(400, "All items must be in the same printer queue")
+
+    batch_id = str(uuid.uuid4())
+    for it in items:
+        it.batch_id = batch_id
+
+    from backend.app.services.queue_counters import update_queue_counters
+
+    await update_queue_counters(db, next(iter(queue_ids)))
+    await db.commit()
+    logger.info("Grouped %s queue items into batch %s", len(items), batch_id)
+    return {"batch_id": batch_id, "count": len(items)}
+
+
+@router.post("/batch/{batch_id}/ungroup")
+async def ungroup_batch(
+    batch_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
+):
+    """Disband a batch (upstream #1743): clear batch_id from its still-in-queue
+    members (pending + printing). Completed/cancelled history keeps its grouping."""
+    result = await db.execute(
+        select(PrintQueueItem).where(
+            PrintQueueItem.batch_id == batch_id,
+            PrintQueueItem.status.in_(["pending", "printing"]),
+        )
+    )
+    items = result.scalars().all()
+    if not items:
+        raise HTTPException(404, "No active items in this batch")
+    queue_id = items[0].queue_id
+    for it in items:
+        it.batch_id = None
+
+    from backend.app.services.queue_counters import update_queue_counters
+
+    await update_queue_counters(db, queue_id)
+    await db.commit()
+    logger.info("Ungrouped batch %s (%s items)", batch_id, len(items))
+    return {"ungrouped": len(items), "batch_id": batch_id}
 
 
 @router.post("/batch/{batch_id}/cancel")

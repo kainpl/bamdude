@@ -3,6 +3,21 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import {
   Pause,
   Play,
   Square,
@@ -10,6 +25,7 @@ import {
   Clock,
   ChevronDown,
   ChevronUp,
+  ChevronRight,
   X,
   Loader2,
   CircleCheck,
@@ -18,6 +34,9 @@ import {
   ChevronsUp,
   ChevronsDown,
   Layers,
+  Ungroup,
+  GripVertical,
+  CheckSquare,
   Pencil,
   MoreVertical,
   Upload,
@@ -311,9 +330,87 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
     onError: (err: Error) => showToast(err.message, 'error'),
   });
 
+  // --- Multi-select + batch grouping + collapse (upstream #1743) ---------------
+  // Selection is scoped to this printer's card — a batch is per-queue, so a
+  // selection can't span cards. Group/Ungroup ride on our existing batch_id.
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const toggleSelect = (id: number) =>
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const clearSelection = () => setSelectedIds(new Set());
+
+  // Per-batch collapse, persisted in localStorage (batch_ids are globally-unique
+  // UUIDs, so one shared key across all cards is safe).
+  const [collapsedBatches, setCollapsedBatches] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem('queueCollapsedBatches');
+      return raw ? new Set<string>(JSON.parse(raw)) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+  const toggleBatchCollapse = (batchId: string) =>
+    setCollapsedBatches(prev => {
+      const next = new Set(prev);
+      if (next.has(batchId)) next.delete(batchId);
+      else next.add(batchId);
+      try {
+        localStorage.setItem('queueCollapsedBatches', JSON.stringify([...next]));
+      } catch {
+        /* localStorage unavailable — collapse just won't persist */
+      }
+      return next;
+    });
+
+  const groupMutation = useMutation({
+    mutationFn: (itemIds: number[]) => api.groupItemsIntoBatch(itemIds),
+    onSuccess: () => {
+      invalidateQueue();
+      clearSelection();
+      showToast(t('queueCard.batch.grouped'), 'success');
+    },
+    onError: (err: Error) => showToast(err.message, 'error'),
+  });
+
+  const ungroupMutation = useMutation({
+    mutationFn: (batchId: string) => api.ungroupBatch(batchId),
+    onSuccess: () => {
+      invalidateQueue();
+      showToast(t('queueCard.batch.ungrouped'), 'success');
+    },
+    onError: (err: Error) => showToast(err.message, 'error'),
+  });
+
+  // Drag-reorder (upstream #1743). Bulk-renumbers the whole pending list via
+  // /queue/reorder. Enabled only in the clean expanded state with no collapsed
+  // batch on this card, so a drag can never move a hidden row or split a batch;
+  // the up/down/bump buttons stay as the always-available fallback.
+  const dndSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+  const reorderQueueMutation = useMutation({
+    mutationFn: (items: { id: number; position: number }[]) => api.reorderQueue(items),
+    onSuccess: () => invalidateQueue(),
+    onError: (err: Error) => showToast(err.message, 'error'),
+  });
+
   const borderClass = STATUS_BORDER[queue.status] ?? STATUS_BORDER.idle;
   const pending = pendingItems ?? [];
   const pendingCount = pending.length;
+  const hasCollapsedBatchHere = pending.some(p => p.batch_id && collapsedBatches.has(p.batch_id));
+  const dragEnabled = expanded && !hasCollapsedBatchHere && hasPermission('queue:update_all');
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!dragEnabled || !over || active.id === over.id) return;
+    const oldIndex = pending.findIndex(p => p.id === active.id);
+    const newIndex = pending.findIndex(p => p.id === over.id);
+    if (oldIndex < 0 || newIndex < 0) return;
+    const reordered = arrayMove(pending, oldIndex, newIndex);
+    reorderQueueMutation.mutate(reordered.map((it, idx) => ({ id: it.id, position: idx + 1 })));
+  };
 
   const canDrop = hasPermission('queue:create');
 
@@ -449,6 +546,14 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
 
   const visibleItems = expanded ? pending : pending.slice(0, 2);
   const hiddenCount = pendingCount - 2;
+
+  // A collapsed batch is represented by its first pending sibling only; the rest
+  // are hidden until expanded. isBatchFirst keys off the pending order.
+  const isBatchFirst = (it: PrintQueueItem) =>
+    !!it.batch_id && pending.find(p => p.batch_id === it.batch_id)?.id === it.id;
+  const renderedItems = visibleItems.filter(
+    it => !(it.batch_id && collapsedBatches.has(it.batch_id)) || isBatchFirst(it),
+  );
 
   return (
     <div
@@ -665,7 +770,31 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
         {/* Pending items list */}
         {pendingCount > 0 && (
           <div className="space-y-1">
-            {visibleItems.map((item: PrintQueueItem) => {
+            {selectedIds.size > 0 && (
+              <div className="flex items-center gap-2 py-1.5 px-2 rounded bg-bambu-dark border border-bambu-dark-tertiary text-xs">
+                <span className="text-white font-medium">
+                  {t('queueCard.batch.nSelected', { count: selectedIds.size })}
+                </span>
+                <button
+                  onClick={() => groupMutation.mutate([...selectedIds])}
+                  disabled={selectedIds.size < 2 || groupMutation.isPending || !hasPermission('queue:update_all')}
+                  className="ml-auto px-2 py-0.5 rounded bg-bambu-green/15 text-bambu-green hover:bg-bambu-green/25 disabled:opacity-40 flex items-center gap-1"
+                  title={t('queueCard.batch.groupAsBatch')}
+                >
+                  <Layers className="w-3 h-3" />
+                  {t('queueCard.batch.groupAsBatch')}
+                </button>
+                <button
+                  onClick={clearSelection}
+                  className="px-2 py-0.5 rounded text-bambu-gray hover:text-white"
+                >
+                  {t('queueCard.batch.clearSelection')}
+                </button>
+              </div>
+            )}
+            <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+              <SortableContext items={renderedItems.map(i => i.id)} strategy={verticalListSortingStrategy}>
+            {renderedItems.map((item: PrintQueueItem) => {
               // Detect if this item is part of an active batch (≥2 pending siblings).
               const batchSize = item.batch_id
                 ? pending.filter(p => p.batch_id === item.batch_id).length
@@ -709,6 +838,17 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
                   onCloneBatch={
                     item.batch_id ? () => cloneBatchMutation.mutate(item.batch_id!) : undefined
                   }
+                  onUngroupBatch={
+                    item.batch_id ? () => ungroupMutation.mutate(item.batch_id!) : undefined
+                  }
+                  selected={selectedIds.has(item.id)}
+                  onToggleSelect={() => toggleSelect(item.id)}
+                  isBatchFirst={isBatchFirst(item)}
+                  batchCollapsed={!!item.batch_id && collapsedBatches.has(item.batch_id)}
+                  onToggleBatchCollapse={
+                    item.batch_id ? () => toggleBatchCollapse(item.batch_id!) : undefined
+                  }
+                  draggable={dragEnabled}
                   batchSize={batchSize}
                   isInBatch={isInBatch}
                   isFirst={isFirst}
@@ -729,6 +869,8 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
                 />
               );
             })}
+              </SortableContext>
+            </DndContext>
             {/* Gradient fade + expand button */}
             {hiddenCount > 0 && !expanded && (
               <div className="relative">
@@ -799,6 +941,13 @@ interface PendingItemRowProps {
   onEdit?: () => void;
   onCancelBatch?: () => void;
   onCloneBatch?: () => void;
+  onUngroupBatch?: () => void;
+  selected: boolean;
+  onToggleSelect: () => void;
+  isBatchFirst: boolean;
+  batchCollapsed: boolean;
+  onToggleBatchCollapse?: () => void;
+  draggable: boolean;
   batchSize: number;
   isInBatch: boolean;
   isFirst: boolean;
@@ -824,6 +973,13 @@ function PendingItemRow({
   onEdit,
   onCancelBatch,
   onCloneBatch,
+  onUngroupBatch,
+  selected,
+  onToggleSelect,
+  isBatchFirst,
+  batchCollapsed,
+  onToggleBatchCollapse,
+  draggable,
   batchSize,
   isInBatch,
   isFirst,
@@ -838,6 +994,14 @@ function PendingItemRow({
   const [menuOpen, setMenuOpen] = useState(false);
   const [batchDialog, setBatchDialog] = useState<null | 'cancel' | 'clone'>(null);
   const navigate = useNavigate();
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: item.id,
+  });
+  const sortableStyle = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : undefined,
+  };
   const canUpdate = hasPermission('queue:update_all');
   const canCreate = hasPermission('queue:create');
   const name = item.archive_name || item.library_file_name || `File #${item.archive_id || item.library_file_id}`;
@@ -867,13 +1031,51 @@ function PendingItemRow({
   return (
     <>
       <div
+        ref={setNodeRef}
         className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-bambu-dark transition-colors group"
-        style={
-          batchAccent
-            ? { borderLeft: `3px solid ${batchAccent.color}`, paddingLeft: '0.5rem' }
-            : undefined
-        }
+        style={{
+          ...sortableStyle,
+          ...(batchAccent ? { borderLeft: `3px solid ${batchAccent.color}`, paddingLeft: '0.5rem' } : {}),
+        }}
+        {...(draggable ? attributes : {})}
       >
+        {draggable && (
+          <button
+            {...listeners}
+            className="p-0.5 -ml-1 rounded text-bambu-gray hover:text-white cursor-grab active:cursor-grabbing touch-none flex-shrink-0"
+            title={t('queueCard.actions.drag')}
+            aria-label={t('queueCard.actions.drag')}
+          >
+            <GripVertical className="w-3.5 h-3.5" />
+          </button>
+        )}
+        {canUpdate && (
+          <button
+            onClick={onToggleSelect}
+            className="flex-shrink-0 text-bambu-gray hover:text-white"
+            title={t('queueCard.batch.select')}
+            aria-pressed={selected}
+          >
+            {selected ? (
+              <CheckSquare className="w-3.5 h-3.5 text-bambu-green" />
+            ) : (
+              <Square className="w-3.5 h-3.5" />
+            )}
+          </button>
+        )}
+        {isInBatch && isBatchFirst && onToggleBatchCollapse && (
+          <button
+            onClick={onToggleBatchCollapse}
+            className="flex-shrink-0 text-bambu-gray hover:text-white"
+            title={batchCollapsed ? t('queueCard.batch.expand') : t('queueCard.batch.collapse')}
+          >
+            {batchCollapsed ? (
+              <ChevronRight className="w-3.5 h-3.5" />
+            ) : (
+              <ChevronDown className="w-3.5 h-3.5" />
+            )}
+          </button>
+        )}
         <span className="text-xs text-bambu-gray w-5 text-right flex-shrink-0">
           {displayNumber}
         </span>
@@ -1036,6 +1238,19 @@ function PendingItemRow({
                   {isInBatch && (
                     <>
                       <div className="border-t border-bambu-dark-tertiary my-1" />
+                      {onUngroupBatch && (
+                        <button
+                          disabled={!canUpdate}
+                          onClick={() => {
+                            setMenuOpen(false);
+                            onUngroupBatch();
+                          }}
+                          className="w-full text-left px-3 py-1.5 text-white hover:bg-bambu-dark disabled:opacity-40 disabled:hover:bg-transparent flex items-center gap-2"
+                        >
+                          <Ungroup className="w-3.5 h-3.5" />
+                          {t('queueCard.batch.ungroup')}
+                        </button>
+                      )}
                       <button
                         disabled={!canCreate}
                         onClick={() => {

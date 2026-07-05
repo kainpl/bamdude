@@ -421,6 +421,102 @@ class TestQueueOwnershipPermissions(TestOwnershipPermissionsSetup):
 
         assert response.status_code == 403
 
+    # ------------------------------------------------------------------
+    # Start / Stop ownership gates (upstream #1625-followup)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_cannot_start_others_queue_item(
+        self, async_client: AsyncClient, auth_setup, queue_item_factory
+    ):
+        """_OWN holder cannot start another user's queue item (was an IDOR: /start
+        previously required only QUEUE_UPDATE_OWN with no ownership check)."""
+        item = await queue_item_factory(created_by_id=auth_setup["operator2_user"]["id"])
+
+        response = await async_client.post(
+            f"/api/v1/queue/{item.id}/start",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_can_start_own_queue_item(self, async_client: AsyncClient, auth_setup, queue_item_factory):
+        """_OWN holder can start their own queue item."""
+        item = await queue_item_factory(created_by_id=auth_setup["operator_user"]["id"], manual_start=True)
+
+        response = await async_client.post(
+            f"/api/v1/queue/{item.id}/start",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_can_start_and_claim_ownerless_queue_item(
+        self, async_client: AsyncClient, auth_setup, queue_item_factory, db_session
+    ):
+        """_OWN holder can start a NULL-owner item and is credited as owner
+        (VP-import claim flow, #1670)."""
+        item = await queue_item_factory(created_by_id=None, manual_start=True)
+
+        response = await async_client.post(
+            f"/api/v1/queue/{item.id}/start",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+
+        assert response.status_code == 200
+        await db_session.refresh(item)
+        assert item.created_by_id == auth_setup["operator_user"]["id"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_cannot_stop_others_queue_item(
+        self, async_client: AsyncClient, auth_setup, queue_item_factory
+    ):
+        """_OWN holder cannot stop another user's actively-printing item (was
+        admin-only: /stop previously required QUEUE_UPDATE_ALL)."""
+        item = await queue_item_factory(created_by_id=auth_setup["operator2_user"]["id"], status="printing")
+
+        response = await async_client.post(
+            f"/api/v1/queue/{item.id}/stop",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_cannot_stop_ownerless_queue_item(
+        self, async_client: AsyncClient, auth_setup, queue_item_factory
+    ):
+        """Stop is strict — a NULL-owner item requires _ALL (unlike /start it is
+        not claimable, stopping is destructive)."""
+        item = await queue_item_factory(created_by_id=None, status="printing")
+
+        response = await async_client.post(
+            f"/api/v1/queue/{item.id}/stop",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_can_stop_own_queue_item(self, async_client: AsyncClient, auth_setup, queue_item_factory):
+        """_OWN holder can stop their own actively-printing item."""
+        item = await queue_item_factory(created_by_id=auth_setup["operator_user"]["id"], status="printing")
+
+        response = await async_client.post(
+            f"/api/v1/queue/{item.id}/stop",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+
+        assert response.status_code == 200
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_bulk_update_skips_non_owned_items(self, async_client: AsyncClient, auth_setup, queue_item_factory):

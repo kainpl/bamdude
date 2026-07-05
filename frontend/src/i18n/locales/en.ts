@@ -237,6 +237,7 @@ export default {
       status: 'Status',
       model: 'Model',
       location: 'Location',
+      eta: 'ETA',
       ascending: 'Sort ascending',
       descending: 'Sort descending'
     },
@@ -1047,7 +1048,8 @@ export default {
       viewArchive: 'View archive',
       retry: 'Retry',
       restart: 'Restart',
-      more: 'More'
+      more: 'More',
+      drag: 'Drag to reorder'
     },
     issues: {
       header: 'Issues ({{count}})'
@@ -1062,7 +1064,16 @@ export default {
       cloneAll: 'Clone entire batch ({{count}} copies)',
       cloneOne: 'Add 1 more copy to batch',
       cloneBatch: 'Clone entire batch',
-      sizeHint: 'This item is part of a batch of {{count}} copies.'
+      sizeHint: 'This item is part of a batch of {{count}} copies.',
+      select: 'Select for grouping',
+      nSelected: '{{count}} selected',
+      groupAsBatch: 'Group as batch',
+      clearSelection: 'Clear',
+      ungroup: 'Ungroup batch',
+      collapse: 'Collapse batch',
+      expand: 'Expand batch',
+      grouped: 'Items grouped into a batch',
+      ungrouped: 'Batch ungrouped'
     },
     footer: {
       pending: '{{count}} pending',

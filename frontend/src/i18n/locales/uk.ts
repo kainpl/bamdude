@@ -245,6 +245,7 @@ export default {
       status: 'Статус',
       model: 'Модель',
       location: 'Розташування',
+      eta: 'ETA',
       ascending: 'Сортувати за зростанням',
       descending: 'Сортувати за спаданням'
     },
@@ -1053,7 +1054,8 @@ export default {
       viewArchive: 'Показати архів',
       retry: 'Повторити',
       restart: 'Перезапустити',
-      more: 'Більше'
+      more: 'Більше',
+      drag: 'Перетягніть для зміни порядку'
     },
     issues: {
       header: 'Проблеми ({{count}})'
@@ -1068,7 +1070,16 @@ export default {
       cloneAll: 'Клонувати всю пачку ({{count}} копій)',
       cloneOne: 'Додати ще 1 копію в пачку',
       cloneBatch: 'Клонувати всю пачку',
-      sizeHint: 'Цей елемент є частиною пачки з {{count}} копій.'
+      sizeHint: 'Цей елемент є частиною пачки з {{count}} копій.',
+      select: 'Вибрати для групування',
+      nSelected: 'Вибрано: {{count}}',
+      groupAsBatch: 'Згрупувати в пачку',
+      clearSelection: 'Очистити',
+      ungroup: 'Розгрупувати пачку',
+      collapse: 'Згорнути пачку',
+      expand: 'Розгорнути пачку',
+      grouped: 'Елементи згруповано в пачку',
+      ungrouped: 'Пачку розгруповано'
     },
     footer: {
       pending: '{{count}} в очікуванні',

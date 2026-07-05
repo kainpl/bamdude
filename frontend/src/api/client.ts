@@ -5701,6 +5701,13 @@ export const api = {
   retryQueueItem: (id: number) =>
     request<PrintQueueItem>(`/queue/${id}/retry`, { method: 'POST' }),
   // Batch operations
+  groupItemsIntoBatch: (itemIds: number[]) =>
+    request<{ batch_id: string; count: number }>(`/queue/batch`, {
+      method: 'POST',
+      body: JSON.stringify({ item_ids: itemIds }),
+    }),
+  ungroupBatch: (batchId: string) =>
+    request<{ ungrouped: number; batch_id: string }>(`/queue/batch/${batchId}/ungroup`, { method: 'POST' }),
   cancelBatch: (batchId: string) =>
     request<{ cancelled: number; batch_id: string }>(`/queue/batch/${batchId}/cancel`, { method: 'POST' }),
   skipBatch: (batchId: string) =>

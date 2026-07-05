@@ -21,6 +21,23 @@ async def _create_printer_with_queue(db_session, **printer_kwargs):
     return printer, queue
 
 
+def test_reorder_schema_rejects_duplicate_positions():
+    """PrintQueueReorder rejects duplicate positions in the payload at the schema
+    boundary (upstream #1625-followup) — a buggy drag-drop client that renumbers
+    two items to the same position would leave the queue's ORDER BY ambiguous."""
+    from pydantic import ValidationError
+
+    from backend.app.schemas.print_queue import PrintQueueReorder
+
+    # Unique positions → valid.
+    PrintQueueReorder(items=[{"id": 1, "position": 1}, {"id": 2, "position": 2}])
+
+    # Duplicate positions → rejected (surfaces as HTTP 422 on the route).
+    with pytest.raises(ValidationError) as exc:
+        PrintQueueReorder(items=[{"id": 1, "position": 1}, {"id": 2, "position": 1}])
+    assert "Duplicate positions" in str(exc.value)
+
+
 class TestPrintQueueAPI:
     """Integration tests for /api/v1/queue endpoints."""
 
@@ -116,6 +133,47 @@ class TestPrintQueueAPI:
         response = await async_client.get("/api/v1/queue/")
         assert response.status_code == 200
         assert isinstance(response.json(), list)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_group_and_ungroup_batch(self, async_client: AsyncClient, queue_item_factory, db_session):
+        """Group 2 pending items in one queue into a batch, then ungroup (upstream #1743)."""
+        item1 = await queue_item_factory(status="pending")
+        item2 = await queue_item_factory(queue_id=item1.queue_id, status="pending")
+
+        # Group
+        resp = await async_client.post("/api/v1/queue/batch", json={"item_ids": [item1.id, item2.id]})
+        assert resp.status_code == 200
+        batch_id = resp.json()["batch_id"]
+        assert resp.json()["count"] == 2
+        await db_session.refresh(item1)
+        await db_session.refresh(item2)
+        assert item1.batch_id == batch_id
+        assert item2.batch_id == batch_id
+
+        # Ungroup
+        resp2 = await async_client.post(f"/api/v1/queue/batch/{batch_id}/ungroup")
+        assert resp2.status_code == 200
+        assert resp2.json()["ungrouped"] == 2
+        await db_session.refresh(item1)
+        await db_session.refresh(item2)
+        assert item1.batch_id is None
+        assert item2.batch_id is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_group_batch_rejects_cross_queue_and_too_few(self, async_client: AsyncClient, queue_item_factory):
+        """A batch must be 2+ items in the same printer queue (upstream #1743)."""
+        item1 = await queue_item_factory(status="pending")
+        item_other_queue = await queue_item_factory(status="pending")  # its own new queue
+
+        # Fewer than 2 → 400
+        resp_few = await async_client.post("/api/v1/queue/batch", json={"item_ids": [item1.id]})
+        assert resp_few.status_code == 400
+
+        # Items in different queues → 400
+        resp_cross = await async_client.post("/api/v1/queue/batch", json={"item_ids": [item1.id, item_other_queue.id]})
+        assert resp_cross.status_code == 400
 
     @pytest.mark.asyncio
     @pytest.mark.integration
