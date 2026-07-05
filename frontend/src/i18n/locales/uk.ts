@@ -202,6 +202,11 @@ export default {
     cleanupAfterPrint: 'Очищення після друку',
     mqttConnectionTimeout: 'Тайм-аут з\'єднання MQTT',
     swapMode: 'Swap Mode увімкнено',
+    amsBackup: {
+      titleOn: 'Резервування філаменту AMS: увімкнено',
+      titleOff: 'Резервування філаменту AMS: вимкнено',
+      titleUnknown: 'Резервування філаменту AMS: невідомо'
+    },
     pageView: {
       cards: 'Картки',
       camWall: 'Стіна камер'

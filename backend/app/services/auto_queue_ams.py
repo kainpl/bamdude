@@ -355,4 +355,11 @@ async def compute_ams_mapping_for_printer(
     if not loaded:
         return None
 
+    # AMS Filament Backup gates prefer-lowest here too (#1766), keeping this dispatch path
+    # consistent with print_scheduler — backup OFF means no mid-print same-material switch,
+    # so don't prefer-lowest. Only coerce on explicit False; None preserves current behaviour.
+    if prefer_lowest and status.ams_auto_switch_filament is False:
+        logger.info("[prefer-lowest] skipped: AMS Backup OFF on printer %s", printer_id)
+        prefer_lowest = False
+
     return match_filaments_to_slots(requirements, loaded, prefer_lowest)

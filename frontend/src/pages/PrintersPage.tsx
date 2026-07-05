@@ -31,6 +31,7 @@ import {
   Stethoscope,
   LayoutGrid,
   MonitorPlay,
+  Repeat,
   Pencil,
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
@@ -3544,6 +3545,34 @@ function PrinterCard({
                       {t('printers.filaments')}
                     </span>
                     <div className="flex-1 h-px bg-bambu-dark-tertiary/30" />
+                    {/* AMS Filament Backup status badge (#1766) — glanceable ON/OFF/Unknown;
+                        click opens the AMS settings modal where the toggle lives. */}
+                    {amsData.length > 0 && (status?.connected ?? false) && status?.ams_auto_switch_filament !== undefined && (() => {
+                      const backup = status.ams_auto_switch_filament;
+                      const title = backup === true
+                        ? t('printers.amsBackup.titleOn')
+                        : backup === false
+                          ? t('printers.amsBackup.titleOff')
+                          : t('printers.amsBackup.titleUnknown');
+                      const color = backup === true
+                        ? 'text-bambu-green'
+                        : backup === false
+                          ? 'text-bambu-gray'
+                          : 'text-bambu-gray/50';
+                      const canToggle = hasPermission('printers:update');
+                      return (
+                        <button
+                          type="button"
+                          onClick={canToggle ? () => setAmsSettingsOpen(true) : undefined}
+                          disabled={!canToggle}
+                          title={title}
+                          aria-label={title}
+                          className={`flex items-center p-1 rounded ${color} ${canToggle ? 'hover:bg-bambu-dark-tertiary/30' : 'cursor-default'}`}
+                        >
+                          <Repeat className="w-3 h-3" />
+                        </button>
+                      );
+                    })()}
                     {hasPermission('printers:update') && (status?.connected ?? false) && amsData.length > 0 && (
                       <button
                         type="button"

@@ -2146,36 +2146,50 @@ class BambuMQTTClient:
                                 )
                                 self.state.tray_now = parsed_tray_now
                 elif not self._is_dual_nozzle and 0 <= parsed_tray_now <= 3:
-                    # Single-nozzle printer with tray_now in 0-3 range.
-                    # P2S (and possibly other models) with multiple AMS units sends LOCAL slot IDs
-                    # in tray_now, not global tray IDs (#420). Use the MQTT mapping field
-                    # (snow-encoded) to resolve the correct AMS unit.
-                    ams_exist_raw = ams_data.get("ams_exist_bits", "0")
-                    try:
-                        ams_exist = int(ams_exist_raw, 16) if isinstance(ams_exist_raw, str) else int(ams_exist_raw)
-                    except (ValueError, TypeError):
-                        ams_exist = 0
-                    num_ams = bin(ams_exist).count("1")
-
-                    if num_ams > 1:
-                        # Multiple AMS on single-nozzle - tray_now is likely a local slot ID.
-                        # Cross-reference with MQTT mapping field to find the correct AMS unit.
-                        mapping_raw = self.state.raw_data.get("mapping")
-                        resolved = self._resolve_local_slot_from_mapping(parsed_tray_now, mapping_raw)
-                        if resolved is not None:
-                            if resolved != parsed_tray_now:
-                                logger.debug(
-                                    f"[{self.serial_number}] Multi-AMS tray_now: "
-                                    f"local slot {parsed_tray_now} -> global ID {resolved} (from mapping)"
-                                )
-                            self.state.tray_now = resolved
-                        else:
-                            # No mapping available (not printing, or ambiguous) - use as-is.
-                            # This matches the old behavior and is correct for AMS 0.
-                            self.state.tray_now = parsed_tray_now
+                    # #1822: on an all-external-spool print the slicer maps every slot to -1;
+                    # the firmware still reports tray_now = the physical slot, which stuck the
+                    # H2S active-tray highlight on AMS slot 1. Promote to 254 (external spool)
+                    # so the highlight lands on the external spool. Narrow scope — only the
+                    # all-(-1) mapping; AMS-only [5] and mixed [5,-1] mappings fall through.
+                    captured = self._captured_ams_mapping
+                    if captured and all(s == -1 for s in captured):
+                        if self.state.tray_now != 254:
+                            logger.debug(
+                                f"[{self.serial_number}] tray_now external-spool override (#1822): "
+                                f"slot {parsed_tray_now} -> 254"
+                            )
+                        self.state.tray_now = 254
                     else:
-                        # Single AMS - local slot 0-3 equals global ID
-                        self.state.tray_now = parsed_tray_now
+                        # Single-nozzle printer with tray_now in 0-3 range.
+                        # P2S (and possibly other models) with multiple AMS units sends LOCAL slot IDs
+                        # in tray_now, not global tray IDs (#420). Use the MQTT mapping field
+                        # (snow-encoded) to resolve the correct AMS unit.
+                        ams_exist_raw = ams_data.get("ams_exist_bits", "0")
+                        try:
+                            ams_exist = int(ams_exist_raw, 16) if isinstance(ams_exist_raw, str) else int(ams_exist_raw)
+                        except (ValueError, TypeError):
+                            ams_exist = 0
+                        num_ams = bin(ams_exist).count("1")
+
+                        if num_ams > 1:
+                            # Multiple AMS on single-nozzle - tray_now is likely a local slot ID.
+                            # Cross-reference with MQTT mapping field to find the correct AMS unit.
+                            mapping_raw = self.state.raw_data.get("mapping")
+                            resolved = self._resolve_local_slot_from_mapping(parsed_tray_now, mapping_raw)
+                            if resolved is not None:
+                                if resolved != parsed_tray_now:
+                                    logger.debug(
+                                        f"[{self.serial_number}] Multi-AMS tray_now: "
+                                        f"local slot {parsed_tray_now} -> global ID {resolved} (from mapping)"
+                                    )
+                                self.state.tray_now = resolved
+                            else:
+                                # No mapping available (not printing, or ambiguous) - use as-is.
+                                # This matches the old behavior and is correct for AMS 0.
+                                self.state.tray_now = parsed_tray_now
+                        else:
+                            # Single AMS - local slot 0-3 equals global ID
+                            self.state.tray_now = parsed_tray_now
                 else:
                     # tray_now > 3 means it's already a global ID, or 255 means unloaded
                     # Note: Do NOT clear pending_tray_target on tray_now=255 here.
@@ -2562,7 +2576,12 @@ class BambuMQTTClient:
             if new_layer > old_layer and self.on_layer_change:
                 self.on_layer_change(new_layer)
         if "total_layer_num" in data:
-            self.state.total_layers = int(data["total_layer_num"])
+            # Guard against the firmware's end-of-print total_layer_num=0 push clobbering the
+            # cached total — a zeroed total zeroed the linear-usage denominator and credited
+            # every gram of an AMS-Backup mid-print spool swap to the 2nd spool (#1771).
+            new_total = int(data["total_layer_num"])
+            if new_total > 0:
+                self.state.total_layers = new_total
 
         # Fan speeds (MQTT sends as string "0"-"15" representing speed levels, or percentage)
         # Convert to 0-100 percentage for display
@@ -3681,6 +3700,9 @@ class BambuMQTTClient:
             self.state.hms_errors = []
             # Reset layer tracking for new print (needed for layer-based timelapse)
             self.state.layer_num = 0
+            # Reset total_layers too so the next print's linear-usage denominator starts clean
+            # (paired with the total_layer_num>0 guard above, #1771)
+            self.state.total_layers = 0
             # Reset completion tracking for new print
             self._was_running = True
             self._completion_triggered = False

@@ -863,14 +863,17 @@ async def _track_from_3mf(
                     mm_at_end = get_cumulative_usage_at_layer(split_layer_usage, seg_end_layer).get(filament_id, 0)
                     segment_grams = mm_to_grams(mm_at_end - mm_at_start, diameter, density)
                 else:
-                    # No per-layer data: linear fallback by layer ratio
+                    # No per-layer data: linear fallback by layer ratio. Cascade the
+                    # denominator — total_layers, then the firmware's last_layer_num — so a
+                    # clobbered/absent total no longer zeroes every non-last segment and dumps
+                    # the whole print's weight on the last spool (#1771). If neither is known,
+                    # split equally across the tray changes rather than all-to-last.
                     seg_end_layer = tray_changes[seg_idx + 1][1]
-                    total_layers = state.total_layers if state else 0
-                    if total_layers > 0:
-                        segment_grams = total_weight * (seg_end_layer - seg_start_layer) / total_layers
+                    denom = (state.total_layers if state else 0) or last_layer_num
+                    if denom > 0:
+                        segment_grams = total_weight * (seg_end_layer - seg_start_layer) / denom
                     else:
-                        # Can't compute ratio - assign all to last segment
-                        segment_grams = 0.0
+                        segment_grams = total_weight / len(tray_changes)
 
                 sum_previous += segment_grams
                 if segment_grams <= 0:

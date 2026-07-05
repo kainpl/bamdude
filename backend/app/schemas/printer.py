@@ -356,6 +356,8 @@ class PrinterStatus(BaseModel):
     firmware_version: str | None = None
     # Developer LAN mode: True = enabled, False = disabled (MQTT encryption), None = unknown
     developer_mode: bool | None = None
+    # AMS Filament Backup (auto_switch_filament): True = on, False = off, None = unknown (#1766)
+    ams_auto_switch_filament: bool | None = None
     # Currently executing macro name (None = no macro running)
     macro_executing: str | None = None
     # Queue plate-clear gate (#961): True means the printer is waiting on

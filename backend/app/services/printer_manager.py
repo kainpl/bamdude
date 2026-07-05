@@ -1284,6 +1284,8 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
         "ams_status_main": state.ams_status_main,
         "ams_status_sub": state.ams_status_sub,
         "tray_now": state.tray_now,
+        # AMS Filament Backup (auto_switch_filament): True/False/None (#1766)
+        "ams_auto_switch_filament": state.ams_auto_switch_filament,
         # Per-AMS extruder map: {ams_id: extruder_id} where 0=right, 1=left
         "ams_extruder_map": ams_extruder_map,
         # WiFi signal strength

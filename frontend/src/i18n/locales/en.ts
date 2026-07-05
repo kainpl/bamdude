@@ -202,6 +202,11 @@ export default {
     cleanupAfterPrint: 'Cleanup After Print',
     mqttConnectionTimeout: 'MQTT Connection Timeout',
     swapMode: 'Swap Mode enabled',
+    amsBackup: {
+      titleOn: 'AMS Filament Backup: On',
+      titleOff: 'AMS Filament Backup: Off',
+      titleUnknown: 'AMS Filament Backup: Unknown'
+    },
     pageView: {
       cards: 'Cards',
       camWall: 'Cam wall'
