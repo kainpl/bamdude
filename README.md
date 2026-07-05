@@ -253,13 +253,9 @@ pip install -r requirements.txt
 uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 ```
 
-**Windows (native):** run the guided installer in PowerShell — it installs Git + Python via `winget`, sets up a venv, and can register BamDude as a Windows Service:
+**Windows (native):** download the latest `bamdude-windows-setup.exe` from the [Releases page](https://github.com/kainpl/bamdude/releases) and run it. It's a self-contained installer (embedded Python — no Python or Node install required) that sets up a data directory and registers BamDude as an NSSM-supervised Windows Service that autostarts on boot.
 
-```powershell
-powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercontent.com/kainpl/bamdude/main/install/windows-installer.ps1 -OutFile windows-installer.ps1; .\windows-installer.ps1"
-```
-
-See [`install/README.md`](install/README.md#windows-installerps1-windows-1011) for options.
+See [`install/README.md`](install/README.md#windows-installer-exe-windows-1011) for options, or [`installers/windows/`](installers/windows/) to build the installer yourself.
 
 ### Upgrading or migrating
 
