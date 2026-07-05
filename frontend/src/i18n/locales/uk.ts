@@ -6375,6 +6375,7 @@ export default {
     noUsageData: 'Немає даних про використання - неможливо побудувати прогноз запасів.',
     // Заголовки таблиці
     sku: 'SKU',
+    spools: 'Котушки',
     material: 'Матеріал',
     stock: 'Запас',
     dailyRate: 'Темп',
@@ -6415,7 +6416,7 @@ export default {
     globalLeadTimeSaved: 'Глобальний термін постачання збережено',
     globalLeadTime: 'Глобальний термін постачання',
     globalLeadTimeHint: 'Мінімальний термін постачання - використовується в розрахунку точки замовлення для всіх SKU',
-    skuLeadTimeOverride: 'Перевизначення терміну для SKU',
+    skuLeadTimeOverride: 'Перевизначення терміну',
     skuLeadTimeHint: '0 = використовувати глобальний термін. Встанови >0, щоб перевизначити для цього SKU.',
     safetyMarginLabel: 'Запас безпеки',
     effectiveLeadTime: 'Фактичний термін постачання',

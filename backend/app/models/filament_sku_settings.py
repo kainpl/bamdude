@@ -24,13 +24,16 @@ class FilamentSkuSettings(Base):
         # On Postgres standard UNIQUE handles the tuple; SQLite treats NULL as
         # distinct so the constraint is best-effort there (callers upsert via
         # the API endpoint which loads-then-mutates, dodging the race).
-        UniqueConstraint("material", "subtype", "brand", name="uq_filament_sku"),
+        # color_name is part of the key so forecasts distinguish e.g. White vs
+        # Black PLA Matte (upstream Bambuddy #1814 / colour-aware forecasting).
+        UniqueConstraint("material", "subtype", "brand", "color_name", name="uq_filament_sku"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     material: Mapped[str] = mapped_column(String(50))
     subtype: Mapped[str | None] = mapped_column(String(50))
     brand: Mapped[str | None] = mapped_column(String(100))
+    color_name: Mapped[str | None] = mapped_column(String(100))
     lead_time_days: Mapped[int] = mapped_column(Integer, default=0)
     safety_margin_value: Mapped[int] = mapped_column(Integer, default=14)
     # "days" → multiplied by daily-rate to form a grams figure; "g" → already grams.

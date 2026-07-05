@@ -2465,6 +2465,7 @@ class FilamentSkuSettingsResponse(BaseModel):
     material: str
     subtype: str | None
     brand: str | None
+    color_name: str | None
     lead_time_days: int
     safety_margin_value: int
     safety_margin_unit: str
@@ -2478,6 +2479,7 @@ class FilamentSkuSettingsUpsert(BaseModel):
     material: str
     subtype: str | None = None
     brand: str | None = None
+    color_name: str | None = None
     lead_time_days: int = 0
     safety_margin_value: int = 14
     safety_margin_unit: str = "days"
@@ -2512,6 +2514,7 @@ async def upsert_sku_settings(
             FilamentSkuSettings.material == data.material,
             FilamentSkuSettings.subtype == data.subtype,
             FilamentSkuSettings.brand == data.brand,
+            FilamentSkuSettings.color_name == data.color_name,
         )
     )
     row = result.scalar_one_or_none()
@@ -2525,6 +2528,7 @@ async def upsert_sku_settings(
             material=data.material,
             subtype=data.subtype,
             brand=data.brand,
+            color_name=data.color_name,
             lead_time_days=data.lead_time_days,
             safety_margin_value=data.safety_margin_value,
             safety_margin_unit=data.safety_margin_unit,
@@ -2544,6 +2548,7 @@ class ShoppingListItemResponse(BaseModel):
     material: str
     subtype: str | None
     brand: str | None
+    color_name: str | None
     quantity_spools: int
     note: str | None
     status: str
@@ -2558,6 +2563,7 @@ class ShoppingListItemCreate(BaseModel):
     material: str
     subtype: str | None = None
     brand: str | None = None
+    color_name: str | None = None
     quantity_spools: int = 1
     note: str | None = None
 
@@ -2572,6 +2578,7 @@ def _shopping_list_item_to_response(item) -> "ShoppingListItemResponse":
         material=item.material,
         subtype=item.subtype,
         brand=item.brand,
+        color_name=item.color_name,
         quantity_spools=item.quantity_spools,
         note=item.note,
         status=item.status or "pending",
@@ -2605,6 +2612,7 @@ async def add_to_shopping_list(
         material=data.material,
         subtype=data.subtype,
         brand=data.brand,
+        color_name=data.color_name,
         quantity_spools=data.quantity_spools,
         note=data.note,
     )

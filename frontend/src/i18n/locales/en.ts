@@ -6374,6 +6374,7 @@ export default {
     noUsageData: 'No usage data available - cannot project stock timeline.',
     // Table headers
     sku: 'SKU',
+    spools: 'Spools',
     material: 'Material',
     stock: 'Stock',
     dailyRate: 'Rate',
@@ -6414,7 +6415,7 @@ export default {
     globalLeadTimeSaved: 'Global lead time saved',
     globalLeadTime: 'Global lead time',
     globalLeadTimeHint: 'Global lead time floor - used in reorder point calculation for all SKUs',
-    skuLeadTimeOverride: 'SKU Lead Time Override',
+    skuLeadTimeOverride: 'Lead Time Override',
     skuLeadTimeHint: '0 = use global lead time. Set >0 to override for this SKU.',
     safetyMarginLabel: 'Safety Margin',
     effectiveLeadTime: 'Effective Lead Time',
