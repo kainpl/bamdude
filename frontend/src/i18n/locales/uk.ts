@@ -1716,6 +1716,7 @@ export default {
     checkPrinterFirmware: 'Перевіряти прошивку принтера',
     includeBetaUpdates: 'Включати бета-версії',
     includeBetaUpdatesDesc: 'Сповіщати про бета та попередні версії при перевірці оновлень',
+    localLogin: { disable: 'Вимкнути локальний вхід за логіном/паролем', disableHint: 'Коли увімкнено, входити можуть лише SSO-провайдери. LDAP не зачіпається. Встановіть BAMDUDE_LOCAL_LOGIN=true на сервері, щоб зберегти шлях відновлення.' },
     telemetry: 'Анонімна статистика використання',
     telemetryDesc: 'Раз на добу надсилати анонімний знімок (версія, платформа, використання функцій), щоб допомогти розвитку. Без імен, IP, серійників чи вмісту файлів. Можна вимкнути будь-коли.',
     // Queue
@@ -2409,6 +2410,8 @@ export default {
         requireEmailVerified: 'Вимагати email_verified',
         requireEmailVerifiedDesc: 'Довіряти стандартному claim "email" лише коли провайдер явно встановлює email_verified=true. Вимкніть для застарілих IdP, які не надсилають цей claim. Обов\'язково ON, коли увімкнено авто-прив\'язку з "email" claim.',
         requireEmailVerifiedNAForCustomClaim: 'Не застосовується - кастомні claim ніколи не звертаються до email_verified.',
+        autologin: 'Автоматичний вхід',
+        autologinDesc: 'Перенаправляти неавтентифікованих відвідувачів одразу до цього провайдера. Лише один провайдер може мати цей прапорець.',
         secretHint: 'залишіть порожнім для збереження',
         secretPlaceholder: 'новий secret'
       }
@@ -2537,6 +2540,8 @@ export default {
     signIn: 'Увійти',
     signingIn: 'Вхід...',
     forgotPassword: 'Забули пароль?',
+    autologinFailed: 'Автоматичний вхід через SSO не вдався. Оберіть провайдера нижче, щоб продовжити.',
+    localDisabledNotice: 'Локальний вхід вимкнено. Скористайтеся одним із SSO-провайдерів нижче.',
     loginSuccess: 'Вхід успішний',
     loginFailed: 'Помилка входу',
     enterCredentials: "Введіть ім'я користувача та пароль",

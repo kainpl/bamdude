@@ -134,6 +134,41 @@ export function LoginPage() {
     }
   }, [searchParams]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // #1589: autologin redirect with fallback. When the backend reports an
+  // `autologin_provider_id`, redirect unauthenticated visitors directly to
+  // that provider's authorize URL on mount — unless the URL carries
+  // `?fallback=local` (the documented recovery path that pairs with the
+  // server-side BAMDUDE_LOCAL_LOGIN env-var bypass). The authorize-URL fetch is
+  // raced against a 5-second timeout; on timeout or fetch error we skip the
+  // redirect and render the normal page, surfacing a banner so the user
+  // understands why autologin didn't kick in.
+  const [autologinFailed, setAutologinFailed] = useState(false);
+  const autologinAttemptedRef = useRef(false);
+  useEffect(() => {
+    if (autologinAttemptedRef.current) return;
+    if (searchParams.get('fallback') === 'local') return;
+    if (!advancedAuthStatus || !advancedAuthStatus.autologin_provider_id) return;
+    // Don't redirect mid-OIDC-exchange (we're already coming back from the IdP).
+    const hash = window.location.hash;
+    if (hash.startsWith('#oidc_token=') || searchParams.get('oidc_error')) return;
+    autologinAttemptedRef.current = true;
+
+    const providerId = advancedAuthStatus.autologin_provider_id;
+    const timeoutPromise = new Promise<never>((_resolve, reject) =>
+      setTimeout(() => reject(new Error('autologin timeout')), 5000),
+    );
+    Promise.race([api.getOIDCAuthorizeUrl(providerId), timeoutPromise])
+      .then((result) => {
+        window.location.href = (result as { auth_url: string }).auth_url;
+      })
+      .catch(() => {
+        setAutologinFailed(true);
+      });
+  }, [advancedAuthStatus, searchParams]);
+
+  const localLoginEnabled = advancedAuthStatus?.local_login_enabled !== false;
+  const showAutologinBanner = autologinFailed && advancedAuthStatus?.autologin_provider_id != null;
+
   // --- Step 1: Credentials login ---
   const loginMutation = useMutation({
     mutationFn: () => login(username, password, rememberMe),
@@ -542,6 +577,19 @@ export function LoginPage() {
           </p>
         </div>
 
+        {showAutologinBanner && (
+          <div className="mt-6 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+            {t('login.autologinFailed')}
+          </div>
+        )}
+
+        {!localLoginEnabled && (
+          <div className="mt-6 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark/40 px-4 py-3 text-sm text-bambu-gray">
+            {t('login.localDisabledNotice')}
+          </div>
+        )}
+
+        {localLoginEnabled && (
         <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
           <div className="space-y-4">
             <div>
@@ -615,6 +663,7 @@ export function LoginPage() {
             </button>
           </div>
         </form>
+        )}
 
         {/* OIDC provider buttons */}
         {oidcProviders && oidcProviders.length > 0 && (

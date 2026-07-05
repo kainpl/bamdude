@@ -23,6 +23,7 @@ const EMPTY_FORM: OIDCProviderCreate = {
   require_email_verified: true,
   icon_url: undefined,
   default_group_id: null,
+  is_autologin: false,
 };
 
 // Common email-claim choices: PocketID/Authentik/Keycloak/Authelia/Google
@@ -176,6 +177,13 @@ function ProviderForm({
                 ? t('settings.oidc.form.requireEmailVerifiedNAForCustomClaim')
                 : t('settings.oidc.form.requireEmailVerifiedDesc')}
             </p>
+          </div>
+        </label>
+        <label className="flex items-center gap-3 cursor-pointer w-full">
+          <Toggle checked={form.is_autologin ?? false} onChange={(v) => set('is_autologin', v)} />
+          <div>
+            <p className="text-white text-sm">{t('settings.oidc.form.autologin')}</p>
+            <p className="text-bambu-gray text-xs">{t('settings.oidc.form.autologinDesc')}</p>
           </div>
         </label>
       </div>
@@ -371,6 +379,7 @@ export function OIDCProviderSettings() {
                     require_email_verified: provider.require_email_verified,
                     icon_url: provider.icon_url ?? undefined,
                     default_group_id: provider.default_group_id ?? null,
+                    is_autologin: provider.is_autologin,
                   }}
                   onSave={(data) => updateMutation.mutate({ id: provider.id, data })}
                   onCancel={() => setEditingId(null)}

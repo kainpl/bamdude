@@ -1702,6 +1702,7 @@ export default {
     checkPrinterFirmware: 'Check printer firmware',
     includeBetaUpdates: 'Include beta versions',
     includeBetaUpdatesDesc: 'Notify about beta and prerelease versions when checking for updates',
+    localLogin: { disable: 'Disable local username/password login', disableHint: 'When enabled, only SSO providers can sign in. LDAP is unaffected. Set BAMDUDE_LOCAL_LOGIN=true on the server to keep a recovery path.' },
     telemetry: 'Anonymous usage statistics',
     telemetryDesc: 'Send a daily anonymized snapshot (version, platform, feature usage) to help guide development. No names, IPs, serials or file contents. Turn off anytime.',
     // Queue
@@ -2393,6 +2394,8 @@ export default {
         requireEmailVerified: 'Require email_verified',
         requireEmailVerifiedDesc: 'Only trust the standard "email" claim when the provider explicitly sets email_verified=true. Disable for legacy IdPs that never send the claim. Required ON when auto-link is on with the "email" claim.',
         requireEmailVerifiedNAForCustomClaim: 'Not used - custom claims never consult email_verified.',
+        autologin: 'Autologin',
+        autologinDesc: 'Redirect unauthenticated visitors straight to this provider. Only one provider can carry this flag.',
         secretHint: 'leave blank to keep current',
         secretPlaceholder: 'new secret'
       }
@@ -2521,6 +2524,8 @@ export default {
     signIn: 'Sign in',
     signingIn: 'Logging in...',
     forgotPassword: 'Forgot your password?',
+    autologinFailed: 'Automatic SSO sign-in failed. Pick a provider below to continue.',
+    localDisabledNotice: 'Local sign-in is disabled. Use one of the SSO providers below.',
     loginSuccess: 'Logged in successfully',
     loginFailed: 'Login failed',
     enterCredentials: 'Please enter username and password',

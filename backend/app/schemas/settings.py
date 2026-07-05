@@ -332,6 +332,18 @@ class AppSettings(BaseModel):
         description="Enable user email notifications for print job events (requires Advanced Authentication)",
     )
 
+    # Local login (#1589 / G8-H1) — when False, /auth/login rejects username+password
+    # (HTTP 401, generic) and the login page hides the credentials form, leaving only
+    # OIDC SSO. LDAP has its own ldap_enabled toggle and is unaffected.
+    # BAMDUDE_LOCAL_LOGIN=true on the server bypasses this at the route level (recovery).
+    local_login_enabled: bool = Field(
+        default=True,
+        description=(
+            "Allow username + password login on /auth/login. Disable when only SSO should be usable. "
+            "BAMDUDE_LOCAL_LOGIN=true on the server overrides this to keep a recovery path open."
+        ),
+    )
+
     # LDAP authentication
     ldap_enabled: bool = Field(default=False, description="Enable LDAP authentication")
     ldap_server_url: str = Field(default="", description="LDAP server URL (e.g., ldap://ldap.example.com:389)")
@@ -411,6 +423,7 @@ class AppSettingsUpdate(BaseModel):
     check_updates: bool | None = None
     check_printer_firmware: bool | None = None
     include_beta_updates: bool | None = None
+    local_login_enabled: bool | None = None  # #1589
     telemetry_enabled: bool | None = None
     language: str | None = None
     bed_cooled_threshold: float | None = None

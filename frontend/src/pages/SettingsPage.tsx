@@ -700,7 +700,7 @@ export function SettingsPage() {
   const obicoActive = !!(obicoStatus?.is_running && obicoStatus?.enabled);
 
   // Advanced auth status for user creation
-  const { data: advancedAuthStatus = { advanced_auth_enabled: false, smtp_configured: false } } = useQuery({
+  const { data: advancedAuthStatus = { advanced_auth_enabled: false, smtp_configured: false, local_login_enabled: true, autologin_provider_id: null } } = useQuery({
     queryKey: ['advancedAuthStatus'],
     queryFn: () => api.getAdvancedAuthStatus(),
   });
@@ -1127,6 +1127,7 @@ export function SettingsPage() {
       settings.check_updates !== localSettings.check_updates ||
       (settings.check_printer_firmware ?? true) !== (localSettings.check_printer_firmware ?? true) ||
       (settings.include_beta_updates ?? false) !== (localSettings.include_beta_updates ?? false) ||
+      (settings.local_login_enabled ?? true) !== (localSettings.local_login_enabled ?? true) ||
       (settings.telemetry_enabled ?? true) !== (localSettings.telemetry_enabled ?? true) ||
       (settings.bed_cooled_threshold ?? 35) !== (localSettings.bed_cooled_threshold ?? 35) ||
       settings.ams_humidity_good !== localSettings.ams_humidity_good ||
@@ -1216,6 +1217,7 @@ export function SettingsPage() {
         check_updates: localSettings.check_updates,
         check_printer_firmware: localSettings.check_printer_firmware,
         include_beta_updates: localSettings.include_beta_updates,
+        local_login_enabled: localSettings.local_login_enabled,
         telemetry_enabled: localSettings.telemetry_enabled,
         bed_cooled_threshold: localSettings.bed_cooled_threshold,
         ams_humidity_good: localSettings.ams_humidity_good,
@@ -5768,7 +5770,23 @@ export function SettingsPage() {
           )}
 
           {usersSubTab === 'oidc' && isAdmin && (
-            <div className="max-w-3xl">
+            <div className="max-w-3xl space-y-4">
+              <Card>
+                <CardContent className="space-y-3 p-4">
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={localSettings.local_login_enabled === false}
+                      onChange={(e) => updateSetting('local_login_enabled', !e.target.checked)}
+                      className="mt-1 h-4 w-4 rounded border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-green focus:ring-bambu-green/50 cursor-pointer"
+                    />
+                    <div>
+                      <p className="text-sm font-medium text-white">{t('settings.localLogin.disable')}</p>
+                      <p className="text-xs text-bambu-gray mt-0.5">{t('settings.localLogin.disableHint')}</p>
+                    </div>
+                  </label>
+                </CardContent>
+              </Card>
               <OIDCProviderSettings />
             </div>
           )}

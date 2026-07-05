@@ -181,6 +181,15 @@ _TRUSTED_PROXY_IPS: frozenset[str] = frozenset(
 )
 
 
+# #1589 / G8-H1: read at call time, not import time, so tests can monkeypatch
+# os.environ between cases without re-importing the module.
+def _local_login_env_bypass() -> bool:
+    """True when BAMDUDE_LOCAL_LOGIN is set truthy. Bypasses the local_login_enabled
+    DB gate on /auth/login AND /auth/forgot-password so a server admin can recover an
+    install whose SSO provider is unreachable. Truthy: true / 1 / yes (case-insensitive)."""
+    return os.environ.get("BAMDUDE_LOCAL_LOGIN", "").strip().lower() in {"true", "1", "yes"}
+
+
 def _get_client_ip(request: Request) -> str:
     """Return the real client IP for rate-limiting purposes.
 
@@ -415,6 +424,11 @@ async def login(
     )
     await check_rate_limit(db, client_ip, event_type=EventType.LOGIN_IP, max_attempts=MAX_LOGIN_ATTEMPTS_PER_IP)
 
+    # #1589: initialize `user` up front so every downstream branch can read it
+    # without UnboundLocalError. The local-credentials path below is now
+    # skippable (gated by local_login_allowed), so the init can no longer rely
+    # on that path running unconditionally.
+    user = None
     # Check if LDAP is enabled
     ldap_user = None
     ldap_settings = await _get_ldap_settings(db)
@@ -452,12 +466,25 @@ async def login(
             logging.getLogger(__name__).warning("LDAP authentication error, falling back to local: %s", e)
             ldap_user = None
 
+    # #1589: local username/password gate. LDAP keeps its own switch
+    # (ldap_enabled) and is not affected — a delegated directory has its own
+    # policy and lockouts and is closer to SSO than to local creds. The env-var
+    # BAMDUDE_LOCAL_LOGIN=true bypasses this gate so a server admin can recover
+    # an install whose SSO provider is unreachable without editing the DB.
+    local_login_allowed = ldap_user is not None or _local_login_env_bypass()
+    if not local_login_allowed:
+        setting_row = await db.execute(select(Settings).where(Settings.key == "local_login_enabled"))
+        row = setting_row.scalar_one_or_none()
+        # Default True when the row is absent — matches AppSettings default so
+        # fresh installs and tests behave like every release before #1589.
+        local_login_allowed = row is None or row.value.lower() == "true"
+
     # Try username-based authentication (skip if already authenticated via LDAP)
-    if not ldap_user:
+    if not ldap_user and local_login_allowed:
         user = await authenticate_user(db, request.username, request.password)
 
     # If username auth failed and advanced auth is enabled, try email-based authentication
-    if not user and not ldap_user:
+    if not user and not ldap_user and local_login_allowed:
         advanced_auth = await is_advanced_auth_enabled(db)
         if advanced_auth:
             user = await authenticate_user_by_email(db, request.username, request.password)
@@ -467,6 +494,11 @@ async def login(
         # the rate limit even when the username doesn't exist.
         await record_failed_attempt(db, request.username, event_type=EventType.LOGIN_ATTEMPT)
         await record_failed_attempt(db, client_ip, event_type=EventType.LOGIN_IP)
+        # #1589: same generic 401 either way — never tell the client whether the
+        # username exists or whether local login was disabled. The Settings UI
+        # and /auth/advanced-auth/status are the channels for that state;
+        # leaking it here would help credential-stuffing distinguish "local
+        # disabled" from "wrong password" across an install fleet.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -988,12 +1020,36 @@ async def disable_advanced_auth(
 
 @router.get("/advanced-auth/status")
 async def get_advanced_auth_status(db: AsyncSession = Depends(get_db)):
-    """Get advanced authentication status."""
+    """Get advanced authentication status.
+
+    Surfaces ``local_login_enabled`` and ``autologin_provider_id`` (#1589) so
+    the LoginPage can decide whether to render the credentials form and whether
+    to redirect unauthenticated visitors directly to an SSO provider, in a
+    single query. ``BAMDUDE_LOCAL_LOGIN=true`` flips the reported
+    ``local_login_enabled`` back to True so the recovery path is visible.
+    """
+    from backend.app.models.oidc_provider import OIDCProvider  # inline: not module-level in auth.py
+
     advanced_auth_enabled = await is_advanced_auth_enabled(db)
     smtp_configured = await get_smtp_settings(db) is not None
+
+    setting_row = await db.execute(select(Settings).where(Settings.key == "local_login_enabled"))
+    row = setting_row.scalar_one_or_none()
+    db_local_enabled = row is None or row.value.lower() == "true"
+    local_login_enabled = db_local_enabled or _local_login_env_bypass()
+
+    # Autologin provider must be both flagged AND enabled — disabling a provider
+    # should not silently keep redirecting visitors to it.
+    autologin = await db.execute(
+        select(OIDCProvider.id).where(OIDCProvider.is_autologin.is_(True), OIDCProvider.is_enabled.is_(True)).limit(1)
+    )
+    autologin_provider_id = autologin.scalar_one_or_none()
+
     return {
         "advanced_auth_enabled": advanced_auth_enabled,
         "smtp_configured": smtp_configured,
+        "local_login_enabled": local_login_enabled,
+        "autologin_provider_id": autologin_provider_id,
     }
 
 
@@ -1033,6 +1089,18 @@ async def forgot_password(
     # Record the event eagerly — see docstring for the anti-enumeration rationale.
     await record_failed_attempt(db, request.email, event_type=EventType.PASSWORD_RESET_SEND)
     await record_failed_attempt(db, client_ip, event_type=EventType.PASSWORD_RESET_IP)
+
+    # #1589: forgot-password is a local-credentials flow — useless when local
+    # login is disabled (the reset wouldn't grant access anyway). Same gate as
+    # /auth/login, with the same env-var bypass for SSO-broken recovery.
+    if not _local_login_env_bypass():
+        setting_row = await db.execute(select(Settings).where(Settings.key == "local_login_enabled"))
+        row = setting_row.scalar_one_or_none()
+        if row is not None and row.value.lower() != "true":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Local login is disabled — use SSO instead.",
+            )
 
     # Check if advanced auth is enabled
     advanced_auth = await is_advanced_auth_enabled(db)

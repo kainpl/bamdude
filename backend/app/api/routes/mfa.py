@@ -34,7 +34,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 from fastapi.responses import RedirectResponse
 from jwt import PyJWKClient
 from passlib.context import CryptContext
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload, undefer
 
@@ -1450,12 +1450,18 @@ async def create_oidc_provider(
         icon_content_type=icon_content_type,
         icon_etag=icon_etag,
         default_group_id=body.default_group_id,
+        is_autologin=body.is_autologin,
     )
     # Defense-in-depth: re-checks the safety guard against the constructed
     # ORM object so any future code path that bypasses Pydantic validation
     # (direct ORM use, scripts) still hits the same gate.
     _enforce_auto_link_safety(provider)
     db.add(provider)
+    # #1589: at most one provider may be the autologin target. When a new one is
+    # created with the flag set, clear it on all others first so the session
+    # still satisfies the invariant after add.
+    if body.is_autologin:
+        await db.execute(update(OIDCProvider).where(OIDCProvider.is_autologin.is_(True)).values(is_autologin=False))
     await db.commit()
     await db.refresh(provider)
     return OIDCProviderResponse.model_validate(provider)
@@ -1542,6 +1548,16 @@ async def update_oidc_provider(
     # final in-memory state. Catches the case where two requests each pass
     # schema validation alone but together produce the unsafe combo.
     _enforce_auto_link_safety(provider)
+
+    # #1589: at most one provider may be the autologin target. Clear the flag on
+    # every other provider when this one becomes the autologin. Excludes the
+    # current row so SQLAlchemy doesn't fight our in-memory set above.
+    if body.is_autologin is True:
+        await db.execute(
+            update(OIDCProvider)
+            .where(OIDCProvider.id != provider.id, OIDCProvider.is_autologin.is_(True))
+            .values(is_autologin=False)
+        )
 
     await db.commit()
     await db.refresh(provider)

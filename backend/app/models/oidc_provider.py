@@ -132,6 +132,11 @@ class OIDCProvider(Base):
     # SHA-256 hex of ``icon_data``, served as the ETag header so clients
     # can revalidate via ``If-None-Match`` and receive 304 Not Modified.
     icon_etag: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    # #1589 / G8-H1: when True the LoginPage redirects unauthenticated visitors
+    # straight to this provider's authorize URL on mount (SSO autologin). App-layer
+    # invariant: at most one provider carries this — create/update clear it on every
+    # other row. Recovery: /login?fallback=local + BAMDUDE_LOCAL_LOGIN=true.
+    is_autologin: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
 
     @property
     def has_icon(self) -> bool:
