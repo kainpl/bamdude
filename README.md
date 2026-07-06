@@ -81,13 +81,15 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - **Printer calibration** — bed leveling, vibration, motor noise, nozzle offset, high-temp heatbed (model-aware, from UI and Telegram bot)
 - Real-time printer status via WebSocket
 - Live camera streaming & snapshots — **fan-out broadcaster** so multiple browser tabs / HA cards / Frigate share a single upstream connection (the printer itself only allows one)
+- **Camera Wall** — one live grid of every printer's camera; on-screen tiles stream live (configurable cap, default 4), off-screen tiles fall back to periodic snapshots, with per-tile offline / status / HMS-error overlays
 - Streaming overlay for OBS
 - External camera support (MJPEG, RTSP, USB)
 - Build plate empty detection
 - Printer control (stop, pause, resume, light, speed)
 - **Pause-state visualisation** — yellow status pip in compact mode, inline `Paused • {reason} · 14m` chip with live elapsed counter in card header (compact + expanded), instant WebSocket toast on RUNNING↔PAUSE edges with classified reason (door / filament runout / AI defect / plate-detect / etc.)
-- AMS management (RFID re-read, slot config, drying)
-- HMS error monitoring with history
+- AMS management (RFID re-read, slot config, **Filament Backup status**) and **auto-drying** — per-filament humidity thresholds + alarms, a badge showing the active filament + target temp, H2C support, and opt-in **Continue drying while printing** on capable firmware (H2D / H2C / H2S / P2S / X2D / A2L / X1C)
+- HMS error monitoring with history — **actionable remediation buttons** (Resume / Stop / Ignore & Resume / Stop Drying / Turn off Fire Alarm / …) that send the command straight to the printer over MQTT
+- **Heater temperature history** — per-printer nozzle / second-nozzle / bed / chamber charts with target overlays, current/avg/min/max stats, and 6h / 24h / 48h / 7d ranges (30-day retention, auto-pruned)
 - Print success rates, filament usage, cost analytics
 
 ### Filament Calibration
@@ -100,6 +102,8 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 
 ### Scheduling & Automation
 - Per-printer queues with status tracking (idle/printing/paused/error)
+- **Queue organization** — group prints into collapsible batches, drag-reorder by grip handle, and sort the Printers page by ETA; the timeline shows only committed schedules
+- **Per-printer Maintenance Mode** — park a printer out of service (drops out of dispatch, scheduler, auto-drying, and metrics, and disconnects MQTT) without deleting it
 - Auto error-pause on print failure (queue stops, user decides next step)
 - Staggered start for farms (limit concurrent heating, bed temp monitoring)
 - **Swap Mode** — A1 Mini / A1 plate swapper with multi-profile support (Kit, STL, JobOx), auto-detect swap files, per-job event selection (start sequence / change table), plate-clear auto-bypass
@@ -117,6 +121,9 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 ### File Manager (Library)
 - Upload and organize sliced files
 - **Composite file tags + chip-row filter** — `format` / `readiness` / `modifiers` / `provenance` chips drive both the badge row and a chip filter on the toolbar (sliced vs project vs raw geometry, single- vs multi-plate, MakerWorld provenance)
+- **User-authored tags** — cross-cutting labels with a tag-filter rail and a bulk Tag action (separate from the automatic format/provenance badges)
+- Sort folders **by recent activity**, search recursively **inside subfolders**, and per-folder Markdown **description panels** (renders README.md)
+- **All Files** now lists your own uploads; a new **External** sidebar entry holds linked-folder files
 - **Per-plate gallery + 3D / G-code preview with build-volume wireframe** — multi-plate 3MFs expose every plate; library viewer hides tabs that don't apply to the file (e.g. no 3D tab for sliced `.gcode.3mf`); dual-handle layer slider (crop both top and bottom), travel-moves toggle, layer-play with 1× / 2× / 4× / 8× speeds, theme-synced canvas, wireframe / X-ray toggle, OBJ format support, Export-as-PNG
 - External folder mounting (NAS, USB)
 - STL / OBJ thumbnail generation — shaded surfaces with Lambertian lighting + transparent background so cards "float" on whatever theme is rendering them
@@ -163,6 +170,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - Actionable buttons: clear plate, mark maintenance done, pause/stop on progress
 - Print finish photo, filament usage details
 - HMS error alerts, bed cooled alerts
+- Dedicated **AI Failure Detection** event (separate from hardware errors); finish photos embedded inline in completion / failure emails
 - **Pause / resume events with classified reason** — `print_paused` carries normalised `{reason}` (door / filament runout / presence-check / file-pause-command / AI defect / plate-objects / user) + matched `{hms_code}`; `print_resumed` carries `{paused_for}` (mm:ss). Default ON for new providers, included in default Telegram-chat event set
 - Queue events (waiting, skipped, failed)
 
@@ -172,6 +180,10 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - Per-spool cost tracking
 - Bulk spool addition
 - Spool catalog, color catalog, low-stock alerts
+- **Managed storage-locations catalog** — pick shelves/drawers/dryboxes from a managed list instead of free-text
+- **Colour-aware reorder forecasting** — per-colour runway with material/brand filters and lead-time overrides
+- **CSV import / export** of the local inventory
+- Opt-out toggle for auto-adding unknown RFID spools
 - Spoolman integration
 
 ### Integrations
@@ -180,6 +192,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - MQTT publishing for Home Assistant
 - Prometheus metrics for Grafana
 - Local OrcaSlicer preset import
+- **Orca Cloud profile sync** — sign in and use your Orca Cloud printer/process/filament presets as a preset tier in the slice dialog and AMS-slot picker
 - K-profiles (pressure advance)
 - Git backup (GitHub + GitLab)
 - API keys & webhooks
@@ -190,12 +203,15 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - Archive, Review, Queue, **File Manager (NEW)**, or Proxy modes
 - **File Manager mode** — saves received 3MF files to the library instead of archiving or printing
 - SSDP discovery or manual IP
+- **Per-VP G-code injection toggle** for auto-eject / plate-clear rigs; Bambu Studio "Send all plates" queues one item per plate
 - **Tailscale Let's Encrypt cert** — opt-in per-VP toggle; when on, asks the local `tailscale` CLI for an LE cert and advertises the tailnet FQDN over SSDP so slicers connect via a hostname matching a trusted cert (no manual CA install)
 
 ### Authentication
 - Group-based permissions (80+ granular)
 - JWT tokens, API key support
 - **OIDC (OpenID Connect)** — PocketID, Authentik, Keycloak, Authelia, Google, **Azure Entra ID** (`preferred_username` / `upn` claim, optional skip of `email_verified` gate)
+- **SSO autologin** and an option to **disable local username/password login** (lockout-guarded)
+- **Admin session-lifetime ceiling** (Settings → Users → Session Policy, up to 30 days)
 - LDAP/Active Directory with group mapping
 - Per-user Bambu Cloud accounts
 - Advanced Auth via Email (SMTP)
@@ -304,6 +320,8 @@ Short version:
 | H2 | H2D, H2D Pro, H2C, H2S |
 | P1 | P1P, P1S |
 | P2 | P2S |
+| X2 | X2D |
+| A2 | A2L |
 | A1 | A1, A1 Mini |
 
 ---
