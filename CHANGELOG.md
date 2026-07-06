@@ -8,6 +8,10 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- **Updated the router dependency to clear reported advisories.** `react-router` was raised to 7.18.1, clearing a batch of advisories flagged against the 7.x line (open redirect via protocol-relative URLs, XSS, denial-of-service, and CSRF). Nearly all of them only affect React Router's server-side rendering and data APIs, which BamDude — a client-side single-page app served as a static bundle — does not use; the bump keeps the dependency audit clean and closes the one client-relevant item (open redirect) regardless.
+
 ## [0.4.7b1] - 2026-07-06
 
 Beta pre-release for testing ahead of the 0.4.7 stable. Image: `ghcr.io/kainpl/bamdude:0.4.7b1` / `kainpl/bamdude:0.4.7b1` (beta channel — `:latest` still tracks 0.4.6). This cycle ports the upstream Bambuddy v0.2.4.7 → v0.2.4.8 changes on top of a large security-hardening pass — headline additions include the **Camera Wall**, **AMS Filament Backup** awareness, **heater temperature history**, actionable **HMS** remediation buttons, queue **batch grouping / drag-reorder / ETA sort**, **Bambu A2L** support, a **native Windows `.exe` installer**, library **user tags**, opt-in **continue drying while printing**, server-side plate thumbnails, and Spoolman tracking for no-3MF "Untitled" prints.
