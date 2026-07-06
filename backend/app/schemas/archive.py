@@ -30,7 +30,7 @@ class ArchiveDuplicate(BaseModel):
 
     id: int
     print_name: str | None
-    created_at: datetime
+    created_at: datetime | None
     match_type: str  # "exact" (hash match) or "similar" (name match)
 
 
@@ -131,7 +131,7 @@ class ArchiveResponse(BaseModel):
     # ``failure_reason`` (short cause code).
     error_message: str | None = None
 
-    created_at: datetime
+    created_at: datetime | None
 
     # User tracking (Issue #206)
     created_by_id: int | None = None
@@ -174,7 +174,7 @@ class ArchiveSlim(BaseModel):
     completed_at: datetime | None
     cost: float | None
     quantity: int = 1
-    created_at: datetime
+    created_at: datetime | None
     thumbnail_path: str | None = None
 
     class Config:

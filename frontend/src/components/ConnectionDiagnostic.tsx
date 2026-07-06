@@ -40,8 +40,15 @@ export function DiagnosticChecklist({ result }: { result: PrinterDiagnosticResul
         : 'bg-red-500/10 border-red-500/30 text-red-300';
 
   const renderCheck = (check: DiagnosticCheck) => {
+    // Camera-port check carries model-specific {port, protocol} params
+    // (RTSPS 322 for X1/X2/H2/P2, Chamber Image 6000 for A1/P1). Default to
+    // the RTSPS pair so older backends that don't send params still render.
+    const params =
+      check.id === 'port_rtsps'
+        ? { protocol: 'RTSPS', port: 322, ...check.params }
+        : check.params;
     const detail = t(`diagnostic.check.${check.id}.${check.status}`, {
-      ...check.params,
+      ...params,
       defaultValue: '',
     });
     return (
@@ -55,7 +62,7 @@ export function DiagnosticChecklist({ result }: { result: PrinterDiagnosticResul
           <StatusIcon status={check.status} />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="text-sm text-white">{t(`diagnostic.check.${check.id}.title`)}</div>
+          <div className="text-sm text-white">{t(`diagnostic.check.${check.id}.title`, params)}</div>
           {detail && <div className="text-xs text-bambu-gray mt-0.5">{detail}</div>}
         </div>
       </li>

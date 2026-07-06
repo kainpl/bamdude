@@ -2257,6 +2257,8 @@ export default {
     releaseNotes: 'Примітки до релізу',
     updateViaDocker: 'Оновити через Docker Compose:',
     updateViaHomeAssistant: 'BamDude працює як аддон Home Assistant. Оновленням керує HA Supervisor - відкрий Налаштування → Аддони → BamDude → Оновити.',
+    updateViaWindowsInstaller: 'Інсталяції Windows оновлюються повторним запуском інсталятора. Завантаж нову версію нижче — твої дані, налаштування та принтери зберігаються.',
+    downloadWindowsInstaller: 'Завантажити інсталятор v{{version}}',
     dockerImagePullTitle: 'Image-based встановлення (типове)',
     dockerImagePullStable: 'Якщо image-tag пінений у docker-compose.yml - поправ; потім pull + recreate:',
     dockerImagePullBeta: 'Бета-теги не підтягуються через `:latest`. Постав явний бета-tag у docker-compose.yml, потім pull + recreate:',
@@ -4087,9 +4089,9 @@ export default {
         warn: 'Порт 990 недоступний. Моніторинг може працювати, але надсилання друку на принтер не вдасться. Переконайтеся, що порт 990 не заблоковано.',
       },
       port_rtsps: {
-        title: 'Порт камери (RTSPS 322)',
+        title: 'Порт камери ({{protocol}} {{port}})',
         pass: 'Доступний - потік камери працюватиме.',
-        warn: 'Порт 322 недоступний. Перегляд камери не працюватиме. Це не впливає на друк.',
+        warn: 'Порт {{port}} недоступний. Перегляд камери не працюватиме. Це не впливає на друк.',
       },
       network_mode: {
         title: 'Мережевий режим Docker',

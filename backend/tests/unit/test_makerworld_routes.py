@@ -1002,3 +1002,140 @@ class TestImportCoverEndpoints:
         assert resp.status_code == 200, resp.text
         assert resp.headers["content-type"].startswith("image/jpeg")
         assert resp.content.startswith(b"\xff\xd8")
+
+
+class TestApiKeyCloudOwner:
+    """#1777 — API-keyed callers resolve the *key owner's* Bambu Cloud token.
+
+    ``RequirePermission`` returns ``current_user=None`` for API-key callers, so
+    without the owner resolver the cloud-token lookup always missed and every
+    API-keyed import/status reported "no cloud token". The MakerWorld routes now
+    fall back to ``resolve_api_key_cloud_owner`` — fenced on
+    ``can_access_cloud`` + a non-NULL owner — so a cloud-flagged key reflects
+    the owner's stored token without widening auth for scope-only keys.
+    """
+
+    @staticmethod
+    async def _create_key(async_client, *, can_access_cloud: bool) -> dict:
+        resp = await async_client.post(
+            "/api/v1/api-keys/",
+            json={"name": f"mw-key-{can_access_cloud}", "can_access_cloud": can_access_cloud},
+        )
+        assert resp.status_code == 200, resp.text
+        return resp.json()
+
+    @staticmethod
+    def _restore_admin_jwt(async_client) -> None:
+        from backend.app.core.auth import create_access_token
+
+        async_client.headers["Authorization"] = f"Bearer {create_access_token(data={'sub': 'test_admin'})}"
+
+    async def _fake_token(self, _db, user):
+        # Owner present → token available; None (scope-only key) → no token.
+        return ("cloud-token-abc" if user is not None else None, None, None)
+
+    @pytest.mark.asyncio
+    async def test_status_reports_token_for_cloud_key_owner(self, async_client):
+        body = await self._create_key(async_client, can_access_cloud=True)
+        raw = body["key"]
+
+        del async_client.headers["Authorization"]
+        try:
+            with patch(
+                "backend.app.api.routes.makerworld.get_stored_token",
+                new=AsyncMock(side_effect=self._fake_token),
+            ):
+                resp = await async_client.get("/api/v1/makerworld/status", headers={"X-API-Key": raw})
+        finally:
+            self._restore_admin_jwt(async_client)
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"has_cloud_token": True, "can_download": True}
+
+    @pytest.mark.asyncio
+    async def test_status_no_token_for_non_cloud_key(self, async_client):
+        """A key WITHOUT ``can_access_cloud`` must not resolve the owner — the
+        status stays False, so the fail-closed "requires Bambu Cloud login"
+        path is preserved (no auth widening)."""
+        body = await self._create_key(async_client, can_access_cloud=False)
+        raw = body["key"]
+
+        del async_client.headers["Authorization"]
+        try:
+            with patch(
+                "backend.app.api.routes.makerworld.get_stored_token",
+                new=AsyncMock(side_effect=self._fake_token),
+            ):
+                resp = await async_client.get("/api/v1/makerworld/status", headers={"X-API-Key": raw})
+        finally:
+            self._restore_admin_jwt(async_client)
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"has_cloud_token": False, "can_download": False}
+
+    @pytest.mark.asyncio
+    async def test_import_attributes_created_by_to_key_owner(self, async_client, db_session):
+        body = await self._create_key(async_client, can_access_cloud=True)
+        raw = body["key"]
+        owner_id = body["user_id"]
+        assert owner_id is not None
+
+        svc = _fake_service(
+            get_design=_default_design(),
+            get_profile_download=_default_manifest(),
+            download_3mf=(b"PK\x03\x04fake-3mf", "benchy.3mf"),
+        )
+
+        del async_client.headers["Authorization"]
+        try:
+            with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
+                resp = await async_client.post(
+                    "/api/v1/makerworld/import",
+                    headers={"X-API-Key": raw},
+                    json={"model_id": 1400373, "profile_id": 298919107},
+                )
+        finally:
+            self._restore_admin_jwt(async_client)
+
+        assert resp.status_code == 200, resp.text
+
+        from sqlalchemy import select
+
+        row = (
+            await db_session.execute(select(LibraryFile).where(LibraryFile.id == resp.json()["library_file_id"]))
+        ).scalar_one()
+        assert row.created_by_id == owner_id
+
+    @pytest.mark.asyncio
+    async def test_import_non_cloud_key_leaves_created_by_null(self, async_client, db_session):
+        """A scope-only key (``can_access_cloud=False``) doesn't resolve an
+        owner, so the imported row's ``created_by_id`` stays NULL — mirrors the
+        fail-closed status test above at the write path."""
+        body = await self._create_key(async_client, can_access_cloud=False)
+        raw = body["key"]
+
+        svc = _fake_service(
+            get_design=_default_design(),
+            get_profile_download=_default_manifest(),
+            download_3mf=(b"PK\x03\x04fake-3mf", "benchy.3mf"),
+        )
+
+        del async_client.headers["Authorization"]
+        try:
+            with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
+                resp = await async_client.post(
+                    "/api/v1/makerworld/import",
+                    headers={"X-API-Key": raw},
+                    json={"model_id": 1400373, "profile_id": 298919107},
+                )
+        finally:
+            self._restore_admin_jwt(async_client)
+
+        assert resp.status_code == 200, resp.text
+
+        from sqlalchemy import select
+
+        row = (
+            await db_session.execute(select(LibraryFile).where(LibraryFile.id == resp.json()["library_file_id"]))
+        ).scalar_one()
+        assert row.created_by_id is None

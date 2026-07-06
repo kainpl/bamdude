@@ -40,3 +40,12 @@ class ActivePrintSpoolman(Base):
     # Filament properties (density, diameter per filament slot)
     # Format: {1: {"density": 1.24, "diameter": 1.75, "type": "PLA"}, ...}
     filament_properties: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    # AMS tray remain% per slot at print start — lets the completion path compute a
+    # remain-delta when the 3MF didn't cover a slot (or there was no 3MF: no-3MF
+    # "Untitled" prints / A6/A7 fallback archive). Mirrors usage_tracker's snapshot.
+    # Adapted vs upstream #1820: we keep ``filament_usage`` NOT NULL (store [] for
+    # the no-3MF case — report paths read ``filament_usage or []`` so [] behaves
+    # identically to None), so this is the only schema addition (no NOT NULL relax).
+    # {"<ams_id>-<tray_id>": {"remain": int, "tray_uuid": str}, ...}
+    tray_remain_start: Mapped[dict | None] = mapped_column(JSON, nullable=True)

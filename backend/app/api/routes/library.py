@@ -66,6 +66,7 @@ from backend.app.schemas.library import (
 )
 from backend.app.services.archive import ThreeMFParser
 from backend.app.services.library_helpers import compute_file_tags, detect_file_type
+from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing
 from backend.app.services.print_plan import inherit_folder_projects, sync_plan_for_file, sync_plan_for_folder
 from backend.app.services.stl_thumbnail import MIN_USABLE_STL_BYTES, generate_stl_thumbnail
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
@@ -2517,6 +2518,14 @@ async def slice_and_persist(
     out_filename = f"{base_name}.gcode.3mf"
     unique_name = f"{uuid.uuid4().hex}.gcode.3mf"
     out_path = get_library_files_dir() / unique_name  # SEC-PATH-OK: unique_name is a server uuid4().hex + .gcode.3mf
+    # Last-resort plate-thumbnail fill: the BS/Orca sidecar CLIs skip
+    # plate_N.png in headless --export-3mf, so STEP/STP sources, preview-less
+    # 3MF sources, and plates 2..N of multi-plate slices land here with no
+    # thumbnail. The STL-source injection above already covers plate_1 for
+    # library-STL slices (higher fidelity) — this checker skips any plate that
+    # already has a PNG, so it only fills the blanks. Best-effort: returns the
+    # bytes unchanged on any render error, so a slice never fails on a thumb.
+    sliced_bytes = inject_plate_thumbnails_if_missing(sliced_bytes)
     out_path.write_bytes(sliced_bytes)
 
     # Extract thumbnail from the produced 3MF so the library card shows a
@@ -2647,6 +2656,11 @@ async def slice_and_persist_as_archive(
     archive_dir = safe_join_under(app_settings.archive_dir, printer_folder, archive_subdir)
     archive_dir.mkdir(parents=True, exist_ok=True)
     out_path = safe_join_under(archive_dir, out_filename)
+    # See slice_and_persist: the BS/Orca sidecar CLIs don't embed plate_N.png
+    # in headless --export-3mf, so a re-sliced archive often has no thumbnail.
+    # Render + inject server-side (SliceResult is a NamedTuple, so _replace).
+    # No-op when the slicer did embed (desktop Studio); best-effort on error.
+    result = result._replace(content=inject_plate_thumbnails_if_missing(result.content))
     out_path.write_bytes(result.content)
 
     # Thumbnail for the new archive card. Priority: (1) the source archive's

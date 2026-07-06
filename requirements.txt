@@ -67,6 +67,12 @@ shapely>=2.0.0
 mapbox-earcut>=1.0.0
 matplotlib>=3.8.0
 fast-simplification>=0.1.0
+# trimesh's 3MF loader imports lxml lazily inside the 3MF code path (model.xml
+# parse). It isn't a strict trimesh transitive, but the loader raises
+# ModuleNotFoundError without it. Needed by services/plate_thumbnail.py, which
+# reloads the sliced 3MF's own mesh to render missing plate_N.png thumbnails
+# server-side (BS/Orca sidecar CLIs skip them in headless --export-3mf).
+lxml>=5.0
 
 # System monitoring
 psutil>=6.0.0

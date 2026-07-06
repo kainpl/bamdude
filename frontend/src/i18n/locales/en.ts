@@ -2243,6 +2243,8 @@ export default {
     releaseNotes: 'Release Notes',
     updateViaDocker: 'Update via Docker Compose:',
     updateViaHomeAssistant: 'BamDude is running as a Home Assistant addon. Updates are managed by the HA Supervisor - open Settings → Add-ons → BamDude → Update.',
+    updateViaWindowsInstaller: 'Windows installations are updated by re-running the installer. Download the new version below — your data, settings and printers are preserved.',
+    downloadWindowsInstaller: 'Download installer for v{{version}}',
     dockerImagePullTitle: 'Image-based install (typical)',
     dockerImagePullStable: 'Edit your docker-compose.yml image tag if pinned, then pull + recreate:',
     dockerImagePullBeta: 'Beta tags are not pulled by `:latest`. Edit your docker-compose.yml to pin the beta image tag, then pull + recreate:',
@@ -4083,9 +4085,9 @@ export default {
         warn: 'Port 990 is unreachable. Monitoring may still work, but sending prints to the printer will fail. Make sure port 990 is not blocked.',
       },
       port_rtsps: {
-        title: 'Camera port (RTSPS 322)',
+        title: 'Camera port ({{protocol}} {{port}})',
         pass: 'Reachable - the camera stream will work.',
-        warn: 'Port 322 is unreachable. The live camera view will not work. This does not affect printing.',
+        warn: 'Port {{port}} is unreachable. The live camera view will not work. This does not affect printing.',
       },
       network_mode: {
         title: 'Docker network mode',
