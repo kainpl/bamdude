@@ -26,6 +26,7 @@ vi.mock('../../api/client', () => ({
     getColorCatalog: vi.fn().mockResolvedValue([]),
     getLocalPresets: vi.fn().mockResolvedValue({ filament: [] }),
     getBuiltinFilaments: vi.fn().mockResolvedValue([]),
+    getLocations: vi.fn().mockResolvedValue([]),
     getPrinters: vi.fn().mockResolvedValue([]),
     getSpoolUsageHistory: vi.fn().mockResolvedValue([]),
     createSpool: vi.fn().mockResolvedValue({ id: 99 }),
