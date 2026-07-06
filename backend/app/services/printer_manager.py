@@ -190,6 +190,51 @@ def supports_drying(model: str | None, firmware: str | None) -> bool:
     return True
 
 
+# Minimum firmware versions for AMS "Print While Drying" — drying that runs CONCURRENTLY
+# with an active print. Strictly stricter than _DRYING_MIN_FIRMWARE (idle drying). Verified
+# against Bambu wiki release notes — the canonical phrasing on every supported model is
+# "printing while filament is drying" / "Print While Drying". Models absent from the wiki
+# release notes (A1, A1 Mini, P1*, X1 non-C, X1E) are intentionally excluded — the firmware
+# will reject the command in those cases anyway via dry_sf_reason=[0] (TaskOccupied).
+_DRY_WHILE_PRINTING_MIN_FIRMWARE: dict[str, str] = {
+    "H2D": "01.03.00.00",
+    "H2D PRO": "01.02.00.00",
+    "H2DPRO": "01.02.00.00",
+    "O1E": "01.02.00.00",  # H2D Pro SSDP code
+    "O2D": "01.02.00.00",  # H2D Pro alternate code
+    "H2C": "01.02.00.00",
+    "O1C": "01.02.00.00",  # H2C SSDP code
+    "O1C2": "01.02.00.00",  # H2C dual-nozzle SSDP code
+    "H2S": "01.02.00.00",
+    "X2D": "01.01.00.00",
+    "N6": "01.01.00.00",  # X2D internal code
+    "X1C": "01.11.02.00",
+    "BL-P001": "01.11.02.00",  # X1C internal code
+    "P2S": "01.02.00.00",
+    "N7": "01.02.00.00",  # P2S internal code
+    "A2L": "01.01.00.00",
+    "N9": "01.01.00.00",  # A2L internal code
+}
+
+
+def supports_drying_while_printing(model: str | None, firmware: str | None) -> bool:
+    """Check if a printer model+firmware supports running AMS drying CONCURRENTLY
+    with an active print.
+
+    Distinct from supports_drying() — that gates idle drying. This gate is strict:
+    only models explicitly confirmed by Bambu wiki release notes are allowed.
+    On unsupported models the firmware returns dry_sf_reason=[0] (TaskOccupied)
+    while a print is running, so being conservative here costs nothing — the
+    firmware is the ultimate arbiter, this gate just hides UI affordances.
+    """
+    if not model:
+        return False
+    model_upper = model.strip().upper()
+    if model_upper not in _DRY_WHILE_PRINTING_MIN_FIRMWARE:
+        return False
+    return bool(firmware and firmware >= _DRY_WHILE_PRINTING_MIN_FIRMWARE[model_upper])
+
+
 # AMS ``dry_sf_reason`` codes → human-readable blockers. Sourced from firmware
 # observations in upstream #971. When one of these codes is present in an AMS
 # push_status the firmware silently drops the drying command, so we surface
@@ -1388,6 +1433,7 @@ def printer_state_to_dict(
         ],
         # AMS drying support
         "supports_drying": supports_drying(model, state.firmware_version),
+        "supports_drying_while_printing": supports_drying_while_printing(model, state.firmware_version),
         # 1-indexed plate number from the active print. Resolution order
         # (see resolve_plate_id docstring for the rationale): BamDude-dispatched
         # plate (when the subtask matches) → ``plate_N.gcode`` regex on

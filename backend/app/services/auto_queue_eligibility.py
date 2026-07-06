@@ -9,9 +9,13 @@ current scheduler tick, find an idle printer that:
 4. Is connected (MQTT) and idle (state=IDLE or FINISH/FAILED with
    plate-clear gate released, mirroring per-printer scheduler). A printer
    that is non-idle ONLY because it is auto-drying still qualifies as a
-   *fallback* when ``queue_drying_block`` is False (print takes priority
-   over drying) — truly-idle printers are preferred. This diverges from
-   upstream, whose model-distribute path never interrupts drying.
+   *fallback* when ``queue_drying_block`` is False — the print takes priority
+   AT DISPATCH, and truly-idle printers are still preferred. When
+   ``print_drying_enabled`` is on and the printer's model+firmware satisfy
+   ``supports_drying_while_printing``, the scheduler re-establishes drying
+   mid-print at a capped temperature — drying yields the dispatch moment then
+   resumes alongside the print, not abandoned. This diverges from upstream,
+   whose model-distribute path never interrupts drying.
 5. Has all ``required_filament_types`` loaded across AMS + external
    trays (canonical-type matching, so PA-CF / PA12-CF / PAHT-CF are
    equivalent — same as upstream).
@@ -197,11 +201,14 @@ async def find_eligible_printer(
     pref_overrides = [o for o in filament_overrides if not o.get("force_color_match")]
 
     # Divergence from upstream (whose model-distribute path has no drying awareness):
-    # a print takes priority over AMS drying. When ``queue_drying_block`` is False
-    # (the default — "prints take priority over drying"), a printer that is non-idle
-    # ONLY because it is auto-drying counts as a *fallback* candidate. The per-printer
-    # ``check_queue()`` performs the actual ``_stop_drying`` when the routed item
-    # dispatches. Truly-idle printers are always preferred over drying ones.
+    # a print takes priority over AMS drying AT DISPATCH. When ``queue_drying_block``
+    # is False (the default — "prints take priority over drying"), a printer that is
+    # non-idle ONLY because it is auto-drying counts as a *fallback* candidate. The
+    # per-printer ``check_queue()`` performs the actual ``_stop_drying`` when the routed
+    # item dispatches; when ``print_drying_enabled`` + ``supports_drying_while_printing``
+    # hold, the scheduler then re-establishes drying mid-print at a capped temperature —
+    # drying yields the dispatch moment then resumes alongside the print, not abandoned.
+    # Truly-idle printers are always preferred over drying ones.
     block_for_drying = await scheduler._get_bool_setting(db, "queue_drying_block")
 
     printers_busy: list[str] = []
@@ -285,8 +292,11 @@ async def find_eligible_printer(
         return candidates[0][0], None
 
     # No truly-idle printer matched — fall back to a drying printer (print takes
-    # priority over drying when queue_drying_block is False). The per-printer
-    # check_queue() stops drying when this routed item dispatches.
+    # priority over drying AT DISPATCH when queue_drying_block is False). The per-printer
+    # check_queue() stops drying when this routed item dispatches; when
+    # print_drying_enabled + supports_drying_while_printing hold, the scheduler then
+    # re-establishes drying mid-print at a capped temperature — drying yields the
+    # dispatch moment then resumes alongside the print, not abandoned.
     if drying_candidates:
         drying_candidates.sort(key=lambda c: c[1], reverse=True)
         return drying_candidates[0][0], None

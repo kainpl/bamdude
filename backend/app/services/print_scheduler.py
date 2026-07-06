@@ -30,6 +30,7 @@ from backend.app.services.printer_manager import (
     first_drying_blocking_reason,
     printer_manager,
     supports_drying,
+    supports_drying_while_printing,
 )
 from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.utils.threemf_tools import extract_nozzle_mapping_from_3mf
@@ -162,8 +163,21 @@ class PrintScheduler:
             items = list(result.scalars().all())
 
             if not items:
-                # No pending items - still check auto-drying on idle printers
-                await self._check_auto_drying(db, [], set())
+                # No pending items - still check auto-drying on idle printers.
+                # Seed busy_printers from currently-printing printers (same
+                # authoritative source as the full path below — PrinterQueue.status
+                # == 'printing') so mid-print drying (print_drying_enabled) resumes
+                # even when the dispatched print was the LAST queued item and no
+                # pending rows remain to drive the full seeding path.
+                from backend.app.models.print_queue import PrinterQueue
+
+                busy_seed_result = await db.execute(
+                    select(PrinterQueue.printer_id)
+                    .where(PrinterQueue.status == "printing")
+                    .where(PrinterQueue.printer_id.is_not(None))
+                )
+                busy_seed: set[int] = {pid for (pid,) in busy_seed_result.all() if pid is not None}
+                await self._check_auto_drying(db, [], busy_seed)
                 return
 
             logger.info(
@@ -1321,12 +1335,17 @@ class PrintScheduler:
     async def _check_auto_drying(self, db: AsyncSession, queue_items: list[PrintQueueItem], busy_printers: set[int]):
         """Start drying on idle printers based on humidity.
 
-        Two modes (can both be enabled):
+        Three modes (can all be enabled independently):
         - queue_drying_enabled: Dry between scheduled queue prints
         - ambient_drying_enabled: Dry any idle printer when humidity is high, regardless of queue
+        - print_drying_enabled: Also evaluate printers that are currently printing,
+          when model+firmware supports "Print While Drying" (gated by
+          supports_drying_while_printing). Drying temperature is capped at
+          max(40, preset_temp - 5) to protect spools mid-print.
         """
         queue_drying_enabled = await self._get_bool_setting(db, "queue_drying_enabled")
         ambient_drying_enabled = await self._get_bool_setting(db, "ambient_drying_enabled")
+        print_drying_enabled = await self._get_bool_setting(db, "print_drying_enabled")
         if not queue_drying_enabled and not ambient_drying_enabled:
             # Stop active drying on all printers if both features disabled
             if self._drying_in_progress:
@@ -1347,8 +1366,10 @@ class PrintScheduler:
                 if item.scheduled_time and not item.manual_start:
                     printers_with_scheduled.add(item.queue_id)
 
-        # If only queue mode is on and no printers have scheduled items, stop drying
-        if not ambient_drying_enabled and not printers_with_scheduled:
+        # If only queue mode is on and no printers have scheduled items, stop drying.
+        # (But skip this short-circuit when print_drying_enabled is on — busy printers
+        # may still be eligible for mid-print drying regardless of queue state.)
+        if not ambient_drying_enabled and not printers_with_scheduled and not print_drying_enabled:
             for pid in list(self._drying_in_progress):
                 logger.info("Auto-drying: printer %d - stopping, no scheduled prints in queue", pid)
                 await self._stop_drying(pid)
@@ -1373,36 +1394,47 @@ class PrintScheduler:
         all_printers = await db.execute(select(Printer).where(Printer.is_active.is_(True)))
         for printer in all_printers.scalars():
             pid = printer.id
-            if pid in busy_printers:
-                logger.debug("Auto-drying: printer %d skipped - busy", pid)
-                continue
-            # In queue-only mode, only dry printers that have scheduled prints
-            if not ambient_drying_enabled and pid not in printers_with_scheduled:
-                if self._drying_in_progress.get(pid):
-                    logger.info("Auto-drying: printer %d - stopping, no scheduled prints for this printer", pid)
-                    await self._stop_drying(pid)
-                logger.debug("Auto-drying: printer %d skipped - no scheduled prints", pid)
-                continue
-            # When block mode is on, don't START new drying on printers with pending items.
-            # But allow already-drying printers through so humidity auto-stop logic still runs.
-            if block_for_drying and pid in printers_with_items and not self._drying_in_progress.get(pid):
-                logger.debug("Auto-drying: printer %d skipped - has pending items (block mode)", pid)
-                continue
-            if not printer_manager.is_connected(pid):
-                logger.debug("Auto-drying: printer %d skipped - not connected", pid)
-                continue
-            if not self._is_printer_idle(pid):
-                logger.debug("Auto-drying: printer %d skipped - not idle", pid)
-                continue
 
-            # Check if this printer supports drying
+            # Resolve model+firmware up front — needed to decide whether this printer
+            # qualifies for mid-print drying (busy printer on capable hardware).
             state = printer_manager.get_status(pid)
             if not state:
                 logger.debug("Auto-drying: printer %d skipped - no state", pid)
                 continue
             model = printer_manager.get_model(pid)
             firmware = state.firmware_version
-            if not supports_drying(model, firmware):
+
+            mid_print = (
+                pid in busy_printers and print_drying_enabled and supports_drying_while_printing(model, firmware)
+            )
+
+            if pid in busy_printers and not mid_print:
+                logger.debug("Auto-drying: printer %d skipped - busy", pid)
+                continue
+
+            if not mid_print:
+                # In queue-only mode, only dry printers that have scheduled prints
+                if not ambient_drying_enabled and pid not in printers_with_scheduled:
+                    if self._drying_in_progress.get(pid):
+                        logger.info("Auto-drying: printer %d - stopping, no scheduled prints for this printer", pid)
+                        await self._stop_drying(pid)
+                    logger.debug("Auto-drying: printer %d skipped - no scheduled prints", pid)
+                    continue
+                # When block mode is on, don't START new drying on printers with pending items.
+                # But allow already-drying printers through so humidity auto-stop logic still runs.
+                if block_for_drying and pid in printers_with_items and not self._drying_in_progress.get(pid):
+                    logger.debug("Auto-drying: printer %d skipped - has pending items (block mode)", pid)
+                    continue
+            if not printer_manager.is_connected(pid):
+                logger.debug("Auto-drying: printer %d skipped - not connected", pid)
+                continue
+            if not mid_print and not self._is_printer_idle(pid):
+                logger.debug("Auto-drying: printer %d skipped - not idle", pid)
+                continue
+
+            # Check drying capability. For the mid-print path, supports_drying_while_printing
+            # was already verified when computing mid_print above.
+            if not mid_print and not supports_drying(model, firmware):
                 logger.debug("Auto-drying: printer %d skipped - model %s does not support drying", pid, model)
                 continue
 
@@ -1508,10 +1540,17 @@ class PrintScheduler:
 
                 temp, duration_hours, filament_type = params
 
+                # Mid-print drying: cap drying temperature to protect spools (Bambu warns
+                # "drying temperature must not exceed the filament's softening temperature"
+                # for Print While Drying). Floor at 40 degC - below that the dryer is
+                # ineffective and firmware will reject anyway.
+                if mid_print:
+                    temp = max(40, temp - 5)
+
                 # Start drying
                 logger.info(
                     "Auto-drying: printer %d AMS %d - humidity %d%% > threshold %d%%, "
-                    "starting %s drying at %d°C for %dh",
+                    "starting %s drying at %d°C for %dh%s",
                     pid,
                     ams_id,
                     humidity,
@@ -1519,6 +1558,7 @@ class PrintScheduler:
                     filament_type,
                     temp,
                     duration_hours,
+                    " (mid-print)" if mid_print else "",
                 )
                 success = printer_manager.send_drying_command(
                     pid, ams_id, temp, duration_hours, mode=1, filament=filament_type
@@ -1547,7 +1587,15 @@ class PrintScheduler:
             self._drying_in_progress.pop(pid, None)
 
     async def _stop_drying(self, printer_id: int):
-        """Stop all active drying on a printer (print takes priority)."""
+        """Stop all active drying on a printer.
+
+        Print takes priority AT DISPATCH: this fires when a print is dispatched onto
+        a drying printer. When ``print_drying_enabled`` is on and the printer's
+        model+firmware satisfy ``supports_drying_while_printing``, the scheduler
+        re-establishes drying mid-print at the capped temperature on the next tick —
+        drying yields the dispatch moment then resumes alongside the print, it is not
+        abandoned. Otherwise drying stays stopped for the duration of the print.
+        """
         state = printer_manager.get_status(printer_id)
         if not state:
             self._drying_in_progress.pop(printer_id, None)

@@ -105,6 +105,7 @@ async def get_settings(
                 "queue_drying_enabled",
                 "queue_drying_block",
                 "ambient_drying_enabled",
+                "print_drying_enabled",
                 "stagger_enabled",
                 "stagger_wait_for_bed",
                 "stagger_strict_for_direct_dispatch",

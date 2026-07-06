@@ -18,6 +18,7 @@ from backend.app.services.printer_manager import (
     printer_state_to_dict,
     supports_chamber_temp,
     supports_drying,
+    supports_drying_while_printing,
 )
 
 
@@ -1279,6 +1280,97 @@ class TestSupportsDrying:
         assert supports_drying("p2s", "01.02.00.00") is True
         assert supports_drying("h2c", "01.02.00.00") is True  # H2C now firmware-gated (#1624)
         assert supports_drying("a1", "99.99.99.99") is False  # A1 stays unsupported
+
+
+class TestSupportsDryingWhilePrinting:
+    """Tests for the supports_drying_while_printing gate (concurrent drying during print).
+
+    Stricter than supports_drying — only models explicitly confirmed by Bambu wiki
+    release notes are allowed (verified phrase: "printing while filament is drying"
+    / "Print While Drying").
+    """
+
+    def test_known_supported_with_firmware(self):
+        """Matrix-confirmed models with min firmware return True."""
+        assert supports_drying_while_printing("H2D", "01.03.00.00") is True
+        assert supports_drying_while_printing("H2D Pro", "01.02.00.00") is True
+        assert supports_drying_while_printing("O1E", "01.02.00.00") is True
+        assert supports_drying_while_printing("O2D", "01.02.00.00") is True
+        assert supports_drying_while_printing("H2C", "01.02.00.00") is True
+        assert supports_drying_while_printing("O1C", "01.02.00.00") is True
+        assert supports_drying_while_printing("O1C2", "01.02.00.00") is True
+        assert supports_drying_while_printing("H2S", "01.02.00.00") is True
+        assert supports_drying_while_printing("X2D", "01.01.00.00") is True
+        assert supports_drying_while_printing("N6", "01.01.00.00") is True
+        assert supports_drying_while_printing("X1C", "01.11.02.00") is True
+        assert supports_drying_while_printing("BL-P001", "01.11.02.00") is True
+        assert supports_drying_while_printing("P2S", "01.02.00.00") is True
+        assert supports_drying_while_printing("N7", "01.02.00.00") is True
+        assert supports_drying_while_printing("A2L", "01.01.00.00") is True
+        assert supports_drying_while_printing("N9", "01.01.00.00") is True
+
+    def test_known_supported_below_min_firmware(self):
+        """Matrix-confirmed models on too-old firmware return False."""
+        assert supports_drying_while_printing("H2D", "01.02.99.99") is False
+        assert supports_drying_while_printing("X1C", "01.11.01.00") is False
+        assert supports_drying_while_printing("P2S", "01.01.99.99") is False
+        assert supports_drying_while_printing("H2S", "01.01.99.99") is False
+        assert supports_drying_while_printing("A2L", "01.00.99.99") is False
+        assert supports_drying_while_printing("X2D", "01.00.99.99") is False
+
+    def test_not_in_matrix_excluded(self):
+        """Models absent from the matrix return False regardless of firmware.
+
+        P1*, A1, A1 Mini, X1 (non-C), X1E are intentionally excluded — their wiki
+        release notes never mention "Print While Drying" / "printing while filament
+        is drying".
+        """
+        for model in [
+            "P1P",
+            "P1S",
+            "C11",
+            "C12",
+            "A1",
+            "A1 MINI",
+            "A1MINI",
+            "N1",
+            "N2S",
+            "X1",
+            "X1E",
+            "BL-P002",
+            "C13",
+        ]:
+            assert supports_drying_while_printing(model, "99.99.99.99") is False, f"Expected False for {model}"
+
+    def test_no_firmware_returns_false(self):
+        """Missing firmware version returns False even for supported models."""
+        assert supports_drying_while_printing("H2D", None) is False
+        assert supports_drying_while_printing("P2S", None) is False
+        assert supports_drying_while_printing("H2D", "") is False
+
+    def test_none_model_returns_false(self):
+        """None model returns False."""
+        assert supports_drying_while_printing(None, "01.03.00.00") is False
+
+    def test_empty_model_returns_false(self):
+        """Empty-string model returns False."""
+        assert supports_drying_while_printing("", "01.03.00.00") is False
+
+    def test_case_insensitive(self):
+        """Model matching is case-insensitive."""
+        assert supports_drying_while_printing("h2d", "01.03.00.00") is True
+        assert supports_drying_while_printing("p2s", "01.02.00.00") is True
+        assert supports_drying_while_printing("a1", "99.99.99.99") is False
+
+    def test_unknown_model_returns_false(self):
+        """Unknown models default to FALSE (strict gate — not the lenient default-allow).
+
+        This contrasts with supports_drying which defaults to True for unknown
+        models. For while-printing the cost of being wrong is real (firmware
+        rejection mid-print is annoying; melted spool is worse), so we err
+        toward conservative.
+        """
+        assert supports_drying_while_printing("FUTURE_MODEL", "99.99.99.99") is False
 
 
 class TestGetDerivedStatusName:

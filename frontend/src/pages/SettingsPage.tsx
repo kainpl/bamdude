@@ -1146,6 +1146,7 @@ export function SettingsPage() {
       (settings.queue_shortest_first ?? false) !== (localSettings.queue_shortest_first ?? false) ||
       (settings.queue_drying_block ?? false) !== (localSettings.queue_drying_block ?? false) ||
       (settings.ambient_drying_enabled ?? false) !== (localSettings.ambient_drying_enabled ?? false) ||
+      (settings.print_drying_enabled ?? false) !== (localSettings.print_drying_enabled ?? false) ||
       (settings.drying_presets ?? '') !== (localSettings.drying_presets ?? '') ||
       (settings.ams_humidity_thresholds ?? '') !== (localSettings.ams_humidity_thresholds ?? '') ||
       (settings.stagger_enabled ?? false) !== (localSettings.stagger_enabled ?? false) ||
@@ -1233,6 +1234,7 @@ export function SettingsPage() {
         queue_shortest_first: localSettings.queue_shortest_first,
         queue_drying_block: localSettings.queue_drying_block,
         ambient_drying_enabled: localSettings.ambient_drying_enabled,
+        print_drying_enabled: localSettings.print_drying_enabled,
         drying_presets: localSettings.drying_presets,
         ams_humidity_thresholds: localSettings.ams_humidity_thresholds,
         stagger_enabled: localSettings.stagger_enabled,
@@ -5037,6 +5039,25 @@ export function SettingsPage() {
                         type="checkbox"
                         checked={localSettings.ambient_drying_enabled ?? false}
                         onChange={(e) => updateSetting('ambient_drying_enabled', e.target.checked)}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                    </label>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <label className="block text-sm text-white">
+                        {t('settings.printDryingEnabled')}
+                      </label>
+                      <p className="text-xs text-bambu-gray mt-0.5">
+                        {t('settings.printDryingEnabledDescription')}
+                      </p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={localSettings.print_drying_enabled ?? false}
+                        onChange={(e) => updateSetting('print_drying_enabled', e.target.checked)}
                         className="sr-only peer"
                       />
                       <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>

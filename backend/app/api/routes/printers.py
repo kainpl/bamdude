@@ -53,6 +53,7 @@ from backend.app.services.printer_manager import (
     resolve_plate_id,
     supports_chamber_temp,
     supports_drying,
+    supports_drying_while_printing,
 )
 from backend.app.utils.http import build_content_disposition
 
@@ -754,6 +755,7 @@ async def get_printer_status(
         macro_executing=state.macro_executing if state else None,
         awaiting_plate_clear=printer_manager.is_awaiting_plate_clear(printer_id),
         supports_drying=supports_drying(printer.model, state.firmware_version),
+        supports_drying_while_printing=supports_drying_while_printing(printer.model, state.firmware_version),
         current_archive_id=current_archive_id,
         current_plate_id=current_plate_id,
         fila_switch=(

@@ -601,6 +601,8 @@ export interface PrinterStatus {
   awaiting_plate_clear: boolean;
   // AMS drying support
   supports_drying: boolean;
+  // AMS "Print While Drying" — drying that runs concurrently with an active print
+  supports_drying_while_printing: boolean;
 }
 
 export interface PrinterCreate {
@@ -1365,6 +1367,7 @@ export interface AppSettings {
   queue_drying_enabled: boolean;  // Auto-dry AMS between queued prints
   queue_drying_block: boolean;  // Block queue until drying completes
   ambient_drying_enabled: boolean;  // Auto-dry idle printers based on humidity regardless of queue
+  print_drying_enabled: boolean;  // Also auto-dry printers that are currently printing, on capable hardware (capped temp)
   drying_presets: string;  // JSON blob of drying presets per filament type
   ams_humidity_thresholds: string;  // JSON blob of per-filament humidity thresholds (#1605)
   // Auto-queue routing

@@ -129,6 +129,16 @@ class AppSettings(BaseModel):
         default=False,
         description="Automatically dry AMS filament on idle printers when humidity exceeds threshold, regardless of queue",
     )
+    print_drying_enabled: bool = Field(
+        default=False,
+        description=(
+            "Allow auto-drying to also fire on a printer that is currently printing, "
+            "when its model+firmware supports concurrent drying (H2D 01.03.00.00+, "
+            "H2C/H2S/P2S/H2D Pro 01.02.00.00+, X2D/A2L 01.01.00.00+, X1C 01.11.02.00+). "
+            "Drying temperature is automatically capped 5 degC below the idle preset "
+            "(floor 40 degC) to protect spools during print."
+        ),
+    )
     drying_presets: str = Field(
         default="",
         description="JSON blob of drying presets per filament type (empty = use built-in defaults)",
@@ -450,6 +460,7 @@ class AppSettingsUpdate(BaseModel):
     queue_drying_enabled: bool | None = None
     queue_drying_block: bool | None = None
     ambient_drying_enabled: bool | None = None
+    print_drying_enabled: bool | None = None
     drying_presets: str | None = None
     ams_humidity_thresholds: str | None = None
     stagger_enabled: bool | None = None
