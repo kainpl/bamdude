@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import zipfile
 from io import BytesIO
 
@@ -77,6 +78,63 @@ def test_substitute_replaces_unused_slots_with_slot1():
     z = _zip({"Metadata/model_settings.config": model_settings})
     out = substitute_unused_plate_filaments(z, 0, ["pla", "abs", "petg"])
     assert out == ["pla", "pla", "pla"]
+
+
+def test_substitute_support_material_slot_preserved():
+    # #1881 regression: object geometry references only slot 1 (PLA), but
+    # slot 2 (PVA) is configured as the support material in
+    # project_settings.config. Without the support-slot union, slot 2's
+    # user-picked PVA profile would be overwritten with slot 1's PLA and
+    # the print would come out single-material with PLA supports.
+    model_settings = (
+        b"<config>"
+        b'<object id="1"><metadata key="extruder" value="1"/></object>'
+        b'<plate><metadata key="plater_id" value="1"/>'
+        b'<model_instance><metadata key="object_id" value="1"/></model_instance></plate>'
+        b"</config>"
+    )
+    project_settings = json.dumps(
+        {
+            "enable_support": "1",
+            "support_filament": "2",
+            "support_interface_filament": "2",
+            "filament_type": ["PLA", "PVA"],
+        }
+    ).encode()
+    z = _zip(
+        {
+            "Metadata/model_settings.config": model_settings,
+            "Metadata/project_settings.config": project_settings,
+        }
+    )
+    out = substitute_unused_plate_filaments(z, 1, ["pla.json", "pva_support.json"])
+    assert out == ["pla.json", "pva_support.json"]
+
+
+def test_substitute_support_disabled_still_substitutes_unused():
+    # When supports are off, slot 2 is genuinely unused — the temp-spread
+    # validator still needs the substitution to succeed.
+    model_settings = (
+        b"<config>"
+        b'<object id="1"><metadata key="extruder" value="1"/></object>'
+        b'<plate><metadata key="plater_id" value="1"/>'
+        b'<model_instance><metadata key="object_id" value="1"/></model_instance></plate>'
+        b"</config>"
+    )
+    project_settings = json.dumps(
+        {
+            "enable_support": "0",
+            "support_filament": "2",
+        }
+    ).encode()
+    z = _zip(
+        {
+            "Metadata/model_settings.config": model_settings,
+            "Metadata/project_settings.config": project_settings,
+        }
+    )
+    out = substitute_unused_plate_filaments(z, 1, ["pla.json", "abs_never_used.json"])
+    assert out == ["pla.json", "pla.json"]
 
 
 # ── merge_plate_3mfs ────────────────────────────────────────────────────────

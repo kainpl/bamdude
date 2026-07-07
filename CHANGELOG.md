@@ -31,6 +31,8 @@ All notable changes to BamDude will be documented in this file.
 - **The virtual-printer MQTT broker recovers from stuck clients.** A slow or dead consumer whose write buffer stopped draining could wedge the broker; it now evicts a client on drain-timeout and tightens TCP keepalive so dead peers are detected promptly (#1872).
 - **Camera passthrough now uses the right port for A1/P1 printers behind a virtual printer.** The VP camera proxy hardcoded the RTSP port (322); A1/P1 series use the chamber-image protocol on port 6000, so their streams didn't come through. The proxy now picks the port from the target printer's model (#1868).
 - **External-camera snapshots in a non-JPEG format now display.** A snapshot fetched from a user's external camera URL in PNG/WebP was passed through unchanged into a JPEG-labelled stream and failed to render; such frames are now transcoded to JPEG (#1902).
+- **Re-slicing a 3MF now keeps its soluble-support (PVA) setup.** When a source 3MF configured to print supports in a separate PVA/soluble material was re-sliced, the support-material choice was dropped and supports came out in the model material. The support settings (enable, support/interface filament) now carry through the re-slice, and support materials show on the archive card of an unsliced source 3MF instead of being hidden (#1881).
+- **Fetching or deleting a single cloud slicer setting no longer fails.** The Bambu Cloud slicer-setting API requires a `version` query parameter that the singular GET and DELETE calls were omitting, so they returned HTTP 400; both now send it (#1815).
 
 ### Security
 
