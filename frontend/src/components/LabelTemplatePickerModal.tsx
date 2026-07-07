@@ -151,6 +151,9 @@ export function LabelTemplatePickerModal({
   // opens. ``handlePick`` sends the queue order matching this sort, so
   // 'color' produces a label sheet ordered by hue (rainbow + neutrals).
   const [sortMode, setSortMode] = useState<SortMode>('id');
+  // #1870: session-only monochrome toggle for black & white thermal printers.
+  // Resets to off each time the modal opens.
+  const [monochrome, setMonochrome] = useState(false);
 
   const effectiveTemplate = spoolDisplayTemplate || DEFAULT_SPOOL_DISPLAY_TEMPLATE;
 
@@ -164,6 +167,7 @@ export function LabelTemplatePickerModal({
       setSearch('');
       setMaterialFilter('');
       setSortMode('id');
+      setMonochrome(false);
       setPending(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -269,8 +273,8 @@ export function LabelTemplatePickerModal({
     setPending(template);
     try {
       const blob = spoolmanMode
-        ? await api.printSpoolmanSpoolLabels({ spools, template })
-        : await api.printSpoolLabels({ spools, template });
+        ? await api.printSpoolmanSpoolLabels({ spools, template, monochrome })
+        : await api.printSpoolLabels({ spools, template, monochrome });
       openBlobInNewTab(blob);
       onClose();
     } catch (err) {
@@ -466,10 +470,33 @@ export function LabelTemplatePickerModal({
           )}
         </div>
 
+        {/* Print options (#1870) */}
+        <div className="px-4 pt-2 pb-1 border-t border-bambu-dark-tertiary">
+          <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+            {monochrome ? (
+              <CheckSquare className="w-4 h-4 text-bambu-green shrink-0" />
+            ) : (
+              <Square className="w-4 h-4 text-bambu-gray shrink-0" />
+            )}
+            <input
+              type="checkbox"
+              checked={monochrome}
+              onChange={(e) => setMonochrome(e.target.checked)}
+              className="sr-only"
+            />
+            <span className="text-sm text-white">
+              {t('inventory.labels.monochrome', 'Monochrome (black & white printer)')}
+            </span>
+            <span className="text-xs text-bambu-gray">
+              {t('inventory.labels.monochromeHint', 'Drops the colour swatch and widens the text')}
+            </span>
+          </label>
+        </div>
+
         {/* Templates — 2-col grid on >= sm so all 5 plus the Cancel footer fit
             inside max-h-[90vh] even when browser chrome eats into the viewport
             (upstream #1230 / 4c0a12b9). Stacked single column on mobile widths. */}
-        <div className="px-3 pt-2 pb-2 grid grid-cols-1 sm:grid-cols-2 gap-2 border-t border-bambu-dark-tertiary">
+        <div className="px-3 pt-1 pb-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
           {TEMPLATE_OPTIONS.map((opt) => {
             const isPending = pending === opt.value;
             const label = t(`inventory.labels.templates.${opt.i18nKey}.label`);

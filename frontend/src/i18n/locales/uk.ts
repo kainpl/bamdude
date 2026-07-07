@@ -4785,6 +4785,8 @@ export default {
       bulkTitle: 'Виберіть котушки для друку наліпок з {{count}} показаних',
       noSpoolsTitle: 'Немає котушок для друку наліпок',
       selectedCount: 'обрано {{count}}',
+      monochrome: 'Монохромний (чорно-білий принтер)',
+      monochromeHint: 'Прибирає зразок кольору й розширює текст',
       searchPlaceholder: 'Пошук за назвою, брендом або #ID',
       filterByMaterial: 'Матеріал:',
       allMaterials: 'Усі',

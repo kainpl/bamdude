@@ -3335,6 +3335,9 @@ export interface SpoolLabelEntry {
 export interface SpoolLabelRequest {
   spools: SpoolLabelEntry[];
   template: SpoolLabelTemplate;
+  /** Black-and-white thermal printers: drop the colour swatch (prints as a
+   *  muddy grey block) and widen the text column instead (#1870). */
+  monochrome?: boolean;
 }
 
 export interface SpoolUsageRecord {

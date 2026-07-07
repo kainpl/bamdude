@@ -63,6 +63,24 @@ class TestInventoryLabels:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_monochrome_flag_returns_pdf(self, async_client: AsyncClient, spool_factory):
+        """#1870: the monochrome flag threads through to the renderer and still
+        yields a valid PDF (swatch dropped, hex code carries the colour)."""
+        a = await spool_factory()
+        resp = await async_client.post(
+            "/api/v1/inventory/labels",
+            json={
+                "spools": [{"id": a.id}],
+                "template": "box_40x30",
+                "monochrome": True,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.headers["content-type"] == "application/pdf"
+        assert resp.content.startswith(b"%PDF")
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_404_on_missing_spool_id(self, async_client: AsyncClient, spool_factory):
         a = await spool_factory()
         resp = await async_client.post(
