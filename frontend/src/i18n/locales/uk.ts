@@ -2562,6 +2562,7 @@ export default {
     title: 'Помилки - {{name}}',
     noErrors: 'Немає помилок',
     viewOnWiki: 'Переглянути на Bambu Lab Wiki',
+    unknownCode: 'Невідомий код HMS — деталі дивіться у вікі Bambu Lab.',
     clearInstructions: 'Очистіть помилки на принтері, щоб прибрати їх тут.',
     clearErrors: 'Очистити помилки',
     clearSuccess: 'Помилки HMS очищено',

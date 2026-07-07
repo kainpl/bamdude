@@ -1465,3 +1465,108 @@ class TestPrinterAccessCodeVisibility:
         body = detail.json()
         assert body.get("access_code") is None
         assert body["name"] == "Secret Printer"
+
+
+class TestExecuteHMSActionAPI:
+    """The /hms/execute-action route decides ack by probing `_last_message_time`
+    (bumped on every inbound MQTT push) rather than diffing (gcode_state,
+    hms_errors-len). This survives the wrong-plate IGNORE_RESUME re-pause (#1869)
+    where both state fields round-trip to their pre-publish values inside the
+    ack window even though the firmware fully ack'd.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_execute_hms_action_success(self, async_client: AsyncClient, printer_factory):
+        """200 when the dispatcher returns True AND the printer pushes at least one
+        MQTT message into the ack-wait window."""
+        printer = await printer_factory(name="Test Printer")
+
+        mock_client = MagicMock()
+        mock_client.state.state = "PAUSE"
+        mock_client.state.hms_errors = [object()]
+        mock_client._last_message_time = 100.0
+
+        def _act(*_a, **_kw):
+            # The pushall that follows every command produces a fresh inbound push;
+            # the state fields themselves don't have to move (#1869).
+            mock_client._last_message_time = 100.5
+            return True
+
+        mock_client.execute_hms_action.side_effect = _act
+
+        with (
+            patch("backend.app.api.routes.printers.printer_manager") as mock_pm,
+            _orig_patch("backend.app.api.routes.printers.HMS_ACTION_ACK_WAIT_SECONDS", 0.01),
+        ):
+            mock_pm.get_client.return_value = mock_client
+
+            body = {"print_error": "05008051", "action": "IGNORE_RESUME", "job_id": None}
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/hms/execute-action", json=body)
+
+            assert response.status_code == 200
+            assert response.json()["success"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_execute_hms_action_no_printer_ack_returns_502(self, async_client: AsyncClient, printer_factory):
+        """502 when publish succeeded but no MQTT message arrives back within the
+        ack-wait window — the firmware-silent-drop failure mode #1830 surfaces."""
+        printer = await printer_factory(name="Test Printer")
+
+        mock_client = MagicMock()
+        mock_client.state.state = "PAUSE"
+        mock_client.state.hms_errors = [object()]
+        mock_client._last_message_time = 100.0
+        mock_client.execute_hms_action.return_value = True  # publish "succeeded"
+        # Crucially: _last_message_time does NOT advance → no inbound push.
+
+        with (
+            patch("backend.app.api.routes.printers.printer_manager") as mock_pm,
+            _orig_patch("backend.app.api.routes.printers.HMS_ACTION_ACK_WAIT_SECONDS", 0.01),
+        ):
+            mock_pm.get_client.return_value = mock_client
+
+            body = {"print_error": "05008051", "action": "IGNORE_RESUME", "job_id": None}
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/hms/execute-action", json=body)
+
+            assert response.status_code == 502
+            assert "acknowledge" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_execute_hms_action_ignore_resume_repauses_within_window_still_acks(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        """200 when the printer ack'd but immediately re-paused with the same fault —
+        wrong-plate IGNORE_RESUME (#1869). The old (gcode_state, hms_errors-len) diff
+        produced a false 502 because both fields round-tripped inside the ack window.
+        Probing `_last_message_time` survives the round-trip."""
+        printer = await printer_factory(name="Test Printer")
+
+        mock_client = MagicMock()
+        mock_client.state.state = "PAUSE"
+        mock_client.state.hms_errors = [object()]
+        mock_client._last_message_time = 100.0
+
+        def _act(*_a, **_kw):
+            # Ack'd, briefly resumed, re-detected the wrong plate, re-paused. Net diff
+            # on state fields is zero, but a fresh status push DID arrive.
+            mock_client._last_message_time = 100.4
+            mock_client.state.state = "PAUSE"  # round-tripped
+            mock_client.state.hms_errors = [object()]  # same length
+            return True
+
+        mock_client.execute_hms_action.side_effect = _act
+
+        with (
+            patch("backend.app.api.routes.printers.printer_manager") as mock_pm,
+            _orig_patch("backend.app.api.routes.printers.HMS_ACTION_ACK_WAIT_SECONDS", 0.01),
+        ):
+            mock_pm.get_client.return_value = mock_client
+
+            body = {"print_error": "05008051", "action": "IGNORE_RESUME", "job_id": None}
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/hms/execute-action", json=body)
+
+            assert response.status_code == 200
+            assert response.json()["success"] is True

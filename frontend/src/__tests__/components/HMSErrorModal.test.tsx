@@ -124,6 +124,37 @@ describe('HMSErrorModal', () => {
     });
   });
 
+  describe('uncataloged-but-actionable faults (#1840)', () => {
+    // Uncataloged code (FFFF_FFFF not in ERROR_DESCRIPTIONS) that nonetheless
+    // carries firmware actions — e.g. H2C 0500_809C. Must surface so the action
+    // button can render, with the unknown-code fallback description.
+    const actionableUncataloged: HMSError = {
+      attr: 0xFFFF,
+      code: '0xFFFF',
+      module: 0,
+      severity: 3,
+      actions: ['IGNORE_RESUME'],
+      full_code: 'FFFFFFFF',
+    };
+
+    it('surfaces an uncataloged fault that carries firmware actions', () => {
+      render(<HMSErrorModal {...defaultProps} errors={[actionableUncataloged]} />);
+      // Not the empty state — the fault is shown even without a catalog entry.
+      expect(screen.queryByText('No errors')).not.toBeInTheDocument();
+      // Falls back to the unknown-code description.
+      expect(
+        screen.getByText('Unknown HMS code — see the Bambu Lab wiki for details.')
+      ).toBeInTheDocument();
+      // And still renders the action button so the user can act on it.
+      expect(screen.getByText('Ignore this and Resume')).toBeInTheDocument();
+    });
+
+    it('still drops an uncataloged fault that carries no actions (junk-echo noise)', () => {
+      render(<HMSErrorModal {...defaultProps} errors={[unknownError]} />);
+      expect(screen.getByText('No errors')).toBeInTheDocument();
+    });
+  });
+
   describe('interactions', () => {
     it('calls onClose when X button is clicked', async () => {
       const user = userEvent.setup();

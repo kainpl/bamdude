@@ -5336,14 +5336,16 @@ class BambuMQTTClient:
         Args:
             print_error: Canonical hex identifier for the fault — 8 chars for the
                 32-bit `print_error` path, 16 chars for the 64-bit `hms[]` path
-                (HMSError.full_code). Only the `idle_ignore` branch puts it on the
-                wire; resume / stop use BambuStudio's plain shape (the `err`-bearing
-                shape is silently rejected by the firmware — verified on a live H2D).
+                (HMSError.full_code). Converted to its DECIMAL string form for the
+                `ignore` / `idle_ignore` commands' `err` field, which is what the
+                firmware compares against the active fault (BambuStudio passes
+                `std::to_string(int m_error_code)`, i.e. decimal — matching `"05008051"`
+                against int 0x05008051 = 83918929 was the pre-#1869 silent-rejection).
+                resume / stop keep BambuStudio's plain shape (user-confirmed working).
             action: One of HMSAction's string values.
             job_id: The `subtask_id` snapshotted onto the HMSError at parse-time.
-                Preserved for symmetry with the catalog but no longer sent —
-                BambuStudio's resume/stop commands are plain and the firmware doesn't
-                echo `job_id` back on the response either.
+                Required by BambuStudio's `command_hms_ignore` shape; empty string is
+                the no-job-id sentinel.
 
         Returns False when the MQTT client is offline or when `action` is unknown so
         the route surfaces it as a 4xx rather than a silent no-op.
@@ -5360,30 +5362,61 @@ class BambuMQTTClient:
                 self.topic_publish, json.dumps({"pushing": {"command": "pushall", "sequence_id": "0"}}), qos=1
             )
 
+        # BambuStudio's `err` field is the DECIMAL string of the error code's int
+        # value (DeviceErrorDialog.cpp passes `std::to_string(m_error_code)` to every
+        # command_hms_* call). Our route hands us the hex string — convert. Falls back
+        # to the raw input if it isn't parseable so the firmware can reject it and the
+        # route can surface 502 instead of us raising ValueError mid-dispatch.
+        try:
+            err_decimal = str(int(print_error, 16))
+        except ValueError:
+            err_decimal = print_error
+
         def hms_resume():
-            # BambuStudio's actual shape — plain resume, no err / no job_id. The
-            # `err`-bearing shape is silently rejected by Bambu firmware on
-            # print_error- and hms[]-sourced faults alike (#1830 §(2)).
+            # Plain resume — verified against the user's H2D/H2S to leave PAUSE cleanly
+            # for "Problem Solved and Resume". BambuStudio's command_hms_resume carries
+            # err/param/job_id, but the plain shape is confirmed working and changing it
+            # without a field test risks regressing a path the user relies on.
             publish({"print": {"command": "resume", "param": "", "sequence_id": "0"}})
 
         def hms_stop():
-            # Same as hms_resume — BambuStudio's actual shape is plain.
+            # Same as hms_resume — plain shape, user-confirmed working for "Stop Printing".
             publish({"print": {"command": "stop", "param": "", "sequence_id": "0"}})
 
-        def hms_ignore(persistent: bool = False):
-            # `idle_ignore` is BambuStudio's "dismiss this warning" command for
-            # non-pause warnings. type=0 dismisses once, type=1 hides it permanently.
-            # For an HMS-paused print `idle_ignore` is silently rejected regardless of
-            # `err` (verified on a live H2D — #1830 §(2)); the user intent of "Ignore
-            # and resume" is to continue, so dispatch a plain resume there instead.
-            if self.state.state == "PAUSE":
-                hms_resume()
-                return
+        def hms_ignore_command():
+            # BambuStudio's `command_hms_ignore` (DeviceManager.cpp:1450) — what the
+            # "Ignore this and Resume" button actually publishes. Distinct from
+            # `idle_ignore`: this command has the firmware suppress the next re-check of
+            # the named fault AND resume the paused print in one operation. The previous
+            # code redirected IGNORE_RESUME to a plain `resume`, which is why a wrong-plate
+            # HMS came back 1-2 s later — `resume` means "re-check normally" so the
+            # firmware re-detected the wrong plate and re-paused with the same code
+            # (#1869). BambuStudio routes IGNORE_NO_REMINDER_NEXT_TIME /
+            # DONT_REMIND_NEXT_TIME to this same command — the "don't remind" half is the
+            # firmware's job.
+            publish(
+                {
+                    "print": {
+                        "command": "ignore",
+                        "err": err_decimal,
+                        "param": "reserve",
+                        "job_id": job_id or "",
+                        "sequence_id": "0",
+                    }
+                }
+            )
+
+        def hms_idle_ignore(persistent: bool = False):
+            # `idle_ignore` is BambuStudio's "dismiss this warning without resuming"
+            # command (`command_hms_idle_ignore`, DeviceManager.cpp:1424). type=0
+            # dismisses once, type=1 suppresses the same warning permanently. Used by
+            # NO_REMINDER_NEXT_TIME, which BambuStudio dispatches via
+            # `command_hms_idle_ignore(..., 0)` — NOT the resume-bearing `ignore` command.
             publish(
                 {
                     "print": {
                         "command": "idle_ignore",
-                        "err": print_error,
+                        "err": err_decimal,
                         "type": 1 if persistent else 0,
                         "sequence_id": "0",
                     }
@@ -5428,11 +5461,18 @@ class BambuMQTTClient:
             case HMSAction.STOP_PRINTING:
                 hms_stop()
 
-            case HMSAction.IGNORE_RESUME | HMSAction.NO_REMINDER_NEXT_TIME:
-                hms_ignore(persistent=False)
+            case HMSAction.IGNORE_RESUME | HMSAction.IGNORE_NO_REMINDER_NEXT_TIME | HMSAction.DONT_REMIND_NEXT_TIME:
+                # All three map to BambuStudio's `command_hms_ignore`
+                # (DeviceErrorDialog.cpp:596-602) — resume + suppress-next-check in one.
+                # The "no reminder next time" half is the firmware's responsibility, so
+                # the wire shape is identical for all three.
+                hms_ignore_command()
 
-            case HMSAction.IGNORE_NO_REMINDER_NEXT_TIME | HMSAction.DONT_REMIND_NEXT_TIME:
-                hms_ignore(persistent=True)
+            case HMSAction.NO_REMINDER_NEXT_TIME:
+                # BambuStudio dispatches NO_REMINDER_NEXT_TIME via
+                # `command_hms_idle_ignore` with type=0 (DeviceErrorDialog.cpp:588-590) —
+                # dismisses the dialog without resuming. Distinct from the IGNORE_* group.
+                hms_idle_ignore(persistent=False)
 
             case HMSAction.FILAMENT_EXTRUDED | HMSAction.DBL_CHECK_DONE:
                 ams_control("done")
