@@ -242,9 +242,7 @@ class TestMinimumDryingTime:
 
     @pytest.fixture
     def scheduler(self):
-        s = PrintScheduler()
-        s._min_drying_seconds = 1800  # 30 minutes
-        return s
+        return PrintScheduler()
 
     @pytest.mark.asyncio
     @patch("backend.app.services.print_scheduler.printer_manager")
@@ -306,7 +304,10 @@ class TestMinimumDryingTime:
     @patch("backend.app.services.print_scheduler.printer_manager")
     @patch("backend.app.services.print_scheduler.supports_drying", return_value=True)
     async def test_stops_after_minimum_time(self, mock_sd, mock_pm, scheduler):
-        """Drying SHOULD stop when humidity below threshold AND 30 min elapsed."""
+        """Even after long elapsed + low humidity, the humidity re-check never stops a
+        running dry (#1892 — removed the min-time humidity stop). The stop that fires at
+        dispatch is print-priority (_stop_drying), using positional args — distinct from
+        the removed keyword humidity-stop."""
         # Simulate: drying started 35 minutes ago
         scheduler._drying_in_progress = {1: time.monotonic() - 2100}
 
@@ -346,7 +347,12 @@ class TestMinimumDryingTime:
 
         await scheduler._check_auto_drying(db, [item], set())
 
-        # Should have sent stop command (humidity-based stop after minimum time)
+        # The humidity re-check must NOT stop the dry (that path was removed in #1892)...
+        for stop_call in mock_pm.send_drying_command.call_args_list:
+            assert stop_call != ((1, 0), {"temp": 0, "duration": 0, "mode": 0}), (
+                "Humidity re-check must never stop a running dry (#1892)"
+            )
+        # ...but print-priority stop still fires at dispatch (positional args, _stop_drying).
         mock_pm.send_drying_command.assert_any_call(1, 0, 0, 0, mode=0)
 
     @staticmethod

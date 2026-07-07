@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import defusedxml.ElementTree as ET
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -99,7 +99,6 @@ class PrintScheduler:
         self._check_interval = 30  # seconds
         self._power_on_wait_time = 180  # seconds to wait for printer after power on (3 min)
         self._power_on_check_interval = 10  # seconds between connection checks
-        self._min_drying_seconds = 1800  # 30 minutes minimum before humidity re-check can stop drying
         # Track which printers are currently auto-drying (printer_id -> start timestamp)
         self._drying_in_progress: dict[int, float] = {}
         # Staggered start: rolling slots for electrical load management
@@ -471,9 +470,15 @@ class PrintScheduler:
         if prefer_lowest:
             inventory_remain_overrides = await self._build_inventory_remain_overrides(db, printer_id, loaded_filaments)
 
+        # Flow-Through-System (FTS accessory): when installed, any AMS slot can be routed
+        # to any extruder via the track switch (no fixed slot→nozzle assignment), so the
+        # per-nozzle slot filter below must NOT restrict candidates to one extruder —
+        # doing so strands the print on a wrong-nozzle slot (#2186).
+        fts_installed = bool(getattr(getattr(status, "fila_switch", None), "installed", False))
+
         # Compute mapping: match required filaments to available slots
         return self._match_filaments_to_slots(
-            filament_reqs, loaded_filaments, prefer_lowest, inventory_remain_overrides
+            filament_reqs, loaded_filaments, prefer_lowest, inventory_remain_overrides, fts_installed
         )
 
     async def _get_filament_requirements(self, db: AsyncSession, item: PrintQueueItem) -> list[dict] | None:
@@ -809,6 +814,7 @@ class PrintScheduler:
         loaded: list[dict],
         prefer_lowest: bool = False,
         inventory_remain_overrides: dict[int, float] | None = None,
+        fts_installed: bool = False,
     ) -> list[int] | None:
         """Match required filaments to loaded filaments and build AMS mapping.
 
@@ -851,8 +857,10 @@ class PrintScheduler:
             # Nozzle-aware filtering: restrict to trays on the correct nozzle.
             # Hard filter - cross-nozzle assignment causes print failures
             # ("position of left hotend is abnormal"), so never fall back.
+            # Skipped when an FTS accessory is installed: the track switch routes any
+            # slot to any extruder, so per-nozzle restriction wrongly strands slots (#2186).
             req_nozzle_id = req.get("nozzle_id")
-            if req_nozzle_id is not None:
+            if req_nozzle_id is not None and not fts_installed:
                 available = [f for f in available if f.get("extruder_id") == req_nozzle_id]
 
             # Sort by remaining filament (ascending) so lowest-remain spool wins.
@@ -1475,33 +1483,23 @@ class PrintScheduler:
                     trays, per_type_thresholds, global_humidity_threshold
                 )
 
-                # Already drying - check if humidity dropped below threshold (with minimum drying time)
+                # Already drying — do NOT stop it here on a humidity re-check. The AMS
+                # humidity reading is noisy while the heater runs (moisture shedding can
+                # briefly read "dry"), so an early-stop would truncate legitimate manual
+                # or preset dries (#1892). A running dry runs to its firmware-set
+                # duration; auto-drying is only ever stopped when a print is dispatched to
+                # the printer (see _stop_drying). We still record first-seen time so a
+                # restart-orphaned dry has a start timestamp.
                 if dry_time > 0:
                     if pid not in self._drying_in_progress:
-                        # Drying we didn't start (manual or from before restart) - track but don't stop
                         self._drying_in_progress[pid] = time.monotonic()
-                    started_at = self._drying_in_progress[pid]
-                    elapsed = time.monotonic() - started_at
-                    if humidity is not None and humidity <= humidity_threshold and elapsed >= self._min_drying_seconds:
-                        logger.info(
-                            "Auto-drying: printer %d AMS %d - humidity %d%% <= threshold %d%% after %dm, stopping drying",
-                            pid,
-                            ams_id,
-                            humidity,
-                            humidity_threshold,
-                            int(elapsed / 60),
-                        )
-                        printer_manager.send_drying_command(pid, ams_id, temp=0, duration=0, mode=0)
-                    else:
-                        logger.debug(
-                            "Auto-drying: printer %d AMS %d - drying (%dm left, humidity %s%%, elapsed %dm/%dm min)",
-                            pid,
-                            ams_id,
-                            dry_time,
-                            humidity,
-                            int(elapsed / 60),
-                            self._min_drying_seconds // 60,
-                        )
+                    logger.debug(
+                        "Auto-drying: printer %d AMS %d - drying in progress (%dm left, humidity %s%%) - letting it run",
+                        pid,
+                        ams_id,
+                        dry_time,
+                        humidity,
+                    )
                     continue
 
                 # Humidity below threshold - no need to start drying
@@ -1821,8 +1819,25 @@ class PrintScheduler:
         # set_queue_printing to keep the printer_queues counters in lockstep.
         from backend.app.services.queue_counters import set_queue_printing, update_queue_counters
 
+        # Atomic pending→printing flip (compare-and-set). `item` comes from a check_queue
+        # snapshot that may be stale: a /cancel committed in another session between the
+        # snapshot and here would be silently clobbered by a blind status write, and the
+        # cancelled print would dispatch anyway (#1853). Gate the flip on the row still
+        # being 'pending'; if it moved on (cancelled / deleted / already picked up), bail
+        # before enqueuing any dispatch work.
+        now = datetime.now(timezone.utc)
+        cas_result = await db.execute(
+            update(PrintQueueItem)
+            .where(PrintQueueItem.id == item.id)
+            .where(PrintQueueItem.status == "pending")
+            .values(status="printing", started_at=now)
+        )
+        if cas_result.rowcount == 0:
+            await db.rollback()
+            logger.info("Queue item %s: no longer pending at dispatch (cancelled or removed) — skipping", item.id)
+            return
         item.status = "printing"
-        item.started_at = datetime.now(timezone.utc)
+        item.started_at = now
         await set_queue_printing(db, item.queue_id, item.id)
         await update_queue_counters(db, item.queue_id)
         await db.commit()

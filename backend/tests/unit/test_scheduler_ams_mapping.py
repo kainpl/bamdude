@@ -223,6 +223,20 @@ class TestMatchFilamentsToSlots:
         result = scheduler._match_filaments_to_slots(required, loaded)
         assert result == [-1]
 
+    def test_fts_installed_bypasses_nozzle_filter(self, scheduler):
+        """FTS (flow-through-system): with the accessory installed, any AMS slot can be
+        routed to any extruder, so the per-nozzle filter must be skipped — a req pinned to
+        nozzle 0 can still bind a tray physically on extruder 1 (#2186). Without FTS the
+        cross-nozzle tray is filtered out and the slot goes unmatched (-1)."""
+        required = [{"slot_id": 1, "type": "PLA", "color": "#FF0000", "nozzle_id": 0}]
+        # The only matching tray sits on the "wrong" extruder (1).
+        loaded = [{"type": "PLA", "color": "#FF0000", "global_tray_id": 5, "extruder_id": 1}]
+
+        # Default (no FTS): the nozzle filter drops the cross-extruder tray → unmatched.
+        assert scheduler._match_filaments_to_slots(required, loaded) == [-1]
+        # FTS installed: filter skipped → the tray binds despite the extruder mismatch.
+        assert scheduler._match_filaments_to_slots(required, loaded, fts_installed=True) == [5]
+
     def test_match_multiple_filaments(self, scheduler):
         """Should match multiple filaments correctly."""
         required = [
