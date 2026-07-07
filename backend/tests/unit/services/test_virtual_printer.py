@@ -1492,8 +1492,17 @@ class TestFTPSession:
         )
         session.authenticated = True
         session._data_connected.set()
+        # A .3mf must open as a ZIP or cmd_STOR rejects it with 426 (#1896),
+        # so feed real ZIP bytes rather than arbitrary filler on the success path.
+        import io
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("3D/3dmodel.model", "<model/>")
+        zip_bytes = buf.getvalue()
         data_reader = AsyncMock()
-        data_reader.read = AsyncMock(side_effect=[b"hello", b""])  # one chunk then EOF
+        data_reader.read = AsyncMock(side_effect=[zip_bytes, b""])  # one chunk then EOF
         session._data_reader = data_reader
 
         await session.cmd_STOR("test.3mf")
@@ -1501,7 +1510,7 @@ class TestFTPSession:
         start.assert_called_once()
         end.assert_called_once()
         received.assert_called_once()
-        assert (tmp_path / "test.3mf").read_bytes() == b"hello"
+        assert (tmp_path / "test.3mf").read_bytes() == zip_bytes
 
     @pytest.mark.asyncio
     async def test_stor_enforces_max_upload_cap(self, mock_reader, mock_writer, ssl_context, tmp_path, monkeypatch):

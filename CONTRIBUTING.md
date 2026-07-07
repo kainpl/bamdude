@@ -49,7 +49,7 @@ pip install pre-commit
 pre-commit install
 
 # Run backend
-DEBUG=true uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000
+DEBUG=true uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000 --loop asyncio
 ```
 
 ### Frontend

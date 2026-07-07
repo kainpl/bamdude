@@ -266,7 +266,7 @@ cd bamdude
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
+uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --loop asyncio
 ```
 
 **Windows (native):** download the latest `bamdude-windows-setup.exe` from the [Releases page](https://github.com/kainpl/bamdude/releases) and run it. It's a self-contained installer (embedded Python — no Python or Node install required) that sets up a data directory and registers BamDude as an NSSM-supervised Windows Service that autostarts on boot.

@@ -591,7 +591,9 @@ Environment="DATA_DIR=$DATA_DIR"
 Environment="LOG_DIR=$LOG_DIR"
 Environment="TZ=$TIMEZONE"
 
-ExecStart=$INSTALL_PATH/venv/bin/uvicorn backend.app.main:app --host $BIND_ADDRESS --port $PORT
+# --loop asyncio: uvicorn[standard] auto-selects uvloop, whose SSL layer can
+# silently truncate VP FTP uploads on a ragged EOF (#1896). Match the Dockerfile.
+ExecStart=$INSTALL_PATH/venv/bin/uvicorn backend.app.main:app --host $BIND_ADDRESS --port $PORT --loop asyncio
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -656,6 +658,9 @@ create_launchd_service() {
         <string>$BIND_ADDRESS</string>
         <string>--port</string>
         <string>$PORT</string>
+        <!-- Force asyncio: uvloop (via uvicorn[standard]) can truncate VP FTP uploads (#1896) -->
+        <string>--loop</string>
+        <string>asyncio</string>
     </array>
     <key>WorkingDirectory</key>
     <string>$INSTALL_PATH</string>
