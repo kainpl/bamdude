@@ -275,6 +275,9 @@ export function SettingsPage() {
     can_access_cloud: false,
     can_manage_library: true,
     can_manage_inventory: true,
+    can_manage_maintenance: true,
+    can_manage_archives: true,
+    can_manage_projects: true,
   });
   const [createdAPIKey, setCreatedAPIKey] = useState<string | null>(null);
   const [showDeleteAPIKeyConfirm, setShowDeleteAPIKeyConfirm] = useState<number | null>(null);
@@ -505,6 +508,9 @@ export function SettingsPage() {
       can_access_cloud: boolean;
       can_manage_library: boolean;
       can_manage_inventory: boolean;
+      can_manage_maintenance: boolean;
+      can_manage_archives: boolean;
+      can_manage_projects: boolean;
     }) => api.createAPIKey(data),
     onSuccess: (data) => {
       setCreatedAPIKey(data.key || null);
@@ -4787,6 +4793,42 @@ export function SettingsPage() {
                           <p className="text-xs text-bambu-gray">{t('settings.manageInventoryDescription')}</p>
                         </div>
                       </label>
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={newAPIKeyPermissions.can_manage_maintenance}
+                          onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_manage_maintenance: e.target.checked }))}
+                          className="w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
+                        />
+                        <div>
+                          <span className="text-white">{t('settings.manageMaintenance')}</span>
+                          <p className="text-xs text-bambu-gray">{t('settings.manageMaintenanceDescription')}</p>
+                        </div>
+                      </label>
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={newAPIKeyPermissions.can_manage_archives}
+                          onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_manage_archives: e.target.checked }))}
+                          className="w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
+                        />
+                        <div>
+                          <span className="text-white">{t('settings.manageArchives')}</span>
+                          <p className="text-xs text-bambu-gray">{t('settings.manageArchivesDescription')}</p>
+                        </div>
+                      </label>
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={newAPIKeyPermissions.can_manage_projects}
+                          onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_manage_projects: e.target.checked }))}
+                          className="w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
+                        />
+                        <div>
+                          <span className="text-white">{t('settings.manageProjects')}</span>
+                          <p className="text-xs text-bambu-gray">{t('settings.manageProjectsDescription')}</p>
+                        </div>
+                      </label>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 pt-2">
@@ -4852,6 +4894,15 @@ export function SettingsPage() {
                             )}
                             {key.can_manage_inventory && (
                               <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-400 rounded">{t('settings.inventoryBadge')}</span>
+                            )}
+                            {key.can_manage_maintenance && (
+                              <span className="px-1.5 py-0.5 bg-cyan-500/20 text-cyan-400 rounded">{t('settings.maintenanceBadge')}</span>
+                            )}
+                            {key.can_manage_archives && (
+                              <span className="px-1.5 py-0.5 bg-indigo-500/20 text-indigo-400 rounded">{t('settings.archivesBadge')}</span>
+                            )}
+                            {key.can_manage_projects && (
+                              <span className="px-1.5 py-0.5 bg-lime-500/20 text-lime-400 rounded">{t('settings.projectsBadge')}</span>
                             )}
                             {key.user_id === null && (
                               <span className="px-1.5 py-0.5 bg-bambu-dark-tertiary text-bambu-gray rounded">{t('settings.legacyBadge')}</span>

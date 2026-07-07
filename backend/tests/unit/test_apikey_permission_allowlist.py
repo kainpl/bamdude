@@ -27,6 +27,9 @@ _ALL_SCOPE_FLAGS = {
     "can_control_printer",
     "can_manage_library",
     "can_manage_inventory",
+    "can_manage_maintenance",
+    "can_manage_archives",
+    "can_manage_projects",
     "can_access_cloud",
 }
 
@@ -143,9 +146,90 @@ def test_empty_permission_list_fails_closed():
     assert ei.value.status_code == 403
 
 
-def test_reprint_rides_can_queue_not_archive_admin():
-    """ARCHIVES_REPRINT_* is a queue op; ARCHIVES_CREATE/DELETE stay admin."""
+def test_reprint_rides_can_queue_not_archive_manage():
+    """ARCHIVES_REPRINT_* is a queue op; ARCHIVES_CREATE/DELETE ride the
+    separate can_manage_archives scope (#1888), so a queue-only key still
+    can't curate archives."""
     key = _key(can_queue=True)
     _check_apikey_permissions(key, [Permission.ARCHIVES_REPRINT_OWN.value])
     with pytest.raises(HTTPException):
         _check_apikey_permissions(key, [Permission.ARCHIVES_DELETE_OWN.value])
+
+
+def test_manage_maintenance_scope():
+    """#1832 follow-up: a Manage-Maintenance key can log/reset maintenance and
+    manage the type catalog; a key without the scope cannot."""
+    maint = _key(can_manage_maintenance=True)
+    for perm in (
+        Permission.MAINTENANCE_CREATE,
+        Permission.MAINTENANCE_UPDATE,
+        Permission.MAINTENANCE_DELETE,
+    ):
+        _check_apikey_permissions(maint, [perm.value])
+    # No scope → denied.
+    for perm in (Permission.MAINTENANCE_UPDATE, Permission.MAINTENANCE_CREATE):
+        with pytest.raises(HTTPException):
+            _check_apikey_permissions(_key(can_read_status=True), [perm.value])
+
+
+def test_manage_archives_scope_but_not_purge():
+    """#1888: a Manage-Archives key can create/update/delete any print archive
+    (OWN + ALL fold into the one scope), but ARCHIVES_PURGE stays admin-only."""
+    arch = _key(can_manage_archives=True)
+    for perm in (
+        Permission.ARCHIVES_CREATE,
+        Permission.ARCHIVES_UPDATE_OWN,
+        Permission.ARCHIVES_UPDATE_ALL,
+        Permission.ARCHIVES_DELETE_OWN,
+        Permission.ARCHIVES_DELETE_ALL,
+    ):
+        _check_apikey_permissions(arch, [perm.value])
+    with pytest.raises(HTTPException):
+        _check_apikey_permissions(arch, [Permission.ARCHIVES_PURGE.value])
+    # A key without the archive scope still can't curate.
+    with pytest.raises(HTTPException):
+        _check_apikey_permissions(_key(can_queue=True), [Permission.ARCHIVES_DELETE_ALL.value])
+
+
+def test_manage_projects_scope():
+    """#1893: a Manage-Projects key can create/update/delete projects and add
+    archives (membership gates on PROJECTS_UPDATE); a key without it cannot.
+    PROJECTS_READ rides can_read_status, not can_manage_projects."""
+    proj = _key(can_manage_projects=True)
+    for perm in (
+        Permission.PROJECTS_CREATE,
+        Permission.PROJECTS_UPDATE,
+        Permission.PROJECTS_DELETE,
+    ):
+        _check_apikey_permissions(proj, [perm.value])
+    # PROJECTS_READ is a read scope, not a management one.
+    with pytest.raises(HTTPException):
+        _check_apikey_permissions(proj, [Permission.PROJECTS_READ.value])
+    _check_apikey_permissions(_key(can_read_status=True), [Permission.PROJECTS_READ.value])
+    # No management scope → project mutations denied.
+    with pytest.raises(HTTPException):
+        _check_apikey_permissions(_key(can_read_status=True), [Permission.PROJECTS_CREATE.value])
+
+
+def test_new_manage_scopes_do_not_cross_leak():
+    """The three new management scopes (#1832/#1888/#1893) are independent of
+    each other and of the pre-existing library/inventory scopes."""
+    maint = _key(can_manage_maintenance=True)
+    arch = _key(can_manage_archives=True)
+    proj = _key(can_manage_projects=True)
+    # Each scope only satisfies its own surface.
+    with pytest.raises(HTTPException):
+        _check_apikey_permissions(maint, [Permission.ARCHIVES_DELETE_ALL.value])
+    with pytest.raises(HTTPException):
+        _check_apikey_permissions(arch, [Permission.PROJECTS_CREATE.value])
+    with pytest.raises(HTTPException):
+        _check_apikey_permissions(proj, [Permission.MAINTENANCE_UPDATE.value])
+    # And a library/inventory key doesn't gain any of the three.
+    lib = _key(can_manage_library=True)
+    for perm in (
+        Permission.MAINTENANCE_UPDATE,
+        Permission.ARCHIVES_DELETE_ALL,
+        Permission.PROJECTS_CREATE,
+    ):
+        with pytest.raises(HTTPException):
+            _check_apikey_permissions(lib, [perm.value])

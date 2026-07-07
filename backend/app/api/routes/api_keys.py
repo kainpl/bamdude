@@ -81,6 +81,9 @@ async def create_api_key(
         can_update_energy_cost=data.can_update_energy_cost,
         can_manage_library=data.can_manage_library,
         can_manage_inventory=data.can_manage_inventory,
+        can_manage_maintenance=data.can_manage_maintenance,
+        can_manage_archives=data.can_manage_archives,
+        can_manage_projects=data.can_manage_projects,
         printer_ids=data.printer_ids,
         expires_at=data.expires_at,
     )
@@ -107,6 +110,9 @@ async def create_api_key(
         can_update_energy_cost=api_key.can_update_energy_cost,
         can_manage_library=api_key.can_manage_library,
         can_manage_inventory=api_key.can_manage_inventory,
+        can_manage_maintenance=api_key.can_manage_maintenance,
+        can_manage_archives=api_key.can_manage_archives,
+        can_manage_projects=api_key.can_manage_projects,
         printer_ids=api_key.printer_ids,
         enabled=api_key.enabled,
         last_used=api_key.last_used,
@@ -165,6 +171,12 @@ async def update_api_key(
         api_key.can_manage_library = data.can_manage_library
     if data.can_manage_inventory is not None:
         api_key.can_manage_inventory = data.can_manage_inventory
+    if data.can_manage_maintenance is not None:
+        api_key.can_manage_maintenance = data.can_manage_maintenance
+    if data.can_manage_archives is not None:
+        api_key.can_manage_archives = data.can_manage_archives
+    if data.can_manage_projects is not None:
+        api_key.can_manage_projects = data.can_manage_projects
     if data.printer_ids is not None:
         api_key.printer_ids = data.printer_ids
     if data.enabled is not None:

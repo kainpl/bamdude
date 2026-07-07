@@ -57,6 +57,25 @@ class APIKey(Base):
     # inventory stays under ``can_read_status``. Default True mirrors
     # ``can_queue``; m086 backfills per-row.
     can_manage_inventory: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Maintenance write scope (upstream Bambuddy #1832 follow-up). Carves the
+    # per-printer maintenance CRUD (log/reset items, edit intervals) + the
+    # maintenance-type catalog CRUD out of the admin denylist so HA-style
+    # automations can record "cleaned nozzle" via API key without broader
+    # printer control. Default True mirrors the other manage_* scopes; the m104
+    # backfill sets existing rows to False (these perms were previously
+    # DENIED for every key, so no silent scope widening on upgrade).
+    can_manage_maintenance: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Archive write scope (upstream Bambuddy #1888). Carves ARCHIVES_CREATE /
+    # _UPDATE_* / _DELETE_* (NOT purge) out of the admin denylist so automations
+    # can prune old prints via API key. OWN + ALL fold into this one scope (keys
+    # have no per-row ownership identity). Default True; m104 backfills existing
+    # rows to False.
+    can_manage_archives: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Project write scope (upstream Bambuddy #1893). Carves PROJECTS_CREATE /
+    # _UPDATE / _DELETE + membership (add-archives, gated on PROJECTS_UPDATE) out
+    # of the admin denylist so automations can organize prints into projects.
+    # Default True; m104 backfills existing rows to False.
+    can_manage_projects: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # Optional scope limits
     printer_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)  # null = all printers

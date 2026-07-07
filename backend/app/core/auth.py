@@ -980,6 +980,9 @@ async def get_api_key(
 #   can_control_printer → physical printer + smart-plug control
 #   can_manage_library  → library upload/rename/delete-OWN + notes + MakerWorld import
 #   can_manage_inventory→ inventory + forecast writes (+ SpoolBuddy-kiosk writes)
+#   can_manage_maintenance→ per-printer maintenance log/reset + type-catalog CRUD (#1832 follow-up)
+#   can_manage_archives → archive create/update/delete (NOT purge) (#1888)
+#   can_manage_projects → project create/update/delete + membership (add-archives) (#1893)
 #   can_access_cloud    → cloud auth (defence-in-depth alongside the router gate)
 #   admin-only          → unmapped (default-deny): all create/update/delete of
 #                         admin resources, settings writes, user/group/api-key
@@ -1060,6 +1063,43 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     Permission.INVENTORY_UPDATE: "can_manage_inventory",
     Permission.INVENTORY_DELETE: "can_manage_inventory",
     Permission.INVENTORY_FORECAST_WRITE: "can_manage_inventory",
+    # can_manage_maintenance — carved out of the admin denylist so HA-style
+    # automations can log "cleaned nozzle" / reset a maintenance counter via
+    # ``POST /maintenance/items/{item_id}/perform`` without granting broader
+    # printer control or settings write (upstream Bambuddy #1832 follow-up).
+    # Also covers per-printer maintenance CRUD (assign/remove items, edit
+    # intervals) and the maintenance-type-catalog CRUD (a config surface —
+    # grouping it with item writes matches the operator mental model of "keys
+    # that log maintenance can also manage what gets tracked"). MAINTENANCE_READ
+    # stays under can_read_status.
+    Permission.MAINTENANCE_CREATE: "can_manage_maintenance",
+    Permission.MAINTENANCE_UPDATE: "can_manage_maintenance",
+    Permission.MAINTENANCE_DELETE: "can_manage_maintenance",
+    # can_manage_archives — print-history curation. Carved out of the admin
+    # denylist so automations can prune old prints via API key (#1888): the
+    # archive delete/update routes gate on
+    # ``require_ownership_permission(ARCHIVES_*_ALL, ARCHIVES_*_OWN)``, which
+    # resolves the ALL permission for API keys (no per-row ownership identity,
+    # same as can_manage_library), so OWN and ALL map to the same scope.
+    # ARCHIVES_PURGE stays admin-only (denylist) as a genuinely destructive op
+    # that drops the print's stats contribution, mirroring LIBRARY_PURGE.
+    # ARCHIVES_REPRINT_* stays under can_queue (it enqueues a print).
+    Permission.ARCHIVES_CREATE: "can_manage_archives",
+    Permission.ARCHIVES_UPDATE_OWN: "can_manage_archives",
+    Permission.ARCHIVES_UPDATE_ALL: "can_manage_archives",
+    Permission.ARCHIVES_DELETE_OWN: "can_manage_archives",
+    Permission.ARCHIVES_DELETE_ALL: "can_manage_archives",
+    # can_manage_projects — project curation. Carved out of the admin denylist
+    # so automations can create projects and batch-add archives via API key
+    # (#1893). The project mutation routes gate on plain
+    # ``RequirePermission(Permission.PROJECTS_*)`` (no OWN/ALL ownership split —
+    # projects have no per-row ownership permission), so the three CRUD
+    # permissions map directly to the one scope. Membership edits
+    # (add-archives-to-project) gate on PROJECTS_UPDATE, so they're covered.
+    # PROJECTS_READ stays under can_read_status.
+    Permission.PROJECTS_CREATE: "can_manage_projects",
+    Permission.PROJECTS_UPDATE: "can_manage_projects",
+    Permission.PROJECTS_DELETE: "can_manage_projects",
     # can_access_cloud — narrow opt-in; also enforced at the router-level
     # ``_cloud_api_key_gate``, gated here too for defence-in-depth.
     Permission.CLOUD_AUTH: "can_access_cloud",
@@ -1102,23 +1142,25 @@ _APIKEY_DENIED_PERMISSIONS: frozenset[Permission] = frozenset(
         Permission.PRINTERS_CREATE,
         Permission.PRINTERS_UPDATE,
         Permission.PRINTERS_DELETE,
-        Permission.ARCHIVES_CREATE,
-        Permission.ARCHIVES_UPDATE_OWN,
-        Permission.ARCHIVES_UPDATE_ALL,
-        Permission.ARCHIVES_DELETE_OWN,
-        Permission.ARCHIVES_DELETE_ALL,
+        # ARCHIVES_CREATE / _UPDATE_OWN / _UPDATE_ALL / _DELETE_OWN / _DELETE_ALL
+        # moved to the allowlist under can_manage_archives (#1888) — splitting
+        # them across allow/deny made the whole archive-management surface
+        # unreachable for API keys via require_ownership_permission (same
+        # regression class as the library/maintenance carve-outs). ARCHIVES_PURGE
+        # stays denied as a genuinely destructive op that drops the print's
+        # stats contribution.
         Permission.ARCHIVES_PURGE,
         # LIBRARY_UPDATE_ALL / LIBRARY_DELETE_ALL moved to the allowlist under
         # can_manage_library (#1832) — splitting them across allow/deny made the
         # library curation surface unreachable for API keys via
         # require_ownership_permission. Purge stays denied (genuinely destructive).
         Permission.LIBRARY_PURGE,
-        Permission.PROJECTS_CREATE,
-        Permission.PROJECTS_UPDATE,
-        Permission.PROJECTS_DELETE,
-        Permission.MAINTENANCE_CREATE,
-        Permission.MAINTENANCE_UPDATE,
-        Permission.MAINTENANCE_DELETE,
+        # PROJECTS_CREATE / _UPDATE / _DELETE moved to the allowlist under
+        # can_manage_projects (#1893) — they were denied for every API key,
+        # making the project-management surface (create, add-archives, delete)
+        # unreachable, same regression class as the archives/library carve-outs.
+        # MAINTENANCE_CREATE / _UPDATE / _DELETE moved to the allowlist under
+        # can_manage_maintenance (#1832 follow-up) for the same reason.
         # Slicer Pipelines writes/runs are admin-only for API keys (no scope column),
         # mirroring upstream's deny; PIPELINES_READ rides can_read_status above.
         Permission.PIPELINES_WRITE,
