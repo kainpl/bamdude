@@ -4797,35 +4797,19 @@ async def on_print_complete(printer_id: int, data: dict):
                 # when done" on this queue item. Must precede the
                 # completed-item auto-cleanup below — that delete expires
                 # ``queue_item``, so ``auto_off_after`` has to be read first.
+                #
+                # Delegates to the smart-plug manager so the off honours each
+                # plug's configured strategy (time delay or temperature
+                # threshold), is cancelled if the printer starts printing again,
+                # and never cuts power on a loaded print (#1890). Previously an
+                # inline block here hardcoded a 50°C / 600s cooldown wait and
+                # powered off on the timeout regardless of print state — cutting
+                # a touchscreen reprint mid-print.
                 if queue_item.auto_off_after:
-                    result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
-                    plugs = list(result.scalars().all())
-                    enabled_plugs = [p for p in plugs if p.enabled]
-                    if enabled_plugs:
-                        logger.info("Auto-off requested for printer %s, waiting for cooldown...", printer_id)
-
-                        async def cooldown_and_poweroff(pid: int, plug_ids: list[int]):
-                            # Wait for nozzle to cool down
-                            await printer_manager.wait_for_cooldown(pid, target_temp=50.0, timeout=600)
-                            # Re-fetch plugs in new session and turn off each one
-                            async with async_session() as new_db:
-                                for plug_id in plug_ids:
-                                    result = await new_db.execute(select(SmartPlug).where(SmartPlug.id == plug_id))
-                                    p = result.scalar_one_or_none()
-                                    if p and p.enabled:
-                                        service = await smart_plug_manager.get_service_for_plug(p, new_db)
-                                        success = await service.turn_off(p)
-                                        if success:
-                                            logger.info("Powered off printer %s via smart plug '%s'", pid, p.name)
-                                        else:
-                                            logger.warning(
-                                                "Failed to power off printer %s via smart plug '%s'", pid, p.name
-                                            )
-
-                        spawn_background_task(
-                            cooldown_and_poweroff(printer_id, [p.id for p in enabled_plugs]),
-                            name=f"cooldown-poweroff-{printer_id}",
-                        )
+                    try:
+                        await smart_plug_manager.schedule_off_after_queue_job(printer_id, db)
+                    except Exception as e:
+                        logger.warning("Failed to schedule queue auto-off for printer %s: %s", printer_id, e)
 
                 # Auto-cleanup: completed queue items now live on via their
                 # linked archive (counters re-computed from print_archives
