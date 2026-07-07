@@ -1865,6 +1865,10 @@ class PrintScheduler:
             "execute_swap_macros": item.execute_swap_macros,
             "swap_macro_events": swap_events,
             "gcode_injection": item.gcode_injection,
+            # Preheat / heat-soak per-item override (#1468). Read by the preheat
+            # stage in background_dispatch (services/preheat.py) before start_print.
+            "preheat_override": getattr(item, "preheat_override", "inherit"),
+            "preheat_chamber_target_override": getattr(item, "preheat_chamber_target_override", None),
             # Filament-calibration tagging — dispatcher's pre-print bind hook
             # uses this to skip the ``extrusion_cali_sel`` re-bind (the
             # calibration print itself is what determines the new K value),

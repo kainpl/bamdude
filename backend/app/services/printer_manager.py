@@ -119,6 +119,87 @@ def supports_chamber_temp(model: str | None) -> bool:
     return model_upper in CHAMBER_TEMP_SUPPORTED_MODELS
 
 
+# Models with an ACTIVE chamber heater (chamber temp raisable via M141, not just
+# readable). Deliberately a subset of CHAMBER_TEMP_SUPPORTED_MODELS: X1/X1C/P2S report
+# chamber temp but heat the chamber only passively via bed radiation, so they are
+# sensor-capable but NOT heater-capable. X1E has a heater but no airduct flap; P2S has
+# an airduct flap but no heater — the three chamber sets are intentionally distinct.
+# Used by the preheat / heat-soak stage (#1468) to decide whether to send M141.
+CHAMBER_HEATER_MODELS = frozenset(
+    [
+        # Display names
+        "X1E",
+        "X2D",
+        "H2C",
+        "H2D",
+        "H2DPRO",
+        "H2S",
+        # Internal codes (from MQTT/SSDP)
+        "C13",  # X1E
+        "N6",  # X2D
+        "O1C",  # H2C
+        "O1C2",  # H2C (dual nozzle variant)
+        "O1D",  # H2D
+        "O1E",  # H2D Pro
+        "O2D",  # H2D Pro (alternate code)
+        "O1S",  # H2S
+    ]
+)
+
+
+def supports_chamber_heater(model: str | None) -> bool:
+    """Check if a printer model has an ACTIVE chamber heater (M141-controllable),
+    not merely a chamber temperature sensor.
+
+    Distinct from ``supports_chamber_temp``: X1/X1C/P2S read chamber temp but warm the
+    chamber only passively via bed radiation, so they are sensor-capable but not
+    heater-capable. The preheat / heat-soak stage (#1468) sends M141 only on models in
+    this set; sensor-only models wait for radiant warm-up, no-sensor models soak on a timer.
+    """
+    if not model:
+        return False
+    return model.strip().upper() in CHAMBER_HEATER_MODELS
+
+
+# Models with a cooling / heating airduct flap. Same set as the PrintersPage airduct
+# toggle (P2S, X2D, H2D, H2C, H2S, H2D Pro). X1E has a chamber heater but NO airduct flap
+# (fixed front-door inlet); P2S has an airduct flap but no active heater. The preheat
+# stage cares about the heater∩airduct intersection: when M141 fires it must also assert
+# heating mode, otherwise the default cooling flap actively vents and fights the heater.
+CHAMBER_AIRDUCT_MODELS = frozenset(
+    [
+        # Display names
+        "P2S",
+        "X2D",
+        "H2C",
+        "H2D",
+        "H2DPRO",
+        "H2S",
+        # Internal codes (from MQTT/SSDP)
+        "N7",  # P2S
+        "N6",  # X2D
+        "O1C",  # H2C
+        "O1C2",  # H2C (dual nozzle variant)
+        "O1D",  # H2D
+        "O1E",  # H2D Pro
+        "O2D",  # H2D Pro (alternate code)
+        "O1S",  # H2S
+    ]
+)
+
+
+def supports_airduct(model: str | None) -> bool:
+    """Check if a printer model has a cooling / heating airduct mode toggle.
+
+    Distinct from ``supports_chamber_heater`` — P2S has the airduct toggle but no active
+    heater, and X1E has the heater but no airduct. The preheat stage flips the flap to
+    heating before energising M141 (cooling mode vents the chamber and fights the heater).
+    """
+    if not model:
+        return False
+    return model.strip().upper() in CHAMBER_AIRDUCT_MODELS
+
+
 def has_stg_cur_idle_bug(model: str | None) -> bool:
     """Check if a printer model may incorrectly report stg_cur=0 when idle.
 

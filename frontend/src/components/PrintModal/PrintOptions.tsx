@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Settings, ChevronDown, ChevronUp } from 'lucide-react';
-import type { PrintOptionsProps, PrintOptions as PrintOptionsType } from './types';
+import { Settings, ChevronDown, ChevronUp, Flame } from 'lucide-react';
+import type { PrintOptionsProps, PrintOptions as PrintOptionsType, PreheatOverride } from './types';
 
 const PRINT_OPTIONS_CONFIG = [
   { key: 'bed_levelling', labelKey: 'printModal.bedLeveling', descKey: 'printModal.bedLevelingDesc' },
@@ -35,6 +35,29 @@ export function PrintOptionsPanel({
 
   const handleToggle = (key: keyof PrintOptionsType) => {
     onChange({ ...options, [key]: !options[key] });
+  };
+
+  const handlePreheatOverride = (next: PreheatOverride) => {
+    onChange({
+      ...options,
+      preheat_override: next,
+      // Clearing override→off also clears the chamber-target override so the
+      // backend doesn't carry a stale value if the user re-enables later.
+      ...(next === 'off' ? { preheat_chamber_target_override: null } : {}),
+    });
+  };
+
+  const handlePreheatTarget = (raw: string) => {
+    if (raw === '') {
+      onChange({ ...options, preheat_chamber_target_override: null });
+      return;
+    }
+    const parsed = parseInt(raw, 10);
+    if (Number.isNaN(parsed)) return;
+    onChange({
+      ...options,
+      preheat_chamber_target_override: Math.max(0, Math.min(60, parsed)),
+    });
   };
 
   const visibleOptions = showDualNozzleOptions
@@ -78,6 +101,57 @@ export function PrintOptionsPanel({
               </div>
             </label>
           ))}
+
+          {/* Preheat / heat-soak per-item override (#1468). Defaults to
+              'inherit' which means the global Settings → Printing toggle
+              decides. Forcing 'on' or 'off' overrides per-print; the chamber
+              target override (optional °C input, visible when not 'off')
+              bypasses the per-filament-type derivation. Bed preheat + soak
+              applies to every model — only the chamber phase is model-gated,
+              and that gating lives server-side — so this sub-section renders
+              for all printers regardless of chamber capability. */}
+          <div className="pt-2 mt-1 border-t border-bambu-dark-tertiary/60">
+            <div className="flex items-center gap-2 mb-1.5">
+              <Flame className="w-3.5 h-3.5 text-amber-400" />
+              <span className="text-sm text-white">{t('settings.preheatTitle')}</span>
+            </div>
+            <p className="text-xs text-bambu-gray mb-2">
+              {t('settings.preheatPerItemDesc')}
+            </p>
+            <div className="flex gap-1.5 mb-2">
+              {(['inherit', 'on', 'off'] as PreheatOverride[]).map((opt) => (
+                <button
+                  key={opt}
+                  type="button"
+                  onClick={() => handlePreheatOverride(opt)}
+                  className={`flex-1 px-2 py-1.5 text-xs rounded transition-colors ${
+                    options.preheat_override === opt
+                      ? 'bg-bambu-green text-white'
+                      : 'bg-bambu-dark-tertiary text-bambu-gray hover:text-white'
+                  }`}
+                >
+                  {t(`settings.preheatOverride_${opt}`)}
+                </button>
+              ))}
+            </div>
+            {options.preheat_override !== 'off' && (
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-bambu-gray flex-1">
+                  {t('settings.preheatTargetOverride')}
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={60}
+                  step={1}
+                  value={options.preheat_chamber_target_override ?? ''}
+                  onChange={(e) => handlePreheatTarget(e.target.value)}
+                  placeholder="—"
+                  className="w-16 px-2 py-1 bg-bambu-dark-tertiary border border-bambu-dark-tertiary rounded text-white text-xs text-right focus:outline-none focus:border-bambu-green"
+                />
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

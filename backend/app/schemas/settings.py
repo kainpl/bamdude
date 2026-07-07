@@ -121,6 +121,37 @@ class AppSettings(BaseModel):
         default=False,
         description="Auto-queue: prefer shorter print jobs first (with been_jumped starvation guard)",
     )
+    # Preheat / heat-soak before queued prints (#1468). The scheduler stage runs on the
+    # idle printer between FTP upload and start_print. Three hardware tiers: chamber heater
+    # (H2C/H2D/H2D Pro/H2S/X2D/X1E) M141 → wait for chamber sensor → soak; chamber sensor
+    # only (X1C/P2S) M140 → wait for radiant warm-up OR timeout → soak; no chamber sensor
+    # (P1S/P1P/A1/A1 Mini) M140 → fixed soak timer. Chamber target derives per-print from
+    # the loaded AMS filament types (max across slots); 0 skips the chamber phase but keeps
+    # the bed phase + soak. Per-item preheat_chamber_target_override bypasses the derivation.
+    preheat_enabled: bool = Field(
+        default=False,
+        description="Master toggle / default for new queue items. Per-item preheat_override can flip the decision per print.",
+    )
+    preheat_filament_targets: str = Field(
+        default="",
+        description=(
+            "JSON map of normalized filament type -> chamber target degC. Empty = bundled defaults "
+            "(PLA/PETG/TPU/PVA: 0, PETG-CF: 40, ABS/ASA: 45, PA/PC/PC-FR: 50, PA-CF: 55, default: 0). "
+            "Scheduler picks the max across loaded AMS slots; 0 disables the chamber phase for that print."
+        ),
+    )
+    preheat_max_wait_seconds: int = Field(
+        default=900,
+        ge=60,
+        le=3600,
+        description="Max time to wait for the chamber to reach target before falling through to soak (radiant heating on X1C/P2S can take 15-30 min).",
+    )
+    preheat_soak_seconds: int = Field(
+        default=300,
+        ge=0,
+        le=1800,
+        description="Hold time at temperature after the chamber reaches target (or after max_wait elapses). 0 = no soak.",
+    )
     queue_drying_block: bool = Field(
         default=False,
         description="Block queue until drying completes (when disabled, prints take priority over drying)",
@@ -467,6 +498,10 @@ class AppSettingsUpdate(BaseModel):
     printer_sensor_history_retention_days: int | None = None
     prefer_lowest_filament: bool | None = None
     queue_shortest_first: bool | None = None
+    preheat_enabled: bool | None = None
+    preheat_filament_targets: str | None = None
+    preheat_max_wait_seconds: int | None = Field(default=None, ge=60, le=3600)
+    preheat_soak_seconds: int | None = Field(default=None, ge=0, le=1800)
     queue_drying_enabled: bool | None = None
     queue_drying_block: bool | None = None
     ambient_drying_enabled: bool | None = None

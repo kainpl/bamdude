@@ -37,6 +37,11 @@ class PrintQueueItemCreate(BaseModel):
     execute_swap_macros: bool = True
     swap_macro_events: list[str] | None = None
     gcode_injection: bool = False
+    # Preheat / heat-soak per-item override (#1468). 'inherit' uses the global
+    # preheat_enabled setting; 'on' / 'off' force the decision. The chamber target
+    # falls through: this override → max(filament-map[loaded tray]) → 0.
+    preheat_override: Literal["inherit", "on", "off"] = "inherit"
+    preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=60)
     # Batch: create N identical items sharing a batch_id (1..50)
     quantity: int = Field(default=1, ge=1, le=50)
     # Project to associate the resulting archive with (when triggered from project view)
@@ -62,6 +67,8 @@ class PrintQueueItemUpdate(BaseModel):
     execute_swap_macros: bool | None = None
     swap_macro_events: list[str] | None = None
     gcode_injection: bool | None = None
+    preheat_override: Literal["inherit", "on", "off"] | None = None
+    preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=60)
     # H2C dual-nozzle-rack slicer pick (#1780). The slicer's per-filament
     # physical nozzle position IDs — an opaque list[int] BambuStudio sends in
     # its project_file MQTT body; replayed to the printer verbatim on dispatch.
@@ -95,6 +102,8 @@ class PrintQueueItemResponse(BaseModel):
     execute_swap_macros: bool = True
     swap_macro_events: list[str] | None = None
     gcode_injection: bool = False
+    preheat_override: Literal["inherit", "on", "off"] = "inherit"
+    preheat_chamber_target_override: int | None = None
     # H2C dual-nozzle-rack slicer pick (#1780). Surface for any future
     # "edit print → choose nozzle" UI; null on every model except O1C2
     # uploads from BambuStudio.
@@ -193,6 +202,8 @@ class PrintQueueBulkUpdate(BaseModel):
     execute_swap_macros: bool | None = None
     swap_macro_events: list[str] | None = None
     gcode_injection: bool | None = None
+    preheat_override: Literal["inherit", "on", "off"] | None = None
+    preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=60)
 
 
 class PrintQueueBulkUpdateResponse(BaseModel):

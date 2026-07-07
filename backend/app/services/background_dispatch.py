@@ -1135,6 +1135,20 @@ class BackgroundDispatchService:
                         "Failed to upload file to printer. Check if SD card is inserted and properly formatted (FAT32/exFAT)."
                     )
 
+                # Preheat / heat-soak (#1468) — bring the bed (and chamber, on supported
+                # models) up to temperature on the now-idle printer before start_print.
+                # Best-effort: only a cancel request propagates (via cancel_check); every
+                # other failure logs and falls through to the normal start path.
+                from backend.app.services.preheat import preheat_and_soak
+
+                await preheat_and_soak(
+                    db,
+                    printer,
+                    archive,
+                    options=job.options,
+                    cancel_check=lambda: self._raise_if_cancel_requested(job),
+                )
+
                 register_expected_print(
                     job.printer_id,
                     remote_filename,
@@ -1632,6 +1646,19 @@ class BackgroundDispatchService:
                     raise RuntimeError(
                         "Failed to upload file to printer. Check if SD card is inserted and properly formatted (FAT32/exFAT)."
                     )
+
+                # Preheat / heat-soak (#1468) — same idle-window stage as the reprint
+                # path: bed (and chamber, on supported models) up to temperature before
+                # start_print. Best-effort; only a cancel request propagates.
+                from backend.app.services.preheat import preheat_and_soak
+
+                await preheat_and_soak(
+                    db,
+                    printer,
+                    archive,
+                    options=job.options,
+                    cancel_check=lambda: self._raise_if_cancel_requested(job),
+                )
 
                 register_expected_print(
                     job.printer_id,

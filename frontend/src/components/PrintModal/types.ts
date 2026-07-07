@@ -49,6 +49,13 @@ export interface PrintModalProps {
 }
 
 /**
+ * Per-item preheat / heat-soak override mode (#1468).
+ * - 'inherit': use the global Settings → Printing preheat_enabled toggle
+ * - 'on' / 'off': force the per-print decision regardless of the global toggle
+ */
+export type PreheatOverride = 'inherit' | 'on' | 'off';
+
+/**
  * Print options that can be configured for a print job.
  */
 export interface PrintOptions {
@@ -62,6 +69,12 @@ export interface PrintOptions {
   /** Nozzle offset calibration before print — dual-nozzle printers only (#1682).
    *  The MQTT layer forces "skip" on single-nozzle machines regardless. */
   nozzle_offset_cali: boolean;
+  // Per-item preheat / heat-soak override (#1468). 'inherit' uses the global
+  // Settings → Printing toggle; 'on' / 'off' force the per-print decision.
+  // chamber_target_override is non-null to bypass the per-filament-type
+  // derivation with an explicit °C target.
+  preheat_override: PreheatOverride;
+  preheat_chamber_target_override: number | null;
 }
 
 /**
@@ -75,6 +88,8 @@ export const DEFAULT_PRINT_OPTIONS: PrintOptions = {
   mesh_mode_fast_check: true,
   gcode_injection: false,
   nozzle_offset_cali: true,
+  preheat_override: 'inherit',
+  preheat_chamber_target_override: null,
 };
 
 /**

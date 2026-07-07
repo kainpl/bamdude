@@ -1372,6 +1372,11 @@ export interface AppSettings {
   ams_humidity_thresholds: string;  // JSON blob of per-filament humidity thresholds (#1605)
   // Auto-queue routing
   queue_shortest_first: boolean;  // SJF + been_jumped guard for the auto-queue scheduler
+  // Preheat & heat-soak before queued prints (#1468)
+  preheat_enabled: boolean;  // Master toggle / default for new queue items (false = dispatch immediately)
+  preheat_filament_targets: string;  // JSON map of normalized filament type -> chamber target °C ('' = bundled defaults)
+  preheat_max_wait_seconds: number;  // Cap on the chamber warm-up phase (60-3600)
+  preheat_soak_seconds: number;  // Hold time at temperature after target reached / max-wait elapsed (0-1800)
   // Print modal settings
   per_printer_mapping_expanded: boolean;  // Whether custom mapping is expanded by default in print modal
   // Date/time format settings
@@ -2416,6 +2421,11 @@ export interface PrintQueueItem {
       gcode_snippets server setting and splices snippets into the plate gcode at
       `; MACHINE_START_GCODE_END` (start) and EOF (end) before FTP upload. */
   gcode_injection: boolean;
+  /** Per-item preheat / heat-soak override (#1468). 'inherit' uses the global
+      preheat_enabled setting; 'on' / 'off' force the per-print decision. */
+  preheat_override: 'inherit' | 'on' | 'off';
+  /** Explicit chamber target (°C) that bypasses the per-filament derivation; null derives (#1468). */
+  preheat_chamber_target_override: number | null;
   status: 'pending' | 'printing' | 'completed' | 'failed' | 'skipped' | 'cancelled';
   started_at: string | null;
   completed_at: string | null;
@@ -2481,6 +2491,9 @@ export interface PrintQueueItemCreate {
   execute_swap_macros?: boolean;
   swap_macro_events?: string[] | null;
   gcode_injection?: boolean;
+  // Per-item preheat / heat-soak override (#1468)
+  preheat_override?: 'inherit' | 'on' | 'off';
+  preheat_chamber_target_override?: number | null;
   quantity?: number;
   // Project to associate the resulting archive with
   project_id?: number;
@@ -2504,6 +2517,9 @@ export interface PrintQueueItemUpdate {
   execute_swap_macros?: boolean;
   swap_macro_events?: string[] | null;
   gcode_injection?: boolean;
+  // Per-item preheat / heat-soak override (#1468)
+  preheat_override?: 'inherit' | 'on' | 'off';
+  preheat_chamber_target_override?: number | null;
 }
 
 export interface PrinterQueue {
@@ -2543,6 +2559,9 @@ export interface PrintQueueBulkUpdate {
   execute_swap_macros?: boolean;
   swap_macro_events?: string[] | null;
   gcode_injection?: boolean;
+  // Per-item preheat / heat-soak override (#1468)
+  preheat_override?: 'inherit' | 'on' | 'off';
+  preheat_chamber_target_override?: number | null;
 }
 
 export interface PrintQueueBulkUpdateResponse {

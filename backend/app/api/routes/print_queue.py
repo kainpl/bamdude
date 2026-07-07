@@ -200,6 +200,8 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         "execute_swap_macros": item.execute_swap_macros,
         "swap_macro_events": json.loads(item.swap_macro_events) if item.swap_macro_events else None,
         "gcode_injection": item.gcode_injection,
+        "preheat_override": getattr(item, "preheat_override", "inherit"),
+        "preheat_chamber_target_override": getattr(item, "preheat_chamber_target_override", None),
         # H2C rack-swap nozzle pick (#1780)
         "nozzle_mapping": nozzle_mapping_parsed,
         "status": item.status,
@@ -506,6 +508,8 @@ async def add_to_queue(
                 execute_swap_macros=execute_swap_macros,
                 swap_macro_events=swap_macro_events_json,
                 gcode_injection=data.gcode_injection,
+                preheat_override=data.preheat_override,
+                preheat_chamber_target_override=data.preheat_chamber_target_override,
                 project_id=effective_project_id,
                 position=max_pos + 1 + i,
                 status="pending",

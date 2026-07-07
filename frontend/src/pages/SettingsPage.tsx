@@ -51,6 +51,7 @@ import { Palette, Search, Settings } from 'lucide-react';
 import { registerSettingsSearch, getSettingsSearchEntries } from '../lib/settingsSearch';
 import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
 import { PrintOptionsPreferencesPanel } from '../components/settings/PrintOptionsPreferencesPanel';
+import { PreheatFilamentTargetsEditor } from '../components/PreheatFilamentTargetsEditor';
 
 const validTabs = ['general', 'printing', 'filament', 'pipelines', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
@@ -1156,6 +1157,10 @@ export function SettingsPage() {
       (settings.stagger_interval_minutes ?? 5) !== (localSettings.stagger_interval_minutes ?? 5) ||
       (settings.stagger_wait_for_bed ?? true) !== (localSettings.stagger_wait_for_bed ?? true) ||
       (settings.stagger_strict_for_direct_dispatch ?? false) !== (localSettings.stagger_strict_for_direct_dispatch ?? false) ||
+      (settings.preheat_enabled ?? false) !== (localSettings.preheat_enabled ?? false) ||
+      (settings.preheat_filament_targets ?? '') !== (localSettings.preheat_filament_targets ?? '') ||
+      (settings.preheat_max_wait_seconds ?? 900) !== (localSettings.preheat_max_wait_seconds ?? 900) ||
+      (settings.preheat_soak_seconds ?? 300) !== (localSettings.preheat_soak_seconds ?? 300) ||
       settings.per_printer_mapping_expanded !== localSettings.per_printer_mapping_expanded ||
       settings.date_format !== localSettings.date_format ||
       settings.time_format !== localSettings.time_format ||
@@ -1245,6 +1250,10 @@ export function SettingsPage() {
         stagger_interval_minutes: localSettings.stagger_interval_minutes,
         stagger_wait_for_bed: localSettings.stagger_wait_for_bed,
         stagger_strict_for_direct_dispatch: localSettings.stagger_strict_for_direct_dispatch,
+        preheat_enabled: localSettings.preheat_enabled,
+        preheat_filament_targets: localSettings.preheat_filament_targets,
+        preheat_max_wait_seconds: localSettings.preheat_max_wait_seconds,
+        preheat_soak_seconds: localSettings.preheat_soak_seconds,
         per_printer_mapping_expanded: localSettings.per_printer_mapping_expanded,
         date_format: localSettings.date_format,
         time_format: localSettings.time_format,
@@ -3351,6 +3360,106 @@ export function SettingsPage() {
                   </div>
                 </div>
               </div>
+            </CardContent>
+          </Card>
+
+          {/* Preheat & Heat Soak (#1468) — bed/chamber warm-up + soak before
+              each queued print. Master toggle + per-filament chamber targets;
+              the per-item override lives in the Print modal. */}
+          <Card id="card-preheat">
+            <CardHeader>
+              <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                <Flame className="w-4 h-4 text-amber-400" />
+                {t('settings.preheatTitle')}
+              </h3>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-xs text-bambu-gray">
+                {t('settings.preheatDescription')}
+              </p>
+              <div className="flex items-center justify-between">
+                <div className="flex-1 mr-4">
+                  <p className="text-sm text-white">
+                    {t('settings.preheatEnabled')}
+                  </p>
+                  <p className="text-xs text-bambu-gray mt-0.5">
+                    {t('settings.preheatEnabledDesc')}
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.preheat_enabled ?? false}
+                    onChange={(e) => updateSetting('preheat_enabled', e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                <div>
+                  <label className="block text-xs text-bambu-gray mb-1">
+                    {t('settings.preheatMaxWait')}
+                  </label>
+                  <input
+                    type="number"
+                    min={60}
+                    max={3600}
+                    value={localSettings.preheat_max_wait_seconds ?? 900}
+                    onChange={(e) => updateSetting('preheat_max_wait_seconds', Math.max(60, Math.min(3600, parseInt(e.target.value) || 900)))}
+                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green disabled:opacity-50"
+                    disabled={!(localSettings.preheat_enabled ?? false)}
+                  />
+                  <p className="text-xs text-bambu-gray mt-1">
+                    {t('settings.preheatMaxWaitHelp')}
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-xs text-bambu-gray mb-1">
+                    {t('settings.preheatSoak')}
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={1800}
+                    value={localSettings.preheat_soak_seconds ?? 300}
+                    onChange={(e) => updateSetting('preheat_soak_seconds', Math.max(0, Math.min(1800, parseInt(e.target.value) || 0)))}
+                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green disabled:opacity-50"
+                    disabled={!(localSettings.preheat_enabled ?? false)}
+                  />
+                  <p className="text-xs text-bambu-gray mt-1">
+                    {t('settings.preheatSoakHelp')}
+                  </p>
+                </div>
+              </div>
+              {/* Per-filament chamber target editor (#1468) */}
+              <div className="pt-2 border-t border-bambu-dark-tertiary/50">
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-sm text-white">
+                    {t('settings.preheatFilamentTargetsLabel')}
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => updateSetting('preheat_filament_targets', '')}
+                    title={t('settings.preheatFilamentTargetsReset')}
+                    className="text-bambu-gray hover:text-white transition-colors p-1 rounded hover:bg-bambu-dark-tertiary"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <p className="text-xs text-bambu-gray mb-2">
+                  {t('settings.preheatFilamentTargetsHint')}
+                </p>
+                <PreheatFilamentTargetsEditor
+                  value={localSettings.preheat_filament_targets ?? ''}
+                  onChange={(v) => updateSetting('preheat_filament_targets', v)}
+                  disabled={!(localSettings.preheat_enabled ?? false)}
+                />
+              </div>
+              <p className="text-xs text-bambu-gray pt-1 border-t border-bambu-dark-tertiary/50">
+                <span className="font-medium text-bambu-gray/90">{t('settings.preheatHardwareTitle')}</span>{' '}
+                {t('settings.preheatHardwareDetail')}
+              </p>
             </CardContent>
           </Card>
 

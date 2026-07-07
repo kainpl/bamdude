@@ -77,6 +77,14 @@ class PrintQueueItem(Base):
     # custom-start-gcode semantics, not "before homing/bed-mesh".
     gcode_injection: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
 
+    # Preheat / heat-soak override (#1468). 'inherit' uses the global preheat_enabled
+    # setting; 'on' / 'off' force the per-item decision. The chamber target falls
+    # through: per-item override → max(filament-map[loaded tray type]) → 0 (skips the
+    # chamber phase). Default 'inherit' so existing queue items behave exactly as before
+    # the migration. See services/preheat.py + services/background_dispatch.py.
+    preheat_override: Mapped[str] = mapped_column(String(20), default="inherit", server_default="inherit")
+    preheat_chamber_target_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # H2C dual-nozzle-rack slicer pick preservation (#1780). BambuStudio's
     # project_file MQTT command for rack-swap-capable models (O1C2 today)
     # carries the slicer's per-filament physical nozzle position IDs — a
