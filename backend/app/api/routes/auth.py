@@ -864,7 +864,7 @@ async def logout(
 
 
 @router.post("/ws-token")
-async def create_ws_token(_: User | None = RequirePermission(Permission.WEBSOCKET_CONNECT)):
+async def create_ws_token(user: User | None = RequirePermission(Permission.WEBSOCKET_CONNECT)):
     """Mint a short-lived token for the ``/api/v1/ws`` WebSocket connection.
 
     The HTTP auth middleware never sees the WebSocket upgrade (it only runs on
@@ -872,8 +872,11 @@ async def create_ws_token(_: User | None = RequirePermission(Permission.WEBSOCKE
     WebSocket, so the SPA obtains a token here and passes it as ``?token=``.
     Gated by ``WEBSOCKET_CONNECT`` so only an authenticated principal (or an
     API key with ``can_read_status``) can subscribe to the event fan-out.
+
+    The minting user is recorded on the token so the connection can be tagged for
+    per-user broadcasts; ``user`` is None for API-key callers (global-only).
     """
-    return {"token": await create_websocket_token()}
+    return {"token": await create_websocket_token(user.username if user else None)}
 
 
 # Advanced Authentication Endpoints

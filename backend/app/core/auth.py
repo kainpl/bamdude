@@ -306,8 +306,13 @@ async def verify_camera_stream_token(token: str) -> bool:
 WEBSOCKET_TOKEN_EXPIRE_MINUTES = 60
 
 
-async def create_websocket_token() -> str:
-    """Create a reusable WebSocket connection token (60-minute window)."""
+async def create_websocket_token(username: str | None = None) -> str:
+    """Create a reusable WebSocket connection token (60-minute window).
+
+    ``username`` records which user the token was minted for so the connection
+    can be tagged for per-user broadcasts (BamDude has no anonymous users). It is
+    None only for API-key callers, whose connections fall back to global broadcast.
+    """
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(minutes=WEBSOCKET_TOKEN_EXPIRE_MINUTES)
     token = secrets.token_urlsafe(24)
@@ -323,6 +328,7 @@ async def create_websocket_token() -> str:
             AuthEphemeralToken(
                 token=token,
                 token_type=TokenType.WEBSOCKET,
+                username=username,
                 expires_at=expires_at,
             )
         )
@@ -344,6 +350,28 @@ async def verify_websocket_token(token: str) -> bool:
             )
         )
         return result.scalar_one_or_none() is not None
+
+
+async def resolve_websocket_token_user(token: str) -> int | None:
+    """Return the user id a valid WS token was minted for, for per-user broadcast
+    tagging. None if the token is invalid/expired or was minted without a user
+    (API-key caller) — the caller must still gate on ``verify_websocket_token``."""
+    if not token:
+        return None
+    now = datetime.now(timezone.utc)
+    async with async_session() as db:
+        username = (
+            await db.execute(
+                select(AuthEphemeralToken.username).where(
+                    AuthEphemeralToken.token == token,
+                    AuthEphemeralToken.token_type == TokenType.WEBSOCKET,
+                    AuthEphemeralToken.expires_at > now,
+                )
+            )
+        ).scalar_one_or_none()
+        if not username:
+            return None
+        return (await db.execute(select(User.id).where(User.username == username))).scalar_one_or_none()
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -980,6 +1008,7 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     Permission.SMART_PLUGS_READ: "can_read_status",
     Permission.CAMERA_VIEW: "can_read_status",
     Permission.MAINTENANCE_READ: "can_read_status",
+    Permission.PIPELINES_READ: "can_read_status",
     Permission.KPROFILES_READ: "can_read_status",
     Permission.NOTIFICATIONS_READ: "can_read_status",
     Permission.NOTIFICATION_TEMPLATES_READ: "can_read_status",
@@ -1090,6 +1119,10 @@ _APIKEY_DENIED_PERMISSIONS: frozenset[Permission] = frozenset(
         Permission.MAINTENANCE_CREATE,
         Permission.MAINTENANCE_UPDATE,
         Permission.MAINTENANCE_DELETE,
+        # Slicer Pipelines writes/runs are admin-only for API keys (no scope column),
+        # mirroring upstream's deny; PIPELINES_READ rides can_read_status above.
+        Permission.PIPELINES_WRITE,
+        Permission.PIPELINES_RUN,
         Permission.KPROFILES_CREATE,
         Permission.KPROFILES_UPDATE,
         Permission.KPROFILES_DELETE,

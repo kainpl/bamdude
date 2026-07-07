@@ -114,7 +114,10 @@ export default {
     current: 'Зараз',
     average: 'Середнє',
     min: 'Мін',
-    max: 'Макс'
+    max: 'Макс',
+    back: 'Назад',
+    previous: 'Попередня',
+    next: 'Наступна'
   },
 
   amsHistory: {
@@ -998,6 +1001,9 @@ export default {
       list: 'Список',
       timeline: 'Таймлайн'
     },
+    tabs: {
+      pipelines: 'Конвеєри'
+    },
     search: {
       placeholder: 'Пошук черг…'
     },
@@ -1509,7 +1515,95 @@ export default {
       backup: 'Резервна копія',
       emailAuth: 'Email автентифікація',
       ldap: 'LDAP',
-      security: 'Безпека'
+      security: 'Безпека',
+      queueDispatch: 'Черга та відправлення',
+      queuePipelines: 'Конвеєри'
+    },
+    pipelineLimits: {
+      title: 'Обмеження конвеєрів',
+      maxCopiesLabel: 'Макс. копій за запуск',
+      maxCopiesDesc: 'Верхня межа кількості копій, яку оператори можуть запросити при запуску конвеєра. Жорсткий ліміт на сервері — 1000.'
+    },
+    pipelines: {
+      title: 'Конвеєри слайсера',
+      subtitle: 'Багаторазові набори пресетів (принтер + процес + філаменти + тип столу). Збережіть один із діалогу слайсингу та застосовуйте одним кліком до наступного файлу.',
+      loading: 'Завантаження конвеєрів…',
+      loadError: 'Не вдалося завантажити конвеєри.',
+      confirmDelete: 'Видалити цей конвеєр? Цю дію не можна скасувати.',
+      staleWarning: 'Один або кілька пресетів більше не існують. Пересохраніть цей конвеєр із діалогу слайсингу, щоб виправити.',
+      empty: {
+        title: 'Конвеєрів ще немає.',
+        howto: 'Відкрийте діалог слайсингу для будь-якого файлу, оберіть принтер / процес / філаменти / тип столу, тоді натисніть «Зберегти як конвеєр». Ваші збережені конвеєри з’являться тут.'
+      },
+      field: {
+        name: 'Назва конвеєра',
+        description: 'Опис',
+        targetPrinter: 'Цільовий принтер',
+        noTarget: '— Без цілі —',
+        targetKind: 'Тип цілі',
+        targetKindSpecific: 'Конкретний принтер',
+        targetKindClass: 'Клас принтерів',
+        targetModelClass: 'Модель принтера',
+        fanoutStrategy: 'Стратегія розподілу',
+        fanout: {
+          max_parallel: 'Макс. паралельно — розподіляти між будь-якими вільними відповідними принтерами',
+          round_robin: 'Кругова — по черзі через придатні принтери',
+          fill_one_first: 'Спочатку один — усі копії на один принтер'
+        },
+        fanoutShort: {
+          max_parallel: 'паралельно',
+          round_robin: 'по колу',
+          fill_one_first: 'по одному'
+        }
+      },
+      action: {
+        save: 'Зберегти',
+        cancel: 'Скасувати',
+        rename: 'Перейменувати',
+        delete: 'Видалити'
+      },
+      slot: {
+        printer: 'Принтер',
+        process: 'Процес',
+        filament: 'Філамент',
+        filamentN: 'Філамент {{n}}',
+        filamentAll: 'Усі {{n}} слотів',
+        bed: 'Стіл'
+      },
+      group: {
+        profiles: 'Профілі',
+        filaments: 'Філаменти'
+      },
+      searchPlaceholder: 'Пошук конвеєрів…',
+      filterTargetType: 'Фільтр за типом цілі',
+      filterTarget: 'Фільтр за ціллю',
+      filter: {
+        all: 'Усі цілі',
+        noTarget: 'Без цілі',
+        count: '{{shown}} / {{total}}',
+        noMatches: 'Жоден конвеєр не відповідає поточним фільтрам.'
+      },
+      noTargetHint: 'Вкажіть цільовий принтер, щоб запустити це',
+      noTargetWarning: 'Вкажіть цільовий принтер перед запуском цього конвеєра.',
+      runs: {
+        lastRun: 'Останній запуск',
+        status: {
+          queued: 'у черзі',
+          slicing: 'слайсинг',
+          dispatching: 'відправлення',
+          in_progress: 'друкується',
+          completed: 'завершено',
+          failed: 'помилка',
+          partial_failure: 'частковий збій',
+          cancelled: 'скасовано'
+        }
+      },
+      toast: {
+        saved: 'Конвеєр збережено',
+        saveFailed: 'Не вдалося зберегти',
+        deleted: 'Конвеєр видалено',
+        deleteFailed: 'Не вдалося видалити'
+      }
     },
     encryption: {
       title: 'Статус шифрування MFA',
@@ -3262,9 +3356,73 @@ export default {
     },
   },
 
+  pipelineRuns: {
+    title: 'Запуски конвеєрів',
+    loading: 'Завантаження…',
+    empty: 'Запусків конвеєрів ще немає.',
+    filter: {
+      pipeline: 'Конвеєр',
+      status: 'Статус',
+      target: 'Ціль',
+      all: 'Усі',
+      allPipelines: 'Усі конвеєри',
+      allStatus: 'Усі статуси',
+      allTargets: 'Усі цілі',
+      clear: 'Очистити фільтри',
+      noMatches: 'Жоден запуск не відповідає поточним фільтрам.'
+    },
+    totalCount_one: '{{n}} запуск',
+    totalCount_few: '{{n}} запуски',
+    totalCount_many: '{{n}} запусків',
+    totalCount_other: '{{n}} запусків',
+    copies: '{{n}} копій',
+    failedCount: '{{n}} з помилкою',
+    copyN: 'Копія {{n}}',
+    retryFailed: 'Повторити невдалі',
+    retryOf: 'повтор #{{n}}',
+    pagination: '{{start}}–{{end}} з {{total}}',
+    cancelledByUser: 'Скасовано користувачем',
+    toast: {
+      cancelled: 'Запуск скасовано',
+      cancelFailed: 'Не вдалося скасувати',
+      retryStarted: 'Повтор розпочато',
+      retryFailed: 'Не вдалося повторити',
+      cleared: '{{n}} запусків очищено',
+      clearFailed: 'Не вдалося очистити'
+    },
+    clearLog: 'Очистити журнал',
+    clearConfirmTitle: 'Очистити журнал?',
+    clearConfirmBody: 'Видалити всі завершені, невдалі, скасовані та частково збійні запуски конвеєрів? Активні запуски зберігаються. Цю дію не можна скасувати.',
+    clearConfirmAction: 'Очистити',
+    jobStatus: {
+      pending: 'очікує',
+      awaiting_printer: 'очікує принтер',
+      queued: 'у черзі',
+      printing: 'друкується',
+      completed: 'завершено',
+      failed: 'помилка',
+      cancelled: 'скасовано'
+    }
+  },
+
   slice: {
     title: 'Нарізати модель',
     action: 'Нарізати',
+    pipelines: {
+      label: 'Конвеєр',
+      applyAria: 'Застосувати конвеєр',
+      applyPrompt: 'Застосувати конвеєр…',
+      empty: 'Немає збережених конвеєрів',
+      saveButton: 'Зберегти як конвеєр',
+      saveTitle: 'Зберегти поточний вибір із чотирьох слотів як багаторазовий конвеєр',
+      namePlaceholder: 'Назва конвеєра',
+      nameAria: 'Назва нового конвеєра',
+      toast: {
+        applied: 'Застосовано «{{name}}»',
+        saved: 'Конвеєр збережено',
+        saveFailed: 'Не вдалося зберегти'
+      }
+    },
     refreshPresets: 'Оновити',
     refreshPresetsTitle: 'Оновити пресети — завантажити найновіші хмарні та вбудовані списки (використовуйте після видалення пресета в Bambu Studio чи Bambu Handy)',
     actionServerSide: 'Нарізати (на сервері)',
@@ -3340,6 +3498,41 @@ export default {
   },
 
   library: {
+    runWithPipeline: {
+      actionLabel: 'Запустити з конвеєром',
+      noPermission: 'У вас немає дозволу запускати конвеєри',
+      modalTitle: 'Запустити з конвеєром',
+      confirmTitle: 'Підтвердити запуск',
+      confirmIntro: 'Передполітна перевірка виявила проблеми з цим запуском',
+      sourceHint: 'Джерело',
+      pipelineHint: 'Конвеєр',
+      targetHint: 'Ціль',
+      pipelineListAria: 'Доступні конвеєри',
+      runAnyway: 'Запустити все одно',
+      loading: 'Завантаження…',
+      empty: 'Ще немає збережених конвеєрів. Відкрийте діалог слайсингу та натисніть «Зберегти як конвеєр», щоб створити один.',
+      noTarget: 'Цільовий принтер не вказано',
+      noTargetMessage: 'У цього конвеєра не вказано цільовий принтер. Відкрийте його в Налаштуваннях, щоб обрати.',
+      copies: 'Копії',
+      copiesHint: 'макс. {{n}}',
+      classTarget: 'Будь-який {{model}}',
+      toast: {
+        started: 'Запуск конвеєра розпочато',
+        failed: 'Не вдалося розпочати запуск'
+      },
+      issue: {
+        printerNotSet: 'У цього конвеєра не вказано цільовий принтер.',
+        printerNotFound: 'Цільовий принтер більше не існує.',
+        printerDisabled: 'Цільовий принтер вимкнено.',
+        printerOffline: 'Цільовий принтер офлайн.',
+        filamentType: 'Слот філаменту {{slot}}: очікується {{expected}}, в AMS {{actual}}',
+        filamentColor: 'Слот філаменту {{slot}}: колір відрізняється (очікується {{expected}}, в AMS {{actual}})',
+        amsSlotMissing: 'Слот AMS {{slot}} недоступний на цьому принтері',
+        filamentUnverified: 'Слот філаменту {{slot}} походить із хмарного / стандартного пресету і не може бути статично перевірений.',
+        noClassMatches: 'Жоден принтер у цій установці не відповідає цільовому класу моделі конвеєра ({{expected}}).',
+        classNotSet: 'Ціль конвеєра встановлена на клас принтерів, але модель не обрано.'
+      }
+    },
     tags: {
       '3mf': '3MF',
       gcode: 'GCODE',

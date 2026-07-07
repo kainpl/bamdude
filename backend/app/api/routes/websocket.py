@@ -2,7 +2,7 @@ import logging
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
-from backend.app.core.auth import verify_websocket_token
+from backend.app.core.auth import resolve_websocket_token_user, verify_websocket_token
 from backend.app.core.websocket import ws_manager
 from backend.app.services.background_dispatch import background_dispatch
 from backend.app.services.printer_manager import printer_manager, printer_state_to_dict
@@ -38,7 +38,10 @@ async def websocket_endpoint(websocket: WebSocket, token: str | None = Query(def
         return
 
     logger.info("WebSocket client connecting...")
-    await ws_manager.connect(websocket)
+    # Tag the connection with the minting user (None for API-key callers) so the
+    # manager can target per-user broadcasts. Auth already passed above.
+    user_id = await resolve_websocket_token_user(token or "")
+    await ws_manager.connect(websocket, user_id)
     logger.info("WebSocket client connected")
 
     try:

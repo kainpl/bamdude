@@ -242,6 +242,10 @@ function App() {
                   <Route path="archives" element={<ArchivesPage />} />
                   <Route path="archives/trash" element={<ArchiveTrashPage />} />
                   <Route path="queue" element={<QueuePage />} />
+                  {/* Slicer Pipelines (#1425) — the Pipelines dashboard lives on
+                      the Print Queue page (Queue + History + Timeline +
+                      Pipelines tabs). The old standalone URL redirects there. */}
+                  <Route path="pipelines/runs" element={<Navigate to="/queue?tab=pipelines" replace />} />
                   <Route path="firmware" element={<FirmwareUpdatePage />} />
                   <Route path="stats" element={<StatsPage />} />
                   <Route path="profiles" element={<ProfilesPage />} />

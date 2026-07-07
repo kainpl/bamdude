@@ -111,6 +111,11 @@ class Permission(StrEnum):
     MAINTENANCE_UPDATE = "maintenance:update"
     MAINTENANCE_DELETE = "maintenance:delete"
 
+    # Slicer Pipelines
+    PIPELINES_READ = "pipelines:read"
+    PIPELINES_WRITE = "pipelines:write"
+    PIPELINES_RUN = "pipelines:run"
+
     # K-Profiles
     KPROFILES_READ = "kprofiles:read"
     KPROFILES_CREATE = "kprofiles:create"
@@ -272,6 +277,11 @@ PERMISSION_CATEGORIES = {
         Permission.MAINTENANCE_UPDATE,
         Permission.MAINTENANCE_DELETE,
     ],
+    "Slicer Pipelines": [
+        Permission.PIPELINES_READ,
+        Permission.PIPELINES_WRITE,
+        Permission.PIPELINES_RUN,
+    ],
     "K-Profiles": [
         Permission.KPROFILES_READ,
         Permission.KPROFILES_CREATE,
@@ -423,6 +433,10 @@ DEFAULT_GROUPS = {
             Permission.MAINTENANCE_CREATE.value,
             Permission.MAINTENANCE_UPDATE.value,
             Permission.MAINTENANCE_DELETE.value,
+            # Slicer Pipelines - full access (operators slice + dispatch)
+            Permission.PIPELINES_READ.value,
+            Permission.PIPELINES_WRITE.value,
+            Permission.PIPELINES_RUN.value,
             # K-Profiles - full access
             Permission.KPROFILES_READ.value,
             Permission.KPROFILES_CREATE.value,
@@ -479,6 +493,7 @@ DEFAULT_GROUPS = {
             Permission.SMART_PLUGS_READ.value,
             Permission.CAMERA_VIEW.value,
             Permission.MAINTENANCE_READ.value,
+            Permission.PIPELINES_READ.value,
             Permission.KPROFILES_READ.value,
             Permission.NOTIFICATIONS_READ.value,
             Permission.NOTIFICATION_TEMPLATES_READ.value,

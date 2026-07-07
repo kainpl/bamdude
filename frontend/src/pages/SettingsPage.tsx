@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles } from 'lucide-react';
+import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles, Workflow } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, macrosApi } from '../api/client';
@@ -36,6 +36,7 @@ import { TwoFactorSettings } from '../components/TwoFactorSettings';
 import { OIDCProviderSettings } from '../components/OIDCProviderSettings';
 import { SecurityStatusCard } from '../components/SecurityStatusCard';
 import { SlicerBundlesPanel } from '../components/SlicerBundlesPanel';
+import { SlicerPipelinesPanel } from '../components/SlicerPipelinesPanel';
 import { FailureDetectionSettings } from '../components/FailureDetectionSettings';
 import { APIBrowser } from '../components/APIBrowser';
 import { Toggle } from '../components/Toggle';
@@ -51,7 +52,7 @@ import { registerSettingsSearch, getSettingsSearchEntries } from '../lib/setting
 import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
 import { PrintOptionsPreferencesPanel } from '../components/settings/PrintOptionsPreferencesPanel';
 
-const validTabs = ['general', 'printing', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
+const validTabs = ['general', 'printing', 'filament', 'pipelines', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
 type UsersSubTab = 'users' | 'email' | 'ldap' | 'twofa' | 'oidc' | 'security';
 
@@ -117,6 +118,7 @@ const TAB_I18N_KEY: Record<TabType, string> = {
   general: 'general',
   printing: 'printing',
   filament: 'filament',
+  pipelines: 'queuePipelines',
   notifications: 'notifications',
   plugs: 'smartPlugs',
   network: 'network',
@@ -1181,6 +1183,7 @@ export function SettingsPage() {
       (settings.use_slicer_api ?? false) !== (localSettings.use_slicer_api ?? false) ||
       (settings.orcaslicer_api_url ?? '') !== (localSettings.orcaslicer_api_url ?? '') ||
       (settings.bambu_studio_api_url ?? '') !== (localSettings.bambu_studio_api_url ?? '') ||
+      (settings.pipeline_max_copies ?? 50) !== (localSettings.pipeline_max_copies ?? 50) ||
       settings.prometheus_enabled !== localSettings.prometheus_enabled ||
       settings.prometheus_token !== localSettings.prometheus_token ||
       (settings.session_max_hours ?? 720) !== (localSettings.session_max_hours ?? 720) ||
@@ -1269,6 +1272,7 @@ export function SettingsPage() {
         use_slicer_api: localSettings.use_slicer_api,
         orcaslicer_api_url: localSettings.orcaslicer_api_url,
         bambu_studio_api_url: localSettings.bambu_studio_api_url,
+        pipeline_max_copies: localSettings.pipeline_max_copies,
         prometheus_enabled: localSettings.prometheus_enabled,
         prometheus_token: localSettings.prometheus_token,
         session_max_hours: localSettings.session_max_hours,
@@ -1455,6 +1459,20 @@ export function SettingsPage() {
           <Cylinder className="w-4 h-4" />
           {t('settings.tabs.filament')}
         </button>
+        {/* Slicer Pipelines (#1425). BamDude's dispatch settings are split
+            across the Printing / Filament tabs, so pipelines get a dedicated
+            top-level tab housing the manager + the copies cap. */}
+        <button
+          onClick={() => handleTabChange('pipelines')}
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+            activeTab === 'pipelines'
+              ? 'text-bambu-green border-bambu-green'
+              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+          }`}
+        >
+          <Workflow className="w-4 h-4" />
+          {t('settings.tabs.queuePipelines')}
+        </button>
         <button
           onClick={() => handleTabChange('notifications')}
           className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
@@ -1566,6 +1584,57 @@ export function SettingsPage() {
           <span className={`w-2 h-2 rounded-full ${cloudAuthStatus?.is_authenticated && gitBackupStatus?.configured && gitBackupStatus?.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
         </button>
       </div>
+      {/* ══════ PIPELINES TAB (#1425) ══════ */}
+      {activeTab === 'pipelines' && (
+        <div className="flex flex-col lg:flex-row gap-4">
+          <div className="space-y-4 lg:w-1/2">
+            <SlicerPipelinesPanel />
+          </div>
+          <div className="space-y-4 lg:w-1/2">
+            {/* Slicer Pipeline limits (#1425 PR C). Cap on the copies input in
+                the Run-with-pipeline modal to prevent fat-fingered queue floods.
+                Hard ceiling at 1000 enforced server-side. */}
+            {localSettings && (
+              <Card id="card-pipeline-limits">
+                <CardHeader>
+                  <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                    <Workflow className="w-4 h-4 text-bambu-green" />
+                    {t('settings.pipelineLimits.title', 'Slicer Pipeline limits')}
+                  </h3>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex-1">
+                      <p className="text-sm text-white">
+                        {t('settings.pipelineLimits.maxCopiesLabel', 'Max copies per run')}
+                      </p>
+                      <p className="text-xs text-bambu-gray mt-0.5">
+                        {t(
+                          'settings.pipelineLimits.maxCopiesDesc',
+                          'Upper bound on the copies operators can request when running a pipeline. Server-side hard cap is 1000.',
+                        )}
+                      </p>
+                    </div>
+                    <input
+                      type="number"
+                      min={1}
+                      max={1000}
+                      value={localSettings.pipeline_max_copies ?? 50}
+                      onChange={(e) => {
+                        const n = parseInt(e.target.value, 10);
+                        if (Number.isNaN(n)) return;
+                        updateSetting('pipeline_max_copies', Math.max(1, Math.min(1000, n)));
+                      }}
+                      aria-label={t('settings.pipelineLimits.maxCopiesLabel', 'Max copies per run')}
+                      className="w-24 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm"
+                    />
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        </div>
+      )}
       {/* ══════ GENERAL TAB ══════ */}
       {activeTab === 'general' && (
       <div className="flex flex-col lg:flex-row gap-4">

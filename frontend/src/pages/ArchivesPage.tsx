@@ -71,6 +71,7 @@ import { Button } from '../components/Button';
 import { ModelViewerModal } from '../components/ModelViewerModal';
 import { PrintModal } from '../components/PrintModal';
 import { SliceModal } from '../components/SliceModal';
+import { RunWithPipelineModal } from '../components/RunWithPipelineModal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { PurgeArchivesModal } from '../components/PurgeArchivesModal';
 import { TrashSplitButton } from '../components/TrashSplitButton';
@@ -204,6 +205,7 @@ function ArchiveCard({
   const [showViewer, setShowViewer] = useState(false);
   const [showReprint, setShowReprint] = useState(false);
   const [showSlice, setShowSlice] = useState(false);
+  const [showRunPipeline, setShowRunPipeline] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const [showTimelapse, setShowTimelapse] = useState(false);
@@ -475,6 +477,15 @@ function ArchiveCard({
         onClick: () => setShowSlice(true),
         disabled: !archive.file_path || !hasPermission('library:upload'),
         title: !archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('library:upload') ? t('fileManager.noPermissionSlice', { defaultValue: 'You do not have permission to slice' }) : undefined,
+      },
+      // Run-with-pipeline (#1425 PR B). Sources from the archive's source 3MF
+      // (backend falls back to file_path). Only when slicer-api is enabled.
+      {
+        label: t('library.runWithPipeline.actionLabel'),
+        icon: <Play className="w-4 h-4" />,
+        onClick: () => setShowRunPipeline(true),
+        disabled: !hasPermission('pipelines:run'),
+        title: !hasPermission('pipelines:run') ? t('library.runWithPipeline.noPermission') : undefined,
       }] : []),
     ]),
     {
@@ -1319,6 +1330,15 @@ function ArchiveCard({
         />
       )}
 
+      {/* Run-with-Pipeline modal (#1425 PR B). Sources from the archive —
+          backend reads source_3mf_path, falls back to file_path. */}
+      {showRunPipeline && (
+        <RunWithPipelineModal
+          source={{ kind: 'archive', id: archive.id, filename: archive.print_name || archive.filename || 'model' }}
+          onClose={() => setShowRunPipeline(false)}
+        />
+      )}
+
       {/* Delete Confirmation */}
       {showDeleteConfirm && (
         <ConfirmModal
@@ -1592,6 +1612,7 @@ function ArchiveListRow({
   const [showReprint, setShowReprint] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
   const [showSlice, setShowSlice] = useState(false);
+  const [showRunPipeline, setShowRunPipeline] = useState(false);
   const [showViewer, setShowViewer] = useState(false);
   const [showTimelapse, setShowTimelapse] = useState(false);
   const [showTimelapseSelect, setShowTimelapseSelect] = useState(false);
@@ -1816,6 +1837,15 @@ function ArchiveListRow({
         onClick: () => setShowSlice(true),
         disabled: !archive.file_path || !hasPermission('library:upload'),
         title: !archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('library:upload') ? t('fileManager.noPermissionSlice', { defaultValue: 'You do not have permission to slice' }) : undefined,
+      },
+      // Run-with-pipeline (#1425 PR B). Sources from the archive's source 3MF
+      // (backend falls back to file_path). Only when slicer-api is enabled.
+      {
+        label: t('library.runWithPipeline.actionLabel'),
+        icon: <Play className="w-4 h-4" />,
+        onClick: () => setShowRunPipeline(true),
+        disabled: !hasPermission('pipelines:run'),
+        title: !hasPermission('pipelines:run') ? t('library.runWithPipeline.noPermission') : undefined,
       }] : []),
     ]),
     {
@@ -2325,6 +2355,15 @@ function ArchiveListRow({
         <SliceModal
           source={{ kind: 'archive', id: archive.id, filename: archive.filename }}
           onClose={() => setShowSlice(false)}
+        />
+      )}
+
+      {/* Run-with-Pipeline modal (#1425 PR B). Sources from the archive —
+          backend reads source_3mf_path, falls back to file_path. */}
+      {showRunPipeline && (
+        <RunWithPipelineModal
+          source={{ kind: 'archive', id: archive.id, filename: archive.print_name || archive.filename || 'model' }}
+          onClose={() => setShowRunPipeline(false)}
         />
       )}
 

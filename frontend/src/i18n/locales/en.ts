@@ -114,7 +114,10 @@ export default {
     current: 'Current',
     average: 'Average',
     min: 'Min',
-    max: 'Max'
+    max: 'Max',
+    back: 'Back',
+    previous: 'Previous',
+    next: 'Next'
   },
 
   amsHistory: {
@@ -992,6 +995,9 @@ export default {
       list: 'List',
       timeline: 'Timeline'
     },
+    tabs: {
+      pipelines: 'Pipelines'
+    },
     search: {
       placeholder: 'Search queues…'
     },
@@ -1501,7 +1507,95 @@ export default {
       backup: 'Backup',
       emailAuth: 'Email Authentication',
       ldap: 'LDAP',
-      security: 'Security'
+      security: 'Security',
+      queueDispatch: 'Queue & Dispatch',
+      queuePipelines: 'Pipelines'
+    },
+    pipelineLimits: {
+      title: 'Slicer Pipeline limits',
+      maxCopiesLabel: 'Max copies per run',
+      maxCopiesDesc: 'Upper bound on the copies operators can request when running a pipeline. Server-side hard cap is 1000.'
+    },
+    pipelines: {
+      title: 'Slicer Pipelines',
+      subtitle: 'Reusable preset bundles (printer + process + filaments + bed type). Save one from the Slice dialog and apply it with a single click on the next file.',
+      loading: 'Loading pipelines…',
+      loadError: 'Could not load pipelines.',
+      confirmDelete: 'Delete this pipeline? This cannot be undone.',
+      staleWarning: 'One or more referenced presets no longer exist. Re-save this pipeline from the Slice dialog to fix.',
+      empty: {
+        title: 'No pipelines yet.',
+        howto: 'Open the Slice dialog for any file, pick your printer / process / filaments / bed type, then click "Save as pipeline". Your saved pipelines will appear here.'
+      },
+      field: {
+        name: 'Pipeline name',
+        description: 'Description',
+        targetPrinter: 'Target printer',
+        noTarget: '— No target —',
+        targetKind: 'Target type',
+        targetKindSpecific: 'Specific printer',
+        targetKindClass: 'Printer class',
+        targetModelClass: 'Printer model',
+        fanoutStrategy: 'Fanout strategy',
+        fanout: {
+          max_parallel: 'Max parallel — distribute across any idle matching printer',
+          round_robin: 'Round robin — cycle through eligible printers',
+          fill_one_first: 'Fill one first — pin all copies to one printer'
+        },
+        fanoutShort: {
+          max_parallel: 'parallel',
+          round_robin: 'round robin',
+          fill_one_first: 'fill one first'
+        }
+      },
+      action: {
+        save: 'Save',
+        cancel: 'Cancel',
+        rename: 'Rename',
+        delete: 'Delete'
+      },
+      slot: {
+        printer: 'Printer',
+        process: 'Process',
+        filament: 'Filament',
+        filamentN: 'Filament {{n}}',
+        filamentAll: 'All {{n}} slots',
+        bed: 'Bed'
+      },
+      group: {
+        profiles: 'Profiles',
+        filaments: 'Filaments'
+      },
+      searchPlaceholder: 'Search pipelines…',
+      filterTargetType: 'Filter by target type',
+      filterTarget: 'Filter by target',
+      filter: {
+        all: 'All targets',
+        noTarget: 'No target set',
+        count: '{{shown}} / {{total}}',
+        noMatches: 'No pipelines match the current filters.'
+      },
+      noTargetHint: 'Set a target printer to run this',
+      noTargetWarning: 'Set a target printer before running this pipeline.',
+      runs: {
+        lastRun: 'Last run',
+        status: {
+          queued: 'queued',
+          slicing: 'slicing',
+          dispatching: 'dispatching',
+          in_progress: 'printing',
+          completed: 'completed',
+          failed: 'failed',
+          partial_failure: 'partial failure',
+          cancelled: 'cancelled'
+        }
+      },
+      toast: {
+        saved: 'Pipeline saved',
+        saveFailed: 'Save failed',
+        deleted: 'Pipeline deleted',
+        deleteFailed: 'Delete failed'
+      }
     },
     encryption: {
       title: 'MFA Encryption Status',
@@ -3246,9 +3340,71 @@ export default {
     },
   },
 
+  pipelineRuns: {
+    title: 'Pipeline Runs',
+    loading: 'Loading…',
+    empty: 'No pipeline runs yet.',
+    filter: {
+      pipeline: 'Pipeline',
+      status: 'Status',
+      target: 'Target',
+      all: 'All',
+      allPipelines: 'All pipelines',
+      allStatus: 'All statuses',
+      allTargets: 'All targets',
+      clear: 'Clear filters',
+      noMatches: 'No runs match the current filters.'
+    },
+    totalCount_one: '{{n}} run',
+    totalCount_other: '{{n}} runs',
+    copies: '{{n}} copies',
+    failedCount: '{{n}} failed',
+    copyN: 'Copy {{n}}',
+    retryFailed: 'Retry failed',
+    retryOf: 'retry of #{{n}}',
+    pagination: '{{start}}–{{end}} of {{total}}',
+    cancelledByUser: 'Cancelled by user',
+    toast: {
+      cancelled: 'Run cancelled',
+      cancelFailed: 'Cancel failed',
+      retryStarted: 'Retry started',
+      retryFailed: 'Retry failed',
+      cleared: '{{n}} runs cleared',
+      clearFailed: 'Clear failed'
+    },
+    clearLog: 'Clear log',
+    clearConfirmTitle: 'Clear log?',
+    clearConfirmBody: 'Delete every completed, failed, cancelled, and partial-failure pipeline run? In-flight runs are kept. This cannot be undone.',
+    clearConfirmAction: 'Clear',
+    jobStatus: {
+      pending: 'pending',
+      awaiting_printer: 'awaiting printer',
+      queued: 'queued',
+      printing: 'printing',
+      completed: 'completed',
+      failed: 'failed',
+      cancelled: 'cancelled'
+    }
+  },
+
   slice: {
     title: 'Slice model',
     action: 'Slice',
+    pipelines: {
+      label: 'Pipeline',
+      applyAria: 'Apply pipeline',
+      applyPrompt: 'Apply pipeline…',
+      empty: 'No saved pipelines',
+      saveButton: 'Save as pipeline',
+      saveTitle: 'Save the current four-slot selection as a reusable pipeline',
+      namePlaceholder: 'Pipeline name',
+      nameAria: 'New pipeline name',
+      toast: {
+        applied: 'Applied "{{name}}"',
+        saved: 'Pipeline saved',
+        saveFailed: 'Save failed'
+      }
+    },
     refreshPresets: 'Refresh',
     refreshPresetsTitle: 'Refresh presets — fetch the latest cloud and bundled listings (use after deleting a preset in Bambu Studio or Bambu Handy)',
     actionServerSide: 'Slice (server-side)',
@@ -3323,6 +3479,41 @@ export default {
   },
 
   library: {
+    runWithPipeline: {
+      actionLabel: 'Run with pipeline',
+      noPermission: 'You do not have permission to run pipelines',
+      modalTitle: 'Run with pipeline',
+      confirmTitle: 'Confirm run',
+      confirmIntro: 'Pre-flight found issues with this run',
+      sourceHint: 'Source',
+      pipelineHint: 'Pipeline',
+      targetHint: 'Target',
+      pipelineListAria: 'Available pipelines',
+      runAnyway: 'Run anyway',
+      loading: 'Loading…',
+      empty: 'No pipelines saved yet. Open the Slice dialog and click "Save as pipeline" to create one.',
+      noTarget: 'No target printer set',
+      noTargetMessage: 'This pipeline has no target printer set. Open it in Settings to pick one.',
+      copies: 'Copies',
+      copiesHint: 'max {{n}}',
+      classTarget: 'Any {{model}}',
+      toast: {
+        started: 'Pipeline run started',
+        failed: 'Could not start run'
+      },
+      issue: {
+        printerNotSet: 'No target printer set on this pipeline.',
+        printerNotFound: 'Target printer no longer exists.',
+        printerDisabled: 'Target printer is disabled.',
+        printerOffline: 'Target printer is offline.',
+        filamentType: 'Filament slot {{slot}}: expected {{expected}}, AMS has {{actual}}',
+        filamentColor: 'Filament slot {{slot}}: colour differs (expected {{expected}}, AMS has {{actual}})',
+        amsSlotMissing: 'AMS slot {{slot}} not available on this printer',
+        filamentUnverified: 'Filament slot {{slot}} comes from a cloud / standard preset and could not be statically verified.',
+        noClassMatches: "No printers in this install match the pipeline's target model class ({{expected}}).",
+        classNotSet: 'Pipeline target is set to a printer class but no model was chosen.'
+      }
+    },
     // Composite tag labels (m036). Surfaced by ``<FileTagBadges>`` in the
     // file manager and by the chip-row filter. Short, all-caps for badge
     // density. Keep en + uk in sync.

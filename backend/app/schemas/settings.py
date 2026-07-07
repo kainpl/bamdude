@@ -340,6 +340,16 @@ class AppSettings(BaseModel):
         description="Global minimum lead-time in days; combined with per-SKU lead time as max(global, sku)",
     )
 
+    # Slicer Pipelines (#1425): upper bound on copies an operator can request in
+    # a single "Run pipeline". Server-side hard cap is 1000; the schema enforces
+    # 1..1000 and the run route additionally rejects copies above this value.
+    pipeline_max_copies: int = Field(
+        default=50,
+        ge=1,
+        le=1000,
+        description="Max copies per pipeline run (1..1000). The run endpoint rejects requests above this value.",
+    )
+
     # Auto-Print G-code Injection (#422). Per-model snippet library:
     # ``{model: {"start_gcode": "...", "end_gcode": "..."}}`` JSON-encoded.
     # Resolved by background_dispatch when a queue item has gcode_injection=True.
@@ -511,6 +521,7 @@ class AppSettingsUpdate(BaseModel):
     low_stock_threshold: float | None = Field(default=None, ge=0.1, le=99.9)
     session_max_hours: int | None = Field(default=None, ge=1, le=720)
     forecast_global_lead_time_days: int | None = Field(default=None, ge=0)
+    pipeline_max_copies: int | None = Field(default=None, ge=1, le=1000)
     user_notifications_enabled: bool | None = None
     ldap_enabled: bool | None = None
     ldap_server_url: str | None = None

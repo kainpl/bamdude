@@ -1430,6 +1430,9 @@ export interface AppSettings {
   // back to env defaults configured on the server.
   orcaslicer_api_url?: string;
   bambu_studio_api_url?: string;
+  // Slicer Pipelines (#1425): upper bound on the copies operators can request
+  // when running a pipeline. Server-side hard cap is 1000; default 50.
+  pipeline_max_copies: number;
   // Per-model auto-print G-code snippets (#422). JSON object keyed by printer
   // model name → { start_gcode, end_gcode }. Empty string = none configured.
   gcode_snippets?: string;
@@ -1939,6 +1942,139 @@ export interface SliceJobState {
   result?: SliceResponse | SliceArchiveResponse;
   error_status?: number;
   error_detail?: string;
+}
+
+// ── Slicer Pipelines (#1425) ──────────────────────────────────────────────
+// A pipeline is a named, reusable bundle of the four slot picks from the Slice
+// dialog (printer + process + filaments + bed) plus a dispatch target and a
+// fanout strategy for spreading copies across a printer class.
+export interface SlicerPipeline {
+  id: number;
+  name: string;
+  description: string | null;
+  printer_preset: PresetRef;
+  process_preset: PresetRef;
+  filament_presets: PresetRef[];
+  bed_type: string | null;
+  target_kind: 'specific_printer' | 'printer_class';
+  target_printer_id: number | null;
+  target_model_class: string | null;
+  fanout_strategy: 'max_parallel' | 'fill_one_first' | 'round_robin';
+  created_by: number | null;
+  created_at: string;
+  updated_at: string;
+}
+export interface SlicerPipelineCreateRequest {
+  name: string;
+  description?: string | null;
+  printer_preset: PresetRef;
+  process_preset: PresetRef;
+  filament_presets: PresetRef[];
+  bed_type?: string | null;
+}
+export type SlicerPipelineUpdateRequest = Partial<SlicerPipelineCreateRequest> & {
+  target_kind?: 'specific_printer' | 'printer_class';
+  // ``target_printer_id: 0`` means "clear the target" — the backend maps that
+  // to null. Use null in TypeScript for the same intent.
+  target_printer_id?: number | null;
+  target_model_class?: string | null;
+  fanout_strategy?: 'max_parallel' | 'fill_one_first' | 'round_robin';
+};
+export interface SlicerPipelinesListResponse {
+  pipelines: SlicerPipeline[];
+}
+
+// Slicer Pipeline runs (#1425 PR B + PR C)
+export type PipelineEligibilityKind =
+  | 'printer_not_set'
+  | 'printer_not_found'
+  | 'printer_disabled'
+  | 'printer_offline'
+  | 'filament_type_mismatch'
+  | 'filament_color_mismatch'
+  | 'ams_slot_missing'
+  | 'filament_unverified'
+  | 'no_class_matches'
+  | 'class_not_set';
+export interface PipelineEligibilityIssue {
+  kind: PipelineEligibilityKind;
+  slot_index: number | null;
+  expected: string | null;
+  actual: string | null;
+}
+export interface PipelinePerPrinterReport {
+  printer_id: number;
+  printer_name: string;
+  ok: boolean;
+  issues: PipelineEligibilityIssue[];
+}
+export interface PipelineEligibilityReport {
+  ok: boolean;
+  target_kind: 'specific_printer' | 'printer_class';
+  target_printer_id: number | null;
+  target_printer_name: string | null;
+  target_model_class: string | null;
+  issues: PipelineEligibilityIssue[];
+  printer_reports: PipelinePerPrinterReport[];
+}
+export interface PipelineJob {
+  id: number;
+  pipeline_run_id: number;
+  copy_index: number;
+  assigned_printer_id: number | null;
+  assigned_printer_name: string | null;
+  queue_entry_id: number | null;
+  status:
+    | 'pending'
+    | 'awaiting_printer'
+    | 'queued'
+    | 'printing'
+    | 'completed'
+    | 'failed'
+    | 'cancelled';
+  error_message: string | null;
+  dispatched_at: string | null;
+  completed_at: string | null;
+}
+export interface PipelineRun {
+  id: number;
+  pipeline_id: number | null;
+  pipeline_name: string | null;
+  source_library_file_id: number | null;
+  source_archive_id: number | null;
+  source_filename: string | null;
+  parent_run_id: number | null;
+  copies: number;
+  copies_completed: number;
+  copies_failed: number;
+  copies_cancelled: number;
+  copies_in_progress: number;
+  status:
+    | 'queued'
+    | 'slicing'
+    | 'dispatching'
+    | 'in_progress'
+    | 'completed'
+    | 'failed'
+    | 'partial_failure'
+    | 'cancelled';
+  slice_job_id: number | null;
+  sliced_library_file_id: number | null;
+  eligibility_overridden: boolean;
+  error_message: string | null;
+  created_by: number | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  jobs: PipelineJob[];
+  target_kind: 'specific_printer' | 'printer_class' | null;
+  target_printer_id: number | null;
+  target_model_class: string | null;
+  fanout_strategy: 'max_parallel' | 'fill_one_first' | 'round_robin' | null;
+}
+export interface PipelineRunListResponse {
+  runs: PipelineRun[];
+  total: number;
 }
 
 export interface ImportResponse {
@@ -3458,6 +3594,7 @@ export type Permission =
   | 'api_keys:read' | 'api_keys:create' | 'api_keys:update' | 'api_keys:delete'
   | 'users:read' | 'users:create' | 'users:update' | 'users:delete'
   | 'groups:read' | 'groups:create' | 'groups:update' | 'groups:delete'
+  | 'pipelines:read' | 'pipelines:write' | 'pipelines:run'
   | 'websocket:connect';
 
 // Group types
@@ -7329,6 +7466,86 @@ export const api = {
   // the wire on every dropdown open.
   getSlicerHealth: (slicer: 'orcaslicer' | 'bambu_studio') =>
     request<SlicerHealth>(`/slicer/health/${slicer}`),
+
+  // ── Slicer Pipelines (#1425) ────────────────────────────────────────────
+  listSlicerPipelines: () =>
+    request<SlicerPipelinesListResponse>('/slicer-pipelines/'),
+  getSlicerPipeline: (id: number) =>
+    request<SlicerPipeline>(`/slicer-pipelines/${id}`),
+  createSlicerPipeline: (data: SlicerPipelineCreateRequest) =>
+    request<SlicerPipeline>('/slicer-pipelines/', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateSlicerPipeline: (id: number, data: SlicerPipelineUpdateRequest) =>
+    request<SlicerPipeline>(`/slicer-pipelines/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deleteSlicerPipeline: (id: number) =>
+    request<void>(`/slicer-pipelines/${id}`, { method: 'DELETE' }),
+  checkPipelineEligibility: (
+    pipelineId: number,
+    source: { kind: 'libraryFile'; id: number } | { kind: 'archive'; id: number },
+  ) =>
+    request<PipelineEligibilityReport>(`/slicer-pipelines/${pipelineId}/check-eligibility`, {
+      method: 'POST',
+      body: JSON.stringify(
+        source.kind === 'libraryFile'
+          ? { source_library_file_id: source.id }
+          : { source_archive_id: source.id },
+      ),
+    }),
+  runPipeline: (
+    pipelineId: number,
+    source: { kind: 'libraryFile'; id: number } | { kind: 'archive'; id: number },
+    force = false,
+    copies = 1,
+  ) =>
+    request<PipelineRun>(`/slicer-pipelines/${pipelineId}/run`, {
+      method: 'POST',
+      body: JSON.stringify({
+        ...(source.kind === 'libraryFile'
+          ? { source_library_file_id: source.id }
+          : { source_archive_id: source.id }),
+        force,
+        copies,
+      }),
+    }),
+  listPipelineRuns: (pipelineId: number, limit = 5) =>
+    request<PipelineRunListResponse>(
+      `/slicer-pipelines/${pipelineId}/runs?limit=${limit}`,
+    ),
+  // Dashboard list across all pipelines (#1425 PR C).
+  listAllPipelineRuns: (params: {
+    limit?: number;
+    offset?: number;
+    pipelineId?: number;
+    status?: string;
+    targetPrinterId?: number;
+    targetModelClass?: string;
+  } = {}) => {
+    const search = new URLSearchParams();
+    if (params.limit) search.set('limit', String(params.limit));
+    if (params.offset) search.set('offset', String(params.offset));
+    if (params.pipelineId) search.set('pipeline_id', String(params.pipelineId));
+    if (params.status) search.set('status', params.status);
+    if (params.targetPrinterId) search.set('target_printer_id', String(params.targetPrinterId));
+    if (params.targetModelClass) search.set('target_model_class', params.targetModelClass);
+    const q = search.toString();
+    return request<PipelineRunListResponse>(`/pipeline-runs${q ? '?' + q : ''}`);
+  },
+  // Clear terminal pipeline runs (#1425 PR C polish). Deletes all runs in a
+  // terminal state (completed/failed/cancelled/partial_failure); in-flight
+  // runs are preserved.
+  clearTerminalPipelineRuns: () =>
+    request<{ deleted: number }>('/pipeline-runs/clear', { method: 'POST' }),
+  getPipelineRun: (runId: number) =>
+    request<PipelineRun>(`/pipeline-runs/${runId}`),
+  cancelPipelineRun: (runId: number) =>
+    request<PipelineRun>(`/pipeline-runs/${runId}/cancel`, { method: 'POST' }),
+  retryFailedPipelineRun: (runId: number) =>
+    request<PipelineRun>(`/pipeline-runs/${runId}/retry-failed`, { method: 'POST' }),
 
   // Local Presets (OrcaSlicer imports)
   getLocalPresets: () =>

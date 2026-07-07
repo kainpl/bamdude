@@ -8,6 +8,10 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Slicer Pipelines — save a slice setup once, then slice-and-queue any file with a single click.** A *pipeline* bundles the four picks you normally make in the Slice dialog (printer preset, process preset, filament preset per AMS slot, and bed type) together with a dispatch target and a copy-fanout strategy, so a repeatable job stops being a re-pick-everything chore. Save one straight from the Slice dialog ("Save as pipeline"), then **Run with pipeline** from a library file, an archive, or the Slice dialog: BamDude slices the source once and enqueues however many copies you asked for onto the target. The target can be a **specific printer** or a whole **printer-model class** (e.g. "any X1C") — class targets are handed to the existing auto-queue distributor, so copies balance across your matching printers exactly like any other model-assigned job. A pre-flight check flags mismatches (target offline/disabled, AMS filament type/colour differs, missing slot) before you commit, with a "Run anyway" escape hatch. A new **Pipelines tab on the Print Queue page** tracks every run live — per-copy status, cancel an in-flight run, retry just the failed copies, and clear the log — and manage/rename/delete pipelines under **Settings → Pipelines**. Gated by three new permissions (`pipelines:read` / `:write` / `:run`); Operators get all three, Viewers get read. Ported from upstream Bambuddy #1425, adapted to BamDude's two-tier queue.
+
 ### Security
 
 - **Updated the router dependency to clear reported advisories.** `react-router` was raised to 7.18.1, clearing a batch of advisories flagged against the 7.x line (open redirect via protocol-relative URLs, XSS, denial-of-service, and CSRF). Nearly all of them only affect React Router's server-side rendering and data APIs, which BamDude — a client-side single-page app served as a static bundle — does not use; the bump keeps the dependency audit clean and closes the one client-relevant item (open redirect) regardless.

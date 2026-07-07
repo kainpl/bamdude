@@ -60,3 +60,51 @@ async def test_websocket_token_is_scoped_to_its_own_type(async_client: AsyncClie
     camera_token = await create_camera_stream_token()
     assert await verify_websocket_token(camera_token) is False
     assert await verify_camera_stream_token(camera_token) is True
+
+
+class _FakeWS:
+    """Minimal WebSocket stand-in recording what the manager sends it."""
+
+    def __init__(self):
+        self.sent: list[str] = []
+
+    async def accept(self):
+        pass
+
+    async def send_text(self, data: str):
+        self.sent.append(data)
+
+
+@pytest.mark.asyncio
+async def test_broadcast_to_user_targets_only_the_owner():
+    """Owner-scoped fan-out: a per-user broadcast reaches only that user's
+    connections; ``user_id=None`` falls back to a global broadcast (BamDude has
+    no anonymous users, so per-user targeting is the norm)."""
+    from backend.app.core.websocket import ConnectionManager
+
+    mgr = ConnectionManager()
+    a, b = _FakeWS(), _FakeWS()
+    await mgr.connect(a, user_id=1)
+    await mgr.connect(b, user_id=2)
+
+    await mgr.broadcast_to_user(1, {"type": "pipeline_run_updated"})
+    assert len(a.sent) == 1 and len(b.sent) == 0  # only user 1's connection
+
+    await mgr.broadcast_to_user(None, {"type": "global"})  # None → global fallback
+    assert len(a.sent) == 2 and len(b.sent) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ws_token_resolves_to_minting_user(async_client: AsyncClient):
+    """The /ws-token endpoint records the authenticated user on the token so the
+    connection can be tagged for per-user broadcasts; a token minted without a
+    user (API-key caller) resolves to None (→ global fallback)."""
+    from backend.app.core.auth import create_websocket_token, resolve_websocket_token_user
+
+    resp = await async_client.post("/api/v1/auth/ws-token")
+    uid = await resolve_websocket_token_user(resp.json()["token"])
+    assert isinstance(uid, int) and uid > 0
+
+    assert await resolve_websocket_token_user(await create_websocket_token()) is None  # userless
+    assert await resolve_websocket_token_user("not-a-real-token") is None
