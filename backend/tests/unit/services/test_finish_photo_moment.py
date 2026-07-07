@@ -63,6 +63,38 @@ class TestFinishPhotoMoment:
         assert moments[0]["trigger"] == "stage_22"
         assert mqtt_client._finish_photo_captured is True
 
+    def test_last_layer_edge_fires_callback(self, mqtt_client):
+        """Crossing into the final layer fires the callback even without stg_cur=22
+        (models like A1 Mini skip stage 22) — trigger 'last_layer' (#1867). One-shot: a
+        later stage-22 must not double-fire."""
+        moments = []
+        mqtt_client.on_finish_photo_moment = lambda data: moments.append(data)
+        self._start_running(mqtt_client)  # total_layer_num=100
+
+        # Mid-print layer advance — must NOT fire.
+        mqtt_client._process_message({"print": {"gcode_state": "RUNNING", "layer_num": 50, "total_layer_num": 100}})
+        assert len(moments) == 0
+
+        # Cross into the final layer (old 50 < 100, new 100 >= 100) — fires once, no stage.
+        mqtt_client._process_message({"print": {"gcode_state": "RUNNING", "layer_num": 100, "total_layer_num": 100}})
+        assert len(moments) == 1
+        assert moments[0]["trigger"] == "last_layer"
+        assert mqtt_client._finish_photo_captured is True
+
+        # A subsequent stage-22 at end-of-print must NOT double-fire (one-shot).
+        mqtt_client._process_message(
+            {
+                "print": {
+                    "gcode_state": "RUNNING",
+                    "layer_num": 100,
+                    "total_layer_num": 100,
+                    "mc_percent": 100,
+                    "stg_cur": 22,
+                }
+            }
+        )
+        assert len(moments) == 1
+
     def test_mid_print_stage_22_does_not_fire(self, mqtt_client):
         """A mid-print color swap transits stage 22 at progress<99 — must NOT fire."""
         moments = []

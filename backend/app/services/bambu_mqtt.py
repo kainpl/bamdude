@@ -2595,6 +2595,37 @@ class BambuMQTTClient:
             # Trigger layer change callback if layer increased
             if new_layer > old_layer and self.on_layer_change:
                 self.on_layer_change(new_layer)
+            # Finish-photo on the last-layer edge (#1867). On models that skip the
+            # stg_cur=22 stage (e.g. A1 Mini) the stage-22 trigger below never fires and
+            # the FINISH fallback only lands after the user's End G-code has run (parked /
+            # swapped / cleared plate). Catching the crossing into the final layer captures
+            # the real print while it's still on the bed. One-shot via _finish_photo_captured
+            # so the stage-22 / FINISH paths become no-ops for this print.
+            total_for_finish = self.state.total_layers or 0
+            if (
+                total_for_finish > 0
+                and new_layer >= total_for_finish
+                and old_layer < total_for_finish
+                and self._was_running
+                and not self._finish_photo_captured
+                and self.on_finish_photo_moment
+            ):
+                self._finish_photo_captured = True
+                logger.info(
+                    "[%s] FINISH PHOTO MOMENT (last-layer) — layer=%s/%s, timelapse_active=%s",
+                    self.serial_number,
+                    new_layer,
+                    total_for_finish,
+                    self._timelapse_during_print,
+                )
+                self.on_finish_photo_moment(
+                    {
+                        "trigger": "last_layer",
+                        "filename": self._previous_gcode_file or self.state.gcode_file,
+                        "subtask_name": self.state.subtask_name,
+                        "timelapse_was_active": self._timelapse_during_print,
+                    }
+                )
         if "total_layer_num" in data:
             # Guard against the firmware's end-of-print total_layer_num=0 push clobbering the
             # cached total — a zeroed total zeroed the linear-usage denominator and credited

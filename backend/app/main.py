@@ -6497,8 +6497,18 @@ async def lifespan(app: FastAPI):
 
         await tl_layer_change(printer_id, layer_num)
 
-        # First layer complete notification (layer_num >= 2 means layer 1 is done)
-        if 2 <= layer_num <= 5 and not _first_layer_notified.get(printer_id, False):
+        # First-layer-complete notification (layer_num >= 2 means layer 1 is done).
+        # Gated on the printer actually PRINTING: some models (e.g. P1S) tick layer_num
+        # during pre-print calibration ~30 min early, which fired a bogus first-layer photo
+        # of an empty plate. Defer until state == RUNNING with no mc_print_sub_stage
+        # (calibration / prep) active, and only mark notified AFTER that check so a
+        # premature tick doesn't burn the one-shot. Widened to <=10 to tolerate the extra
+        # early ticks the gate now skips (#1837).
+        if 2 <= layer_num <= 10 and not _first_layer_notified.get(printer_id, False):
+            client = printer_manager.get_client(printer_id)
+            state = client.state if client else None
+            if not state or state.state != "RUNNING" or getattr(state, "mc_print_sub_stage", 0) not in (None, 0):
+                return
             _first_layer_notified[printer_id] = True
             try:
                 async with async_session() as db:
@@ -6509,10 +6519,8 @@ async def lifespan(app: FastAPI):
                     if not printer:
                         return
                     printer_name = printer.name
-                    client = printer_manager.get_client(printer_id)
-                    state = client.state if client else None
-                    filename = (state.subtask_name or state.gcode_file or "Unknown") if state else "Unknown"
-                    total_layers = state.total_layers if state else 0
+                    filename = state.subtask_name or state.gcode_file or "Unknown"
+                    total_layers = state.total_layers or 0
 
                     image_data = await _capture_snapshot_for_notification(
                         printer_id, printer, logging.getLogger(__name__)
