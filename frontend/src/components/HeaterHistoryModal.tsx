@@ -11,7 +11,8 @@ import {
   ResponsiveContainer,
   Legend,
 } from 'recharts';
-import { api, type HeaterSensorKind, type PrinterSensorHistoryResponse } from '../api/client';
+import { api, type HeaterSensorKind, type PrinterSensorHistoryResponse, type PrinterStatus } from '../api/client';
+import { HeaterThermometer } from './HeaterThermometer';
 import { parseUTCDate, applyTimeFormat, type TimeFormat } from '../utils/date';
 import { useTranslation } from 'react-i18next';
 
@@ -22,6 +23,10 @@ interface HeaterHistoryModalProps {
   printerName: string;
   initialKind?: HeaterSensorKind;
   availableKinds?: HeaterSensorKind[];
+  /** Live MQTT temperatures (same source as the printer card) so the "Current"
+   *  stat reflects the real-time reading + heater state instead of the last
+   *  recorded history sample, which lags by the refetch interval. */
+  liveTemps?: PrinterStatus['temperatures'];
 }
 
 type TimeRange = '6h' | '24h' | '48h' | '7d';
@@ -47,6 +52,15 @@ const KIND_TARGET_COLORS: Record<HeaterSensorKind, string> = {
   chamber: '#a7f3d0',
 };
 
+// Tailwind colour classes the shared HeaterThermometer maps to SVG fills —
+// mirrors the printer card (nozzles orange, bed blue, chamber green).
+const KIND_ICON_COLOR: Record<HeaterSensorKind, string> = {
+  nozzle: 'text-orange-400',
+  nozzle_2: 'text-orange-400',
+  bed: 'text-blue-400',
+  chamber: 'text-green-400',
+};
+
 export function HeaterHistoryModal({
   isOpen,
   onClose,
@@ -54,6 +68,7 @@ export function HeaterHistoryModal({
   printerName,
   initialKind = 'nozzle',
   availableKinds = ['nozzle', 'bed', 'chamber'],
+  liveTemps,
 }: HeaterHistoryModalProps) {
   const { t } = useTranslation();
   const [timeRange, setTimeRange] = useState<TimeRange>('24h');
@@ -116,8 +131,18 @@ export function HeaterHistoryModal({
   }
 
   const lastPoint = chartData[chartData.length - 1];
-  const currentValue = lastPoint?.value;
-  const currentTarget = lastPoint?.target;
+  const historyValue = lastPoint?.value;
+  const historyTarget = lastPoint?.target;
+
+  // "Current" reflects the live MQTT reading (same source as the printer card)
+  // rather than the last recorded history sample, which lags by up to the
+  // refetch interval + the server-side snapshot cadence. Fall back to the last
+  // history point when a live value isn't available for this sensor.
+  const liveValue = liveTemps?.[kind];
+  const liveTarget = liveTemps?.[`${kind}_target`];
+  const liveHeating = liveTemps?.[`${kind}_heating`];
+  const currentValue = liveValue != null ? liveValue : historyValue;
+  const currentTarget = liveTarget != null ? liveTarget : historyTarget;
 
   const getTrend = (values: (number | null)[]) => {
     const filtered = values.filter((v): v is number => v != null);
@@ -227,6 +252,18 @@ export function HeaterHistoryModal({
             <div className="rounded-lg p-4" style={{ backgroundColor: cardBg }}>
               <p className="text-xs" style={{ color: textSecondary }}>{t('common.current', 'Current')}</p>
               <div className="flex items-center gap-2">
+                {liveHeating != null && (
+                  <span
+                    className="flex shrink-0"
+                    title={
+                      liveHeating
+                        ? t('printers.heaterHistory.heating', 'Heating')
+                        : t('printers.heaterHistory.idle', 'Idle')
+                    }
+                  >
+                    <HeaterThermometer className="w-5 h-7" color={KIND_ICON_COLOR[kind]} isHeating={liveHeating} />
+                  </span>
+                )}
                 <p className="text-2xl font-bold" style={{ color: KIND_COLORS[kind] }}>
                   {currentValue != null ? `${Math.round(currentValue)}°C` : '—'}
                 </p>

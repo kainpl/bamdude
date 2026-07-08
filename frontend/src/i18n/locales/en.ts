@@ -274,7 +274,9 @@ export default {
       bed: 'Bed',
       chamber: 'Chamber',
       error: 'Failed to load history',
-      empty: 'No data recorded yet'
+      empty: 'No data recorded yet',
+      heating: 'Heating',
+      idle: 'Idle'
     },
     maintenance: {
       menuEnter: 'Enter maintenance mode',

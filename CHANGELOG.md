@@ -8,6 +8,10 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Heater History window's "Current" reading is now live, not a stale history sample.** The big "Current" value (and its target) was pulled from the last *recorded* history point, which only refreshes about once a minute, so it lagged behind the real-time temperature on the printer card (e.g. the card showed 254 °C while the window showed 256 °C). It now reads the same live MQTT value as the card, and a thermometer icon in front of the number fills and glows when that heater is actively on (empty outline when idle) — the same indicator the printer card uses.
+
 ## [0.4.7b2] - 2026-07-08
 
 Beta pre-release continuing toward the 0.4.7 stable. Image: `ghcr.io/kainpl/bamdude:0.4.7b2` / `kainpl/bamdude:0.4.7b2` (beta channel — `:latest` still tracks 0.4.6). This cycle ports the upstream Bambuddy **v0.2.4.8 → v0.2.4.9** changes — the headline additions are **Slicer Pipelines** (save a slice setup once, then slice-and-queue any library file or archive with model-class fanout and a live per-copy runs dashboard) and **Preheat & heat-soak** before queued prints (per-filament chamber targets from the loaded AMS + airduct control) — alongside new **API-key management scopes** and a broad fix pass: correct Spoolman accounting across an AMS-backup switch, smart-plug power kept on across print restarts, virtual-printer upload integrity (`--loop asyncio` + a ZIP-completeness gate), HMS "Ignore and Resume" that truly ignores, scannable QR on 203 dpi thermal labels, app-wide light-theme contrast, and more.
