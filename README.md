@@ -117,6 +117,8 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - Energy consumption tracking
 - Auto power-on/off
 - Background print dispatch with WebSocket progress
+- **Slicer Pipelines** — save a slice setup (printer / process / per-slot filament presets + bed type) once, then slice-and-queue any library file or archive in one click; target a specific printer or a whole model class (fanned out across matching printers via the auto-queue distributor), with a pre-flight compatibility check, multi-copy fanout, a live per-copy runs dashboard, and retry-failed
+- **Preheat & heat-soak** — optionally hold the bed (and, on chamber-equipped printers, the chamber) at temperature *before* a queued print starts, so engineering filaments get the adhesion/warp soak Bambu's firmware won't wait for; per-print chamber target worked out from the loaded AMS filament types (editable map), three hardware tiers handled automatically (active heater / sensor-wait / timer) with airduct-flap control, plus a per-print Inherit/On/Off override
 
 ### File Manager (Library)
 - Upload and organize sliced files
