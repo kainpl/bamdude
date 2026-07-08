@@ -90,7 +90,7 @@ export function mapModelCode(ssdpModel: string | null | undefined): string {
 export function getWifiStrength(rssi: number): { labelKey: string; color: string; bars: number } {
   if (rssi >= -50) return { labelKey: 'printers.wifiSignal.excellent', color: 'text-bambu-green', bars: 4 };
   if (rssi >= -60) return { labelKey: 'printers.wifiSignal.good', color: 'text-bambu-green', bars: 3 };
-  if (rssi >= -70) return { labelKey: 'printers.wifiSignal.fair', color: 'text-yellow-400', bars: 2 };
-  if (rssi >= -80) return { labelKey: 'printers.wifiSignal.weak', color: 'text-orange-400', bars: 1 };
-  return { labelKey: 'printers.wifiSignal.veryWeak', color: 'text-red-400', bars: 1 };
+  if (rssi >= -70) return { labelKey: 'printers.wifiSignal.fair', color: 'text-yellow-600 dark:text-yellow-400', bars: 2 };
+  if (rssi >= -80) return { labelKey: 'printers.wifiSignal.weak', color: 'text-orange-600 dark:text-orange-400', bars: 1 };
+  return { labelKey: 'printers.wifiSignal.veryWeak', color: 'text-red-600 dark:text-red-400', bars: 1 };
 }

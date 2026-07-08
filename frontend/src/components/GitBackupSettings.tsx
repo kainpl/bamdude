@@ -59,10 +59,10 @@ function StatusBadge({ status }: StatusBadgeProps) {
   if (!status) return null;
 
   const styles: Record<string, string> = {
-    success: 'bg-green-500/20 text-green-400',
-    failed: 'bg-red-500/20 text-red-400',
-    skipped: 'bg-yellow-500/20 text-yellow-400',
-    running: 'bg-blue-500/20 text-blue-400',
+    success: 'bg-green-100 dark:bg-green-500/20 text-green-700 dark:text-green-400',
+    failed: 'bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-400',
+    skipped: 'bg-yellow-100 dark:bg-yellow-500/20 text-yellow-700 dark:text-yellow-400',
+    running: 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400',
   };
 
   const icons: Record<string, React.ReactNode> = {
@@ -588,7 +588,7 @@ export function GitBackupSettings() {
                 {/* Access Token */}
                 <div>
                   <label className="block text-sm text-bambu-gray mb-1">
-                    {t('backup.personalAccessToken')} {config?.has_token && <span className="text-green-400">{t('backup.tokenSaved')}</span>}
+                    {t('backup.personalAccessToken')} {config?.has_token && <span className="text-green-700 dark:text-green-400">{t('backup.tokenSaved')}</span>}
                   </label>
                   <input
                     type="password"
@@ -664,13 +664,13 @@ export function GitBackupSettings() {
                     <div className="flex items-center gap-2">
                       <span className={`text-sm ${noPrintersConnected ? 'text-bambu-gray' : 'text-white'}`}>{t('backup.kProfiles')}</span>
                       {noPrintersConnected && (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-400">
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-yellow-100 dark:bg-yellow-500/20 text-yellow-700 dark:text-yellow-400">
                           <AlertTriangle className="w-3 h-3" />
                           {t('backup.noPrintersConnected')}
                         </span>
                       )}
                       {somePrintersDisconnected && (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-400">
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-yellow-100 dark:bg-yellow-500/20 text-yellow-700 dark:text-yellow-400">
                           <AlertTriangle className="w-3 h-3" />
                           {t('backup.printersConnected', { connected: connectedPrinters, total: totalPrinters })}
                         </span>
@@ -691,7 +691,7 @@ export function GitBackupSettings() {
                     <div className="flex items-center gap-2">
                       <span className={`text-sm ${cloudStatus?.is_authenticated ? 'text-white' : 'text-bambu-gray'}`}>{t('backup.cloudProfiles')}</span>
                       {!cloudStatus?.is_authenticated && (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-400">
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-yellow-100 dark:bg-yellow-500/20 text-yellow-700 dark:text-yellow-400">
                           <AlertTriangle className="w-3 h-3" />
                           {t('backup.cloudLoginRequiredShort')}
                         </span>
@@ -766,14 +766,14 @@ export function GitBackupSettings() {
               {/* Save error banner — full message, whitespace preserved so
                   the "repository must be private" credentials list reads. */}
               {saveError && (
-                <div className="text-sm bg-red-500/10 border border-red-500/40 rounded-lg px-3 py-2 text-red-300 whitespace-pre-wrap">
+                <div className="text-sm bg-red-500/10 border border-red-500/40 rounded-lg px-3 py-2 text-red-700 dark:text-red-300 whitespace-pre-wrap">
                   {saveError}
                 </div>
               )}
 
               {/* Test result */}
               {testResult && (
-                <div className={`text-sm flex items-center gap-1 ${testResult.success ? 'text-green-400' : 'text-red-400'}`}>
+                <div className={`text-sm flex items-center gap-1 ${testResult.success ? 'text-green-700 dark:text-green-400' : 'text-red-700 dark:text-red-400'}`}>
                   {testResult.success ? <CheckCircle className="w-4 h-4" /> : <XCircle className="w-4 h-4" />}
                   {testResult.message}
                 </div>
@@ -989,14 +989,14 @@ export function GitBackupSettings() {
 
             {/* Restore result message */}
             {restoreResult && (
-              <div className={`p-3 rounded-lg ${restoreResult.success ? 'bg-green-500/10 border border-green-500/30' : 'bg-red-500/10 border border-red-500/30'}`}>
+              <div className={`p-3 rounded-lg ${restoreResult.success ? 'bg-green-50 dark:bg-green-500/10 border border-green-300 dark:border-green-500/30' : 'bg-red-50 dark:bg-red-500/10 border border-red-300 dark:border-red-500/30'}`}>
                 <div className="flex items-start gap-2 text-sm">
                   {restoreResult.success ? (
-                    <CheckCircle className="w-4 h-4 text-green-400 mt-0.5 flex-shrink-0" />
+                    <CheckCircle className="w-4 h-4 text-green-600 dark:text-green-400 mt-0.5 flex-shrink-0" />
                   ) : (
-                    <XCircle className="w-4 h-4 text-red-400 mt-0.5 flex-shrink-0" />
+                    <XCircle className="w-4 h-4 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" />
                   )}
-                  <div className={restoreResult.success ? 'text-green-200' : 'text-red-200'}>
+                  <div className={restoreResult.success ? 'text-green-800 dark:text-green-200' : 'text-red-800 dark:text-red-200'}>
                     {restoreResult.message}
                     {restoreResult.success && (
                       <div className="mt-2">
@@ -1015,12 +1015,12 @@ export function GitBackupSettings() {
             )}
 
             {/* Warning */}
-            <div className="p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/30">
+            <div className="p-3 rounded-lg bg-yellow-50 dark:bg-yellow-500/10 border border-yellow-300 dark:border-yellow-500/30">
               <div className="flex items-start gap-2 text-sm">
-                <AlertTriangle className="w-4 h-4 text-yellow-400 mt-0.5 flex-shrink-0" />
-                <div className="text-yellow-200">
+                <AlertTriangle className="w-4 h-4 text-yellow-600 dark:text-yellow-400 mt-0.5 flex-shrink-0" />
+                <div className="text-yellow-800 dark:text-yellow-200">
                   <span className="font-medium">{t('backup.restoreReplacesAll')}</span>{' '}
-                  <span className="text-yellow-200/70">{t('backup.restoreReplacesAllDetail')}</span>
+                  <span className="text-yellow-800/80 dark:text-yellow-200/70">{t('backup.restoreReplacesAllDetail')}</span>
                 </div>
               </div>
             </div>
@@ -1221,7 +1221,7 @@ export function GitBackupSettings() {
                         type="button"
                         onClick={() => setScheduledRestoreFile(b.filename)}
                         title={t('backup.scheduledLocalBackup.restore')}
-                        className="p-1.5 rounded hover:bg-yellow-500/20 text-yellow-400 transition-colors"
+                        className="p-1.5 rounded hover:bg-yellow-500/20 text-yellow-700 dark:text-yellow-400 transition-colors"
                       >
                         <RotateCcw className="w-4 h-4" />
                       </button>
@@ -1229,7 +1229,7 @@ export function GitBackupSettings() {
                         type="button"
                         onClick={() => setScheduledDeleteFile(b.filename)}
                         title={t('backup.scheduledLocalBackup.delete')}
-                        className="p-1.5 rounded hover:bg-red-500/20 text-red-400 transition-colors"
+                        className="p-1.5 rounded hover:bg-red-500/20 text-red-700 dark:text-red-400 transition-colors"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -1351,10 +1351,10 @@ export function GitBackupSettings() {
             <p className="text-bambu-gray mb-4">
               {operationStatus || (isExporting ? t('backup.preparing') : t('backup.processing'))}
             </p>
-            <div className="p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/30">
+            <div className="p-3 rounded-lg bg-yellow-50 dark:bg-yellow-500/10 border border-yellow-300 dark:border-yellow-500/30">
               <div className="flex items-start gap-2 text-sm">
-                <AlertTriangle className="w-4 h-4 text-yellow-400 mt-0.5 flex-shrink-0" />
-                <p className="text-yellow-200 text-left">
+                <AlertTriangle className="w-4 h-4 text-yellow-600 dark:text-yellow-400 mt-0.5 flex-shrink-0" />
+                <p className="text-yellow-800 dark:text-yellow-200 text-left">
                   {t('backup.doNotClosePage')}
                 </p>
               </div>

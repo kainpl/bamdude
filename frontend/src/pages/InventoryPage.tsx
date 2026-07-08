@@ -178,14 +178,14 @@ function formatWeight(g: number, useKg = false): string {
 
 // Material color mapping for pills
 const MATERIAL_COLORS: Record<string, string> = {
-  PLA: 'bg-green-500/20 text-green-400',
-  ABS: 'bg-red-500/20 text-red-400',
-  PETG: 'bg-blue-500/20 text-blue-400',
-  TPU: 'bg-purple-500/20 text-purple-400',
-  ASA: 'bg-orange-500/20 text-orange-400',
-  PA: 'bg-yellow-500/20 text-yellow-400',
-  PC: 'bg-cyan-500/20 text-cyan-400',
-  PET: 'bg-sky-500/20 text-sky-400',
+  PLA: 'bg-green-100 dark:bg-green-500/20 text-green-700 dark:text-green-400',
+  ABS: 'bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-400',
+  PETG: 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400',
+  TPU: 'bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-400',
+  ASA: 'bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400',
+  PA: 'bg-yellow-100 dark:bg-yellow-500/20 text-yellow-700 dark:text-yellow-400',
+  PC: 'bg-cyan-100 dark:bg-cyan-500/20 text-cyan-700 dark:text-cyan-400',
+  PET: 'bg-sky-100 dark:bg-sky-500/20 text-sky-700 dark:text-sky-400',
 };
 
 type TFn = (key: string, opts?: Record<string, unknown>) => string;
@@ -333,7 +333,7 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
     const isHt = !isExternal && assignment.ams_id >= 128;
     const slotLabel = formatSlotLabel(assignment.ams_id, assignment.tray_id, isHt, isExternal);
     return (
-      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-purple-500/20 text-purple-400">
+      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-400">
         {printerLabel} {slotLabel}{assignment.ams_label ? ` (${assignment.ams_label})` : ''}
       </span>
     );
@@ -341,7 +341,7 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
   storage_location: ({ spool }) => {
     if (!spool.storage_location) return <span className="text-sm text-bambu-gray">-</span>;
     return (
-      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-500/20 text-blue-400">
+      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400">
         {spool.storage_location}
       </span>
     );
@@ -349,7 +349,7 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
   purchase_location: ({ spool }) => {
     if (!spool.purchase_location) return <span className="text-sm text-bambu-gray">-</span>;
     return (
-      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-purple-500/20 text-purple-400">
+      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-400">
         {spool.purchase_location}
       </span>
     );
@@ -405,7 +405,7 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
   stock: ({ spool, t }) => {
     if (!spool.slicer_filament) {
       return (
-        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-amber-500/20 text-amber-400">
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400">
           {t('inventory.stock')}
         </span>
       );
@@ -457,7 +457,7 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
 
     return (
       <div
-        className={`flex items-center gap-1 text-sm font-medium ${isMatch ? 'text-green-400' : 'text-yellow-400'}`}
+        className={`flex items-center gap-1 text-sm font-medium ${isMatch ? 'text-green-700 dark:text-green-400' : 'text-yellow-700 dark:text-yellow-400'}`}
         title={tooltip}
       >
         <span>{Math.round(scaleWeight)}g</span>
@@ -1446,7 +1446,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           {/* By Material */}
           <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-4">
             <div className="flex items-center gap-2 mb-1">
-              <Layers className="w-4 h-4 text-green-400" />
+              <Layers className="w-4 h-4 text-green-600 dark:text-green-400" />
               <span className="text-xs text-bambu-gray font-medium uppercase tracking-wide">{t('inventory.byMaterial')}</span>
             </div>
             <div className="flex flex-wrap gap-1.5 mt-1">
@@ -1465,13 +1465,13 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-4">
             <div className="flex items-center justify-between gap-2 mb-1">
               <div className="flex items-center gap-2">
-                <TrendingDown className="w-4 h-4 text-blue-400" />
+                <TrendingDown className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                 <span className="text-xs text-bambu-gray font-medium uppercase tracking-wide">{t('inventory.totalConsumed')}</span>
               </div>
               {stats.totalConsumed > 0 && resetableSpoolIds.length > 0 && (
                 <button
                   onClick={() => setConfirmAction({ type: 'reset-all-consumed-counters' })}
-                  className="p-1 text-bambu-gray hover:text-red-400 rounded transition-colors"
+                  className="p-1 text-bambu-gray hover:text-red-600 dark:hover:text-red-400 rounded transition-colors"
                   title={t('inventory.resetAllConsumedCountersTooltip')}
                   aria-label={t('inventory.resetAllConsumedCounters')}
                 >
@@ -1486,7 +1486,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           {/* In Printer */}
           <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-4">
             <div className="flex items-center gap-2 mb-1">
-              <Printer className="w-4 h-4 text-purple-400" />
+              <Printer className="w-4 h-4 text-purple-600 dark:text-purple-400" />
               <span className="text-xs text-bambu-gray font-medium uppercase tracking-wide">{t('inventory.inPrinter')}</span>
             </div>
             <div className="text-xl font-bold text-white">{inPrinterCount}</div>
@@ -1496,10 +1496,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           {/* Low Stock */}
           <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-4">
             <div className="flex items-center gap-2 mb-1">
-              <AlertTriangle className="w-4 h-4 text-yellow-400" />
+              <AlertTriangle className="w-4 h-4 text-yellow-600 dark:text-yellow-400" />
               <span className="text-xs text-bambu-gray font-medium uppercase tracking-wide">{t('inventory.lowStock')}</span>
             </div>
-            <div className={`text-xl font-bold ${stats.lowStock > 0 ? 'text-yellow-400' : 'text-white'}`}>{stats.lowStock}</div>
+            <div className={`text-xl font-bold ${stats.lowStock > 0 ? 'text-yellow-700 dark:text-yellow-400' : 'text-white'}`}>{stats.lowStock}</div>
             <div className="text-xs text-bambu-gray mt-1 flex items-center gap-2">
               {showThresholdInput ? (
                 <form
@@ -1714,7 +1714,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             onClick={() => { setUsageFilter('lowstock'); resetPage(); }}
             className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors ${
               usageFilter === 'lowstock'
-                ? 'bg-yellow-500/20 text-yellow-400'
+                ? 'bg-yellow-100 dark:bg-yellow-500/20 text-yellow-700 dark:text-yellow-400'
                 : 'text-bambu-gray hover:bg-bambu-dark-tertiary'
             }`}
           >
@@ -1739,7 +1739,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             onClick={() => { setStockFilter('stock'); resetPage(); }}
             className={`px-3 py-1.5 text-xs font-medium transition-colors ${
               stockFilter === 'stock'
-                ? 'bg-amber-500/20 text-amber-400'
+                ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400'
                 : 'text-bambu-gray hover:bg-bambu-dark-tertiary'
             }`}
           >
@@ -2547,7 +2547,7 @@ function SpoolTableRow({
               the user needs a way to zero an archived spool's tracking
               counter individually without having to un-archive it first. */}
           {onResetConsumedCounter && spool.weight_used > (spool.weight_used_baseline ?? 0) && (
-            <button onClick={onResetConsumedCounter} className="p-1.5 text-bambu-gray hover:text-orange-400 rounded transition-colors" title={t('inventory.resetConsumedCounterTooltip')}>
+            <button onClick={onResetConsumedCounter} className="p-1.5 text-bambu-gray hover:text-orange-600 dark:hover:text-orange-400 rounded transition-colors" title={t('inventory.resetConsumedCounterTooltip')}>
               <Eraser className="w-4 h-4" />
             </button>
           )}
@@ -2556,11 +2556,11 @@ function SpoolTableRow({
               <RotateCcw className="w-4 h-4" />
             </button>
           ) : (
-            <button onClick={onArchive} className="p-1.5 text-bambu-gray hover:text-yellow-400 rounded transition-colors" title={t('inventory.archive')}>
+            <button onClick={onArchive} className="p-1.5 text-bambu-gray hover:text-yellow-600 dark:hover:text-yellow-400 rounded transition-colors" title={t('inventory.archive')}>
               <Archive className="w-4 h-4" />
             </button>
           )}
-          <button onClick={onDelete} className="p-1.5 text-bambu-gray hover:text-red-400 rounded transition-colors" title={t('common.delete')}>
+          <button onClick={onDelete} className="p-1.5 text-bambu-gray hover:text-red-600 dark:hover:text-red-400 rounded transition-colors" title={t('common.delete')}>
             <Trash2 className="w-4 h-4" />
           </button>
         </div>

@@ -187,7 +187,7 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
         {/* Form */}
         <form onSubmit={handleSubmit} className="px-6 py-4 space-y-4">
           {error && (
-            <div className="p-3 bg-red-500/20 border border-red-500/50 rounded text-red-400 text-sm">
+            <div className="p-3 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded text-red-700 dark:text-red-400 text-sm">
               {error}
             </div>
           )}
@@ -311,7 +311,7 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
               </p>
             )}
             {showDigestProviderWarning && (
-              <div className="flex items-start gap-1.5 text-xs text-amber-400">
+              <div className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400">
                 <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
                 <span>{t('telegram.dailyDigestProviderOff')}</span>
               </div>

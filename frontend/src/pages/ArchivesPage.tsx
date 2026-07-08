@@ -851,7 +851,7 @@ function ArchiveCard({
           title={!canModify('archives', 'update', archive.created_by_id) ? t('archives.permission.noUpdateArchives') : (archive.is_favorite ? t('archives.card.removeFromFavorites') : t('archives.card.addToFavorites'))}
         >
           <Star
-            className={`w-5 h-5 ${archive.is_favorite ? 'text-yellow-400 fill-yellow-400' : 'text-white'} ${!canModify('archives', 'update', archive.created_by_id) ? 'opacity-50' : ''}`}
+            className={`w-5 h-5 ${archive.is_favorite ? 'text-yellow-600 dark:text-yellow-400 fill-yellow-400' : 'text-white'} ${!canModify('archives', 'update', archive.created_by_id) ? 'opacity-50' : ''}`}
           />
         </button>
         {(() => {
@@ -917,7 +917,7 @@ function ArchiveCard({
             }}
             title={t('archives.card.openSource3mf')}
           >
-            <FileCode className="w-4 h-4 text-orange-400" />
+            <FileCode className="w-4 h-4 text-orange-600 dark:text-orange-400" />
           </button>
         )}
         {/* F3D badge */}
@@ -933,7 +933,7 @@ function ArchiveCard({
             }}
             title={t('archives.card.downloadF3d')}
           >
-            <Box className="w-4 h-4 text-cyan-400" />
+            <Box className="w-4 h-4 text-cyan-600 dark:text-cyan-400" />
           </button>
         )}
         {/* 3D preview badge */}
@@ -970,7 +970,7 @@ function ArchiveCard({
             }}
             title={archive.photos.length === 1 ? t('archives.card.viewPhoto') : t('archives.card.viewPhotos', { count: archive.photos.length })}
           >
-            <Camera className="w-4 h-4 text-blue-400" />
+            <Camera className="w-4 h-4 text-blue-600 dark:text-blue-400" />
             {archive.photos.length > 1 && (
               <span className="absolute -top-1 -right-1 w-4 h-4 bg-blue-500 rounded-full text-[10px] text-white flex items-center justify-center">
                 {archive.photos.length}
@@ -987,7 +987,7 @@ function ArchiveCard({
             title={t('archives.card.openFolder', { name: linkedFolders[0].name })}
             style={{ left: archive.source_3mf_path ? (archive.f3d_path ? '5.5rem' : '3rem') : (archive.f3d_path ? '3rem' : '0.5rem') }}
           >
-            <FolderOpen className="w-4 h-4 text-yellow-400" />
+            <FolderOpen className="w-4 h-4 text-yellow-600 dark:text-yellow-400" />
           </Link>
         )}
       </div>
@@ -1025,7 +1025,7 @@ function ArchiveCard({
             className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
               isSlicedFile(archive)
                 ? 'bg-bambu-green/20 text-bambu-green'
-                : 'bg-orange-500/20 text-orange-400'
+                : 'bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400'
             }`}
             title={
               isSlicedFile(archive)
@@ -1036,7 +1036,7 @@ function ArchiveCard({
             {isSlicedFile(archive) ? t('archives.card.gcode') : t('archives.card.source')}
           </span>
           {archive.swap_compatible && (
-            <span className="text-[10px] px-1 py-0.5 bg-amber-500/20 text-amber-400 rounded">SWAP</span>
+            <span className="text-[10px] px-1 py-0.5 bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 rounded">SWAP</span>
           )}
           {/* File hash badge */}
           {archive.content_hash && (
@@ -1080,8 +1080,8 @@ function ArchiveCard({
                   archive.time_accuracy >= 95 && archive.time_accuracy <= 105
                     ? 'bg-bambu-green/20 text-bambu-green'
                     : archive.time_accuracy > 105
-                      ? 'bg-blue-500/20 text-blue-400'
-                      : 'bg-orange-500/20 text-orange-400'
+                      ? 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400'
+                      : 'bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400'
                 }`}>
                   {archive.time_accuracy > 100 ? '+' : ''}{(archive.time_accuracy - 100).toFixed(0)}%
                 </span>
@@ -1154,7 +1154,7 @@ function ArchiveCard({
           <div className="flex flex-wrap items-center gap-1.5 mb-3">
             {archive.notes && (
               <div
-                className="flex items-center gap-1 px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded text-xs"
+                className="flex items-center gap-1 px-1.5 py-0.5 bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400 rounded text-xs"
                 title={archive.notes}
               >
                 <StickyNote className="w-3 h-3" />
@@ -1288,7 +1288,7 @@ function ArchiveCard({
             disabled={!canModify('archives', 'delete', archive.created_by_id)}
             title={!canModify('archives', 'delete', archive.created_by_id) ? t('archives.card.noPermissionDelete') : t('archives.card.delete')}
           >
-            <Trash2 className="w-3 h-3 sm:w-4 sm:h-4 text-red-400" />
+            <Trash2 className="w-3 h-3 sm:w-4 sm:h-4 text-red-600 dark:text-red-400" />
           </Button>
         </div>
       </CardContent>
@@ -2171,7 +2171,7 @@ function ArchiveListRow({
               </span>
             )}
             {archive.swap_compatible && (
-              <span className="text-[10px] px-1 py-0.5 bg-amber-500/20 text-amber-400 rounded flex-shrink-0">SWAP</span>
+              <span className="text-[10px] px-1 py-0.5 bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 rounded flex-shrink-0">SWAP</span>
             )}
             {archive.timelapse_path && (
               <span title={t('archives.list.hasTimelapse')}>
@@ -2185,7 +2185,7 @@ function ArchiveListRow({
                 title={t('archives.card.openFolder', { name: linkedFolders[0].name })}
                 onClick={(e) => e.stopPropagation()}
               >
-                <FolderOpen className="w-3.5 h-3.5 text-yellow-400" />
+                <FolderOpen className="w-3.5 h-3.5 text-yellow-600 dark:text-yellow-400" />
               </Link>
             )}
           </div>
@@ -2305,7 +2305,7 @@ function ArchiveListRow({
             disabled={!canModify('archives', 'delete', archive.created_by_id)}
             title={!canModify('archives', 'delete', archive.created_by_id) ? t('archives.card.noPermissionDelete') : t('archives.card.delete')}
           >
-            <Trash2 className="w-4 h-4 text-red-400" />
+            <Trash2 className="w-4 h-4 text-red-600 dark:text-red-400" />
           </Button>
           <Button
             variant="ghost"
@@ -3060,19 +3060,19 @@ export function ArchivesPage() {
       {/* Install-step-4 nudge (#1687): no-3MF fallback detected — slicer-side
           "Store sent files on external storage" is likely off. */}
       {no3MFWarning?.has_fallback && !no3MFWarningDismissed && (
-        <div className="mb-6 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+        <div className="mb-6 rounded-lg border border-amber-300 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-medium text-amber-200">
+            <div className="text-sm font-medium text-amber-900 dark:text-amber-200">
               {t('archives.no3mfBanner.title')}
             </div>
-            <div className="text-xs text-amber-200/80 mt-1">
+            <div className="text-xs text-amber-800/90 dark:text-amber-200/80 mt-1">
               {t('archives.no3mfBanner.body')}{' '}
               <a
                 href="https://docs.bamdude.top/getting-started/"
                 target="_blank"
                 rel="noreferrer"
-                className="underline hover:text-amber-100 inline-flex items-center gap-1"
+                className="underline hover:text-amber-900 dark:hover:text-amber-100 inline-flex items-center gap-1"
               >
                 {t('archives.no3mfBanner.docsLink')}
                 <ExternalLink className="w-3 h-3" />
@@ -3081,7 +3081,7 @@ export function ArchivesPage() {
           </div>
           <button
             onClick={dismissNo3MFWarning}
-            className="text-amber-200/60 hover:text-amber-200 flex-shrink-0 p-1 -m-1"
+            className="text-amber-800/70 dark:text-amber-200/60 hover:text-amber-900 dark:hover:text-amber-200 flex-shrink-0 p-1 -m-1"
             title={t('archives.no3mfBanner.dismissLabel')}
             aria-label={t('archives.no3mfBanner.dismissLabel')}
           >
@@ -3428,7 +3428,7 @@ export function ArchivesPage() {
                 onClick={() => { setFilterFavorites(!filterFavorites); setPage(1); }}
                 className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-colors flex-shrink-0 ${
                   filterFavorites
-                    ? 'bg-yellow-500/20 border-yellow-500 text-yellow-400'
+                    ? 'bg-yellow-100 dark:bg-yellow-500/20 border-yellow-500 text-yellow-700 dark:text-yellow-400'
                     : 'bg-bambu-dark border-bambu-dark-tertiary text-bambu-gray hover:text-white'
                 }`}
                 title={filterFavorites ? t('archives.showAll') : t('archives.showFavoritesOnly')}
@@ -3442,7 +3442,7 @@ export function ArchivesPage() {
                 onClick={() => { setHideFailed(!hideFailed); setPage(1); }}
                 className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-colors flex-shrink-0 ${
                   hideFailed
-                    ? 'bg-red-500/20 border-red-500 text-red-400'
+                    ? 'bg-red-100 dark:bg-red-500/20 border-red-500 text-red-700 dark:text-red-400'
                     : 'bg-bambu-dark border-bambu-dark-tertiary text-bambu-gray hover:text-white'
                 }`}
                 title={hideFailed ? t('archives.showFailedPrints') : t('archives.hideFailedPrints')}
@@ -3456,7 +3456,7 @@ export function ArchivesPage() {
                 onClick={() => { setHideDuplicates(!hideDuplicates); setPage(1); }}
                 className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-colors flex-shrink-0 ${
                   hideDuplicates
-                    ? 'bg-purple-500/20 border-purple-500 text-purple-400'
+                    ? 'bg-purple-100 dark:bg-purple-500/20 border-purple-500 text-purple-700 dark:text-purple-400'
                     : 'bg-bambu-dark border-bambu-dark-tertiary text-bambu-gray hover:text-white'
                 }`}
                 title={t('archives.hideDuplicates')}

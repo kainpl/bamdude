@@ -66,7 +66,7 @@ export function PrinterQueueWidget({ printerId, printerState, awaitingPlateClear
     return (
       <div className="mb-3 p-3 bg-bambu-dark rounded-lg border border-yellow-400/30">
         <div className="flex items-center gap-3 mb-2">
-          <Calendar className="w-5 h-5 text-yellow-400 flex-shrink-0" />
+          <Calendar className="w-5 h-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
           <div className="min-w-0 flex-1">
             <p className="text-xs text-bambu-gray">{t('queue.nextInQueue')}</p>
             <p className="text-sm text-white truncate">
@@ -74,7 +74,7 @@ export function PrinterQueueWidget({ printerId, printerState, awaitingPlateClear
             </p>
           </div>
           {totalPending > 1 && (
-            <span className="text-xs px-1.5 py-0.5 bg-yellow-400/20 text-yellow-400 rounded flex-shrink-0">
+            <span className="text-xs px-1.5 py-0.5 bg-yellow-100 dark:bg-yellow-400/20 text-yellow-700 dark:text-yellow-400 rounded flex-shrink-0">
               +{totalPending - 1}
             </span>
           )}
@@ -109,7 +109,7 @@ export function PrinterQueueWidget({ printerId, printerState, awaitingPlateClear
     >
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0 flex-1">
-          <Calendar className="w-5 h-5 text-yellow-400 flex-shrink-0" />
+          <Calendar className="w-5 h-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
           <div className="min-w-0 flex-1">
             <p className="text-xs text-bambu-gray">{t('queue.nextInQueue')}</p>
             <p className="text-sm text-white truncate">
@@ -123,7 +123,7 @@ export function PrinterQueueWidget({ printerId, printerState, awaitingPlateClear
             {nextItem?.scheduled_time ? formatRelativeTime(nextItem.scheduled_time, 'system', t) : t('time.waiting')}
           </span>
           {totalPending > 1 && (
-            <span className="text-xs px-1.5 py-0.5 bg-yellow-400/20 text-yellow-400 rounded">
+            <span className="text-xs px-1.5 py-0.5 bg-yellow-100 dark:bg-yellow-400/20 text-yellow-700 dark:text-yellow-400 rounded">
               +{totalPending - 1}
             </span>
           )}

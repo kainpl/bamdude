@@ -408,7 +408,7 @@ export function LibraryFileNotesPopover({ fileId, open, anchorRef, onClose, onCo
                         aria-label={t('libraryNotes.delete')}
                         title={t('libraryNotes.delete')}
                         onClick={() => setConfirmDeleteId(currentNote.id)}
-                        className="p-1 rounded hover:bg-red-500/20 hover:text-red-400"
+                        className="p-1 rounded hover:bg-red-500/20 hover:text-red-600 dark:hover:text-red-400"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>

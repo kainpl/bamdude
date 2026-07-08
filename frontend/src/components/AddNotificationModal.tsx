@@ -288,7 +288,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
         {/* Form */}
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
           {error && (
-            <div className="p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-sm text-red-400">
+            <div className="p-3 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded-lg text-sm text-red-700 dark:text-red-400">
               {error}
             </div>
           )}
@@ -398,7 +398,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
             <div className={`p-3 rounded-lg flex items-center gap-2 ${
               testResult.success
                 ? 'bg-bambu-green/20 border border-bambu-green/50 text-bambu-green'
-                : 'bg-red-500/20 border border-red-500/50 text-red-400'
+                : 'bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 text-red-700 dark:text-red-400'
             }`}>
               {testResult.success ? (
                 <>
@@ -437,12 +437,12 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
           {/* Telegram-only hint: per-event opt-ins and quiet hours live on
               each chat now (m045). Provider keeps only enabled + digest. */}
           {providerType === 'telegram' && (
-            <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg flex items-start gap-2">
-              <MessageCircle className="w-4 h-4 text-blue-400 flex-shrink-0 mt-0.5" />
+            <div className="p-3 bg-blue-50 dark:bg-blue-500/10 border border-blue-300 dark:border-blue-500/30 rounded-lg flex items-start gap-2">
+              <MessageCircle className="w-4 h-4 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
               <div className="text-xs text-bambu-gray space-y-1">
                 <p className="text-white">{t('notifications.telegram.perChatHintTitle')}</p>
                 <p>{t('notifications.telegram.perChatHintBody')}</p>
-                <Link to="/telegram" className="inline-flex items-center gap-1 text-blue-400 hover:text-blue-300">
+                <Link to="/telegram" className="inline-flex items-center gap-1 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300">
                   {t('notifications.telegram.openChatsPage')}
                   <ExternalLink className="w-3 h-3" />
                 </Link>

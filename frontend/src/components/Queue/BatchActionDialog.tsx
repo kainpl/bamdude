@@ -58,7 +58,7 @@ export function BatchActionDialog({
             onClick={onApplyAll}
             className={
               applyAllDanger
-                ? 'w-full py-2 px-3 rounded bg-red-500/20 hover:bg-red-500/30 text-red-400 text-sm font-medium transition-colors'
+                ? 'w-full py-2 px-3 rounded bg-red-100 dark:bg-red-500/20 hover:bg-red-500/30 text-red-700 dark:text-red-400 text-sm font-medium transition-colors'
                 : 'w-full py-2 px-3 rounded bg-bambu-green/20 hover:bg-bambu-green/30 text-bambu-green text-sm font-medium transition-colors'
             }
           >

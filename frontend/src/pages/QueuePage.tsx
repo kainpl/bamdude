@@ -388,13 +388,13 @@ export function QueuePage() {
                       <p className="text-xs text-bambu-gray truncate">
                         {queueInfo?.printer_name || `Queue ${item.queue_id}`}
                         {item.source && item.source !== 'bamdude_queue' && (
-                          <span className="ml-2 text-amber-400">
+                          <span className="ml-2 text-amber-700 dark:text-amber-400">
                             · {t(`queue.source.${item.source}`)}
                           </span>
                         )}
                       </p>
                     </div>
-                    <span className="text-xs px-1.5 py-0.5 bg-blue-400/20 text-blue-400 rounded shrink-0">
+                    <span className="text-xs px-1.5 py-0.5 bg-blue-100 dark:bg-blue-400/20 text-blue-700 dark:text-blue-400 rounded shrink-0">
                       {t('queueCard.status.printing')}
                     </span>
                   </div>
@@ -415,12 +415,12 @@ export function QueuePage() {
                       <p className="text-xs text-bambu-gray truncate">
                         {queueInfo?.printer_name || `Queue ${item.queue_id}`}
                         {item.waiting_reason && (
-                          <span className="ml-2 text-yellow-400">· {item.waiting_reason}</span>
+                          <span className="ml-2 text-yellow-700 dark:text-yellow-400">· {item.waiting_reason}</span>
                         )}
                       </p>
                     </div>
                     {item.manual_start && (
-                      <span className="text-xs px-1.5 py-0.5 bg-yellow-400/20 text-yellow-400 rounded shrink-0">
+                      <span className="text-xs px-1.5 py-0.5 bg-yellow-100 dark:bg-yellow-400/20 text-yellow-700 dark:text-yellow-400 rounded shrink-0">
                         {t('queueCard.manualStart')}
                       </span>
                     )}

@@ -46,7 +46,7 @@ export function StaggerBanner() {
       className="mb-3 flex items-center gap-3 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary px-3 py-2 text-sm"
       title={tooltip}
     >
-      <Zap className="w-4 h-4 text-amber-400 shrink-0" />
+      <Zap className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
       <span className="text-white">
         {t('queue.stagger.slots', { occupied, capacity })}
       </span>

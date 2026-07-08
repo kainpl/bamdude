@@ -68,7 +68,7 @@ type TFunction = (key: string, options?: Record<string, unknown>) => string;
 function StatusBadge({ status, t }: { status: string; t: TFunction }) {
   const colors = {
     active: 'bg-bambu-green/20 text-bambu-green',
-    completed: 'bg-blue-500/20 text-blue-400',
+    completed: 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400',
     archived: 'bg-bambu-gray/20 text-bambu-gray',
   };
   const color = colors[status as keyof typeof colors] || colors.active;
@@ -179,9 +179,9 @@ function ArchiveGrid({ archives, t }: { archives: Archive[]; t: TFunction }) {
 function PriorityBadge({ priority, t }: { priority: string; t: TFunction }) {
   const config = {
     low: { color: 'bg-gray-500/20 text-gray-400', label: t('projectDetail.priority.low') },
-    normal: { color: 'bg-blue-500/20 text-blue-400', label: t('projectDetail.priority.normal') },
-    high: { color: 'bg-orange-500/20 text-orange-400', label: t('projectDetail.priority.high') },
-    urgent: { color: 'bg-red-500/20 text-red-400', label: t('projectDetail.priority.urgent') },
+    normal: { color: 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400', label: t('projectDetail.priority.normal') },
+    high: { color: 'bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400', label: t('projectDetail.priority.high') },
+    urgent: { color: 'bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-400', label: t('projectDetail.priority.urgent') },
   };
   const { color, label } = config[priority as keyof typeof config] || config.normal;
 
@@ -200,9 +200,9 @@ function getDueDateStatus(dateString: string | null, t: TFunction): { color: str
   const now = new Date();
   const diffDays = Math.ceil((dueDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 
-  if (diffDays < 0) return { color: 'text-red-400', label: t('projectDetail.dueDate.overdue') };
-  if (diffDays === 0) return { color: 'text-orange-400', label: t('projectDetail.dueDate.today') };
-  if (diffDays <= 3) return { color: 'text-yellow-400', label: t('projectDetail.dueDate.daysLeft', { count: diffDays }) };
+  if (diffDays < 0) return { color: 'text-red-700 dark:text-red-400', label: t('projectDetail.dueDate.overdue') };
+  if (diffDays === 0) return { color: 'text-orange-700 dark:text-orange-400', label: t('projectDetail.dueDate.today') };
+  if (diffDays <= 3) return { color: 'text-yellow-700 dark:text-yellow-400', label: t('projectDetail.dueDate.daysLeft', { count: diffDays }) };
   return { color: 'text-bambu-gray', label: t('projectDetail.dueDate.daysLeft', { count: diffDays }) };
 }
 
@@ -784,7 +784,7 @@ export function ProjectDetailPage() {
         const allDone = hasPlan && remainingJobs === 0;
 
         const remainingLine = (text: string) => (
-          <p className={`text-sm ${allDone ? 'text-bambu-green' : 'text-amber-400'}`}>
+          <p className={`text-sm ${allDone ? 'text-bambu-green' : 'text-amber-700 dark:text-amber-400'}`}>
             {allDone ? `✓ ${t('projectDetail.files.allDone')}` : text}
           </p>
         );
@@ -792,7 +792,7 @@ export function ProjectDetailPage() {
         // hint matches the same amber/green emphasis as the printJobs
         // card's bottom line.
         const remainingSub = (text: string) => (
-          <p className={`text-sm ${allDone ? 'text-bambu-green' : 'text-amber-400'}`}>
+          <p className={`text-sm ${allDone ? 'text-bambu-green' : 'text-amber-700 dark:text-amber-400'}`}>
             {allDone
               ? `✓ ${t('projectDetail.files.allDone')}`
               : t('projectDetail.files.remainingValue', { value: text })}
@@ -827,14 +827,14 @@ export function ProjectDetailPage() {
               label={t('projectDetail.stats.printTime')}
               value={formatDurationFromHours(stats.total_print_time_hours)}
               subValue={hasPlan ? remainingSub(formatDuration(remainingTimeSec)) : undefined}
-              color="text-yellow-400"
+              color="text-yellow-600 dark:text-yellow-400"
             />
             <StatCard
               icon={Printer}
               label={t('projectDetail.stats.filamentUsed')}
               value={formatFilament(stats.total_filament_grams)}
               subValue={hasPlan ? remainingSub(formatFilament(remainingFilamentG)) : undefined}
-              color="text-purple-400"
+              color="text-purple-600 dark:text-purple-400"
             />
           </div>
         );
@@ -894,7 +894,7 @@ export function ProjectDetailPage() {
                     <p className="text-sm text-bambu-gray">
                       {t('projectDetail.cost.total')}: <span className="text-white font-semibold">{currency}{project.budget.toFixed(2)}</span>
                     </p>
-                    <p className={`text-sm ${remaining >= 0 ? 'text-bambu-green' : 'text-red-400'}`}>
+                    <p className={`text-sm ${remaining >= 0 ? 'text-bambu-green' : 'text-red-700 dark:text-red-400'}`}>
                       {t('projectDetail.cost.remaining')}: <span className="font-semibold">{currency}{remaining.toFixed(2)}</span>
                     </p>
                   </div>
@@ -929,7 +929,7 @@ export function ProjectDetailPage() {
                     <span className={`text-xs px-2 py-0.5 rounded ${
                       child.status === 'completed' ? 'bg-status-ok/20 text-status-ok' :
                       child.status === 'archived' ? 'bg-bambu-gray/20 text-bambu-gray' :
-                      'bg-blue-500/20 text-blue-400'
+                      'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400'
                     }`}>
                       {child.status}
                     </span>
@@ -1264,7 +1264,7 @@ export function ProjectDetailPage() {
                           <button
                             onClick={() => openSchedule(item)}
                             title={t('projectDetail.files.addToQueue')}
-                            className="p-1.5 rounded hover:bg-blue-500/20 text-blue-400 transition-colors"
+                            className="p-1.5 rounded hover:bg-blue-500/20 text-blue-700 dark:text-blue-400 transition-colors"
                           >
                             <CalendarPlus className="w-4 h-4" />
                           </button>
@@ -1276,7 +1276,7 @@ export function ProjectDetailPage() {
                         onClick={() => unlinkFileMutation.mutate(item.library_file_id)}
                         disabled={unlinkFileMutation.isPending}
                         title={t('projectDetail.files.unlinkFile')}
-                        className="p-1.5 rounded hover:bg-red-500/20 text-bambu-gray hover:text-red-400 disabled:opacity-30 disabled:hover:bg-transparent transition-colors shrink-0"
+                        className="p-1.5 rounded hover:bg-red-500/20 text-bambu-gray hover:text-red-600 dark:hover:text-red-400 disabled:opacity-30 disabled:hover:bg-transparent transition-colors shrink-0"
                       >
                         <Unlink className="w-4 h-4" />
                       </button>
@@ -1591,7 +1591,7 @@ export function ProjectDetailPage() {
                               disabled={!hasPermission('projects:update')}
                               className={`p-1 rounded transition-colors flex-shrink-0 ${
                                 hasPermission('projects:update')
-                                  ? 'hover:bg-bambu-dark-tertiary text-bambu-gray hover:text-red-400'
+                                  ? 'hover:bg-bambu-dark-tertiary text-bambu-gray hover:text-red-600 dark:hover:text-red-400'
                                   : 'text-bambu-gray/50 cursor-not-allowed'
                               }`}
                               title={!hasPermission('projects:update') ? t('projectDetail.bom.noDeletePermission') : t('common.delete')}
@@ -1606,7 +1606,7 @@ export function ProjectDetailPage() {
                             href={item.sourcing_url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="flex items-center gap-1 mt-1 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                            className="flex items-center gap-1 mt-1 text-xs text-blue-700 dark:text-blue-400 hover:text-blue-900 dark:hover:text-blue-300 transition-colors"
                             onClick={(e) => e.stopPropagation()}
                           >
                             <ExternalLink className="w-3 h-3 flex-shrink-0" />
@@ -1690,7 +1690,7 @@ export function ProjectDetailPage() {
                   <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
                     event.event_type === 'print_completed' ? 'bg-status-ok/20 text-status-ok' :
                     event.event_type === 'print_failed' ? 'bg-status-error/20 text-status-error' :
-                    event.event_type === 'print_started' ? 'bg-yellow-500/20 text-yellow-400' :
+                    event.event_type === 'print_started' ? 'bg-yellow-100 dark:bg-yellow-500/20 text-yellow-700 dark:text-yellow-400' :
                     'bg-bambu-dark-tertiary text-bambu-gray'
                   }`}>
                     {event.event_type === 'print_completed' && <CheckCircle className="w-4 h-4" />}

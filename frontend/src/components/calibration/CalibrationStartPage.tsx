@@ -77,7 +77,7 @@ export function CalibrationStartPage({ capabilities, onPick }: Props) {
     const pill =
       state === 'verification' ? (
         <span
-          className="text-[10px] font-semibold uppercase tracking-wide bg-yellow-500/20 text-yellow-300 px-1.5 py-0.5 rounded"
+          className="text-[10px] font-semibold uppercase tracking-wide bg-yellow-500/20 text-yellow-700 dark:text-yellow-300 px-1.5 py-0.5 rounded"
           title={t('filamentCali.start.verificationModeTooltip')}
         >
           {t('filamentCali.start.verificationModePill')}

@@ -804,7 +804,7 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
             <button
               onClick={() => setShowClearConfirm(true)}
               disabled={clearSdCardMutation.isPending}
-              className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 transition-colors disabled:opacity-50"
+              className="flex items-center gap-1 text-xs text-red-700 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 transition-colors disabled:opacity-50"
               title={t('printerFiles.clearSdCardHint')}
             >
               {clearSdCardMutation.isPending ? (
@@ -852,7 +852,7 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
               variant="secondary"
               disabled={selectedFiles.size === 0 || deleteMutation.isPending}
               onClick={handleDelete}
-              className="text-red-400 hover:text-red-300"
+              className="text-red-700 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300"
             >
               {deleteMutation.isPending ? (
                 <Loader2 className="w-4 h-4 animate-spin" />

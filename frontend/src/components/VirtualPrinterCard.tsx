@@ -374,7 +374,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
               </button>
               <button
                 onClick={() => setShowDeleteConfirm(true)}
-                className="p-1.5 text-bambu-gray hover:text-red-400 transition-colors"
+                className="p-1.5 text-bambu-gray hover:text-red-600 dark:hover:text-red-400 transition-colors"
                 title={t('common.delete')}
               >
                 <Trash2 className="w-4 h-4" />
@@ -455,8 +455,8 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                   </div>
                   {autoDispatchBlocked && (
                     <div className="mt-2 flex items-start gap-2 p-2 rounded bg-yellow-500/10 border border-yellow-500/30">
-                      <AlertTriangle className="w-4 h-4 text-yellow-400 flex-shrink-0 mt-0.5" />
-                      <p className="text-xs text-yellow-400">
+                      <AlertTriangle className="w-4 h-4 text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
+                      <p className="text-xs text-yellow-700 dark:text-yellow-400">
                         {localAutoDispatch
                           ? t('virtualPrinter.autoDispatch.activeButUnsafe')
                           : t('virtualPrinter.autoDispatch.requiresTargetOrAuto')}
@@ -587,8 +587,8 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
             {/* Proxy mode: hint about using target printer's access code */}
             {localMode === 'proxy' && (
               <div className="pt-2 border-t border-bambu-dark-tertiary">
-                <div className="flex items-start gap-2 p-2 rounded bg-blue-500/10 border border-blue-500/30">
-                  <Info className="w-4 h-4 text-blue-400 flex-shrink-0 mt-0.5" />
+                <div className="flex items-start gap-2 p-2 rounded bg-blue-50 border border-blue-300 dark:bg-blue-500/10 dark:border-blue-500/30">
+                  <Info className="w-4 h-4 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
                   <p className="text-xs text-bambu-gray">
                     {t('virtualPrinter.proxy.accessCodeHint')}
                   </p>
@@ -602,17 +602,17 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                 <div className="flex items-center gap-2 mb-2">
                   <div className="text-white text-sm font-medium">{t('virtualPrinter.accessCode.title')}</div>
                   {inheritsAccessCodeFromTarget ? (
-                    <span className="flex items-center gap-1 text-xs text-blue-400">
+                    <span className="flex items-center gap-1 text-xs text-blue-700 dark:text-blue-400">
                       <Info className="w-3 h-3" />
                       {t('virtualPrinter.accessCode.inheritedFromTarget')}
                     </span>
                   ) : printer.access_code_set ? (
-                    <span className="flex items-center gap-1 text-xs text-green-400">
+                    <span className="flex items-center gap-1 text-xs text-green-700 dark:text-green-400">
                       <Check className="w-3 h-3" />
                       {t('virtualPrinter.accessCode.isSet')}
                     </span>
                   ) : (
-                    <span className="flex items-center gap-1 text-xs text-yellow-400">
+                    <span className="flex items-center gap-1 text-xs text-yellow-700 dark:text-yellow-400">
                       <AlertTriangle className="w-3 h-3" />
                       {t('virtualPrinter.accessCode.notSet')}
                     </span>
@@ -669,7 +669,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                     </div>
                     {localAccessCode && (
                       <p className="text-xs text-bambu-gray mt-1">
-                        <span className={localAccessCode.length === 8 ? 'text-green-400' : 'text-yellow-400'}>
+                        <span className={localAccessCode.length === 8 ? 'text-green-700 dark:text-green-400' : 'text-yellow-700 dark:text-yellow-400'}>
                           {t('virtualPrinter.accessCode.charCount', { count: localAccessCode.length })}
                         </span>
                       </p>
@@ -766,7 +766,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                     )}
                   </div>
                   {noMatchingPrinters && (
-                    <p className="mt-1 text-xs text-yellow-400">
+                    <p className="mt-1 text-xs text-yellow-700 dark:text-yellow-400">
                       {t('virtualPrinter.targetPrinter.noMatchForModel', { model: expectedDisplay })}
                     </p>
                   )}
@@ -879,8 +879,8 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
               )}
               {!localTailscaleDisabled && tailscaleStatus && !tailscaleStatus.available && (
                 <div className="mt-2 flex items-start gap-2 p-2 rounded bg-yellow-500/10 border border-yellow-500/30">
-                  <AlertTriangle className="w-4 h-4 text-yellow-400 flex-shrink-0 mt-0.5" />
-                  <p className="text-xs text-yellow-400">
+                  <AlertTriangle className="w-4 h-4 text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
+                  <p className="text-xs text-yellow-700 dark:text-yellow-400">
                     {tailscaleStatus.error || t('virtualPrinter.tailscale.unavailable')}
                   </p>
                 </div>
@@ -892,7 +892,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
               <div className="flex items-center gap-2 mb-1">
                 <div className="text-white text-sm font-medium">{t('virtualPrinter.remoteInterface.title')}</div>
                 {localRemoteInterfaceIp ? (
-                  <span className="flex items-center gap-1 text-xs text-green-400"><Check className="w-3 h-3" /></span>
+                  <span className="flex items-center gap-1 text-xs text-green-700 dark:text-green-400"><Check className="w-3 h-3" /></span>
                 ) : (
                   <span className="flex items-center gap-1 text-xs text-bambu-gray" title={t('virtualPrinter.remoteInterface.optional')}><Info className="w-3 h-3" /></span>
                 )}

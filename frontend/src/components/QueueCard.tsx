@@ -65,12 +65,12 @@ interface QueueCardProps {
 // Border color goes inline via `style` (Tailwind JIT can miss dynamic class
 // suffixes); badge classes stay as full literals so the tint is JIT-safe.
 const BATCH_PALETTE: { color: string; badge: string }[] = [
-  { color: '#60a5fa', badge: 'bg-blue-400/20 text-blue-400' },
-  { color: '#c084fc', badge: 'bg-purple-400/20 text-purple-400' },
-  { color: '#fbbf24', badge: 'bg-amber-400/20 text-amber-400' },
-  { color: '#2dd4bf', badge: 'bg-teal-400/20 text-teal-400' },
+  { color: '#60a5fa', badge: 'bg-blue-100 dark:bg-blue-400/20 text-blue-700 dark:text-blue-400' },
+  { color: '#c084fc', badge: 'bg-purple-400/20 text-purple-700 dark:text-purple-400' },
+  { color: '#fbbf24', badge: 'bg-amber-400/20 text-amber-700 dark:text-amber-400' },
+  { color: '#2dd4bf', badge: 'bg-teal-400/20 text-teal-700 dark:text-teal-400' },
   { color: '#f472b6', badge: 'bg-pink-400/20 text-pink-400' },
-  { color: '#22d3ee', badge: 'bg-cyan-400/20 text-cyan-400' },
+  { color: '#22d3ee', badge: 'bg-cyan-400/20 text-cyan-700 dark:text-cyan-400' },
 ];
 
 function getBatchAccent(batchId: string): (typeof BATCH_PALETTE)[number] {
@@ -91,9 +91,9 @@ const STATUS_BORDER: Record<string, string> = {
 
 const STATUS_BADGE: Record<string, { bg: string; text: string }> = {
   idle: { bg: 'bg-bambu-green/20', text: 'text-bambu-green' },
-  printing: { bg: 'bg-blue-400/20', text: 'text-blue-400' },
-  paused: { bg: 'bg-yellow-400/20', text: 'text-yellow-400' },
-  error: { bg: 'bg-red-400/20', text: 'text-red-400' },
+  printing: { bg: 'bg-blue-400/20', text: 'text-blue-700 dark:text-blue-400' },
+  paused: { bg: 'bg-yellow-400/20', text: 'text-yellow-700 dark:text-yellow-400' },
+  error: { bg: 'bg-red-400/20', text: 'text-red-700 dark:text-red-400' },
 };
 
 function StatusBadge({ status, t }: { status: string; t: (key: string) => string }) {
@@ -579,7 +579,7 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
           <div className="flex items-center gap-2 flex-shrink-0">
             <StatusBadge status={queue.status} t={t} />
             {queue.is_paused && (
-              <span className="px-1.5 py-0.5 rounded text-[10px] leading-tight bg-yellow-400/20 text-yellow-400 flex items-center gap-1">
+              <span className="px-1.5 py-0.5 rounded text-[10px] leading-tight bg-yellow-400/20 text-yellow-700 dark:text-yellow-400 flex items-center gap-1">
                 <Pause className="w-2.5 h-2.5" />
                 {t('queueCard.pausedPill')}
               </span>
@@ -630,7 +630,7 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
                 <div className="flex items-center gap-1.5 mb-1">
                   <p className="text-sm text-bambu-gray">{t('queueCard.currentPrint')}</p>
                   {currentItem?.source && currentItem.source !== 'bamdude_queue' && (
-                    <span className="text-[10px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-400 font-medium">
+                    <span className="text-[10px] px-1 py-0.5 rounded bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 font-medium">
                       {t(`queue.source.${currentItem.source}`)}
                     </span>
                   )}
@@ -709,7 +709,7 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
                   <button
                     onClick={() => pausePrintMutation.mutate()}
                     disabled={pausePrintMutation.isPending}
-                    className="flex-1 py-1.5 px-2 rounded bg-yellow-500/10 hover:bg-yellow-500/20 text-yellow-400 text-xs font-medium transition-colors disabled:opacity-50 flex items-center justify-center gap-1"
+                    className="flex-1 py-1.5 px-2 rounded bg-yellow-500/10 hover:bg-yellow-500/20 text-yellow-700 dark:text-yellow-400 text-xs font-medium transition-colors disabled:opacity-50 flex items-center justify-center gap-1"
                     title={t('queueCard.pausePrint')}
                   >
                     {pausePrintMutation.isPending ? (
@@ -727,7 +727,7 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
                     }
                   }}
                   disabled={stopPrintMutation.isPending}
-                  className="flex-1 py-1.5 px-2 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-medium transition-colors disabled:opacity-50 flex items-center justify-center gap-1"
+                  className="flex-1 py-1.5 px-2 rounded bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:text-red-400 text-xs font-medium transition-colors disabled:opacity-50 flex items-center justify-center gap-1"
                   title={t('queueCard.stopPrint')}
                 >
                   {stopPrintMutation.isPending ? (
@@ -1088,7 +1088,7 @@ function PendingItemRow({
               </span>
             )}
             {item.manual_start && (
-              <span className="text-[9px] px-1 rounded bg-yellow-400/20 text-yellow-400 font-medium">
+              <span className="text-[9px] px-1 rounded bg-yellow-400/20 text-yellow-700 dark:text-yellow-400 font-medium">
                 M
               </span>
             )}
@@ -1110,7 +1110,7 @@ function PendingItemRow({
             })()}
           </div>
           {item.waiting_reason && (
-            <p className="text-[10px] text-yellow-400 truncate">{item.waiting_reason}</p>
+            <p className="text-[10px] text-yellow-700 dark:text-yellow-400 truncate">{item.waiting_reason}</p>
           )}
         </div>
         <div className="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -1267,7 +1267,7 @@ function PendingItemRow({
                           setMenuOpen(false);
                           if (onCancelBatch) onCancelBatch();
                         }}
-                        className="w-full text-left px-3 py-1.5 text-red-400 hover:bg-red-500/10 disabled:opacity-40 disabled:hover:bg-transparent"
+                        className="w-full text-left px-3 py-1.5 text-red-700 dark:text-red-400 hover:bg-red-500/10 disabled:opacity-40 disabled:hover:bg-transparent"
                       >
                         {t('queueCard.batch.cancelBatch')}
                       </button>
@@ -1280,7 +1280,7 @@ function PendingItemRow({
           <button
             onClick={handleCancel}
             disabled={cancelPending || !canUpdate}
-            className="p-0.5 rounded hover:bg-red-500/20 text-red-400 disabled:opacity-50"
+            className="p-0.5 rounded hover:bg-red-500/20 text-red-700 dark:text-red-400 disabled:opacity-50"
             title={t('queueCard.cancelItem')}
           >
             <X className="w-3.5 h-3.5" />
@@ -1387,7 +1387,7 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
         className="w-full flex items-center gap-1 text-xs text-bambu-gray hover:text-white transition-colors"
       >
         {open ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-        <AlertCircle className="w-3 h-3 text-yellow-400" />
+        <AlertCircle className="w-3 h-3 text-yellow-600 dark:text-yellow-400" />
         <span>{t('queueCard.issues.header', { count: total })}</span>
       </button>
       {open && (
@@ -1396,11 +1396,11 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
             const name = item.archive_name || item.library_file_name || `File #${item.archive_id || item.library_file_id}`;
             return (
               <div key={item.id} className="flex items-center gap-2 py-1 px-2 rounded bg-red-500/5 group">
-                <X className="w-3 h-3 text-red-400 flex-shrink-0" />
+                <X className="w-3 h-3 text-red-600 dark:text-red-400 flex-shrink-0" />
                 <div className="min-w-0 flex-1">
                   <p className="text-xs text-white truncate">{name}</p>
                   {item.error_message && (
-                    <p className="text-[10px] text-red-400 truncate">{item.error_message}</p>
+                    <p className="text-[10px] text-red-700 dark:text-red-400 truncate">{item.error_message}</p>
                   )}
                 </div>
                 <div className="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -1415,7 +1415,7 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
                   <button
                     onClick={() => removeMutation.mutate(item.id)}
                     disabled={removeMutation.isPending}
-                    className="p-0.5 rounded hover:bg-red-500/20 text-red-400 disabled:opacity-50"
+                    className="p-0.5 rounded hover:bg-red-500/20 text-red-700 dark:text-red-400 disabled:opacity-50"
                     title={t('queue.removeFromQueue')}
                   >
                     <X className="w-3.5 h-3.5" />
@@ -1447,7 +1447,7 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
                   <button
                     onClick={() => removeMutation.mutate(item.id)}
                     disabled={removeMutation.isPending}
-                    className="p-0.5 rounded hover:bg-red-500/20 text-red-400 disabled:opacity-50"
+                    className="p-0.5 rounded hover:bg-red-500/20 text-red-700 dark:text-red-400 disabled:opacity-50"
                     title={t('queue.removeFromQueue')}
                   >
                     <X className="w-3.5 h-3.5" />
@@ -1460,7 +1460,7 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
             const name = item.archive_name || item.library_file_name || `File #${item.archive_id || item.library_file_id}`;
             return (
               <div key={item.id} className="flex items-center gap-2 py-1 px-2 rounded bg-yellow-500/5 group">
-                <Pause className="w-3 h-3 text-yellow-400 flex-shrink-0" />
+                <Pause className="w-3 h-3 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
                 <div className="min-w-0 flex-1">
                   <p className="text-xs text-white truncate">{name}</p>
                 </div>
@@ -1476,7 +1476,7 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
                   <button
                     onClick={() => removeMutation.mutate(item.id)}
                     disabled={removeMutation.isPending}
-                    className="p-0.5 rounded hover:bg-red-500/20 text-red-400 disabled:opacity-50"
+                    className="p-0.5 rounded hover:bg-red-500/20 text-red-700 dark:text-red-400 disabled:opacity-50"
                     title={t('queue.removeFromQueue')}
                   >
                     <X className="w-3.5 h-3.5" />

@@ -239,7 +239,7 @@ export function PAProfileSection({
                 </div>
                 <span className={`text-xs px-2 py-1 rounded-full ${
                   printer.connected
-                    ? 'bg-green-500/20 text-green-500'
+                    ? 'bg-green-100 dark:bg-green-500/20 text-green-500'
                     : 'bg-bambu-gray/20 text-bambu-gray'
                 }`}>
                   {printer.connected ? t('inventory.connected') : t('inventory.offline')}

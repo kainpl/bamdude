@@ -37,7 +37,7 @@ export function QueueStatsBar({ queues, pendingItems }: Props) {
       icon: PrinterIcon,
       label: t('queue.stats.printing'),
       value: stats.printing,
-      tone: 'text-blue-400',
+      tone: 'text-blue-700 dark:text-blue-400',
     },
     {
       key: 'pending',

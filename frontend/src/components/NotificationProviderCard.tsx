@@ -175,7 +175,7 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                             </button>
                             <button
                                 onClick={() => setShowDeleteConfirm(true)}
-                                className="p-1.5 text-bambu-gray hover:text-red-400 hover:bg-bambu-dark-tertiary rounded transition-colors"
+                                className="p-1.5 text-bambu-gray hover:text-red-600 dark:hover:text-red-400 hover:bg-bambu-dark-tertiary rounded transition-colors"
                                 title={t('notifications.delete')}
                             >
                                 <Trash2 className="w-4 h-4"/>
@@ -203,18 +203,18 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                         noise — replace with a single hint chip. */}
                     <div className="mb-3 flex flex-wrap gap-1">
                         {isTelegram && (
-                            <span className="px-2 py-0.5 bg-blue-500/15 text-blue-300 text-xs rounded inline-flex items-center gap-1">
+                            <span className="px-2 py-0.5 bg-blue-500/15 text-blue-700 dark:text-blue-300 text-xs rounded inline-flex items-center gap-1">
                                 <MessageCircle className="w-3 h-3" />
                                 {t('notifications.telegram.eventsPerChatChip')}
                             </span>
                         )}
                         {!isTelegram && provider.on_print_start && (
                             <span
-                                className="px-2 py-0.5 bg-blue-500/20 text-blue-400 text-xs rounded">{t('notifications.start')}</span>
+                                className="px-2 py-0.5 bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400 text-xs rounded">{t('notifications.start')}</span>
                         )}
                         {!isTelegram && provider.on_plate_not_empty && (
                             <span
-                                className="px-2 py-0.5 bg-rose-600/20 text-rose-300 text-xs rounded">{t('notifications.plateCheck')}</span>
+                                className="px-2 py-0.5 bg-rose-100 dark:bg-rose-600/20 text-rose-700 dark:text-rose-300 text-xs rounded">{t('notifications.plateCheck')}</span>
                         )}
                         {!isTelegram && provider.on_print_complete && (
                             <span
@@ -222,15 +222,15 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                         )}
                         {!isTelegram && provider.on_print_failed && (
                             <span
-                                className="px-2 py-0.5 bg-red-500/20 text-red-400 text-xs rounded">{t('notifications.failed')}</span>
+                                className="px-2 py-0.5 bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-400 text-xs rounded">{t('notifications.failed')}</span>
                         )}
                         {!isTelegram && provider.on_print_stopped && (
                             <span
-                                className="px-2 py-0.5 bg-orange-500/20 text-orange-400 text-xs rounded">{t('notifications.stopped')}</span>
+                                className="px-2 py-0.5 bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400 text-xs rounded">{t('notifications.stopped')}</span>
                         )}
                         {!isTelegram && provider.on_print_paused && (
                             <span
-                                className="px-2 py-0.5 bg-amber-500/20 text-amber-300 text-xs rounded">{t('notifications.paused')}</span>
+                                className="px-2 py-0.5 bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300 text-xs rounded">{t('notifications.paused')}</span>
                         )}
                         {!isTelegram && provider.on_print_resumed && (
                             <span
@@ -238,7 +238,7 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                         )}
                         {!isTelegram && provider.on_print_progress && (
                             <span
-                                className="px-2 py-0.5 bg-yellow-500/20 text-yellow-400 text-xs rounded">{t('notifications.progress')}</span>
+                                className="px-2 py-0.5 bg-yellow-100 dark:bg-yellow-500/20 text-yellow-700 dark:text-yellow-400 text-xs rounded">{t('notifications.progress')}</span>
                         )}
                         {!isTelegram && provider.on_printer_offline && (
                             <span
@@ -246,66 +246,66 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                         )}
                         {!isTelegram && provider.on_printer_error && (
                             <span
-                                className="px-2 py-0.5 bg-rose-500/20 text-rose-400 text-xs rounded">{t('notifications.error')}</span>
+                                className="px-2 py-0.5 bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-400 text-xs rounded">{t('notifications.error')}</span>
                         )}
                         {!isTelegram && provider.on_ai_failure_detection && (
                             <span
-                                className="px-2 py-0.5 bg-fuchsia-500/20 text-fuchsia-300 text-xs rounded">{t('notifications.aiFailureDetection')}</span>
+                                className="px-2 py-0.5 bg-fuchsia-100 dark:bg-fuchsia-500/20 text-fuchsia-700 dark:text-fuchsia-300 text-xs rounded">{t('notifications.aiFailureDetection')}</span>
                         )}
                         {!isTelegram && provider.on_filament_low && (
                             <span
-                                className="px-2 py-0.5 bg-cyan-500/20 text-cyan-400 text-xs rounded">{t('notifications.lowFilament')}</span>
+                                className="px-2 py-0.5 bg-cyan-100 dark:bg-cyan-500/20 text-cyan-700 dark:text-cyan-400 text-xs rounded">{t('notifications.lowFilament')}</span>
                         )}
                         {!isTelegram && provider.on_maintenance_due && (
                             <span
-                                className="px-2 py-0.5 bg-purple-500/20 text-purple-400 text-xs rounded">{t('notifications.maintenance')}</span>
+                                className="px-2 py-0.5 bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-400 text-xs rounded">{t('notifications.maintenance')}</span>
                         )}
                         {!isTelegram && provider.on_ams_humidity_high && (
                             <span
-                                className="px-2 py-0.5 bg-blue-600/20 text-blue-300 text-xs rounded">{t('notifications.amsHumidity')}</span>
+                                className="px-2 py-0.5 bg-blue-100 dark:bg-blue-600/20 text-blue-700 dark:text-blue-300 text-xs rounded">{t('notifications.amsHumidity')}</span>
                         )}
                         {!isTelegram && provider.on_ams_temperature_high && (
                             <span
-                                className="px-2 py-0.5 bg-orange-600/20 text-orange-300 text-xs rounded">{t('notifications.amsTemp')}</span>
+                                className="px-2 py-0.5 bg-orange-100 dark:bg-orange-600/20 text-orange-700 dark:text-orange-300 text-xs rounded">{t('notifications.amsTemp')}</span>
                         )}
                         {!isTelegram && provider.on_ams_ht_humidity_high && (
                             <span
-                                className="px-2 py-0.5 bg-cyan-600/20 text-cyan-300 text-xs rounded">{t('notifications.amsHtHumidity')}</span>
+                                className="px-2 py-0.5 bg-cyan-100 dark:bg-cyan-600/20 text-cyan-700 dark:text-cyan-300 text-xs rounded">{t('notifications.amsHtHumidity')}</span>
                         )}
                         {!isTelegram && provider.on_ams_ht_temperature_high && (
                             <span
-                                className="px-2 py-0.5 bg-amber-600/20 text-amber-300 text-xs rounded">{t('notifications.amsHtTemp')}</span>
+                                className="px-2 py-0.5 bg-amber-100 dark:bg-amber-600/20 text-amber-700 dark:text-amber-300 text-xs rounded">{t('notifications.amsHtTemp')}</span>
                         )}
                         {!isTelegram && provider.on_bed_cooled && (
                             <span
-                                className="px-2 py-0.5 bg-teal-500/20 text-teal-400 text-xs rounded">{t('notifications.bedCooled')}</span>
+                                className="px-2 py-0.5 bg-teal-100 dark:bg-teal-500/20 text-teal-700 dark:text-teal-400 text-xs rounded">{t('notifications.bedCooled')}</span>
                         )}
                         {!isTelegram && provider.on_first_layer_complete && (
                             <span
-                                className="px-2 py-0.5 bg-emerald-600/20 text-emerald-300 text-xs rounded">{t('notifications.firstLayer')}</span>
+                                className="px-2 py-0.5 bg-emerald-100 dark:bg-emerald-600/20 text-emerald-700 dark:text-emerald-300 text-xs rounded">{t('notifications.firstLayer')}</span>
                         )}
                         {!isTelegram && provider.on_print_missing_spool_assignment && (
                             <span
-                                className="px-2 py-0.5 bg-amber-500/20 text-amber-300 text-xs rounded">{t('notifications.missingSpoolAssignmentLabel')}</span>
+                                className="px-2 py-0.5 bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300 text-xs rounded">{t('notifications.missingSpoolAssignmentLabel')}</span>
                         )}
                         {!isTelegram && provider.on_stock_reorder_alert && (
                             <span
-                                className="px-2 py-0.5 bg-lime-500/20 text-lime-400 text-xs rounded">{t('notifications.stockReorderAlert')}</span>
+                                className="px-2 py-0.5 bg-lime-100 dark:bg-lime-500/20 text-lime-700 dark:text-lime-400 text-xs rounded">{t('notifications.stockReorderAlert')}</span>
                         )}
                         {!isTelegram && provider.on_stock_break_alert && (
                             <span
-                                className="px-2 py-0.5 bg-red-600/20 text-red-300 text-xs rounded">{t('notifications.stockBreakAlert')}</span>
+                                className="px-2 py-0.5 bg-red-100 dark:bg-red-600/20 text-red-700 dark:text-red-300 text-xs rounded">{t('notifications.stockBreakAlert')}</span>
                         )}
                         {!isTelegram && provider.quiet_hours_enabled && (
                             <span
-                                className="px-2 py-0.5 bg-indigo-500/20 text-indigo-400 text-xs rounded flex items-center gap-1">
+                                className="px-2 py-0.5 bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-400 text-xs rounded flex items-center gap-1">
                 <Moon className="w-3 h-3"/>
                                 {t('notifications.quiet')}
               </span>
                         )}
                         {provider.daily_digest_enabled && (
                             <span
-                                className="px-2 py-0.5 bg-emerald-500/20 text-emerald-400 text-xs rounded flex items-center gap-1">
+                                className="px-2 py-0.5 bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 text-xs rounded flex items-center gap-1">
                 <Calendar className="w-3 h-3"/>
                                 {t('notifications.digest', {time: provider.daily_digest_time})}
               </span>
@@ -340,7 +340,7 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                         <div className={`mb-3 p-2 rounded-lg flex items-center gap-2 text-sm ${
                             testResult.success
                                 ? 'bg-bambu-green/20 text-bambu-green'
-                                : 'bg-red-500/20 text-red-400'
+                                : 'bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-400'
                         }`}>
                             {testResult.success ? (
                                 <CheckCircle className="w-4 h-4"/>
@@ -386,8 +386,8 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                                 each TelegramChat row after m045 — show a hint
                                 here so the operator knows where to look. */}
                             {isTelegram && (
-                                <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg flex items-start gap-2">
-                                    <MessageCircle className="w-4 h-4 text-blue-400 flex-shrink-0 mt-0.5"/>
+                                <div className="p-3 bg-blue-50 dark:bg-blue-500/10 border border-blue-300 dark:border-blue-500/30 rounded-lg flex items-start gap-2">
+                                    <MessageCircle className="w-4 h-4 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5"/>
                                     <div className="text-xs text-bambu-gray space-y-1">
                                         <p className="text-white">{t('notifications.telegram.perChatHintTitle')}</p>
                                         <p>{t('notifications.telegram.perChatHintBody')}</p>
@@ -734,7 +734,7 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                             <div className="space-y-2">
                                 <div className="flex items-center justify-between">
                                     <div className="flex items-center gap-2">
-                                        <Moon className="w-4 h-4 text-purple-400"/>
+                                        <Moon className="w-4 h-4 text-purple-600 dark:text-purple-400"/>
                                         <p className="text-sm text-white">{t('notifications.quietHours')}</p>
                                     </div>
                                     <Toggle
@@ -762,7 +762,7 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                             <div className="space-y-2">
                                 <div className="flex items-center justify-between">
                                     <div className="flex items-center gap-2">
-                                        <Calendar className="w-4 h-4 text-emerald-400"/>
+                                        <Calendar className="w-4 h-4 text-emerald-600 dark:text-emerald-400"/>
                                         <p className="text-sm text-white">{t('notifications.dailyDigest')}</p>
                                     </div>
                                     <Toggle
@@ -800,7 +800,7 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                                     size="sm"
                                     variant="secondary"
                                     onClick={() => setShowDeleteConfirm(true)}
-                                    className="text-red-400 hover:text-red-300"
+                                    className="text-red-700 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300"
                                 >
                                     <Trash2 className="w-4 h-4"/>
                                 </Button>

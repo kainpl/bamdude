@@ -150,7 +150,7 @@ export function LogArchivesPanel() {
                               type="button"
                               onClick={() => deleteMutation.mutate(a.filename)}
                               disabled={isDeleting}
-                              className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-colors disabled:opacity-50"
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors disabled:opacity-50"
                             >
                               {isDeleting ? (
                                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -170,7 +170,7 @@ export function LogArchivesPanel() {
                           <button
                             type="button"
                             onClick={() => setPendingDelete(a.filename)}
-                            className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-bambu-gray hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-bambu-gray hover:text-red-700 dark:hover:text-red-400 hover:bg-red-500/10 transition-colors"
                             title={t('common.delete', { defaultValue: 'Delete' })}
                           >
                             <Trash2 className="w-3.5 h-3.5" />

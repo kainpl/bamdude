@@ -169,7 +169,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
                 item.disabled
                   ? 'text-bambu-gray cursor-not-allowed'
                   : item.danger
-                  ? 'text-red-400 hover:bg-red-400/10'
+                  ? 'text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-400/10'
                   : 'text-white hover:bg-bambu-dark-tertiary'
               } ${hasSubmenu && activeSubmenu === index ? 'bg-bambu-dark-tertiary' : ''}`}
             >
@@ -206,7 +206,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
                       subItem.disabled
                         ? 'text-bambu-gray cursor-not-allowed'
                         : subItem.danger
-                        ? 'text-red-400 hover:bg-red-400/10'
+                        ? 'text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-400/10'
                         : 'text-white hover:bg-bambu-dark-tertiary'
                     }`}
                   >

@@ -72,7 +72,7 @@ export function TelegramChatCard({ chat, onEdit }: TelegramChatCardProps) {
                 {chat.label || `Chat ${chat.chat_id}`}
               </span>
               {isPending && (
-                <span className="text-xs text-yellow-400 bg-yellow-400/10 px-1.5 py-0.5 rounded">
+                <span className="text-xs text-yellow-700 dark:text-yellow-400 bg-yellow-400/10 px-1.5 py-0.5 rounded">
                   {t('telegram.pending')}
                 </span>
               )}
@@ -91,7 +91,7 @@ export function TelegramChatCard({ chat, onEdit }: TelegramChatCardProps) {
               </button>
               <button
                 onClick={() => setShowDeleteConfirm(true)}
-                className="p-1.5 text-bambu-gray hover:text-red-400 hover:bg-bambu-dark-tertiary rounded transition-colors"
+                className="p-1.5 text-bambu-gray hover:text-red-600 dark:hover:text-red-400 hover:bg-bambu-dark-tertiary rounded transition-colors"
                 title={t('telegram.delete')}
               >
                 <Trash2 className="w-3.5 h-3.5" />
@@ -114,7 +114,7 @@ export function TelegramChatCard({ chat, onEdit }: TelegramChatCardProps) {
               {chat.daily_digest && (
                 providerDigestOn && providerDigestTime ? (
                   <span
-                    className="ml-1.5 inline-flex items-center gap-1 text-emerald-400"
+                    className="ml-1.5 inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400"
                     title={t('telegram.dailyDigestProviderTime', { time: providerDigestTime })}
                   >
                     <CalendarClock className="w-3 h-3" />
@@ -122,7 +122,7 @@ export function TelegramChatCard({ chat, onEdit }: TelegramChatCardProps) {
                   </span>
                 ) : (
                   <span
-                    className="ml-1.5 inline-flex items-center gap-1 text-amber-400"
+                    className="ml-1.5 inline-flex items-center gap-1 text-amber-700 dark:text-amber-400"
                     title={t('telegram.dailyDigestProviderOff')}
                   >
                     <AlertTriangle className="w-3 h-3" />
@@ -154,7 +154,7 @@ export function TelegramChatCard({ chat, onEdit }: TelegramChatCardProps) {
               {t('telegram.test')}
             </Button>
             {testResult && (
-              <span className={`text-xs flex items-center gap-1 ${testResult.success ? 'text-green-400' : 'text-red-400'}`}>
+              <span className={`text-xs flex items-center gap-1 ${testResult.success ? 'text-green-700 dark:text-green-400' : 'text-red-700 dark:text-red-400'}`}>
                 {testResult.success ? <CheckCircle className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
                 {testResult.message}
               </span>

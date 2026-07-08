@@ -412,7 +412,7 @@ export function BugReportBubble() {
 
                   {/* Data collection notice */}
                   <details className="text-xs bg-bambu-dark border border-bambu-dark-tertiary rounded-lg p-3">
-                    <summary className="cursor-pointer font-medium text-status-warning hover:text-yellow-300">
+                    <summary className="cursor-pointer font-medium text-status-warning hover:text-yellow-700 dark:hover:text-yellow-300">
                       {t('bugReport.dataCollectedSummary')}
                     </summary>
                     <div className="mt-2 space-y-2 pl-2 border-l-2 border-status-warning/40 text-bambu-gray-light">

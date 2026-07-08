@@ -57,7 +57,7 @@ export function CalibrationRunningPage({ session, onCancel }: Props) {
         <button
           type="button"
           onClick={handleCancel}
-          className="px-3 py-1.5 text-sm text-red-400 hover:text-red-300"
+          className="px-3 py-1.5 text-sm text-red-700 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300"
         >
           {t('filamentCali.running.cancel')}
         </button>

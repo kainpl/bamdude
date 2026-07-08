@@ -395,7 +395,7 @@ export function GcodeViewer({
 
         {error && !notSliced && (
           <div className="absolute inset-0 flex items-center justify-center bg-bambu-dark/80">
-            <div className="text-center text-red-400">
+            <div className="text-center text-red-700 dark:text-red-400">
               <p className="text-sm">{error}</p>
             </div>
           </div>

@@ -468,7 +468,7 @@ export function AdditionalSection({
             className={`w-full px-3 py-2 bg-bambu-dark border ${errors.low_stock_threshold_pct ? 'border-red-500' : 'border-bambu-dark-tertiary'} rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green`}
           />
           {errors.low_stock_threshold_pct && (
-            <p className="text-xs text-red-400 mt-1">{errors.low_stock_threshold_pct}</p>
+            <p className="text-xs text-red-700 dark:text-red-400 mt-1">{errors.low_stock_threshold_pct}</p>
           )}
         </div>
       </div>
@@ -490,7 +490,7 @@ export function AdditionalSection({
             {t('inventory.spoolForm.extraColorsHelp', 'Comma-separated 6/8-char hex tokens, up to 8. Empty = solid colour.')}
           </p>
           {errors.extra_colors && (
-            <p className="text-xs text-red-400 mt-1">{errors.extra_colors}</p>
+            <p className="text-xs text-red-700 dark:text-red-400 mt-1">{errors.extra_colors}</p>
           )}
         </div>
         <div>

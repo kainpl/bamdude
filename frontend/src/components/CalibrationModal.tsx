@@ -91,7 +91,7 @@ export function CalibrationModal({ printerId, printerName, printerModel, onClose
         {/* Content */}
         <div className="px-5 py-4 space-y-3">
           {error && (
-            <div className="p-3 bg-red-500/20 border border-red-500/50 rounded text-red-400 text-sm">
+            <div className="p-3 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded text-red-700 dark:text-red-400 text-sm">
               {error}
             </div>
           )}

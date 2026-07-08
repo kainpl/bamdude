@@ -70,7 +70,7 @@ export function TimelineAxis({ ticks, windowStartMs, windowDurationMs, nowMs, la
           className="absolute top-0 h-full"
           style={{ left: (nowMs - windowStartMs) * pxPerMs }}
         >
-          <div className="absolute -top-0.5 left-0 -translate-x-1/2 text-[9px] font-semibold text-red-400 bg-bambu-dark px-1 rounded">
+          <div className="absolute -top-0.5 left-0 -translate-x-1/2 text-[9px] font-semibold text-red-700 dark:text-red-400 bg-bambu-dark px-1 rounded">
             {t('queue.timeline.now')}
           </div>
         </div>

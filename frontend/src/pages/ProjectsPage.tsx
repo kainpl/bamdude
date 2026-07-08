@@ -231,7 +231,7 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
               placeholder={t('projects.urlPlaceholder')}
               maxLength={2048}
             />
-            {urlError && <p className="text-xs text-red-400 mt-1">{urlError}</p>}
+            {urlError && <p className="text-xs text-red-600 dark:text-red-400 mt-1">{urlError}</p>}
           </div>
 
           {/* Cover image (#1155) — only when editing; uploading needs a project_id.
@@ -551,7 +551,7 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
   const getStatusConfig = () => {
     if (isCompleted) return { icon: CheckCircle2, color: 'text-bambu-green', bg: 'bg-bambu-green/10' };
     if (isArchived) return { icon: Archive, color: 'text-bambu-gray', bg: 'bg-bambu-gray/10' };
-    if (project.queue_count > 0) return { icon: Clock, color: 'text-blue-400', bg: 'bg-blue-400/10' };
+    if (project.queue_count > 0) return { icon: Clock, color: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-50 dark:bg-blue-400/10' };
     return { icon: FolderKanban, color: 'text-bambu-gray', bg: 'bg-bambu-gray/10' };
   };
   const statusConfig = getStatusConfig();
@@ -736,7 +736,7 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
                   </button>
                   <button
                     className={`w-full px-3 py-2 text-left text-sm flex items-center gap-2 ${
-                      hasPermission('projects:delete') ? 'text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                      hasPermission('projects:delete') ? 'text-red-600 dark:text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
                     }`}
                     onClick={() => { if (hasPermission('projects:delete')) { onDelete(); setShowActions(false); } }}
                     disabled={!hasPermission('projects:delete')}
@@ -803,7 +803,7 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
               )}
               {/* Failed count */}
               {project.failed_count > 0 && (
-                <div className="text-xs text-red-400">
+                <div className="text-xs text-red-600 dark:text-red-400">
                   {project.failed_count} {t('projects.failed')}
                 </div>
               )}
@@ -817,13 +817,13 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
                 </div>
               )}
               {project.failed_count > 0 && (
-                <div className="flex items-center gap-1.5 text-red-400">
+                <div className="flex items-center gap-1.5 text-red-600 dark:text-red-400">
                   <AlertTriangle className="w-3.5 h-3.5" />
                   <span>{project.failed_count} {t('projects.failed')}</span>
                 </div>
               )}
               {project.queue_count > 0 && (
-                <div className="flex items-center gap-1.5 text-blue-400">
+                <div className="flex items-center gap-1.5 text-blue-600 dark:text-blue-400">
                   <Clock className="w-3.5 h-3.5" />
                   <span>{project.queue_count} {t('projects.inQueue')}</span>
                 </div>
@@ -877,7 +877,7 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
         <div className="flex items-center justify-between pt-3 border-t border-bambu-dark-tertiary">
           <div className="flex items-center gap-4 text-xs text-bambu-gray">
             <div className="flex items-center gap-1.5" title={t('projects.printJobs')}>
-              <Layers className="w-3.5 h-3.5 text-blue-400" />
+              <Layers className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
               <span>{project.archive_count} {t('projects.plates')}</span>
             </div>
             <div className="flex items-center gap-1.5" title={t('projects.partsPrinted')}>
@@ -885,13 +885,13 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
               <span>{project.completed_count} {t('projects.parts')}</span>
             </div>
             {project.failed_count > 0 && (
-              <div className="flex items-center gap-1.5 text-red-400" title={t('projects.failedParts')}>
+              <div className="flex items-center gap-1.5 text-red-600 dark:text-red-400" title={t('projects.failedParts')}>
                 <AlertTriangle className="w-3.5 h-3.5" />
                 <span>{project.failed_count}</span>
               </div>
             )}
             {project.queue_count > 0 && (
-              <div className="flex items-center gap-1.5 text-yellow-400" title={t('projects.inQueue')}>
+              <div className="flex items-center gap-1.5 text-yellow-600 dark:text-yellow-400" title={t('projects.inQueue')}>
                 <ListTodo className="w-3.5 h-3.5" />
                 <span>{project.queue_count}</span>
               </div>
@@ -930,7 +930,7 @@ function TemplateCard({ template, onUse, onDelete, isCreating, hasPermission, t 
           <button
             type="button"
             onClick={onDelete}
-            className="text-bambu-gray hover:text-red-400 transition-colors"
+            className="text-bambu-gray hover:text-red-600 dark:hover:text-red-400 transition-colors"
             title={t('projects.templates.deleteTemplate')}
           >
             <Trash2 className="w-4 h-4" />

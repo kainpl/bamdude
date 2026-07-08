@@ -1807,7 +1807,7 @@ export function SettingsPage() {
                 {(localSettings.preferred_slicer ?? 'bambu_studio') === 'orcaslicer' && (
                   <div
                     role="alert"
-                    className="text-xs text-amber-200 bg-amber-900/20 border border-amber-700/40 rounded p-2 mt-2"
+                    className="text-xs text-amber-800 dark:text-amber-200 bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700/40 rounded p-2 mt-2"
                   >
                     {t(
                       'settings.orcaslicerKnownIssuesWarning',
@@ -2523,7 +2523,7 @@ export function SettingsPage() {
                         {updateStatus.message}
                       </div>
                     ) : updateStatus?.status === 'error' ? (
-                      <div className="mt-3 p-2 bg-red-500/20 rounded text-sm text-red-400">
+                      <div className="mt-3 p-2 bg-red-100 dark:bg-red-500/20 rounded text-sm text-red-700 dark:text-red-400">
                         {updateStatus.error || updateStatus.message}
                       </div>
                     ) : updateCheck?.is_ha_addon ? (
@@ -2611,7 +2611,7 @@ export function SettingsPage() {
                     )}
                   </div>
                 ) : updateCheck?.error ? (
-                  <div className="mt-2 p-2 bg-red-500/10 border border-red-500/30 rounded text-sm text-red-400">
+                  <div className="mt-2 p-2 bg-red-50 dark:bg-red-500/10 border border-red-300 dark:border-red-500/30 rounded text-sm text-red-700 dark:text-red-400">
                     {t('settings.failedToCheckUpdates', { error: updateCheck.error })}
                   </div>
                 ) : updateCheck && !updateCheck.update_available ? (
@@ -2768,7 +2768,7 @@ export function SettingsPage() {
                       <div className="mt-2 text-xs text-bambu-gray">
                         {t('settings.storageUsageTotal', 'Total')}: <span className="text-white">{storageUsage.total_formatted}</span>
                         {storageUsage.scan_errors > 0 && (
-                          <span className="ml-2 text-amber-400">
+                          <span className="ml-2 text-amber-700 dark:text-amber-400">
                             {t('settings.storageUsageErrors', 'Scan errors')}: {storageUsage.scan_errors}
                           </span>
                         )}
@@ -3109,7 +3109,7 @@ export function SettingsPage() {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-                  <Code className="w-5 h-5 text-amber-400" />
+                  <Code className="w-5 h-5 text-amber-600 dark:text-amber-400" />
                   {t('settings.macros')}
                 </h2>
                 <Button size="sm" onClick={handleOpenAddMacro}>
@@ -3160,7 +3160,7 @@ export function SettingsPage() {
                         <Toggle checked={macro.enabled} onChange={(checked) => updateMacroMutation.mutate({ id: macro.id, data: { enabled: checked } })} />
                         <button onClick={() => handleOpenEditMacro(macro)} className="p-1.5 text-bambu-gray hover:text-white transition-colors" title={t('settings.editMacro')}><Pencil className="w-4 h-4" /></button>
                         {macro.is_custom ? (
-                          <button onClick={() => setDeleteMacroId(macro.id)} className="p-1.5 text-bambu-gray hover:text-red-400 transition-colors"><Trash2 className="w-4 h-4" /></button>
+                          <button onClick={() => setDeleteMacroId(macro.id)} className="p-1.5 text-bambu-gray hover:text-red-600 dark:hover:text-red-400 transition-colors"><Trash2 className="w-4 h-4" /></button>
                         ) : (
                           <span className="p-1.5 text-bambu-dark-tertiary"><Lock className="w-4 h-4" /></span>
                         )}
@@ -3184,7 +3184,7 @@ export function SettingsPage() {
               {/* Staggered Start */}
               <div className="space-y-3">
                 <div className="flex items-center gap-2 text-white">
-                  <Zap className="w-4 h-4 text-yellow-400" />
+                  <Zap className="w-4 h-4 text-yellow-600 dark:text-yellow-400" />
                   <span className="font-medium">{t('settings.staggeredStart')}</span>
                 </div>
                 <p className="text-xs text-bambu-gray">
@@ -3375,7 +3375,7 @@ export function SettingsPage() {
           <Card id="card-preheat">
             <CardHeader>
               <h3 className="text-base font-semibold text-white flex items-center gap-2">
-                <Flame className="w-4 h-4 text-amber-400" />
+                <Flame className="w-4 h-4 text-amber-600 dark:text-amber-400" />
                 {t('settings.preheatTitle')}
               </h3>
             </CardHeader>
@@ -3588,7 +3588,7 @@ export function SettingsPage() {
           <Card>
             <CardHeader>
               <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-                <Globe className="w-5 h-5 text-blue-400" />
+                <Globe className="w-5 h-5 text-blue-600 dark:text-blue-400" />
                 {t('settings.externalUrl')}
               </h2>
             </CardHeader>
@@ -3617,7 +3617,7 @@ export function SettingsPage() {
           <Card>
             <CardHeader>
               <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-                <RefreshCw className="w-5 h-5 text-blue-400" />
+                <RefreshCw className="w-5 h-5 text-blue-600 dark:text-blue-400" />
                 {t('settings.ftpRetry')}
               </h2>
             </CardHeader>
@@ -3721,7 +3721,7 @@ export function SettingsPage() {
                 {localSettings.ha_enabled && haTestResult && (
                   <div className="flex items-center gap-2">
                     <span className={`w-2.5 h-2.5 rounded-full ${haTestResult.success ? 'bg-green-400' : 'bg-red-400'}`} />
-                    <span className={`text-sm ${haTestResult.success ? 'text-green-400' : 'text-red-400'}`}>
+                    <span className={`text-sm ${haTestResult.success ? 'text-green-700 dark:text-green-400' : 'text-red-700 dark:text-red-400'}`}>
                       {haTestResult.success ? t('settings.connected') : t('settings.disconnected')}
                     </span>
                   </div>
@@ -3862,13 +3862,13 @@ export function SettingsPage() {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-                  <Wifi className="w-5 h-5 text-blue-400" />
+                  <Wifi className="w-5 h-5 text-blue-600 dark:text-blue-400" />
                   {t('settings.mqttPublishing')}
                 </h2>
                 {mqttStatus?.enabled && (
                   <div className="flex items-center gap-2">
                     <span className={`w-2.5 h-2.5 rounded-full ${mqttStatus.connected ? 'bg-green-400' : 'bg-red-400'}`} />
-                    <span className={`text-sm ${mqttStatus.connected ? 'text-green-400' : 'text-red-400'}`}>
+                    <span className={`text-sm ${mqttStatus.connected ? 'text-green-700 dark:text-green-400' : 'text-red-700 dark:text-red-400'}`}>
                       {mqttStatus.connected ? t('settings.connected') : t('settings.disconnected')}
                     </span>
                   </div>
@@ -4019,7 +4019,7 @@ export function SettingsPage() {
           <Card>
             <CardHeader>
               <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-                <TrendingUp className="w-5 h-5 text-orange-400" />
+                <TrendingUp className="w-5 h-5 text-orange-600 dark:text-orange-400" />
                 {t('settings.prometheusMetrics')}
               </h2>
             </CardHeader>
@@ -4065,12 +4065,12 @@ export function SettingsPage() {
                   <div className="pt-2 border-t border-bambu-dark-tertiary">
                     <p className="text-sm text-white mb-2">{t('settings.availableMetrics')}</p>
                     <div className="text-xs text-bambu-gray space-y-1">
-                      <p><code className="text-orange-400">bamdude_printer_connected</code> - {t('settings.metricsConnectionStatus')}</p>
-                      <p><code className="text-orange-400">bamdude_printer_state</code> - {t('settings.metricsPrinterState')}</p>
-                      <p><code className="text-orange-400">bamdude_print_progress</code> - {t('settings.metricsPrintProgress')}</p>
-                      <p><code className="text-orange-400">bamdude_bed_temp_celsius</code> - {t('settings.metricsBedTemp')}</p>
-                      <p><code className="text-orange-400">bamdude_nozzle_temp_celsius</code> - {t('settings.metricsNozzleTemp')}</p>
-                      <p><code className="text-orange-400">bamdude_prints_total</code> - {t('settings.metricsPrintsTotal')}</p>
+                      <p><code className="text-orange-700 dark:text-orange-400">bamdude_printer_connected</code> - {t('settings.metricsConnectionStatus')}</p>
+                      <p><code className="text-orange-700 dark:text-orange-400">bamdude_printer_state</code> - {t('settings.metricsPrinterState')}</p>
+                      <p><code className="text-orange-700 dark:text-orange-400">bamdude_print_progress</code> - {t('settings.metricsPrintProgress')}</p>
+                      <p><code className="text-orange-700 dark:text-orange-400">bamdude_bed_temp_celsius</code> - {t('settings.metricsBedTemp')}</p>
+                      <p><code className="text-orange-700 dark:text-orange-400">bamdude_nozzle_temp_celsius</code> - {t('settings.metricsNozzleTemp')}</p>
+                      <p><code className="text-orange-700 dark:text-orange-400">bamdude_prints_total</code> - {t('settings.metricsPrintsTotal')}</p>
                       <p className="text-bambu-gray/70 italic">{t('settings.metricsMore')}</p>
                     </div>
                   </div>
@@ -4089,9 +4089,9 @@ export function SettingsPage() {
           <div className="bg-bambu-dark-secondary rounded-lg p-6 max-w-md w-full mx-4">
             <div className="flex items-center gap-3 mb-4">
               {haTestResult.success ? (
-                <CheckCircle className="w-8 h-8 text-green-400" />
+                <CheckCircle className="w-8 h-8 text-green-600 dark:text-green-400" />
               ) : (
-                <XCircle className="w-8 h-8 text-red-400" />
+                <XCircle className="w-8 h-8 text-red-600 dark:text-red-400" />
               )}
               <h3 className="text-lg font-medium text-white">
                 {haTestResult.success ? t('settings.connectionSuccessful') : t('settings.connectionFailed')}
@@ -4156,7 +4156,7 @@ export function SettingsPage() {
                     {bulkPlugActionMutation.isPending ? (
                       <Loader2 className="w-4 h-4 animate-spin" />
                     ) : (
-                      <PowerOff className="w-4 h-4 text-red-400" />
+                      <PowerOff className="w-4 h-4 text-red-600 dark:text-red-400" />
                     )}
                     {t('settings.allOff')}
                   </Button>
@@ -4180,7 +4180,7 @@ export function SettingsPage() {
             <Card className="mb-6">
               <CardHeader>
                 <h3 className="text-base font-semibold text-white flex items-center gap-2">
-                  <Zap className="w-4 h-4 text-yellow-400" />
+                  <Zap className="w-4 h-4 text-yellow-600 dark:text-yellow-400" />
                   {t('settings.energySummary')}
                   {energyLoading && (
                     <Loader2 className="w-4 h-4 animate-spin text-bambu-gray ml-2" />
@@ -4388,7 +4388,7 @@ export function SettingsPage() {
                       {t('settings.testPassedCount', { count: testAllResult.success })}
                     </span>
                     {testAllResult.failed > 0 && (
-                      <span className="flex items-center gap-1 text-red-400">
+                      <span className="flex items-center gap-1 text-red-700 dark:text-red-400">
                         <XCircle className="w-4 h-4" />
                         {t('settings.testFailedCount', { count: testAllResult.failed })}
                       </span>
@@ -4397,7 +4397,7 @@ export function SettingsPage() {
                   {testAllResult.results.filter(r => !r.success).length > 0 && (
                     <div className="space-y-1 mt-2 pt-2 border-t border-bambu-dark-tertiary">
                       {testAllResult.results.filter(r => !r.success).map((result) => (
-                        <div key={result.provider_id} className="text-xs text-red-400">
+                        <div key={result.provider_id} className="text-xs text-red-700 dark:text-red-400">
                           <span className="font-medium">{result.provider_name}:</span> {result.message}
                         </div>
                       ))}
@@ -4534,14 +4534,14 @@ export function SettingsPage() {
                 const channelBadge = (channel: EventChannel) => {
                   if (channel === 'email') {
                     return (
-                      <span className="px-1.5 py-0.5 bg-blue-500/20 text-blue-300 text-[10px] rounded uppercase tracking-wide">
+                      <span className="px-1.5 py-0.5 bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300 text-[10px] rounded uppercase tracking-wide">
                         {t('settings.notificationChannels.email')}
                       </span>
                     );
                   }
                   if (channel === 'test') {
                     return (
-                      <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-300 text-[10px] rounded uppercase tracking-wide">
+                      <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-700 dark:text-amber-300 text-[10px] rounded uppercase tracking-wide">
                         {t('settings.notificationChannels.test')}
                       </span>
                     );
@@ -4878,31 +4878,31 @@ export function SettingsPage() {
                         <div className="flex items-center gap-2">
                           <div className="flex gap-1 text-xs">
                             {key.can_read_status && (
-                              <span className="px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded">{t('settings.read')}</span>
+                              <span className="px-1.5 py-0.5 bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400 rounded">{t('settings.read')}</span>
                             )}
                             {key.can_queue && (
-                              <span className="px-1.5 py-0.5 bg-green-500/20 text-green-400 rounded">{t('queue.title')}</span>
+                              <span className="px-1.5 py-0.5 bg-green-100 dark:bg-green-500/20 text-green-700 dark:text-green-400 rounded">{t('queue.title')}</span>
                             )}
                             {key.can_control_printer && (
-                              <span className="px-1.5 py-0.5 bg-orange-500/20 text-orange-400 rounded">{t('settings.control')}</span>
+                              <span className="px-1.5 py-0.5 bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400 rounded">{t('settings.control')}</span>
                             )}
                             {key.can_access_cloud && (
-                              <span className="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded">{t('settings.cloudBadge')}</span>
+                              <span className="px-1.5 py-0.5 bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-400 rounded">{t('settings.cloudBadge')}</span>
                             )}
                             {key.can_manage_library && (
-                              <span className="px-1.5 py-0.5 bg-teal-500/20 text-teal-400 rounded">{t('settings.libraryBadge')}</span>
+                              <span className="px-1.5 py-0.5 bg-teal-100 dark:bg-teal-500/20 text-teal-700 dark:text-teal-400 rounded">{t('settings.libraryBadge')}</span>
                             )}
                             {key.can_manage_inventory && (
-                              <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-400 rounded">{t('settings.inventoryBadge')}</span>
+                              <span className="px-1.5 py-0.5 bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 rounded">{t('settings.inventoryBadge')}</span>
                             )}
                             {key.can_manage_maintenance && (
-                              <span className="px-1.5 py-0.5 bg-cyan-500/20 text-cyan-400 rounded">{t('settings.maintenanceBadge')}</span>
+                              <span className="px-1.5 py-0.5 bg-cyan-100 dark:bg-cyan-500/20 text-cyan-700 dark:text-cyan-400 rounded">{t('settings.maintenanceBadge')}</span>
                             )}
                             {key.can_manage_archives && (
-                              <span className="px-1.5 py-0.5 bg-indigo-500/20 text-indigo-400 rounded">{t('settings.archivesBadge')}</span>
+                              <span className="px-1.5 py-0.5 bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-400 rounded">{t('settings.archivesBadge')}</span>
                             )}
                             {key.can_manage_projects && (
-                              <span className="px-1.5 py-0.5 bg-lime-500/20 text-lime-400 rounded">{t('settings.projectsBadge')}</span>
+                              <span className="px-1.5 py-0.5 bg-lime-100 dark:bg-lime-500/20 text-lime-700 dark:text-lime-400 rounded">{t('settings.projectsBadge')}</span>
                             )}
                             {key.user_id === null && (
                               <span className="px-1.5 py-0.5 bg-bambu-dark-tertiary text-bambu-gray rounded">{t('settings.legacyBadge')}</span>
@@ -4913,7 +4913,7 @@ export function SettingsPage() {
                             size="sm"
                             onClick={() => setShowDeleteAPIKeyConfirm(key.id)}
                           >
-                            <Trash2 className="w-4 h-4 text-red-400" />
+                            <Trash2 className="w-4 h-4 text-red-600 dark:text-red-400" />
                           </Button>
                         </div>
                       </div>
@@ -4948,32 +4948,32 @@ export function SettingsPage() {
                 </p>
                 <div className="space-y-2 font-mono text-xs">
                   <div className="p-2 bg-bambu-dark rounded">
-                    <span className="text-blue-400">GET</span>{' '}
+                    <span className="text-blue-700 dark:text-blue-400">GET</span>{' '}
                     <span className="text-white">/api/v1/webhook/status</span>
                     <span className="text-bambu-gray"> - {t('settings.webhook.getAllStatus')}</span>
                   </div>
                   <div className="p-2 bg-bambu-dark rounded">
-                    <span className="text-blue-400">GET</span>{' '}
+                    <span className="text-blue-700 dark:text-blue-400">GET</span>{' '}
                     <span className="text-white">/api/v1/webhook/status/:id</span>
                     <span className="text-bambu-gray"> - {t('settings.webhook.getSpecificStatus')}</span>
                   </div>
                   <div className="p-2 bg-bambu-dark rounded">
-                    <span className="text-green-400">POST</span>{' '}
+                    <span className="text-green-700 dark:text-green-400">POST</span>{' '}
                     <span className="text-white">/api/v1/webhook/queue</span>
                     <span className="text-bambu-gray"> - {t('settings.webhook.addToQueue')}</span>
                   </div>
                   <div className="p-2 bg-bambu-dark rounded">
-                    <span className="text-orange-400">POST</span>{' '}
+                    <span className="text-orange-700 dark:text-orange-400">POST</span>{' '}
                     <span className="text-white">/api/v1/webhook/printer/:id/pause</span>
                     <span className="text-bambu-gray"> - {t('settings.webhook.pausePrint')}</span>
                   </div>
                   <div className="p-2 bg-bambu-dark rounded">
-                    <span className="text-orange-400">POST</span>{' '}
+                    <span className="text-orange-700 dark:text-orange-400">POST</span>{' '}
                     <span className="text-white">/api/v1/webhook/printer/:id/resume</span>
                     <span className="text-bambu-gray"> - {t('settings.webhook.resumePrint')}</span>
                   </div>
                   <div className="p-2 bg-bambu-dark rounded">
-                    <span className="text-red-400">POST</span>{' '}
+                    <span className="text-red-700 dark:text-red-400">POST</span>{' '}
                     <span className="text-white">/api/v1/webhook/printer/:id/stop</span>
                     <span className="text-bambu-gray"> - {t('settings.webhook.stopPrint')}</span>
                   </div>
@@ -5084,7 +5084,7 @@ export function SettingsPage() {
                 {/* Humidity Thresholds */}
                 <div className="space-y-3">
                   <div className="flex items-center gap-2 text-white">
-                    <Droplets className="w-4 h-4 text-blue-400" />
+                    <Droplets className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                     <span className="font-medium">{t('settings.humidity')}</span>
                   </div>
                   <div className="grid grid-cols-2 gap-3">
@@ -5124,7 +5124,7 @@ export function SettingsPage() {
                   <p className="text-xs text-bambu-gray">
                     {t('settings.aboveFairBad')}
                   </p>
-                  <p className="text-xs text-amber-400/70">
+                  <p className="text-xs text-amber-700/80 dark:text-amber-400/70">
                     {t('settings.fairAlsoDryingThreshold')}
                   </p>
                 </div>
@@ -5132,7 +5132,7 @@ export function SettingsPage() {
                 {/* Temperature Thresholds */}
                 <div className="space-y-3 pt-2 border-t border-bambu-dark-tertiary">
                   <div className="flex items-center gap-2 text-white">
-                    <Thermometer className="w-4 h-4 text-orange-400" />
+                    <Thermometer className="w-4 h-4 text-orange-600 dark:text-orange-400" />
                     <span className="font-medium">{t('settings.temperature')}</span>
                   </div>
                   <div className="grid grid-cols-2 gap-3">
@@ -5179,7 +5179,7 @@ export function SettingsPage() {
                 {/* History Retention */}
                 <div className="space-y-3 pt-4 border-t border-bambu-dark-tertiary">
                   <div className="flex items-center gap-2 text-white">
-                    <Database className="w-4 h-4 text-purple-400" />
+                    <Database className="w-4 h-4 text-purple-600 dark:text-purple-400" />
                     <span className="font-medium">{t('settings.historyRetention')}</span>
                   </div>
                   <div>
@@ -5206,7 +5206,7 @@ export function SettingsPage() {
                 {/* Queue Auto-Drying */}
                 <div className="space-y-3 pt-4 border-t border-bambu-dark-tertiary">
                   <div className="flex items-center gap-2 text-white">
-                    <Flame className="w-4 h-4 text-amber-400" />
+                    <Flame className="w-4 h-4 text-amber-600 dark:text-amber-400" />
                     <span className="font-medium">{t('settings.queueDrying')}</span>
                   </div>
                   <p className="text-xs text-bambu-gray">
@@ -5768,8 +5768,8 @@ export function SettingsPage() {
           <Card>
             <CardContent className="py-4">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full flex items-center justify-center bg-green-500/20">
-                  <Lock className="w-5 h-5 text-green-400" />
+                <div className="w-10 h-10 rounded-full flex items-center justify-center bg-green-100 dark:bg-green-500/20">
+                  <Lock className="w-5 h-5 text-green-600 dark:text-green-400" />
                 </div>
                 <div>
                   <h3 className="text-white font-medium">{t('settings.authentication')}</h3>
@@ -5786,8 +5786,8 @@ export function SettingsPage() {
             <Card className="border-blue-500/30 bg-blue-500/5">
               <CardContent className="py-4">
                 <div className="flex items-start gap-3">
-                  <div className="w-10 h-10 rounded-full flex items-center justify-center bg-blue-500/20 flex-shrink-0">
-                    <Mail className="w-5 h-5 text-blue-400" />
+                  <div className="w-10 h-10 rounded-full flex items-center justify-center bg-blue-100 dark:bg-blue-500/20 flex-shrink-0">
+                    <Mail className="w-5 h-5 text-blue-600 dark:text-blue-400" />
                   </div>
                   <div>
                     <h3 className="text-white font-medium">{t('settings.email.advancedAuthEnabled')}</h3>
@@ -5907,7 +5907,7 @@ export function SettingsPage() {
                           <p className="text-white font-medium text-lg">{user.username}</p>
                           <div className="flex flex-wrap gap-1 mt-2">
                             {user.is_admin && (
-                              <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-purple-500/20 text-purple-300">
+                              <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-300">
                                 {t('settings.admin')}
                               </span>
                             )}
@@ -5916,11 +5916,11 @@ export function SettingsPage() {
                                 key={group.id}
                                 className={`px-2 py-0.5 rounded-full text-xs font-medium ${
                                   group.name === 'Administrators'
-                                    ? 'bg-purple-500/20 text-purple-300'
+                                    ? 'bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-300'
                                     : group.name === 'Operators'
-                                    ? 'bg-blue-500/20 text-blue-300'
+                                    ? 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300'
                                     : group.name === 'Viewers'
-                                    ? 'bg-green-500/20 text-green-300'
+                                    ? 'bg-green-100 dark:bg-green-500/20 text-green-700 dark:text-green-300'
                                     : 'bg-gray-500/20 text-gray-300'
                                 }`}
                               >
@@ -5972,12 +5972,12 @@ export function SettingsPage() {
                               <p className="text-white font-medium truncate">{userItem.username}</p>
                               <div className="flex flex-wrap gap-1 mt-1">
                                 {userItem.auth_source === 'ldap' && (
-                                  <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-cyan-500/20 text-cyan-300">
+                                  <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-cyan-100 dark:bg-cyan-500/20 text-cyan-700 dark:text-cyan-300">
                                     LDAP
                                   </span>
                                 )}
                                 {userItem.is_admin && (
-                                  <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-purple-500/20 text-purple-300">
+                                  <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-300">
                                     {t('settings.admin')}
                                   </span>
                                 )}
@@ -5986,11 +5986,11 @@ export function SettingsPage() {
                                     key={group.id}
                                     className={`px-2 py-0.5 rounded-full text-xs font-medium ${
                                       group.name === 'Administrators'
-                                        ? 'bg-purple-500/20 text-purple-300'
+                                        ? 'bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-300'
                                         : group.name === 'Operators'
-                                        ? 'bg-blue-500/20 text-blue-300'
+                                        ? 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300'
                                         : group.name === 'Viewers'
-                                        ? 'bg-green-500/20 text-green-300'
+                                        ? 'bg-green-100 dark:bg-green-500/20 text-green-700 dark:text-green-300'
                                         : 'bg-gray-500/20 text-gray-300'
                                     }`}
                                   >
@@ -6055,17 +6055,17 @@ export function SettingsPage() {
                                 <Shield
                                   className={`w-4 h-4 ${
                                     group.name === 'Administrators'
-                                      ? 'text-purple-400'
+                                      ? 'text-purple-600 dark:text-purple-400'
                                       : group.name === 'Operators'
-                                      ? 'text-blue-400'
+                                      ? 'text-blue-600 dark:text-blue-400'
                                       : group.name === 'Viewers'
-                                      ? 'text-green-400'
+                                      ? 'text-green-600 dark:text-green-400'
                                       : 'text-bambu-gray'
                                   }`}
                                 />
                                 <span className="text-white font-medium">{getGroupName(group.name, t)}</span>
                                 {group.is_system && (
-                                  <span className="px-2 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-400">
+                                  <span className="px-2 py-0.5 rounded text-xs bg-yellow-100 dark:bg-yellow-500/20 text-yellow-700 dark:text-yellow-400">
                                     {t('settings.systemLabel')}
                                   </span>
                                 )}
@@ -6267,7 +6267,7 @@ export function SettingsPage() {
                     minLength={6}
                   />
                   {userFormData.confirmPassword && userFormData.password !== userFormData.confirmPassword && (
-                    <p className="text-red-400 text-xs mt-1">{t('settings.passwordsDoNotMatch')}</p>
+                    <p className="text-red-700 dark:text-red-400 text-xs mt-1">{t('settings.passwordsDoNotMatch')}</p>
                   )}
                 </div>
                 <div>
@@ -6286,7 +6286,7 @@ export function SettingsPage() {
                         />
                         <span className="text-sm text-white">{getGroupName(group.name, t)}</span>
                         {group.is_system && (
-                          <span className="text-xs text-yellow-400">{t('settings.systemBadge')}</span>
+                          <span className="text-xs text-yellow-700 dark:text-yellow-400">{t('settings.systemBadge')}</span>
                         )}
                       </label>
                     ))}
@@ -6384,7 +6384,7 @@ export function SettingsPage() {
                 {/* Username Field */}
                 <div>
                   <label className="block text-sm font-medium text-white mb-2">
-                    {t('settings.username')} {advancedAuthStatus?.advanced_auth_enabled && <span className="text-red-400">*</span>}
+                    {t('settings.username')} {advancedAuthStatus?.advanced_auth_enabled && <span className="text-red-700 dark:text-red-400">*</span>}
                   </label>
                   <input
                     type="text"
@@ -6399,7 +6399,7 @@ export function SettingsPage() {
                 {/* Email Field */}
                 <div>
                   <label className="block text-sm font-medium text-white mb-2">
-                    {t('users.form.email') || 'Email'} {advancedAuthStatus?.advanced_auth_enabled ? <span className="text-red-400">*</span> : <span className="text-bambu-gray font-normal">({t('users.form.optional') || 'optional'})</span>}
+                    {t('users.form.email') || 'Email'} {advancedAuthStatus?.advanced_auth_enabled ? <span className="text-red-700 dark:text-red-400">*</span> : <span className="text-bambu-gray font-normal">({t('users.form.optional') || 'optional'})</span>}
                   </label>
                   <input
                     type="email"
@@ -6445,7 +6445,7 @@ export function SettingsPage() {
                           minLength={6}
                         />
                         {userFormData.confirmPassword && userFormData.password !== userFormData.confirmPassword && (
-                          <p className="text-red-400 text-xs mt-1">{t('settings.passwordsDoNotMatch')}</p>
+                          <p className="text-red-700 dark:text-red-400 text-xs mt-1">{t('settings.passwordsDoNotMatch')}</p>
                         )}
                       </div>
                     )}
@@ -6497,7 +6497,7 @@ export function SettingsPage() {
                         />
                         <span className="text-sm text-white">{getGroupName(group.name, t)}</span>
                         {group.is_system && (
-                          <span className="text-xs text-yellow-400">({t('users.system') || 'System'})</span>
+                          <span className="text-xs text-yellow-700 dark:text-yellow-400">({t('users.system') || 'System'})</span>
                         )}
                       </label>
                     ))}
@@ -6556,7 +6556,7 @@ export function SettingsPage() {
             onClick={(e: React.MouseEvent) => e.stopPropagation()}
           >
             <CardHeader>
-              <div className="flex items-center gap-2 text-red-400">
+              <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
                 <Trash2 className="w-5 h-5" />
                 <h3 className="text-lg font-semibold">{t('settings.deleteUserTitle')}</h3>
               </div>
@@ -6676,7 +6676,7 @@ export function SettingsPage() {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <Code className="w-5 h-5 text-amber-400" />
+                  <Code className="w-5 h-5 text-amber-600 dark:text-amber-400" />
                   <h2 className="text-lg font-semibold text-white">
                     {editingMacro ? t('settings.editMacro') : t('settings.addMacro')}
                   </h2>
@@ -6820,7 +6820,7 @@ export function SettingsPage() {
                               ...prev,
                               printer_models: prev.printer_models.filter(m => m !== code),
                             }))}
-                            className="hover:text-red-400 transition-colors"
+                            className="hover:text-red-600 dark:hover:text-red-400 transition-colors"
                           >
                             <X className="w-3 h-3" />
                           </button>
@@ -7029,7 +7029,7 @@ export function SettingsPage() {
                     minLength={6}
                   />
                   {changePasswordData.confirmPassword && changePasswordData.newPassword !== changePasswordData.confirmPassword && (
-                    <p className="text-red-400 text-xs mt-1">{t('settings.passwordsDoNotMatch')}</p>
+                    <p className="text-red-700 dark:text-red-400 text-xs mt-1">{t('settings.passwordsDoNotMatch')}</p>
                   )}
                 </div>
               </div>

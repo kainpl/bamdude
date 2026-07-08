@@ -84,7 +84,7 @@ export function PhotoGalleryModal({
               Download
             </Button>
             {onDelete && (
-              <Button variant="secondary" size="sm" onClick={handleDelete} className="text-red-400 hover:text-red-300">
+              <Button variant="secondary" size="sm" onClick={handleDelete} className="text-red-700 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300">
                 <Trash2 className="w-4 h-4" />
               </Button>
             )}

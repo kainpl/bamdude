@@ -86,7 +86,7 @@ export function SlicerHealthIndicator(props: SlicerHealthIndicatorProps) {
       ? 'text-bambu-gray'
       : healthy
         ? 'text-emerald-400'
-        : 'text-red-400';
+        : 'text-red-700 dark:text-red-400';
     return (
       <span className={`inline-flex items-center gap-1.5 text-xs ${tone}`} title={tooltip}>
         <Icon className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
@@ -123,7 +123,7 @@ export function SlicerHealthIndicator(props: SlicerHealthIndicatorProps) {
             ? 'text-bambu-gray'
             : healthy
               ? 'text-emerald-400'
-              : 'text-red-400'
+              : 'text-red-700 dark:text-red-400'
         }`}
       >
         {isLoading ? (
@@ -152,7 +152,7 @@ export function SlicerHealthIndicator(props: SlicerHealthIndicatorProps) {
           </p>
         )}
         {!isLoading && !healthy && error && (
-          <p className="text-xs text-red-400 mt-1 break-words">{error}</p>
+          <p className="text-xs text-red-700 dark:text-red-400 mt-1 break-words">{error}</p>
         )}
       </div>
     </div>

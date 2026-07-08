@@ -672,7 +672,7 @@ function KProfileModal({
           <Card className="w-full max-w-sm">
             <CardContent className="p-6">
               <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center">
+                <div className="w-10 h-10 rounded-full bg-red-100 dark:bg-red-500/20 flex items-center justify-center">
                   <Trash2 className="w-5 h-5 text-red-500" />
                 </div>
                 <div>
@@ -1547,7 +1547,7 @@ export function KProfilesView() {
           <Card className="w-full max-w-sm">
             <CardContent className="p-6">
               <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center">
+                <div className="w-10 h-10 rounded-full bg-red-100 dark:bg-red-500/20 flex items-center justify-center">
                   <Trash2 className="w-5 h-5 text-red-500" />
                 </div>
                 <div>

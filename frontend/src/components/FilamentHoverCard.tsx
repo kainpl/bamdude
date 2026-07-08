@@ -400,7 +400,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                             e.stopPropagation();
                             inventory.onUnassignSpool?.();
                           }}
-                          className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-red-500/20 hover:bg-red-500/30 text-red-400"
+                          className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-red-100 dark:bg-red-500/20 hover:bg-red-200 dark:hover:bg-red-500/30 text-red-700 dark:text-red-400"
                         >
                           <Unlink className="w-3.5 h-3.5" />
                           {t('inventory.unassignSpool')}
@@ -489,7 +489,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                     spoolman?.onUnlinkSpool?.();
                     setShowUnlinkConfirm(false);
                   }}
-                  className="flex-1 px-3 py-2 text-sm font-medium rounded transition-colors bg-red-500/20 hover:bg-red-500/30 text-red-400"
+                  className="flex-1 px-3 py-2 text-sm font-medium rounded transition-colors bg-red-100 dark:bg-red-500/20 hover:bg-red-200 dark:hover:bg-red-500/30 text-red-700 dark:text-red-400"
                 >
                   {t('inventory.unassignSpool')}
                 </button>
@@ -577,7 +577,7 @@ export function EmptySlotHoverCard({ children, className = '', configureSlot, on
           ">
             <div className="px-3 py-1.5 text-xs whitespace-nowrap">
               {emptyKind === 'reset' ? (
-                <span className="text-amber-400">{t('ams.slotLoadedUnconfigured')}</span>
+                <span className="text-amber-700 dark:text-amber-400">{t('ams.slotLoadedUnconfigured')}</span>
               ) : (
                 <span className="text-bambu-gray">{t('ams.emptySlot')}</span>
               )}

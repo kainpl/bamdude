@@ -198,7 +198,7 @@ export function AutoQueuePanel() {
                   {targetLocation && <span>· {targetLocation}</span>}
                   {head.force_color_match && <span>· {t('autoQueue.exactColor')}</span>}
                   {waitingReason && (
-                    <span className="text-yellow-400">· {waitingReason}</span>
+                    <span className="text-yellow-700 dark:text-yellow-400">· {waitingReason}</span>
                   )}
                 </div>
               </div>
@@ -226,7 +226,7 @@ export function AutoQueuePanel() {
                     }
                   }}
                   disabled={cancelMutation.isPending || cancelBatchMutation.isPending}
-                  className="px-2 py-1 text-xs text-red-400 hover:bg-red-500/10 rounded inline-flex items-center gap-1 disabled:opacity-40"
+                  className="px-2 py-1 text-xs text-red-700 dark:text-red-400 hover:bg-red-500/10 rounded inline-flex items-center gap-1 disabled:opacity-40"
                   title={t('common.cancel')}
                 >
                   <Trash2 className="w-3.5 h-3.5" />

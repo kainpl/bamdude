@@ -183,7 +183,7 @@ function BamDudeRow({
         )}
         <button
           onClick={onDelete}
-          className="p-1 text-bambu-gray hover:text-red-400"
+          className="p-1 text-bambu-gray hover:text-red-600 dark:hover:text-red-400"
           aria-label="Delete"
         >
           <Trash2 className="h-3 w-3" />

@@ -89,11 +89,11 @@ export function CalendarView({ archives, printerMap }: CalendarViewProps) {
             <div className="text-xs text-bambu-gray">{t('archives.calendar.totalPrints', 'Prints (30 days)')}</div>
           </div>
           <div>
-            <div className="text-2xl font-bold text-green-400">{successCount}</div>
+            <div className="text-2xl font-bold text-green-700 dark:text-green-400">{successCount}</div>
             <div className="text-xs text-bambu-gray">{t('archives.calendar.successful', 'Successful')}</div>
           </div>
           <div>
-            <div className="text-2xl font-bold text-red-400">{failedCount}</div>
+            <div className="text-2xl font-bold text-red-700 dark:text-red-400">{failedCount}</div>
             <div className="text-xs text-bambu-gray">{t('archives.calendar.failed', 'Failed')}</div>
           </div>
         </div>
@@ -212,7 +212,7 @@ export function CalendarView({ archives, printerMap }: CalendarViewProps) {
                               : (isFailureStatus(archive.status) ? 'text-red-400' : 'text-bambu-gray');
                             return <span className={color}>{t(badge.labelKey)}</span>;
                           }
-                          return <span className="text-green-400">{t('archives.calendar.successful', 'Successful')}</span>;
+                          return <span className="text-green-700 dark:text-green-400">{t('archives.calendar.successful', 'Successful')}</span>;
                         })()}
                         <span>
                           {(() => {

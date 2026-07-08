@@ -183,7 +183,7 @@ export function ArchiveTrashPage() {
           <Button
             variant="secondary"
             onClick={() => setPending({ type: 'empty' })}
-            className="text-red-400"
+            className="text-red-700 dark:text-red-400"
           >
             <Trash2 className="w-4 h-4 mr-1" />
             {t('archiveTrash.emptyTrash')}
@@ -255,7 +255,7 @@ export function ArchiveTrashPage() {
                   variant="secondary"
                   onClick={() => setPending({ type: 'bulkDelete', count: selected.size })}
                   disabled={bulkDeleteMutation.isPending}
-                  className="text-red-400"
+                  className="text-red-700 dark:text-red-400"
                 >
                   <Trash2 className="w-4 h-4 mr-1" />
                   {t('archiveTrash.bulkPurge')}
@@ -351,7 +351,7 @@ export function ArchiveTrashPage() {
                       <button
                         onClick={() => restoreMutation.mutate(item.id)}
                         disabled={restoreMutation.isPending}
-                        className="inline-flex items-center gap-1 px-2 py-1 text-xs text-blue-400 hover:text-blue-300"
+                        className="inline-flex items-center gap-1 px-2 py-1 text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300"
                       >
                         <RotateCcw className="w-3.5 h-3.5" />
                         {t('archiveTrash.restore')}
@@ -359,7 +359,7 @@ export function ArchiveTrashPage() {
                       <button
                         onClick={() => setPending({ type: 'delete', id: item.id, filename: item.filename })}
                         disabled={deleteMutation.isPending}
-                        className="inline-flex items-center gap-1 px-2 py-1 text-xs text-red-400 hover:text-red-300 ml-2"
+                        className="inline-flex items-center gap-1 px-2 py-1 text-xs text-red-700 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 ml-2"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                         {t('archiveTrash.purgeNow')}
@@ -397,7 +397,7 @@ export function ArchiveTrashPage() {
       )}
 
       {trashQuery.isError && (
-        <div className="mt-4 text-sm text-red-400">
+        <div className="mt-4 text-sm text-red-700 dark:text-red-400">
           {(trashQuery.error as Error | null)?.message ?? t('archiveTrash.loadError')}
           <Button variant="secondary" onClick={() => navigate('/archives')} className="ml-3">
             {t('archiveTrash.backToArchives')}

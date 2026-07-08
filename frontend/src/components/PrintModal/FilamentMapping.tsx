@@ -168,9 +168,9 @@ export function FilamentMapping({
         <Circle className="w-4 h-4" fill={statusColor} stroke="none" />
         <span>{t('printModal.filamentMapping')}</span>
         {hasTypeMismatch ? (
-          <span className="text-xs text-orange-400">({t('printModal.filamentTypeNotFound')})</span>
+          <span className="text-xs text-orange-700 dark:text-orange-400">({t('printModal.filamentTypeNotFound')})</span>
         ) : hasColorMismatch ? (
-          <span className="text-xs text-yellow-400">({t('printModal.filamentColorMismatch')})</span>
+          <span className="text-xs text-yellow-700 dark:text-yellow-400">({t('printModal.filamentColorMismatch')})</span>
         ) : (
           <span className="text-xs text-bambu-green">({t('printModal.filamentReady')})</span>
         )}
@@ -241,8 +241,8 @@ export function FilamentMapping({
                     item.status === 'match'
                       ? 'border-bambu-green/50 text-bambu-green'
                       : item.status === 'type_only'
-                      ? 'border-yellow-400/50 text-yellow-400'
-                      : 'border-orange-400/50 text-orange-400'
+                      ? 'border-yellow-500 dark:border-yellow-400/50 text-yellow-700 dark:text-yellow-400'
+                      : 'border-orange-500 dark:border-orange-400/50 text-orange-700 dark:text-orange-400'
                   } ${item.isManual ? 'ring-1 ring-blue-400/50' : ''}`}
                   title={item.isManual ? t('printModal.manuallySelected') : t('printModal.autoMatched')}
                 >
@@ -291,11 +291,11 @@ export function FilamentMapping({
                   <Check className="w-3 h-3 text-bambu-green" />
                 ) : item.status === 'type_only' ? (
                   <span title={t('printModal.sameTypeDifferentColor')}>
-                    <AlertTriangle className="w-3 h-3 text-yellow-400" />
+                    <AlertTriangle className="w-3 h-3 text-yellow-600 dark:text-yellow-400" />
                   </span>
                 ) : (
                   <span title={t('printModal.filamentTypeNotLoaded')}>
-                    <AlertTriangle className="w-3 h-3 text-orange-400" />
+                    <AlertTriangle className="w-3 h-3 text-orange-600 dark:text-orange-400" />
                   </span>
                 )}
               </div>
@@ -322,7 +322,7 @@ export function FilamentMapping({
             </span>
           </div>
           {hasTypeMismatch && (
-            <p className="text-xs text-orange-400 mt-2">{t('printModal.filamentTypeMismatch')}</p>
+            <p className="text-xs text-orange-700 dark:text-orange-400 mt-2">{t('printModal.filamentTypeMismatch')}</p>
           )}
         </div>
       )}

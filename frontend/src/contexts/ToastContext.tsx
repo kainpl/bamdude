@@ -55,10 +55,10 @@ export function useToast() {
 }
 
 const icons = {
-  success: <CheckCircle className="w-5 h-5 text-green-400" />,
-  error: <XCircle className="w-5 h-5 text-red-400" />,
-  warning: <AlertCircle className="w-5 h-5 text-yellow-400" />,
-  info: <Info className="w-5 h-5 text-blue-400" />,
+  success: <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400" />,
+  error: <XCircle className="w-5 h-5 text-red-600 dark:text-red-400" />,
+  warning: <AlertCircle className="w-5 h-5 text-yellow-600 dark:text-yellow-400" />,
+  info: <Info className="w-5 h-5 text-blue-600 dark:text-blue-400" />,
   loading: <Loader2 className="w-5 h-5 text-bambu-green animate-spin" />,
 };
 
@@ -567,7 +567,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                                 <button
                                   onClick={() => void cancelDispatchJob(job.jobId)}
                                   disabled={cancellingDispatchJobIds.has(job.jobId)}
-                                  className="text-[11px] text-red-300 hover:text-red-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                                  className="text-[11px] text-red-700 dark:text-red-300 hover:text-red-800 dark:hover:text-red-200 disabled:opacity-50 disabled:cursor-not-allowed"
                                   title={t('backgroundDispatch.cancelDispatchJob')}
                                 >
                                   {cancellingDispatchJobIds.has(job.jobId)

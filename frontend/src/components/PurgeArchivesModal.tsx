@@ -135,7 +135,7 @@ export function PurgeArchivesModal({ onClose }: PurgeArchivesModalProps) {
               {t('archivePurge.ageHint')}
             </p>
             {!autoEnabled && (
-              <p className="text-xs text-amber-300 mt-1">{t('archivePurge.autoDisabledHint')}</p>
+              <p className="text-xs text-amber-700 dark:text-amber-300 mt-1">{t('archivePurge.autoDisabledHint')}</p>
             )}
           </div>
 
@@ -157,7 +157,7 @@ export function PurgeArchivesModal({ onClose }: PurgeArchivesModalProps) {
                 <Loader2 className="w-4 h-4 animate-spin" /> {t('archivePurge.previewLoading')}
               </div>
             ) : previewQuery.isError ? (
-              <div className="text-sm text-red-400">
+              <div className="text-sm text-red-700 dark:text-red-400">
                 {(previewQuery.error as Error | null)?.message ?? t('archivePurge.previewFailed')}
               </div>
             ) : (
@@ -176,7 +176,7 @@ export function PurgeArchivesModal({ onClose }: PurgeArchivesModalProps) {
             )}
           </div>
 
-          <div className="flex gap-2 items-start text-xs text-amber-200 bg-amber-900/20 border border-amber-700/40 rounded px-3 py-2">
+          <div className="flex gap-2 items-start text-xs text-amber-800 dark:text-amber-200 bg-amber-900/20 border border-amber-700/40 rounded px-3 py-2">
             <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
             <span>{t('archivePurge.warning')}</span>
           </div>

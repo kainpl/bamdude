@@ -13,8 +13,8 @@ interface SpoolUsageHistoryProps {
 
 const STATUS_COLORS: Record<string, string> = {
   completed: 'text-bambu-green',
-  failed: 'text-red-400',
-  aborted: 'text-yellow-400',
+  failed: 'text-red-700 dark:text-red-400',
+  aborted: 'text-yellow-700 dark:text-yellow-400',
 };
 
 export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
@@ -84,7 +84,7 @@ export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
           size="sm"
           onClick={() => clearMutation.mutate()}
           disabled={clearMutation.isPending}
-          className="text-xs text-bambu-gray hover:text-red-400"
+          className="text-xs text-bambu-gray hover:text-red-700 dark:hover:text-red-400"
         >
           <Trash2 className="w-3 h-3 mr-1" />
           {t('inventory.clearHistory')}
@@ -116,7 +116,7 @@ export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
                 disabled={deleteRowMutation.isPending}
                 title={t('inventory.deleteUsageRecord')}
                 aria-label={t('inventory.deleteUsageRecord')}
-                className="text-bambu-gray/40 hover:text-red-400 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity disabled:opacity-30"
+                className="text-bambu-gray/40 hover:text-red-600 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity disabled:opacity-30"
               >
                 <X className="w-3.5 h-3.5" />
               </button>

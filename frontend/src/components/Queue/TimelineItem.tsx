@@ -91,8 +91,8 @@ export function TimelineItem({
           style={{ left: labelOffset, width: labelWidth }}
         >
           {estimated && <HelpCircle className="w-3 h-3 text-bambu-gray shrink-0" />}
-          {item.manual_start && <Hand className="w-3 h-3 text-yellow-400 shrink-0" />}
-          {item.waiting_reason && <AlertTriangle className="w-3 h-3 text-yellow-400 shrink-0" />}
+          {item.manual_start && <Hand className="w-3 h-3 text-yellow-600 dark:text-yellow-400 shrink-0" />}
+          {item.waiting_reason && <AlertTriangle className="w-3 h-3 text-yellow-600 dark:text-yellow-400 shrink-0" />}
           <span className="truncate text-xs text-white min-w-0">{title}</span>
           {batchTotal > 1 && (
             <span className="ml-auto shrink-0 text-[10px] text-bambu-gray-light bg-bambu-dark/60 px-1 rounded">

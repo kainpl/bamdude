@@ -1101,7 +1101,7 @@ export function ModelViewer({
 
       {error && (
         <div className="absolute inset-0 flex items-center justify-center bg-bambu-dark/80">
-          <p className="text-red-400">{error}</p>
+          <p className="text-red-700 dark:text-red-400">{error}</p>
         </div>
       )}
 

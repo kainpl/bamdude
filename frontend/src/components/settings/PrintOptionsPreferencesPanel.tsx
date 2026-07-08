@@ -216,7 +216,7 @@ export function PrintOptionsPreferencesPanel() {
                     <button
                       type="button"
                       onClick={() => handleDelete(entry)}
-                      className="p-1.5 text-bambu-gray hover:text-red-400 hover:bg-bambu-dark-tertiary rounded"
+                      className="p-1.5 text-bambu-gray hover:text-red-600 dark:hover:text-red-400 hover:bg-bambu-dark-tertiary rounded"
                       title={t('common.delete')}
                     >
                       <Trash2 className="w-4 h-4" />
@@ -421,7 +421,7 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
               </select>
             )}
             {collidesWithExisting && (
-              <p className="text-xs text-red-400 mt-1">{t('printOptionsPrefs.alreadyExists')}</p>
+              <p className="text-xs text-red-700 dark:text-red-400 mt-1">{t('printOptionsPrefs.alreadyExists')}</p>
             )}
           </div>
         </div>

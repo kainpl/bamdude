@@ -732,7 +732,7 @@ export function CameraPage() {
           {isReconnecting && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-10">
               <div className="text-center p-4">
-                <WifiOff className="w-10 h-10 text-orange-400 mx-auto mb-3" />
+                <WifiOff className="w-10 h-10 text-orange-600 dark:text-orange-400 mx-auto mb-3" />
                 <p className="text-white mb-2">{t('camera.connectionLost')}</p>
                 <p className="text-sm text-bambu-gray mb-3">
                   {t('camera.reconnecting', { countdown: reconnectCountdown, attempt: Math.min(reconnectAttempts + 1, MAX_RECONNECT_ATTEMPTS), max: MAX_RECONNECT_ATTEMPTS })}
@@ -749,7 +749,7 @@ export function CameraPage() {
           {streamError && !isReconnecting && (
             <div className="absolute inset-0 flex items-center justify-center bg-black z-10">
               <div className="text-center p-4">
-                <AlertTriangle className="w-12 h-12 text-orange-400 mx-auto mb-3" />
+                <AlertTriangle className="w-12 h-12 text-orange-600 dark:text-orange-400 mx-auto mb-3" />
                 <p className="text-white mb-2">{t('camera.cameraUnavailable')}</p>
                 <p className="text-xs text-bambu-gray mb-4 max-w-md">
                   {t('camera.cameraUnavailableDesc')}

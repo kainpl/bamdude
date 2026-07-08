@@ -190,7 +190,7 @@ class ErrorBoundary extends React.Component<
             <p className="text-bambu-gray text-sm mb-4">{this.state.error?.message}</p>
             <details className="text-left mb-4">
               <summary className="text-xs text-bambu-gray cursor-pointer">Stack trace</summary>
-              <pre className="mt-2 text-xs text-red-400 overflow-auto max-h-48 p-2 bg-bambu-dark rounded">
+              <pre className="mt-2 text-xs text-red-700 dark:text-red-400 overflow-auto max-h-48 p-2 bg-bambu-dark rounded">
                 {this.state.error?.stack}
               </pre>
             </details>

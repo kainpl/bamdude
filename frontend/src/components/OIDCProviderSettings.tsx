@@ -76,21 +76,21 @@ function ProviderForm({
     <div className="space-y-4">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
-          <label className={labelCls}>{t('settings.oidc.form.name')} <span className="text-red-400">*</span></label>
+          <label className={labelCls}>{t('settings.oidc.form.name')} <span className="text-red-700 dark:text-red-400">*</span></label>
           <input className={inputCls} value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="Google" />
         </div>
         <div>
-          <label className={labelCls}>{t('settings.oidc.form.issuerUrl')} <span className="text-red-400">*</span></label>
+          <label className={labelCls}>{t('settings.oidc.form.issuerUrl')} <span className="text-red-700 dark:text-red-400">*</span></label>
           <input className={inputCls} value={form.issuer_url} onChange={(e) => set('issuer_url', e.target.value)} placeholder="https://accounts.google.com" />
         </div>
         <div>
-          <label className={labelCls}>{t('settings.oidc.form.clientId')} <span className="text-red-400">*</span></label>
+          <label className={labelCls}>{t('settings.oidc.form.clientId')} <span className="text-red-700 dark:text-red-400">*</span></label>
           <input className={inputCls} value={form.client_id} onChange={(e) => set('client_id', e.target.value)} placeholder="your-client-id" />
         </div>
         <div>
           <label className={labelCls}>
             {t('settings.oidc.form.clientSecret')}
-            {!isEdit && <span className="text-red-400"> *</span>}
+            {!isEdit && <span className="text-red-700 dark:text-red-400"> *</span>}
             {isEdit && <span className="text-bambu-gray text-xs ml-1">({t('settings.oidc.form.secretHint')})</span>}
           </label>
           <input
@@ -327,7 +327,7 @@ export function OIDCProviderSettings() {
                 <div className="flex items-center gap-2">
                   <h4 className="text-white font-medium">{provider.name}</h4>
                   {provider.is_enabled ? (
-                    <span className="flex items-center gap-1 text-xs text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full">
+                    <span className="flex items-center gap-1 text-xs text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-400/10 px-2 py-0.5 rounded-full">
                       <Check className="w-3 h-3" /> {t('common.enabled')}
                     </span>
                   ) : (
@@ -402,13 +402,13 @@ export function OIDCProviderSettings() {
                 </div>
                 <div>
                   <dt className="text-bambu-gray">{t('settings.oidc.form.autoCreate')}</dt>
-                  <dd className={provider.auto_create_users ? 'text-green-400' : 'text-bambu-gray'}>
+                  <dd className={provider.auto_create_users ? 'text-green-700 dark:text-green-400' : 'text-bambu-gray'}>
                     {provider.auto_create_users ? t('common.yes') : t('common.no')}
                   </dd>
                 </div>
                 <div>
                   <dt className="text-bambu-gray">{t('settings.oidc.form.autoLink')}</dt>
-                  <dd className={provider.auto_link_existing_accounts ? 'text-green-400' : 'text-bambu-gray'}>
+                  <dd className={provider.auto_link_existing_accounts ? 'text-green-700 dark:text-green-400' : 'text-bambu-gray'}>
                     {provider.auto_link_existing_accounts ? t('common.yes') : t('common.no')}
                   </dd>
                 </div>

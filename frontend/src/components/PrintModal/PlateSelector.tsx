@@ -57,7 +57,7 @@ export function PlateSelector({
           {multiSelect ? t('printModal.selectPlatesToPrint') : t('printModal.selectPlateToPrint')}
         </span>
         {selectedPlates.size === 0 && (
-          <span className="text-xs text-orange-400 flex items-center gap-1">
+          <span className="text-xs text-orange-700 dark:text-orange-400 flex items-center gap-1">
             <AlertTriangle className="w-3 h-3" />
             {t('printModal.selectionRequired')}
           </span>

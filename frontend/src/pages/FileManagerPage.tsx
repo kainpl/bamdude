@@ -297,7 +297,7 @@ function RenameModal({ type, currentName, onClose, onSave, isLoading, t }: Renam
               )}
             </div>
             {invalidChar && (
-              <p className="mt-1 text-sm text-red-400">
+              <p className="mt-1 text-sm text-red-700 dark:text-red-400">
                 {t('fileManager.invalidFilenameChar', { char: invalidChar })}
               </p>
             )}
@@ -554,7 +554,7 @@ function LinkFolderModal({ folder, onClose, onLink, isLoading, t }: LinkFolderMo
                   <button
                     type="button"
                     onClick={() => setSelectedArchiveId(null)}
-                    className="p-1 rounded hover:bg-bambu-dark-tertiary text-bambu-gray hover:text-red-400"
+                    className="p-1 rounded hover:bg-bambu-dark-tertiary text-bambu-gray hover:text-red-600 dark:hover:text-red-400"
                     title={t('fileManager.unlink')}
                   >
                     <X className="w-4 h-4" />
@@ -760,7 +760,7 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
           <div className="w-4.5" />
         )}
         {isExternal ? (
-          <FolderSymlink className="w-4 h-4 text-purple-400 flex-shrink-0" />
+          <FolderSymlink className="w-4 h-4 text-purple-600 dark:text-purple-400 flex-shrink-0" />
         ) : (
           <FolderOpen className="w-4 h-4 text-bambu-green flex-shrink-0" />
         )}
@@ -769,7 +769,7 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
             metadata, kept adjacent to the name. */}
         {isExternal && folder.external_readonly && (
           <span title={t('fileManager.readOnly')}>
-            <Lock className="w-3 h-3 text-amber-400 flex-shrink-0" />
+            <Lock className="w-3 h-3 text-amber-600 dark:text-amber-400 flex-shrink-0" />
           </span>
         )}
         {/* Order across all rows is strictly: link/unlink → count → menu,
@@ -779,7 +779,7 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
         {isLinked ? (
           <button
             onClick={(e) => { e.stopPropagation(); onLink(folder); }}
-            className="flex-shrink-0 flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors"
+            className="flex-shrink-0 flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400 hover:bg-blue-200 dark:hover:bg-blue-500/30 transition-colors"
             title={
               folder.projects.length > 0
                 ? folder.projects.map(p => p.name).join(', ')
@@ -848,7 +848,7 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
                 </button>
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                    hasPermission('library:delete_all') ? 'text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                    hasPermission('library:delete_all') ? 'text-red-700 dark:text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
                   }`}
                   onClick={() => { if (hasPermission('library:delete_all')) { onDelete(folder.id); setShowActions(false); } }}
                   disabled={!hasPermission('library:delete_all')}
@@ -1088,7 +1088,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
               </button>
             )}
             <button
-              className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${canModify('library', 'delete', file.created_by_id) ? 'text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
+              className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${canModify('library', 'delete', file.created_by_id) ? 'text-red-700 dark:text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
               onClick={() => { if (canModify('library', 'delete', file.created_by_id)) { onDelete(file.id); setOpen(false); } }}
               disabled={!canModify('library', 'delete', file.created_by_id)}
             >
@@ -1443,7 +1443,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
               )}
               <button
                 className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                  canModify('library', 'delete', file.created_by_id) ? 'text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                  canModify('library', 'delete', file.created_by_id) ? 'text-red-700 dark:text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
                 }`}
                 onClick={() => { if (canModify('library', 'delete', file.created_by_id)) { onDelete(file.id); setShowActions(false); } }}
                 disabled={!canModify('library', 'delete', file.created_by_id)}
@@ -2360,12 +2360,12 @@ export function FileManagerPage() {
             <span className="text-white font-medium">{stats.total_files}</span>
           </div>
           <div className="flex items-center gap-2 text-sm">
-            <FolderOpen className="w-4 h-4 text-blue-400" />
+            <FolderOpen className="w-4 h-4 text-blue-600 dark:text-blue-400" />
             <span className="text-bambu-gray">{t('fileManager.folders')}:</span>
             <span className="text-white font-medium">{stats.total_folders}</span>
           </div>
           <div className="flex items-center gap-2 text-sm">
-            <HardDrive className="w-4 h-4 text-amber-400" />
+            <HardDrive className="w-4 h-4 text-amber-600 dark:text-amber-400" />
             <span className="text-bambu-gray">{t('fileManager.size')}:</span>
             <span className="text-white font-medium">{formatFileSize(stats.total_size_bytes)}</span>
           </div>
@@ -2552,7 +2552,7 @@ export function FileManagerPage() {
                   setTopLevelView('external');
                 }}
               >
-                <FolderSymlink className="w-4 h-4 text-purple-400" />
+                <FolderSymlink className="w-4 h-4 text-purple-600 dark:text-purple-400" />
                 <span className="text-sm">{t('fileManager.allExternal')}</span>
               </div>
             )}
@@ -2600,13 +2600,13 @@ export function FileManagerPage() {
           {selectedFolder && <FolderReadmePanel folderId={selectedFolder.id} />}
           {/* External folder info bar */}
           {selectedFolder?.is_external && (
-            <div className="flex items-center gap-3 mb-4 p-3 bg-purple-500/10 border border-purple-500/30 rounded-lg">
-              <FolderSymlink className="w-5 h-5 text-purple-400 flex-shrink-0" />
+            <div className="flex items-center gap-3 mb-4 p-3 bg-purple-50 dark:bg-purple-500/10 border border-purple-300 dark:border-purple-500/30 rounded-lg">
+              <FolderSymlink className="w-5 h-5 text-purple-600 dark:text-purple-400 flex-shrink-0" />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-purple-300">{t('fileManager.externalFolder')}</span>
+                  <span className="text-sm font-medium text-purple-700 dark:text-purple-300">{t('fileManager.externalFolder')}</span>
                   {selectedFolder.external_readonly && (
-                    <span className="text-xs px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 flex items-center gap-1">
+                    <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 flex items-center gap-1">
                       <Lock className="w-3 h-3" />
                       {t('fileManager.readOnly')}
                     </span>
@@ -3199,10 +3199,10 @@ export function FileManagerPage() {
                           className="p-1.5 rounded bg-blue-500/20 hover:bg-blue-500/30 flex items-center gap-1 transition-colors"
                           title={t('fileManager.linkedToNProjects', { count: file.project_ids.length })}
                         >
-                          <Link2 className="w-4 h-4 text-blue-400" />
-                          <Briefcase className="w-3.5 h-3.5 text-blue-400" />
+                          <Link2 className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                          <Briefcase className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
                           {file.project_ids.length > 1 && (
-                            <span className="text-[10px] font-semibold text-blue-400">
+                            <span className="text-[10px] font-semibold text-blue-700 dark:text-blue-400">
                               ×{file.project_ids.length}
                             </span>
                           )}

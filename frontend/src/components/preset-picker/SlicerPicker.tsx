@@ -84,7 +84,7 @@ function SlicerPickerCard({
     : isDisabled
       ? 'border-bambu-dark-tertiary bg-bambu-dark/50 opacity-60 cursor-not-allowed'
       : 'border-bambu-dark-tertiary bg-bambu-dark hover:border-bambu-gray/50';
-  const iconClass = selected ? 'text-bambu-green' : healthy ? 'text-bambu-gray' : 'text-red-400';
+  const iconClass = selected ? 'text-bambu-green' : healthy ? 'text-bambu-gray' : 'text-red-700 dark:text-red-400';
   const titleClass = selected ? 'text-white' : 'text-bambu-gray';
   const descClass = selected ? 'text-bambu-gray' : 'text-bambu-gray/60';
 
