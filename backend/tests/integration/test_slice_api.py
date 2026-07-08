@@ -356,6 +356,145 @@ class TestEmbeddedSettingsFallback:
         assert terminal["error_status"] == 502
         assert call_count["n"] == 1
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_3mf_content_rejection_does_not_fall_back(
+        self, async_client: AsyncClient, db_session, slice_test_setup
+    ):
+        """#1851: when the CLI ran and *rejected* the job for a content reason
+        (marker present), the chosen presets were applied — falling back to the
+        3MF's embedded settings would silently re-slice for the source's
+        original printer. The job must fail (400) with the mined CLI reason and
+        NOT retry via ``slice_without_profiles``."""
+        src_path = slice_test_setup["tmp_path"] / "library" / "files" / "Reject.3mf"
+        src_path.write_bytes(_make_3mf_with_settings())
+        threemf = LibraryFile(
+            filename="Reject.3mf",
+            file_path=str(src_path.relative_to(slice_test_setup["tmp_path"])),
+            file_type="3mf",
+            file_size=src_path.stat().st_size,
+        )
+        db_session.add(threemf)
+        await db_session.commit()
+        await db_session.refresh(threemf)
+
+        call_count = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            call_count["n"] += 1
+            return httpx.Response(
+                status_code=500,
+                json={
+                    "message": (
+                        "Slicing failed with error from slicer: The input preset file is invalid and can not be parsed."
+                    ),
+                    "details": (
+                        "Slicer process failed (exit code 251)\n"
+                        "stdout: [2026-06-29 04:12:12.175810] [error] run 3008: filament preset "
+                        "Generic PLA @BBL H2C (slot 1) is not compatible with printer "
+                        "Bambu Lab A1 0.4 nozzle.\n"
+                        "run found error, return -5, exit..."
+                    ),
+                },
+            )
+
+        _install_mock_sidecar(handler)
+        response = await async_client.post(
+            f"/api/v1/library/files/{threemf.id}/slice",
+            json={
+                "printer_preset_id": slice_test_setup["printer_id"],
+                "process_preset_id": slice_test_setup["process_id"],
+                "filament_preset_id": slice_test_setup["filament_id"],
+            },
+        )
+        assert response.status_code == 202
+        terminal = await _wait_for_job(async_client, response.json()["job_id"])
+        assert terminal["status"] == "failed"
+        assert terminal["error_status"] == 400
+        # The generic placeholder is replaced with the real CLI diagnostic.
+        assert "not compatible with printer Bambu Lab A1" in terminal["error_detail"]
+        # No embedded-settings fallback — one sidecar call only.
+        assert call_count["n"] == 1
+
+
+class TestSlicerRejectionMessage:
+    """Unit coverage for ``_slicer_rejection_message`` — the CLI-rejection
+    surfacing (#1851). Fed the ``str(SlicerApiServerError)`` shape our
+    ``_format_sidecar_error`` produces."""
+
+    @staticmethod
+    def _reject(text: str):
+        from backend.app.api.routes.library import _slicer_rejection_message
+
+        return _slicer_rejection_message(text)
+
+    def test_returns_none_without_marker(self):
+        # No "Slicing failed with error from slicer:" marker → not a content
+        # rejection, so the caller's embedded-settings fallback still fires.
+        assert self._reject("") is None
+        assert self._reject("Slicer sidecar unreachable: connection reset") is None
+        assert self._reject("Slicer CLI failed (500): Failed to slice — bad config") is None
+
+    def test_replaces_input_preset_invalid_placeholder_with_cli_error_line(self):
+        # The CLI emits its catch-all "input preset file is invalid" placeholder
+        # for every -5 exit, including real preset-vs-printer compatibility
+        # rejections. The actual diagnostic only appears in the stdout
+        # ``[error] run NNNN:`` line; the function must prefer that.
+        text = (
+            "Slicer CLI failed (500): Slicing failed with error from slicer: "
+            "The input preset file is invalid and can not be parsed.: "
+            "Slicer process failed (exit code 251)\n"
+            "stdout: [2026-06-29 04:12:11.952784] [trace] Initializing StaticPrintConfigs\n"
+            "[2026-06-29 04:12:12.175810] [error] run 3008: filament preset "
+            "Generic PLA @BBL H2C (slot 1) is not compatible with printer "
+            "Bambu Lab A1 0.4 nozzle.\n"
+            "run found error, return -5, exit..."
+        )
+        assert self._reject(text) == (
+            "filament preset Generic PLA @BBL H2C (slot 1) is not compatible with printer Bambu Lab A1 0.4 nozzle."
+        )
+
+    def test_replaces_placeholder_with_bamdude_dash_joined_shape(self):
+        # BamDude's ``_format_sidecar_error`` joins the sidecar ``message`` /
+        # ``details`` fields with " — ". The placeholder + junk still resolves
+        # to the mined CLI diagnostic through the " — " separator.
+        text = (
+            "Slicer CLI failed (500): Slicing failed with error from slicer: "
+            "The input preset file is invalid and can not be parsed. — "
+            "Slicer process failed (exit code 251)\n"
+            "stdout: [2026-06-29 04:12:12.175810] [error] run 3008: filament preset "
+            "Generic PLA @BBL H2C (slot 1) is not compatible with printer "
+            "Bambu Lab A1 0.4 nozzle.\n"
+            "run found error, return -5, exit..."
+        )
+        assert self._reject(text) == (
+            "filament preset Generic PLA @BBL H2C (slot 1) is not compatible with printer Bambu Lab A1 0.4 nozzle."
+        )
+
+    def test_keeps_meaningful_reason_even_when_cli_error_line_present(self):
+        # When the headline error_string is already a useful reason (here the
+        # bed-boundary rejection), don't override it with a generic ``[error]``
+        # line that may just restate the same message. Avoids double-text.
+        text = (
+            "Slicer CLI failed (500): Slicing failed with error from slicer: "
+            "Some objects are located over the boundary of the heated bed.: "
+            "Slicer process failed (exit code 204)\n"
+            "stdout: [error] some unrelated stdout chatter"
+        )
+        assert self._reject(text) == "Some objects are located over the boundary of the heated bed."
+
+    def test_cli_error_line_without_run_prefix(self):
+        # The CLI sometimes logs ``[error] <msg>`` without the ``run NNNN:``
+        # prefix (different code paths). The regex must still pick it up.
+        text = (
+            "Slicer CLI failed (500): Slicing failed with error from slicer: "
+            "The input preset file is invalid and can not be parsed.: "
+            "Slicer process failed (exit code 251)\n"
+            "stdout: [2026-06-29 12:00:00.000000] [error] Configuration parse failed: "
+            "missing key 'printer_settings_id'"
+        )
+        assert self._reject(text) == "Configuration parse failed: missing key 'printer_settings_id'"
+
 
 # ---------------------------------------------------------------------------
 # POST /archives/{id}/slice
