@@ -3703,6 +3703,11 @@ export interface PrintOptionsPreferenceData {
     mesh_mode_fast_check: boolean;
     gcode_injection: boolean;
     nozzle_offset_cali: boolean;  // Dual-nozzle printers only (#1682)
+    // Per-item preheat / heat-soak override (#1468). 'inherit' follows the
+    // global Settings → Printing toggle; 'on'/'off' force it. Target override
+    // (°C, 0–60) bypasses the per-filament-type chamber derivation; null keeps it.
+    preheat_override: 'inherit' | 'on' | 'off';
+    preheat_chamber_target_override: number | null;
   };
   swap_macros: {
     execute: boolean;

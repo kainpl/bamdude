@@ -12,7 +12,7 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Trash2, Pencil, Copy } from 'lucide-react';
+import { Plus, Trash2, Pencil, Copy, Flame } from 'lucide-react';
 import {
   api,
   type Printer,
@@ -37,6 +37,8 @@ const DEFAULT_PRINT_OPTIONS: PrintOptionsPreferenceData = {
     mesh_mode_fast_check: true,
     gcode_injection: false,
     nozzle_offset_cali: true,
+    preheat_override: 'inherit',
+    preheat_chamber_target_override: null,
   },
   swap_macros: {
     execute: true,
@@ -263,6 +265,9 @@ function summariseOptions(
   if (data.print_options.timelapse) enabled.push(t('printModal.timelapse'));
   if (data.print_options.mesh_mode_fast_check) enabled.push(t('printModal.meshModeFastCheck'));
   if (data.print_options.gcode_injection) enabled.push(t('printModal.gcodeInjection'));
+  if (data.print_options.preheat_override && data.print_options.preheat_override !== 'inherit') {
+    enabled.push(`${t('settings.preheatTitle')}: ${t('settings.preheatOverride_' + data.print_options.preheat_override)}`);
+  }
   if (data.swap_macros.execute && data.swap_macros.events.length > 0) {
     enabled.push(`${t('printModal.swapMacros')} (${data.swap_macros.events.length})`);
   }
@@ -359,6 +364,38 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
     });
   };
 
+  const setPreheatOverride = (next: 'inherit' | 'on' | 'off') => {
+    setData((prev) => ({
+      ...prev,
+      print_options: {
+        ...prev.print_options,
+        preheat_override: next,
+        // Clearing to 'off' drops the chamber-target override so the row
+        // doesn't carry a stale value if it's re-enabled later.
+        ...(next === 'off' ? { preheat_chamber_target_override: null } : {}),
+      },
+    }));
+  };
+
+  const setPreheatTarget = (raw: string) => {
+    if (raw === '') {
+      setData((prev) => ({
+        ...prev,
+        print_options: { ...prev.print_options, preheat_chamber_target_override: null },
+      }));
+      return;
+    }
+    const parsed = parseInt(raw, 10);
+    if (Number.isNaN(parsed)) return;
+    setData((prev) => ({
+      ...prev,
+      print_options: {
+        ...prev.print_options,
+        preheat_chamber_target_override: Math.max(0, Math.min(60, parsed)),
+      },
+    }));
+  };
+
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={onClose}>
       <div
@@ -450,6 +487,45 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
               </label>
             ))}
           </div>
+        </div>
+
+        <div className="border-t border-bambu-dark-tertiary pt-3 mb-4">
+          <div className="flex items-center gap-2 mb-1">
+            <Flame className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+            <h4 className="text-sm font-medium text-white">{t('settings.preheatTitle')}</h4>
+          </div>
+          <p className="text-xs text-bambu-gray mb-2">{t('settings.preheatPerItemDesc')}</p>
+          <div className="flex gap-1.5 mb-2">
+            {(['inherit', 'on', 'off'] as const).map((opt) => (
+              <button
+                key={opt}
+                type="button"
+                onClick={() => setPreheatOverride(opt)}
+                className={`flex-1 px-2 py-1.5 text-xs rounded transition-colors ${
+                  data.print_options.preheat_override === opt
+                    ? 'bg-bambu-green text-black'
+                    : 'bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray hover:text-white'
+                }`}
+              >
+                {t(`settings.preheatOverride_${opt}`)}
+              </button>
+            ))}
+          </div>
+          {data.print_options.preheat_override !== 'off' && (
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-bambu-gray flex-1">{t('settings.preheatTargetOverride')}</label>
+              <input
+                type="number"
+                min={0}
+                max={60}
+                step={1}
+                value={data.print_options.preheat_chamber_target_override ?? ''}
+                onChange={(e) => setPreheatTarget(e.target.value)}
+                placeholder="—"
+                className="w-16 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-xs text-right focus:outline-none focus:border-bambu-green"
+              />
+            </div>
+          )}
         </div>
 
         {swapEligible && !isSystemRow && (

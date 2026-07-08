@@ -8,6 +8,10 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The Print dialog now remembers your Preheat & heat-soak choice per printer model.** The per-print Preheat override (Inherit / On / Off) and its optional chamber-target join the print-option toggles that were already saved per model — so they're persisted when you print, queue, or auto-queue a job and restored the next time you open the dialog for that model. Admins can also pre-set or edit them per user (and for the virtual-printer system fallback) under **Settings → Print → Saved Print Options Profiles**.
+
 ### Fixed
 
 - **The Heater History window's "Current" reading is now live, not a stale history sample.** The big "Current" value (and its target) was pulled from the last *recorded* history point, which only refreshes about once a minute, so it lagged behind the real-time temperature on the printer card (e.g. the card showed 254 °C while the window showed 256 °C). It now reads the same live MQTT value as the card, and a thermometer icon in front of the number fills and glows when that heater is actively on (empty outline when idle) — the same indicator the printer card uses.

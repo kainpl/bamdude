@@ -1,6 +1,7 @@
 """Schemas for per-(user, printer-model) saved PrintModal toggles."""
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -21,6 +22,13 @@ class PrintOptionsToggles(BaseModel):
     # Dual-nozzle-only toggle (#1682). Defaulted so preferences saved before it
     # existed still parse; the PrintModal only surfaces it on dual-nozzle printers.
     nozzle_offset_cali: bool = True
+    # Per-item preheat / heat-soak override (#1468). Defaulted so preferences
+    # saved before it existed still parse — 'inherit' means "follow the global
+    # Settings → Printing preheat_enabled toggle"; 'on'/'off' force the decision.
+    preheat_override: Literal["inherit", "on", "off"] = "inherit"
+    # Optional explicit chamber-target override (°C, 0–60). None keeps the
+    # per-filament-type derivation.
+    preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=60)
 
 
 class SwapMacrosPref(BaseModel):
