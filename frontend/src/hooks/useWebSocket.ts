@@ -1,10 +1,17 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api } from '../api/client';
+import { api, ApiError } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { useConnection } from '../contexts/ConnectionContext';
 import { useTranslation } from 'react-i18next';
 import { inventoryLocationsQueryKey } from '../utils/inventoryQueries';
+
+// The only auth-failure close code /api/v1/ws emits (backend websocket.py
+// _WS_CLOSE_UNAUTHORIZED). A 4401 means the ws-token was missing / invalid /
+// expired, or the caller lacks WEBSOCKET_CONNECT — none of which a reconnect
+// can fix without a fresh login (which remounts this provider anyway). Treat it
+// as terminal so we don't respawn the /auth/ws-token loop.
+const WS_CLOSE_UNAUTHORIZED = 4401;
 
 interface WebSocketMessage {
   type: string;
@@ -21,6 +28,11 @@ interface WebSocketMessage {
 export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
+  // Set true by the effect cleanup so a close event fired *during* unmount
+  // can't schedule a reconnect after the provider is gone (the old code closed
+  // the socket, whose ws.onclose then set a *fresh* reconnect timeout — a
+  // leaked reconnect that kept minting ws-tokens post-logout).
+  const disposedRef = useRef(false);
   const queryClient = useQueryClient();
   const [isConnected, setIsConnectedLocal] = useState(false);
   const { setIsConnected: setIsConnectedShared } = useConnection();
@@ -84,7 +96,7 @@ export function useWebSocket() {
   }, []);
 
   const connect = useCallback(async () => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
+    if (disposedRef.current || wsRef.current?.readyState === WebSocket.OPEN) {
       return;
     }
 
@@ -95,15 +107,32 @@ export function useWebSocket() {
     let token: string;
     try {
       ({ token } = await api.getWebSocketToken());
-    } catch {
-      // Can't mint a token (server down / not authenticated yet) — retry on the
-      // standard backoff instead of opening an unauthenticated socket.
+    } catch (err) {
+      // A 401/403 from the token mint is an AUTH decision, not a transient
+      // blip — retrying just hammers /auth/ws-token every 3s forever:
+      //   401 — the JWT expired. ``request()`` already cleared it and
+      //         dispatched ``bamdude:auth-invalidated``, so AuthContext is
+      //         redirecting to /login and this provider is about to unmount.
+      //   403 — the user is validly logged in but their group lacks
+      //         WEBSOCKET_CONNECT. They stay logged in; live updates simply
+      //         degrade to the REST polling the query cache already does.
+      // Either way: do NOT reconnect. A network/5xx error is not auth — keep
+      // the existing 3s backoff so a transient outage recovers (auth-disabled
+      // deployments never reach the ws-token gate).
+      const status = err instanceof ApiError ? err.status : 0;
+      if (status === 401 || status === 403) {
+        return;
+      }
       if (import.meta.env.MODE !== 'test') {
         console.warn('[WebSocket] Could not obtain connection token; retrying');
       }
       reconnectTimeoutRef.current = window.setTimeout(() => {
         connect();
       }, 3000);
+      return;
+    }
+
+    if (disposedRef.current) {
       return;
     }
 
@@ -190,6 +219,14 @@ export function useWebSocket() {
       sendPingRef.current = null;
       setIsConnected(false);
       wsRef.current = null;
+
+      // Don't reconnect after an auth rejection (4401) or once the provider has
+      // unmounted — both would just respawn the /auth/ws-token loop. A 4401 is
+      // terminal (needs a fresh login, which remounts us); every other close
+      // code is treated as a network drop and gets the 3s reconnect.
+      if (disposedRef.current || event.code === WS_CLOSE_UNAUTHORIZED) {
+        return;
+      }
 
       // Reconnect after 3 seconds
       reconnectTimeoutRef.current = window.setTimeout(() => {
@@ -546,6 +583,7 @@ export function useWebSocket() {
     // cancels this timer if StrictMode unmounts us before it fires, so
     // only the surviving mount's connect actually runs. In production
     // (no StrictMode) this is a harmless 0 ms delay.
+    disposedRef.current = false;
     const initTimer = window.setTimeout(connect, 0);
 
     // Visibility-sync: when the tab returns to the foreground we want
@@ -568,6 +606,9 @@ export function useWebSocket() {
     document.addEventListener('visibilitychange', onVisibilityChange);
 
     return () => {
+      // Mark disposed BEFORE closing so the ws.onclose triggered by close()
+      // sees it and won't schedule a post-unmount reconnect.
+      disposedRef.current = true;
       clearTimeout(initTimer);
       document.removeEventListener('visibilitychange', onVisibilityChange);
       if (reconnectTimeoutRef.current) {

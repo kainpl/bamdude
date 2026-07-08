@@ -92,6 +92,15 @@ class MockWebSocket {
       );
     }
   }
+
+  // Helper to simulate the server closing with a specific code (e.g. 4401,
+  // the /ws auth-rejection close code). Unlike close(), this carries a code.
+  simulateClose(code: number) {
+    this.readyState = MockWebSocket.CLOSED;
+    if (this.onclose) {
+      this.onclose(new CloseEvent('close', { code }));
+    }
+  }
 }
 
 // Create test QueryClient
@@ -639,6 +648,95 @@ describe('useWebSocket hook', () => {
       unmount();
 
       expect(ws.close).toHaveBeenCalled();
+    });
+
+    it('does NOT reconnect after an auth-rejection close (4401)', async () => {
+      // Regression: a 4401 (ws-token invalid/expired or caller lacks
+      // WEBSOCKET_CONNECT) used to reschedule connect() every 3s, spamming
+      // /auth/ws-token forever. It must be terminal now.
+      vi.useFakeTimers();
+
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+
+      const firstWs = await waitForWs();
+      act(() => {
+        firstWs.open();
+      });
+
+      const instanceCountBefore = wsInstances.length;
+
+      // Server rejects auth.
+      act(() => {
+        firstWs.simulateClose(4401);
+      });
+
+      // No reconnect even after the 3s window elapses.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      expect(wsInstances.length).toBe(instanceCountBefore);
+
+      vi.useRealTimers();
+    });
+
+    it('does NOT open a socket or reconnect when ws-token mint returns 403', async () => {
+      // An authenticated user whose group lacks WEBSOCKET_CONNECT. POST
+      // /auth/ws-token returns 403; the hook must NOT fall through to a
+      // tokenless socket (server closes it 4401) and must NOT enter the
+      // reconnect loop — it degrades to REST polling instead.
+      vi.useFakeTimers();
+
+      const { api, ApiError } = await import('../../api/client');
+      vi.mocked(api.getWebSocketToken).mockRejectedValueOnce(
+        new ApiError('Insufficient permissions', 403),
+      );
+
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+
+      // Flush the deferred connect + its token-mint rejection, then let the
+      // (would-be) reconnect window pass. No socket should ever be constructed.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      expect(wsInstances.length).toBe(0);
+
+      vi.useRealTimers();
+    });
+
+    it('does NOT reconnect when a close fires during unmount', async () => {
+      // The provider unmounting (e.g. logout redirect) must not leave a
+      // scheduled reconnect behind — the cleanup marks disposed before
+      // close(), so the resulting onclose is a no-op.
+      vi.useFakeTimers();
+
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      const { unmount } = renderHook(() => useWebSocket(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      const ws = await waitForWs();
+      act(() => {
+        ws.open();
+      });
+
+      const instanceCountBefore = wsInstances.length;
+
+      // Unmount closes the socket, which fires onclose synchronously.
+      act(() => {
+        unmount();
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      expect(wsInstances.length).toBe(instanceCountBefore);
+
+      vi.useRealTimers();
     });
   });
 });

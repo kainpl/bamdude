@@ -3,7 +3,7 @@ import { useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Layers, Clock, Timer, Printer } from 'lucide-react';
-import { api, withStreamToken } from '../api/client';
+import { api, ApiError, withStreamToken } from '../api/client';
 import type { PrinterStatus } from '../api/client';
 import { formatDuration, formatETA, type TimeFormat } from '../utils/date';
 
@@ -148,27 +148,56 @@ export function StreamOverlayPage() {
   useEffect(() => {
     if (!id) return;
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/v1/ws`;
-    const ws = new WebSocket(wsUrl);
+    let ws: WebSocket | null = null;
+    let cancelled = false;
 
-    ws.onmessage = (event) => {
+    // GHSA-r2qv follow-up: /api/v1/ws requires a short-lived token (the HTTP
+    // auth middleware can't gate the WebSocket upgrade). Mint one before
+    // connecting via api.getWebSocketToken so the JWT Authorization header
+    // rides along (a raw tokenless socket is closed 4401 by the server). An
+    // auth-disabled deployment succeeds even without a token.
+    (async () => {
+      let token: string | undefined;
       try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'printer_status' && data.printer_id === id) {
-          queryClient.setQueryData(['printerStatus', id], data.status);
-        }
-      } catch {
-        // Ignore parse errors
+        const resp = await api.getWebSocketToken();
+        token = resp.token;
+      } catch (err) {
+        // A 401 (JWT expired) / 403 (no WEBSOCKET_CONNECT permission) is an
+        // auth decision — a tokenless socket would just be closed 4401, so
+        // skip opening one and let the REST polling fallback keep the overlay
+        // fresh. There's no reconnect loop on this page, so this is purely
+        // avoiding one doomed socket per mount. A network/5xx error is not
+        // auth: fall through and try anyway (auth-disabled deployments land
+        // here with no token and connect fine).
+        const status = err instanceof ApiError ? err.status : 0;
+        if (status === 401 || status === 403) return;
       }
-    };
+      if (cancelled) return;
 
-    ws.onerror = () => {
-      // WebSocket error - polling will continue as fallback
-    };
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const tokenParam = token ? `?token=${encodeURIComponent(token)}` : '';
+      const wsUrl = `${protocol}//${window.location.host}/api/v1/ws${tokenParam}`;
+      ws = new WebSocket(wsUrl);
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'printer_status' && data.printer_id === id) {
+            queryClient.setQueryData(['printerStatus', id], data.status);
+          }
+        } catch {
+          // Ignore parse errors
+        }
+      };
+
+      ws.onerror = () => {
+        // WebSocket error - polling will continue as fallback
+      };
+    })();
 
     return () => {
-      ws.close();
+      cancelled = true;
+      if (ws) ws.close();
     };
   }, [id, queryClient]);
 

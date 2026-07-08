@@ -6,7 +6,7 @@
  * permissions granted) were deleted.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter } from 'react-router-dom';
@@ -15,6 +15,7 @@ import { server } from '../mocks/server';
 import { AuthProvider, useAuth } from '../../contexts/AuthContext';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { ToastProvider } from '../../contexts/ToastContext';
+import { getAuthToken, setAuthToken } from '../../api/client';
 import type { Permission } from '../../api/client';
 
 function createWrapper() {
@@ -119,6 +120,75 @@ describe('AuthContext', () => {
 
       expect(result.current.canModify('queue', 'update', 1)).toBe(false);
       expect(result.current.canModify('archives', 'delete', null)).toBe(false);
+    });
+  });
+
+  describe('token validation on mount (#1889)', () => {
+    beforeEach(() => {
+      // Persisted token lives in jsdom's real localStorage.
+      setAuthToken('valid-token');
+      server.use(
+        http.get('*/api/v1/auth/status', () =>
+          HttpResponse.json({ auth_enabled: true, requires_setup: false }),
+        ),
+      );
+    });
+
+    afterEach(() => {
+      setAuthToken(null);
+      localStorage.removeItem('auth_token');
+    });
+
+    it('keeps the stored token when /auth/me fails transiently (does not force re-login)', async () => {
+      // Backend not ready yet / brief blip → 500 on every attempt.
+      server.use(http.get('*/api/v1/auth/me', () => new HttpResponse(null, { status: 500 })));
+
+      const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() });
+
+      await waitFor(() => expect(result.current.loading).toBe(false), { timeout: 4000 });
+
+      // No user this load, but the token MUST survive so a reload can recover —
+      // the pre-#1889 blanket catch deleted it, making the session unrecoverable.
+      expect(result.current.user).toBeNull();
+      expect(getAuthToken()).toBe('valid-token');
+      expect(localStorage.getItem('auth_token')).toBe('valid-token');
+    });
+
+    it('clears the token on a definitive 401 invalid-token response', async () => {
+      server.use(
+        http.get('*/api/v1/auth/me', () =>
+          HttpResponse.json({ detail: 'Could not validate credentials' }, { status: 401 }),
+        ),
+      );
+
+      const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() });
+
+      await waitFor(() => expect(result.current.loading).toBe(false), { timeout: 4000 });
+
+      expect(result.current.user).toBeNull();
+      // Definitive invalid-token → token cleared from memory + localStorage.
+      expect(getAuthToken()).toBeNull();
+      expect(localStorage.getItem('auth_token')).toBeNull();
+    });
+
+    it('loads the user when the stored token is valid', async () => {
+      server.use(
+        http.get('*/api/v1/auth/me', () =>
+          HttpResponse.json({
+            id: 1,
+            username: 'alice',
+            is_active: true,
+            permissions: [],
+            groups: [],
+          }),
+        ),
+      );
+
+      const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() });
+
+      await waitFor(() => expect(result.current.user).not.toBeNull(), { timeout: 4000 });
+      expect(result.current.user?.username).toBe('alice');
+      expect(getAuthToken()).toBe('valid-token');
     });
   });
 });

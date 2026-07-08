@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { api, getAuthToken, setAuthToken } from '../api/client';
+import { ApiError, api, getAuthToken, setAuthToken } from '../api/client';
 import type { Permission, UserResponse } from '../api/client';
 
 interface AuthContextType {
@@ -53,14 +53,47 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       const token = getAuthToken();
       if (token) {
-        try {
-          const currentUser = await api.getCurrentUser();
-          if (!mountedRef.current) return;
+        // Validate the stored token. A transient failure here (backend not yet
+        // ready after a container/proxy restart, a brief network blip) must NOT
+        // discard a valid token — doing so logs the user out and, because the
+        // token is deleted, a reload can't recover it (#1889). Only a definitive
+        // 401 invalid-token clears the token, and ``request()`` already does
+        // that clearing (+ dispatches ``bamdude:auth-invalidated``); here we
+        // just retry the transient cases and keep the token so the session
+        // survives a slow load.
+        let currentUser: UserResponse | null = null;
+        let definitiveAuthFailure = false;
+        const maxAttempts = 3;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          try {
+            currentUser = await api.getCurrentUser();
+            break;
+          } catch (err) {
+            if (!mountedRef.current) return;
+            // 401 invalid-token → genuinely logged out. ``request()`` has
+            // already cleared the token; stop retrying.
+            if (err instanceof ApiError && err.status === 401) {
+              definitiveAuthFailure = true;
+              break;
+            }
+            // Transient (network / 5xx / other) → back off and retry. Leave the
+            // token in place so a subsequent load can recover.
+            if (attempt < maxAttempts) {
+              await new Promise((r) => setTimeout(r, 400 * attempt));
+            }
+          }
+        }
+        if (!mountedRef.current) return;
+        if (currentUser) {
           setUser(currentUser);
-        } catch {
-          // Token invalid/expired - drop it and force re-login.
-          setAuthToken(null);
-          if (!mountedRef.current) return;
+        } else {
+          // No user: either a definitive 401 (token already cleared by
+          // request()) or transient failures exhausted their retries. In the
+          // transient case we deliberately keep the token so a reload retries
+          // rather than forcing a re-login.
+          if (definitiveAuthFailure) {
+            setAuthToken(null);
+          }
           setUser(null);
         }
       } else {

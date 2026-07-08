@@ -342,7 +342,11 @@ async function request<T>(
       }
     }
 
-    throw new Error(message);
+    // Throw ApiError (not a bare Error) so callers can branch on the HTTP
+    // status — e.g. useWebSocket / AuthContext / StreamOverlayPage classify a
+    // 401/403 as a definitive AUTH decision (stop) vs a transient 5xx/network
+    // blip (retry), and InventoryPage keys 404/503 handling off ``err.status``.
+    throw new ApiError(message, response.status);
   }
 
   // Handle empty responses (204 No Content, etc.)
