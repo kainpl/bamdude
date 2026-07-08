@@ -3206,6 +3206,13 @@ class BambuMQTTClient:
                 target = self.state.temperatures.get("nozzle_target", 0)
                 self.state.temperatures["nozzle_heating"] = target > 0 and current < target
 
+            # Calculate bed_heating for non-H2 printers (H2 sets it from device.bed.info.temp above;
+            # standard printers only report bed_temper/bed_target_temper, so mirror the nozzle fallback).
+            if "bed" in temps and "bed_heating" not in temps:
+                current = self.state.temperatures.get("bed", 0)
+                target = self.state.temperatures.get("bed_target", 0)
+                self.state.temperatures["bed_heating"] = target > 0 and current < target
+
         # Parse HMS (Health Management System) errors
         if "hms" in data:
             hms_list = data["hms"]

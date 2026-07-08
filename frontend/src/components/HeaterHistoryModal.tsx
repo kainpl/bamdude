@@ -252,7 +252,7 @@ export function HeaterHistoryModal({
             <div className="rounded-lg p-4" style={{ backgroundColor: cardBg }}>
               <p className="text-xs" style={{ color: textSecondary }}>{t('common.current', 'Current')}</p>
               <div className="flex items-center gap-2">
-                {liveHeating != null && (
+                {liveValue != null && (
                   <span
                     className="flex shrink-0"
                     title={
@@ -261,7 +261,7 @@ export function HeaterHistoryModal({
                         : t('printers.heaterHistory.idle', 'Idle')
                     }
                   >
-                    <HeaterThermometer className="w-5 h-7" color={KIND_ICON_COLOR[kind]} isHeating={liveHeating} />
+                    <HeaterThermometer className="w-5 h-7" color={KIND_ICON_COLOR[kind]} isHeating={!!liveHeating} />
                   </span>
                 )}
                 <p className="text-2xl font-bold" style={{ color: KIND_COLORS[kind] }}>

@@ -11,6 +11,7 @@ All notable changes to BamDude will be documented in this file.
 ### Fixed
 
 - **The Heater History window's "Current" reading is now live, not a stale history sample.** The big "Current" value (and its target) was pulled from the last *recorded* history point, which only refreshes about once a minute, so it lagged behind the real-time temperature on the printer card (e.g. the card showed 254 °C while the window showed 256 °C). It now reads the same live MQTT value as the card, and a thermometer icon in front of the number fills and glows when that heater is actively on (empty outline when idle) — the same indicator the printer card uses.
+- **The bed heater indicator now works on non-H2 printers too.** The bed's live heating state was only derived for the H2 series, so on every other model the bed thermometer never reflected whether the bed was actively heating. It's now computed for all printers (heating = a target is set and the current temperature is still below it).
 
 ## [0.4.7b2] - 2026-07-08
 
