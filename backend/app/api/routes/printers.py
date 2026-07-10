@@ -1002,6 +1002,13 @@ async def get_printer_cover(
     from backend.app.models.archive import PrintArchive
 
     subtask_base = subtask_name.replace(".gcode.3mf", "").replace(".3mf", "")
+    # Bambu firmware reports subtask_name with spaces collapsed to underscores
+    # (e.g. plate name "Modular Panels rear" → "Modular_Panels_rear"), while the
+    # archive keeps the original spaced filename. So an exact match misses
+    # multi-plate prints whose plate name contains spaces — normalise both sides
+    # to underscores. Mirrors build_filename_candidates() in archive_download.py.
+    subtask_us = subtask_base.replace(" ", "_")
+    filename_us = func.replace(PrintArchive.filename, " ", "_")
     # No status filter: the printer state can be FINISH (archive already
     # flipped to "completed") while the UI still asks for the cover.  Also
     # require a non-empty file_path so a fallback row (3MF pending) doesn't
@@ -1016,6 +1023,8 @@ async def get_printer_cover(
                 PrintArchive.filename == f"{subtask_base}.gcode.3mf",
                 PrintArchive.filename == f"{subtask_base}.3mf",
                 PrintArchive.filename == subtask_name,
+                filename_us == f"{subtask_us}.gcode.3mf",
+                filename_us == f"{subtask_us}.3mf",
             )
         )
         .order_by(PrintArchive.created_at.desc())
