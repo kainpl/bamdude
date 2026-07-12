@@ -240,6 +240,24 @@ class TestPrintersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_unarchive_clears_flag_and_reconnects_if_active(
+        self, async_client: AsyncClient, printer_factory, db_session
+    ):
+        p = await printer_factory(name="Back", serial_number="ARCH05")
+        p.archived = True
+        p.is_active = True
+        await db_session.commit()
+        with patch("backend.app.api.routes.printers.printer_manager") as pm:
+            pm.connect_printer = AsyncMock(return_value=True)
+            resp = await async_client.post(f"/api/v1/printers/{p.id}/unarchive")
+        assert resp.status_code == 200
+        assert resp.json()["archived"] is False
+        pm.connect_printer.assert_awaited_once()
+        await db_session.refresh(p)
+        assert p.archived is False and p.archived_at is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_create_active_printer_rejected_when_probe_fails(self, async_client: AsyncClient):
         """A failed MQTT probe (mistyped access code / wrong IP) returns 400 and
         does NOT persist the printer — no empty card on the dashboard."""

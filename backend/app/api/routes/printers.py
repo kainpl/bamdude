@@ -412,6 +412,28 @@ async def archive_printer(
     return payload
 
 
+@router.post("/{printer_id}/unarchive")
+async def unarchive_printer(
+    printer_id: int,
+    _=RequirePermission(Permission.PRINTERS_DELETE),
+    db: AsyncSession = Depends(get_db),
+):
+    """Restore an archived printer. Reconnects MQTT only when the printer is
+    active — a printer that was also in Maintenance Mode (``is_active=False``)
+    stays parked, since archived and is_active are independent axes."""
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+    printer.archived = False
+    printer.archived_at = None
+    await db.commit()
+    await db.refresh(printer)
+    if printer.is_active:
+        await printer_manager.connect_printer(printer)
+    return _serialize_printer(printer, include_secret=False)
+
+
 @router.delete("/{printer_id}")
 async def delete_printer(
     printer_id: int,
