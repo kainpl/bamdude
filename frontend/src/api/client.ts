@@ -372,6 +372,11 @@ export interface Printer {
   location: string | null;  // Group/location name
   nozzle_count: number;  // 1 or 2, auto-detected from MQTT
   is_active: boolean;
+  // Soft-retire (#archived): archived printers are hidden from the whole app +
+  // MQTT while their print history is kept. Independent from is_active
+  // (Maintenance Mode). GET /printers/ excludes them unless include_archived.
+  archived: boolean;
+  archived_at: string | null;
   auto_archive: boolean;
   cleanup_after_print: boolean;
   mqtt_connection_timeout: number;
@@ -4585,7 +4590,12 @@ export const api = {
     }),
 
   // Printers
-  getPrinters: () => request<Printer[]>('/printers/'),
+  getPrinters: (opts?: { includeArchived?: boolean }) =>
+    request<Printer[]>(`/printers/${opts?.includeArchived ? '?include_archived=true' : ''}`),
+  archivePrinter: (id: number) =>
+    request<Printer & { cancelled_items: number }>(`/printers/${id}/archive`, { method: 'POST' }),
+  unarchivePrinter: (id: number) =>
+    request<Printer>(`/printers/${id}/unarchive`, { method: 'POST' }),
   getPrinter: (id: number) => request<Printer>(`/printers/${id}`),
   createPrinter: (data: PrinterCreate) =>
     request<Printer>('/printers/', {
