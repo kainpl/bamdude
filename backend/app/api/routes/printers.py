@@ -80,16 +80,23 @@ def _serialize_printer(printer: Printer, *, include_secret: bool):
 
 @router.get("/")
 async def list_printers(
+    include_archived: bool = False,
     user: User | None = RequirePermission(Permission.PRINTERS_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """List all configured printers.
 
+    Archived printers are excluded unless ``include_archived=true`` (used by the
+    Settings → Printers restore section and the Archives-page history filter).
+
     ``access_code`` is redacted for callers without PRINTERS_UPDATE (Viewers and
     read-scoped API keys) so a read-only caller can't harvest the MQTT credential
     and bypass RBAC (upstream 8283b175 / 9a432f00).
     """
-    result = await db.execute(select(Printer).order_by(Printer.name))
+    stmt = select(Printer).order_by(Printer.name)
+    if not include_archived:
+        stmt = stmt.where(Printer.archived.is_(False))
+    result = await db.execute(stmt)
     printers = list(result.scalars().all())
     include_secret = _caller_can_view_printer_secrets(user)
     return [_serialize_printer(p, include_secret=include_secret) for p in printers]

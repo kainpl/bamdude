@@ -185,6 +185,23 @@ class TestPrintersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_list_excludes_archived_by_default(self, async_client: AsyncClient, printer_factory, db_session):
+        """GET /printers/ hides archived printers unless include_archived=true."""
+        await printer_factory(name="Live", serial_number="LIVE01")
+        p_arch = await printer_factory(name="Retired", serial_number="ARCH02")
+        p_arch.archived = True
+        await db_session.commit()
+
+        default = await async_client.get("/api/v1/printers/")
+        names = {p["name"] for p in default.json()}
+        assert "Live" in names and "Retired" not in names
+
+        incl = await async_client.get("/api/v1/printers/?include_archived=true")
+        names_incl = {p["name"] for p in incl.json()}
+        assert "Live" in names_incl and "Retired" in names_incl
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_create_active_printer_rejected_when_probe_fails(self, async_client: AsyncClient):
         """A failed MQTT probe (mistyped access code / wrong IP) returns 400 and
         does NOT persist the printer — no empty card on the dashboard."""
