@@ -161,6 +161,7 @@ async def find_eligible_printer(
         .join(PrinterQueue, PrinterQueue.printer_id == Printer.id)
         .where(func.lower(Printer.model) == normalized_model.lower())
         .where(Printer.is_active.is_(True))
+        .where(Printer.archived.is_(False))
         .where(PrinterQueue.auto_distribute_eligible.is_(True))
         # An operator-paused queue refuses new work — auto-queue included.
         .where(PrinterQueue.is_paused.is_(False))

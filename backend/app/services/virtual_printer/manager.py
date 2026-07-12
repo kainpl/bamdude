@@ -1289,7 +1289,7 @@ class VirtualPrinterInstance:
         result = await db.execute(
             sa_select(PrinterQueue, Printer.model)
             .join(Printer, Printer.id == PrinterQueue.printer_id)
-            .where(Printer.is_active.is_(True), Printer.model == sliced_model)
+            .where(Printer.is_active.is_(True), Printer.archived.is_(False), Printer.model == sliced_model)
         )
         matching_queues = result.all()
 

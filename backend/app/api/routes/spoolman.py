@@ -434,7 +434,7 @@ async def sync_all_printers(
         raise HTTPException(status_code=503, detail="Spoolman is not reachable")
 
     # Get all active printers
-    result = await db.execute(select(Printer).where(Printer.is_active.is_(True)))
+    result = await db.execute(select(Printer).where(Printer.is_active.is_(True)).where(Printer.archived.is_(False)))
     printers = result.scalars().all()
 
     total_synced = 0

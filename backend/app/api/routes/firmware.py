@@ -106,7 +106,7 @@ async def check_firmware_updates(
     firmware_service = get_firmware_service()
 
     # Get all printers from database
-    result = await db.execute(select(Printer).where(Printer.is_active.is_(True)))
+    result = await db.execute(select(Printer).where(Printer.is_active.is_(True)).where(Printer.archived.is_(False)))
     printers = result.scalars().all()
 
     updates = []

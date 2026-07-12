@@ -176,7 +176,7 @@ async def _check_one_printer(
     report."""
     issues: list[EligibilityIssue] = []
 
-    if not printer.is_active:
+    if not printer.is_active or printer.archived:
         issues.append(EligibilityIssue(kind="printer_disabled"))
 
     if not printer_raw_status or not printer_raw_status.get("connected"):

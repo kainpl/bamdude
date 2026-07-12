@@ -1570,7 +1570,7 @@ printer_manager = PrinterManager()
 
 async def init_printer_connections(db: AsyncSession):
     """Initialize connections to all active printers."""
-    result = await db.execute(select(Printer).where(Printer.is_active.is_(True)))
+    result = await db.execute(select(Printer).where(Printer.is_active.is_(True)).where(Printer.archived.is_(False)))
     printers = result.scalars().all()
 
     for printer in printers:

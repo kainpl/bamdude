@@ -123,7 +123,9 @@ async def collect_diagnostic_snapshot(db: AsyncSession) -> dict[str, Any]:
     from backend.app.models.printer import Printer
     from backend.app.models.virtual_printer import VirtualPrinter
 
-    printers_result = await db.execute(select(Printer).where(Printer.is_active.is_(True)))
+    printers_result = await db.execute(
+        select(Printer).where(Printer.is_active.is_(True)).where(Printer.archived.is_(False))
+    )
     printers = list(printers_result.scalars().all())
 
     vps_result = await db.execute(select(VirtualPrinter).where(VirtualPrinter.enabled.is_(True)))

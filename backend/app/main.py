@@ -5799,7 +5799,9 @@ async def record_ams_history():
 
             async with async_session() as db:
                 # Get all active printers
-                result = await db.execute(select(Printer).where(Printer.is_active.is_(True)))
+                result = await db.execute(
+                    select(Printer).where(Printer.is_active.is_(True)).where(Printer.archived.is_(False))
+                )
                 printers = result.scalars().all()
 
                 # Get alarm thresholds from settings
@@ -6075,7 +6077,9 @@ async def record_printer_sensor_history():
             from backend.app.models.settings import Settings
 
             async with async_session() as db:
-                result = await db.execute(select(Printer).where(Printer.is_active.is_(True)))
+                result = await db.execute(
+                    select(Printer).where(Printer.is_active.is_(True)).where(Printer.archived.is_(False))
+                )
                 printers = result.scalars().all()
 
                 recorded_count = 0
@@ -6192,7 +6196,9 @@ async def track_printer_runtime():
 
             async with async_session() as db:
                 # Get all active printers
-                result = await db.execute(select(Printer).where(Printer.is_active.is_(True)))
+                result = await db.execute(
+                    select(Printer).where(Printer.is_active.is_(True)).where(Printer.archived.is_(False))
+                )
                 printers = result.scalars().all()
 
                 now = datetime.now(timezone.utc)

@@ -189,7 +189,10 @@ async def get_available_filaments(
     normalized_model = normalize_printer_model(model) or normalize_printer_model_id(model) or model
 
     query = (
-        select(Printer).where(func.lower(Printer.model) == normalized_model.lower()).where(Printer.is_active == True)  # noqa: E712
+        select(Printer)
+        .where(func.lower(Printer.model) == normalized_model.lower())
+        .where(Printer.is_active == True)  # noqa: E712
+        .where(Printer.archived.is_(False))
     )
     if location:
         query = query.where(Printer.location == location)
@@ -283,7 +286,7 @@ async def get_developer_mode_warnings(
     db: AsyncSession = Depends(get_db),
 ):
     """Check if any connected printer lacks developer LAN mode."""
-    result = await db.execute(select(Printer).where(Printer.is_active == True))  # noqa: E712
+    result = await db.execute(select(Printer).where(Printer.is_active == True).where(Printer.archived.is_(False)))  # noqa: E712
     printers = result.scalars().all()
     statuses = printer_manager.get_all_statuses()
 

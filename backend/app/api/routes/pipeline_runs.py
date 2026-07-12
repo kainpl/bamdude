@@ -480,6 +480,7 @@ async def _pick_assignments(
                 select(Printer)
                 .where(Printer.model == pipeline.target_model_class)
                 .where(Printer.is_active.is_(True))
+                .where(Printer.archived.is_(False))
                 .order_by(Printer.id)
             )
         )

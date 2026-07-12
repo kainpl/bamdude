@@ -515,7 +515,7 @@ class GitBackupService:
 
     async def _collect_kprofiles(self, db: AsyncSession, files: dict):
         """Collect K-profiles from all connected printers."""
-        result = await db.execute(select(Printer).where(Printer.is_active == True))  # noqa: E712
+        result = await db.execute(select(Printer).where(Printer.is_active == True).where(Printer.archived.is_(False)))  # noqa: E712
         printers = result.scalars().all()
 
         nozzle_diameters = ["0.2", "0.4", "0.6", "0.8"]

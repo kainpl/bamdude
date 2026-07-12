@@ -99,7 +99,7 @@ async def get_metrics(
     # =========================================================================
 
     # Get all printers from DB
-    result = await db.execute(select(Printer).where(Printer.is_active == True))  # noqa: E712
+    result = await db.execute(select(Printer).where(Printer.is_active == True).where(Printer.archived.is_(False)))  # noqa: E712
     printers = list(result.scalars().all())
 
     # Build lookup for printer info

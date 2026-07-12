@@ -495,7 +495,7 @@ async def get_all_maintenance_overview(
     """Get maintenance overview for all active printers."""
     await ensure_default_types(db)
 
-    result = await db.execute(select(Printer).where(Printer.is_active.is_(True)))
+    result = await db.execute(select(Printer).where(Printer.is_active.is_(True)).where(Printer.archived.is_(False)))
     printers = result.scalars().all()
 
     overviews = []
@@ -909,7 +909,7 @@ async def get_maintenance_summary(
     """Get a summary of maintenance status across all printers."""
     await ensure_default_types(db)
 
-    result = await db.execute(select(Printer).where(Printer.is_active.is_(True)))
+    result = await db.execute(select(Printer).where(Printer.is_active.is_(True)).where(Printer.archived.is_(False)))
     printers = result.scalars().all()
 
     total_due = 0

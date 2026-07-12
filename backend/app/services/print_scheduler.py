@@ -1399,7 +1399,9 @@ class PrintScheduler:
         block_for_drying = await self._get_bool_setting(db, "queue_drying_block")
 
         # Get all active printers
-        all_printers = await db.execute(select(Printer).where(Printer.is_active.is_(True)))
+        all_printers = await db.execute(
+            select(Printer).where(Printer.is_active.is_(True)).where(Printer.archived.is_(False))
+        )
         for printer in all_printers.scalars():
             pid = printer.id
 

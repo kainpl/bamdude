@@ -59,7 +59,7 @@ async def get_printers_data() -> list[dict]:
     from backend.app.models.printer import Printer
 
     async with async_session() as db:
-        result = await db.execute(select(Printer).where(Printer.is_active == True))  # noqa: E712
+        result = await db.execute(select(Printer).where(Printer.is_active == True).where(Printer.archived.is_(False)))  # noqa: E712
         printers = list(result.scalars().all())
 
     data = []
