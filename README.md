@@ -104,6 +104,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - Per-printer queues with status tracking (idle/printing/paused/error)
 - **Queue organization** — group prints into collapsible batches, drag-reorder by grip handle, and sort the Printers page by ETA; the timeline shows only committed schedules
 - **Per-printer Maintenance Mode** — park a printer out of service (drops out of dispatch, scheduler, auto-drying, and metrics, and disconnects MQTT) without deleting it
+- **Archive a printer** — soft-retire a sold/decommissioned printer: it disappears from the Printers page, every picker, queues, dispatch, the scheduler, and MQTT, while its full print history is kept. Blocked while printing; cancels the printer's pending queue items. Restore or permanently delete it under Settings → Printing → Archived printers. Distinct from Maintenance Mode, which only parks a printer temporarily and keeps its card visible
 - Auto error-pause on print failure (queue stops, user decides next step)
 - Staggered start for farms (limit concurrent heating, bed temp monitoring)
 - **Swap Mode** — A1 Mini / A1 plate swapper with multi-profile support (Kit, STL, JobOx), auto-detect swap files, per-job event selection (start sequence / change table), plate-clear auto-bypass

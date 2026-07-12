@@ -8,6 +8,10 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.7b3] - 2026-07-12
+
+Beta pre-release continuing toward the 0.4.7 stable. Image: `ghcr.io/kainpl/bamdude:0.4.7b3` / `kainpl/bamdude:0.4.7b3` (beta channel — `:latest` still tracks 0.4.6). The headline is **Archive a printer** — soft-retire a sold or decommissioned printer so it disappears from the whole app (Printers page, pickers, queues, dispatch, scheduler, MQTT) while its print history is kept, restorable from Settings → Printing. Alongside it: the Print dialog now **remembers your Preheat & heat-soak choice per printer model**, the **Heater History window shows the live "Current" reading** with a heating-state thermometer (now on non-H2 printers too), and the **multi-plate print preview** no longer 404s when a plate name contains spaces.
+
 ### Added
 
 - **Archive a printer instead of deleting it.** A printer you've retired — sold, decommissioned, swapped out — can now be *archived* rather than deleted: it vanishes from the Printers page, every printer picker, queues, dispatch, the scheduler, and MQTT, **while its full print history is kept**. Archiving is blocked while a print is running and cancels the printer's pending queue items. Restore an archived printer (or delete it for good) under **Settings → Printing → Archived printers**. This is distinct from Maintenance Mode, which only parks a printer temporarily and keeps its card visible.
