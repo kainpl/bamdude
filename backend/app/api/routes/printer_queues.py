@@ -11,6 +11,7 @@ from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
+from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.user import User
 from backend.app.schemas.printer_queue import PrinterQueueResponse, PrinterQueueUpdate
@@ -89,8 +90,14 @@ async def list_queues(
     """List all printer queues with status and counters."""
     from sqlalchemy.orm import selectinload
 
+    # Exclude archived printers' queues — an archived printer disappears from
+    # the whole app, so its queue card must not linger in the queue view.
     result = await db.execute(
-        select(PrinterQueue).options(selectinload(PrinterQueue.printer)).order_by(PrinterQueue.id)
+        select(PrinterQueue)
+        .join(Printer, Printer.id == PrinterQueue.printer_id)
+        .where(Printer.archived.is_(False))
+        .options(selectinload(PrinterQueue.printer))
+        .order_by(PrinterQueue.id)
     )
     queues = list(result.scalars().all())
     counts_by_queue = await _bulk_terminal_counts(db, [q.id for q in queues])
