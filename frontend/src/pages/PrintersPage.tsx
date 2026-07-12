@@ -69,6 +69,7 @@ import {
   Eye,
   EyeOff,
   Settings,
+  Archive,
 } from 'lucide-react';
 
 import { Link as RouterLink, useNavigate } from 'react-router-dom';
@@ -1834,6 +1835,25 @@ function PrinterCard({
     }
   };
 
+  // Archive (soft-retire) the printer — hides it from the whole app + drops
+  // MQTT while keeping its history. Blocked while printing (the backend also
+  // 409s); pending queue items are cancelled server-side. Restore from
+  // Settings → Printers. Distinct from Maintenance Mode (temporary park).
+  const [confirmArchive, setConfirmArchive] = useState(false);
+  const archiveMutation = useMutation({
+    mutationFn: () => api.archivePrinter(printer.id),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ['printers'] });
+      queryClient.invalidateQueries({ queryKey: ['queue'] });
+      showToast(
+        t('printers.archive.toastArchived', { name: printer.name, count: res.cancelled_items }),
+        'success',
+      );
+      setConfirmArchive(false);
+    },
+    onError: (error: Error) => showToast(error.message || t('printers.archive.toastFailed'), 'error'),
+  });
+
   const unlinkSpoolMutation = useMutation({
     mutationFn: (spoolId: number) => api.unlinkSpool(spoolId),
     onSuccess: (result) => {
@@ -2635,6 +2655,23 @@ function PrinterCard({
                     <Wrench className="w-4 h-4" />
                     {t('printers.maintenanceHistory')}
                   </button>
+                  {hasPermission('printers:delete') && (
+                    <button
+                      className={`w-full px-4 py-2 text-left text-sm flex items-center gap-2 ${
+                        isPrintingOrPaused ? 'opacity-50 cursor-not-allowed' : 'hover:bg-bambu-dark-tertiary'
+                      }`}
+                      disabled={isPrintingOrPaused || archiveMutation.isPending}
+                      onClick={() => {
+                        if (isPrintingOrPaused) return;
+                        setShowMenu(false);
+                        setConfirmArchive(true);
+                      }}
+                      title={isPrintingOrPaused ? t('printers.archive.blockedPrinting') : undefined}
+                    >
+                      <Archive className="w-4 h-4" />
+                      {t('printers.archive.action')}
+                    </button>
+                  )}
                   <div className="mx-3 my-1 border-t border-bambu-dark-tertiary" />
                   {/* Calibration & Macros */}
                   <button
@@ -5479,6 +5516,17 @@ function PrinterCard({
             setConfirmMaintenanceEnter(false);
           }}
           onCancel={() => setConfirmMaintenanceEnter(false)}
+        />
+      )}
+
+      {confirmArchive && (
+        <ConfirmModal
+          title={t('printers.archive.action')}
+          message={t('printers.archive.confirmBody', { name: printer.name })}
+          confirmText={t('printers.archive.action')}
+          variant="danger"
+          onConfirm={() => archiveMutation.mutate()}
+          onCancel={() => setConfirmArchive(false)}
         />
       )}
 
