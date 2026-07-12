@@ -30,3 +30,20 @@ async def test_archived_printer_excluded_from_find_eligible(db_session, printer_
     printer, reason = await find_eligible_printer(db_session, item, set())
     assert printer is None
     assert reason is not None and "No active" in reason
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_maintenance_printer_excluded_from_find_eligible(db_session, printer_factory):
+    """A printer in Maintenance Mode (is_active=False) is not eligible for
+    auto-queue distribution either — the same distribution gate covers both
+    axes."""
+    p = await printer_factory(name="M1", serial_number="ELIG02", model="X1C", is_active=False)
+    db_session.add(PrinterQueue(printer_id=p.id, auto_distribute_eligible=True, is_paused=False))
+    await db_session.commit()
+
+    item = AutoQueueItem(target_model="X1C")
+
+    printer, reason = await find_eligible_printer(db_session, item, set())
+    assert printer is None
+    assert reason is not None and "No active" in reason
