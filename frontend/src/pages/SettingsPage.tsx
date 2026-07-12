@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles, Workflow } from 'lucide-react';
+import { Loader2, Archive, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles, Workflow } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, macrosApi } from '../api/client';
@@ -51,6 +51,7 @@ import { Palette, Search, Settings } from 'lucide-react';
 import { registerSettingsSearch, getSettingsSearchEntries } from '../lib/settingsSearch';
 import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
 import { PrintOptionsPreferencesPanel } from '../components/settings/PrintOptionsPreferencesPanel';
+import { ArchivedPrintersPanel } from '../components/settings/ArchivedPrintersPanel';
 import { PreheatFilamentTargetsEditor } from '../components/PreheatFilamentTargetsEditor';
 
 const validTabs = ['general', 'printing', 'filament', 'pipelines', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
@@ -3010,6 +3011,23 @@ export function SettingsPage() {
               <PrintOptionsPreferencesPanel />
             </CardContent>
           </Card>
+
+          {/* Archived printers — soft-retired printers, hidden everywhere else.
+              Restore (unarchive) or delete permanently. Admin-grade
+              (printers:delete), the same gate as the archive action itself. */}
+          {hasPermission('printers:delete') && (
+            <Card id="card-archived-printers">
+              <CardHeader>
+                <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                  <Archive className="w-4 h-4 text-bambu-green" />
+                  {t('printers.archive.sectionTitle')}
+                </h3>
+              </CardHeader>
+              <CardContent>
+                <ArchivedPrintersPanel />
+              </CardContent>
+            </Card>
+          )}
 
           {/* Slicer Preset Bundles — print-time pick that pairs with the
               Saved Print Profiles above (both are pre-print profile state
