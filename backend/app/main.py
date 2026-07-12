@@ -5,7 +5,6 @@ import secrets
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -281,12 +280,13 @@ root_logger.addHandler(console_handler)
 # so the operator-facing knob lives where they'd expect it.
 if app_settings.log_to_file:
     from backend.app.core.logging_state import (  # noqa: E402
+        WindowsSafeTimedRotatingFileHandler,
         app_log_filename_namer,
         set_app_log_handler,
     )
 
     log_file = app_settings.log_dir / "bamdude.log"
-    file_handler = TimedRotatingFileHandler(
+    file_handler = WindowsSafeTimedRotatingFileHandler(
         log_file,
         when="midnight",
         interval=1,

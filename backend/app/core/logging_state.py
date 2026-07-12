@@ -20,9 +20,44 @@ Lives in its own module to dodge the circular import between
 from __future__ import annotations
 
 import logging
+import time
 from logging.handlers import TimedRotatingFileHandler
 
 logger = logging.getLogger(__name__)
+
+
+class WindowsSafeTimedRotatingFileHandler(TimedRotatingFileHandler):
+    """``TimedRotatingFileHandler`` that tolerates a log file held open by
+    another process.
+
+    Under ``uvicorn --reload`` on Windows the reloader parent and the worker
+    both keep ``bamdude.log`` open, and Windows refuses to rename an open file,
+    so the midnight rollover's ``os.rename`` raises ``PermissionError``
+    (WinError 32). The stdlib handler leaves ``rolloverAt`` unadvanced on that
+    failure, so it re-attempts — and re-fails — on *every* subsequent log
+    record, flooding the console with tracebacks.
+
+    Here we swallow the rename failure, reopen the stream we just closed, and
+    push ``rolloverAt`` to the next interval so the next attempt is tomorrow
+    rather than on the next line. Production (a single process) never hits the
+    lock and rotates exactly as before.
+    """
+
+    def doRollover(self) -> None:  # pragma: no cover - platform/timing dependent
+        try:
+            super().doRollover()
+        except OSError:
+            # Couldn't rotate (file locked by another process). super() already
+            # closed the stream before the failed rename — reopen it so logging
+            # keeps flowing to the current file.
+            if self.stream is None:
+                self.stream = self._open()
+            current_time = int(time.time())
+            new_rollover_at = self.computeRollover(current_time)
+            while new_rollover_at <= current_time:
+                new_rollover_at += self.interval
+            self.rolloverAt = new_rollover_at
+
 
 _handler: TimedRotatingFileHandler | None = None
 
