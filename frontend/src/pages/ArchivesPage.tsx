@@ -2787,8 +2787,11 @@ export function ArchivesPage() {
   const paginationMeta = archivesResponse?.meta;
 
   const { data: printers } = useQuery({
-    queryKey: ['printers'],
-    queryFn: api.getPrinters,
+    // Include archived printers so history for a retired printer stays
+    // filterable here (they're hidden from the archived-excluding ['printers']
+    // cache used everywhere else).
+    queryKey: ['printers', 'withArchived'],
+    queryFn: () => api.getPrinters({ includeArchived: true }),
   });
 
   const { data: filterOptions } = useQuery({
