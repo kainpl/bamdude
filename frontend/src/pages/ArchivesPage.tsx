@@ -2791,7 +2791,7 @@ export function ArchivesPage() {
     // filterable here (they're hidden from the archived-excluding ['printers']
     // cache used everywhere else).
     queryKey: ['printers', 'withArchived'],
-    queryFn: () => api.getPrinters({ includeArchived: true }),
+    queryFn: api.getPrintersWithArchived,
   });
 
   const { data: filterOptions } = useQuery({

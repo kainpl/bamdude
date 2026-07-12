@@ -21,7 +21,7 @@ export function ArchivedPrintersPanel() {
 
   const { data: all, isLoading } = useQuery({
     queryKey: ['printers', 'withArchived'],
-    queryFn: () => api.getPrinters({ includeArchived: true }),
+    queryFn: api.getPrintersWithArchived,
   });
   const archived = useMemo(() => (all ?? []).filter((p: Printer) => p.archived), [all]);
 

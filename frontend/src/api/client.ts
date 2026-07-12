@@ -4590,8 +4590,12 @@ export const api = {
     }),
 
   // Printers
-  getPrinters: (opts?: { includeArchived?: boolean }) =>
-    request<Printer[]>(`/printers/${opts?.includeArchived ? '?include_archived=true' : ''}`),
+  getPrinters: () => request<Printer[]>('/printers/'),
+  // Includes archived (soft-retired) printers — used by the Settings restore
+  // section and the Archives history filter. A separate method (not a param on
+  // getPrinters) so the many bare `queryFn: api.getPrinters` call sites keep
+  // their Printer[] inference.
+  getPrintersWithArchived: () => request<Printer[]>('/printers/?include_archived=true'),
   archivePrinter: (id: number) =>
     request<Printer & { cancelled_items: number }>(`/printers/${id}/archive`, { method: 'POST' }),
   unarchivePrinter: (id: number) =>
