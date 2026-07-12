@@ -10,6 +10,7 @@ All notable changes to BamDude will be documented in this file.
 
 ### Added
 
+- **Archive a printer instead of deleting it.** A printer you've retired — sold, decommissioned, swapped out — can now be *archived* rather than deleted: it vanishes from the Printers page, every printer picker, queues, dispatch, the scheduler, and MQTT, **while its full print history is kept**. Archiving is blocked while a print is running and cancels the printer's pending queue items. Restore an archived printer (or delete it for good) under **Settings → Printing → Archived printers**. This is distinct from Maintenance Mode, which only parks a printer temporarily and keeps its card visible.
 - **The Print dialog now remembers your Preheat & heat-soak choice per printer model.** The per-print Preheat override (Inherit / On / Off) and its optional chamber-target join the print-option toggles that were already saved per model — so they're persisted when you print, queue, or auto-queue a job and restored the next time you open the dialog for that model. Admins can also pre-set or edit them per user (and for the virtual-printer system fallback) under **Settings → Print → Saved Print Options Profiles**.
 
 ### Fixed
