@@ -168,6 +168,23 @@ class TestPrintersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_created_printer_defaults_not_archived(self, async_client: AsyncClient):
+        """A freshly created printer serializes archived=False / archived_at=None."""
+        data = {
+            "name": "Arch A",
+            "serial_number": "ARCH0001",
+            "ip_address": "10.0.0.9",
+            "access_code": "12345678",
+            "model": "X1C",
+        }
+        resp = await async_client.post("/api/v1/printers/", json=data)
+        assert resp.status_code in (200, 201)
+        body = resp.json()
+        assert body["archived"] is False
+        assert body["archived_at"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_create_active_printer_rejected_when_probe_fails(self, async_client: AsyncClient):
         """A failed MQTT probe (mistyped access code / wrong IP) returns 400 and
         does NOT persist the printer — no empty card on the dashboard."""

@@ -18,6 +18,11 @@ class Printer(Base):
     location: Mapped[str | None] = mapped_column(String(100))  # Group/location name
     nozzle_count: Mapped[int] = mapped_column(default=1)  # 1 or 2, auto-detected from MQTT
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Soft-retire: archived printers disappear from the whole app + MQTT while
+    # their print history is kept. Independent axis from is_active (Maintenance
+    # Mode). See migration m105 + docs spec 2026-07-12-archived-printers.
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     auto_archive: Mapped[bool] = mapped_column(Boolean, default=True)
     cleanup_after_print: Mapped[bool] = mapped_column(Boolean, default=False)  # Delete files from SD after print
     mqtt_connection_timeout: Mapped[int] = mapped_column(

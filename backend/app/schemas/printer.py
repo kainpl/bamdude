@@ -92,6 +92,8 @@ class PrinterUpdate(BaseModel):
 class PrinterResponse(PrinterBase):
     id: int
     is_active: bool
+    archived: bool = False
+    archived_at: datetime | None = None
     nozzle_count: int = 1  # 1 or 2, auto-detected from MQTT
     print_hours_offset: float = 0.0
     external_camera_url: str | None = None
