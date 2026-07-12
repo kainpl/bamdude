@@ -293,6 +293,20 @@ export default {
       editFieldLabel: 'Out of service (maintenance mode)',
       editFieldHelp: 'Excludes this printer from the queue without deleting it. It stays disconnected until you turn this off.'
     },
+    archive: {
+      action: 'Archive printer',
+      sectionTitle: 'Archived printers',
+      unarchive: 'Unarchive',
+      deleteForever: 'Delete permanently',
+      empty: 'No archived printers.',
+      blockedPrinting: 'Stop the active print before archiving',
+      confirmBody: 'Archive "{{name}}"? It disappears from printers, queues, and dispatch, its MQTT connection is dropped, and its pending queue items are cancelled — its print history is kept and you can restore it from Settings → Printing → Archived printers.',
+      confirmDelete: 'Permanently delete "{{name}}"? This cannot be undone.',
+      toastArchived: 'Archived {{name}} ({{count}} pending items cancelled)',
+      toastRestored: 'Printer restored',
+      toastDeleted: 'Printer deleted',
+      toastFailed: 'Failed to archive printer',
+    },
     // Sort options
     sort: {
       name: 'Name',
