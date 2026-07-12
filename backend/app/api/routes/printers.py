@@ -364,6 +364,54 @@ async def update_printer(
     return printer
 
 
+@router.post("/{printer_id}/archive")
+async def archive_printer(
+    printer_id: int,
+    _=RequirePermission(Permission.PRINTERS_DELETE),
+    db: AsyncSession = Depends(get_db),
+):
+    """Soft-retire a printer: hide it from the whole app + drop MQTT while
+    keeping its print history. Blocked while the printer is actively printing;
+    the printer's pending queue items are cancelled. Reversible via
+    ``POST /printers/{id}/unarchive``."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import update as sql_update
+
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.printer_queue import PrinterQueue
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+    if printer_manager.is_print_active(printer_id):
+        raise HTTPException(409, "Stop the active print before archiving this printer")
+
+    printer.archived = True
+    printer.archived_at = datetime.now(timezone.utc)
+
+    # Cancel pending items on this printer's queue(s). Resolve the queue(s) via
+    # PrinterQueue.printer_id rather than assuming queue_id == printer_id.
+    queue_ids = (await db.execute(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))).scalars().all()
+    cancelled = 0
+    if queue_ids:
+        cancel_result = await db.execute(
+            sql_update(PrintQueueItem)
+            .where(PrintQueueItem.queue_id.in_(queue_ids), PrintQueueItem.status == "pending")
+            .values(status="cancelled")
+        )
+        cancelled = cancel_result.rowcount or 0
+
+    await db.commit()
+    await db.refresh(printer)
+    printer_manager.disconnect_printer(printer_id)
+
+    payload = _serialize_printer(printer, include_secret=False).model_dump()
+    payload["cancelled_items"] = cancelled
+    return payload
+
+
 @router.delete("/{printer_id}")
 async def delete_printer(
     printer_id: int,

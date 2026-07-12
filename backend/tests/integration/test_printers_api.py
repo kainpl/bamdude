@@ -202,6 +202,44 @@ class TestPrintersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_archive_sets_flag_and_cancels_pending(self, async_client: AsyncClient, printer_factory, db_session):
+        from backend.app.models.print_queue import PrintQueueItem
+        from backend.app.models.printer_queue import PrinterQueue
+
+        p = await printer_factory(name="ToArchive", serial_number="ARCH03")
+        queue = PrinterQueue(printer_id=p.id)
+        db_session.add(queue)
+        await db_session.commit()
+        await db_session.refresh(queue)
+        db_session.add(PrintQueueItem(queue_id=queue.id, status="pending", position=1))
+        db_session.add(PrintQueueItem(queue_id=queue.id, status="pending", position=2))
+        await db_session.commit()
+
+        with patch("backend.app.api.routes.printers.printer_manager") as pm:
+            pm.is_print_active.return_value = False
+            resp = await async_client.post(f"/api/v1/printers/{p.id}/archive")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["archived"] is True
+        assert body["cancelled_items"] == 2
+        pm.disconnect_printer.assert_called_once_with(p.id)
+        await db_session.refresh(p)
+        assert p.archived is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_archive_blocked_while_printing(self, async_client: AsyncClient, printer_factory, db_session):
+        p = await printer_factory(name="Busy", serial_number="ARCH04")
+        with patch("backend.app.api.routes.printers.printer_manager") as pm:
+            pm.is_print_active.return_value = True
+            resp = await async_client.post(f"/api/v1/printers/{p.id}/archive")
+        assert resp.status_code == 409
+        await db_session.refresh(p)
+        assert p.archived is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_create_active_printer_rejected_when_probe_fails(self, async_client: AsyncClient):
         """A failed MQTT probe (mistyped access code / wrong IP) returns 400 and
         does NOT persist the printer — no empty card on the dashboard."""
