@@ -109,9 +109,15 @@ async def create_printer(
     db: AsyncSession = Depends(get_db),
 ):
     """Add a new printer."""
-    # Check if serial number already exists
-    result = await db.execute(select(Printer).where(Printer.serial_number == printer_data.serial_number))
-    if result.scalar_one_or_none():
+    # Check if serial number already exists. An archived printer keeps its
+    # serial, so re-adding the same physical machine collides — point the
+    # operator at unarchive instead of a dead-end duplicate error.
+    existing = (
+        await db.execute(select(Printer).where(Printer.serial_number == printer_data.serial_number))
+    ).scalar_one_or_none()
+    if existing is not None:
+        if existing.archived:
+            raise HTTPException(409, "This serial belongs to an archived printer — unarchive it instead of re-adding")
         raise HTTPException(400, "Printer with this serial number already exists")
 
     printer = Printer(**printer_data.model_dump())

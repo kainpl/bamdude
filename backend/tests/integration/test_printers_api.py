@@ -258,6 +258,25 @@ class TestPrintersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_readd_archived_serial_hints_unarchive(self, async_client: AsyncClient, printer_factory, db_session):
+        """Re-adding a printer whose serial matches an archived one returns a
+        409 pointing at unarchive rather than a generic duplicate error."""
+        p = await printer_factory(name="Old", serial_number="DUP999")
+        p.archived = True
+        await db_session.commit()
+        data = {
+            "name": "New",
+            "serial_number": "DUP999",
+            "ip_address": "10.0.0.5",
+            "access_code": "12345678",
+            "model": "X1C",
+        }
+        resp = await async_client.post("/api/v1/printers/", json=data)
+        assert resp.status_code == 409
+        assert "archiv" in resp.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_create_active_printer_rejected_when_probe_fails(self, async_client: AsyncClient):
         """A failed MQTT probe (mistyped access code / wrong IP) returns 400 and
         does NOT persist the printer — no empty card on the dashboard."""
