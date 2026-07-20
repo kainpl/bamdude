@@ -34,7 +34,8 @@ import {
 import { Button } from '../components/Button';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
-import { api, type ArchiveSlim } from '../api/client';
+import { api, type ArchiveSlim, type Printer } from '../api/client';
+import { printerLabel, comparePrinterByLabel } from '../utils/printerLabel';
 import { PrintCalendar } from '../components/PrintCalendar';
 import { FilamentTrends } from '../components/FilamentTrends';
 import { Dashboard, type DashboardWidget } from '../components/Dashboard';
@@ -191,7 +192,7 @@ function QuickStatsWidget({
 
 function SuccessRateWidget({
   stats,
-  printerMap,
+  printerById,
   size = 1,
 }: {
   stats: {
@@ -201,7 +202,7 @@ function SuccessRateWidget({
     cancelled_prints?: number;
     prints_by_printer: Record<string, number>;
   } | undefined;
-  printerMap: Map<string, string>;
+  printerById: Map<string, Printer>;
   size?: 1 | 2 | 4;
 }) {
   const { t } = useTranslation();
@@ -265,10 +266,12 @@ function SuccessRateWidget({
           <div className="mt-4 pt-4 border-t border-bambu-dark-tertiary">
             <p className="text-xs text-bambu-gray font-medium mb-2">{t('stats.printsByPrinter')}</p>
             <div className={`grid gap-x-6 gap-y-1 ${size === 4 ? 'grid-cols-3' : 'grid-cols-2'}`} style={{ width: 'fit-content' }}>
-              {Object.entries(stats.prints_by_printer).map(([printerId, count]) => (
+              {Object.entries(stats.prints_by_printer)
+                .sort(([a], [b]) => comparePrinterByLabel(a, b, printerById, t))
+                .map(([printerId, count]) => (
                 <div key={printerId} className="flex items-center gap-3 text-sm">
                   <span className="text-bambu-gray truncate max-w-[120px]">
-                    {printerMap.get(printerId) || `${t('common.printer')} ${printerId}`}
+                    {printerLabel(printerById.get(printerId), printerId, t)}
                   </span>
                   <span className="text-white font-medium">{count}</span>
                 </div>
@@ -283,14 +286,14 @@ function SuccessRateWidget({
 
 function TimeAccuracyWidget({
   stats,
-  printerMap,
+  printerById,
   size = 1,
 }: {
   stats: {
     average_time_accuracy: number | null;
     time_accuracy_by_printer: Record<string, number> | null;
   } | undefined;
-  printerMap: Map<string, string>;
+  printerById: Map<string, Printer>;
   size?: 1 | 2 | 4;
 }) {
   const { t } = useTranslation();
@@ -325,8 +328,12 @@ function TimeAccuracyWidget({
 
   // Show more printers when expanded
   const maxPrinters = size === 1 ? 3 : size === 2 ? 6 : 999;
+  // Sort before slicing so active printers (A→Z) fill the visible slots and
+  // archived ones sink to the bottom rather than crowding out the top N.
   const printerEntries = stats?.time_accuracy_by_printer
-    ? Object.entries(stats.time_accuracy_by_printer).slice(0, maxPrinters)
+    ? Object.entries(stats.time_accuracy_by_printer)
+        .sort(([a], [b]) => comparePrinterByLabel(a, b, printerById, t))
+        .slice(0, maxPrinters)
     : [];
 
   return (
@@ -369,7 +376,7 @@ function TimeAccuracyWidget({
             {printerEntries.map(([printerId, acc]) => (
               <div key={printerId} className="flex items-center gap-2 text-xs">
                 <span className="text-bambu-gray truncate max-w-[100px]">
-                  {printerMap.get(printerId) || `${t('common.printer')} ${printerId}`}
+                  {printerLabel(printerById.get(printerId), printerId, t)}
                 </span>
                 <span className={`font-medium ${
                   acc >= 95 && acc <= 105 ? 'text-status-ok' :
@@ -523,11 +530,11 @@ function PrintActivityWidget({
 function PrinterStatsWidget({
   stats,
   archives,
-  printerMap,
+  printerById,
 }: {
   stats: { prints_by_printer: Record<string, number> } | undefined;
   archives: ArchiveSlim[];
-  printerMap: Map<string, string>;
+  printerById: Map<string, Printer>;
 }) {
   const { t } = useTranslation();
   const [printerMetric, setPrinterMetric] = useState<Metric>('weight');
@@ -554,13 +561,15 @@ function PrinterStatsWidget({
     });
     return Array.from(map.entries())
       .map(([id, v]) => ({
-        name: printerMap.get(id) || `${t('common.printer')} ${id}`,
+        id,
+        name: printerLabel(printerById.get(id), id, t),
         value: printerMetric === 'prints' ? v.prints :
                printerMetric === 'weight' ? Math.round(v.weight) :
                Math.round((v.time / 3600) * 10) / 10,
       }))
-      .sort((a, b) => b.value - a.value);
-  }, [stats, archives, printerMap, printerMetric, t]);
+      // By name, archived printers sunk to the bottom (chart renders index 0 at top).
+      .sort((a, b) => comparePrinterByLabel(a.id, b.id, printerById, t));
+  }, [stats, archives, printerById, printerMetric, t]);
 
   // Hourly distribution (time of day)
   const hourlyData = useMemo(() => {
@@ -1041,9 +1050,11 @@ export function StatsPage() {
     }),
   });
 
+  // Include archived printers so their prints resolve to a stable
+  // "Printer N (Archived)" label instead of falling back to a bare "Printer N".
   const { data: printers } = useQuery({
-    queryKey: ['printers'],
-    queryFn: api.getPrinters,
+    queryKey: ['printers', 'withArchived'],
+    queryFn: api.getPrintersWithArchived,
   });
 
   const { data: archives, refetch: refetchArchives } = useQuery({
@@ -1089,7 +1100,7 @@ export function StatsPage() {
   };
 
   const currency = getCurrencySymbol(settings?.currency || 'USD');
-  const printerMap = new Map(printers?.map((p) => [String(p.id), p.name]) || []);
+  const printerById = new Map((printers || []).map((p) => [String(p.id), p]));
   const printDates = useMemo(() => archives?.map((a) => a.created_at) || [], [archives]);
 
   if (isLoading) {
@@ -1113,13 +1124,13 @@ export function StatsPage() {
     {
       id: 'success-rate',
       title: t('stats.successRate'),
-      component: (size) => <SuccessRateWidget stats={stats} printerMap={printerMap} size={size} />,
+      component: (size) => <SuccessRateWidget stats={stats} printerById={printerById} size={size} />,
       defaultSize: 1,
     },
     {
       id: 'time-accuracy',
       title: t('stats.timeAccuracy'),
-      component: (size) => <TimeAccuracyWidget stats={stats} printerMap={printerMap} size={size} />,
+      component: (size) => <TimeAccuracyWidget stats={stats} printerById={printerById} size={size} />,
       defaultSize: 1,
     },
     {
@@ -1143,7 +1154,7 @@ export function StatsPage() {
     {
       id: 'printer-stats',
       title: t('stats.printerStats'),
-      component: <PrinterStatsWidget stats={stats} archives={archives || []} printerMap={printerMap} />,
+      component: <PrinterStatsWidget stats={stats} archives={archives || []} printerById={printerById} />,
       defaultSize: 4,
     },
     {

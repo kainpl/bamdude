@@ -495,7 +495,12 @@ async def get_all_maintenance_overview(
     """Get maintenance overview for all active printers."""
     await ensure_default_types(db)
 
-    result = await db.execute(select(Printer).where(Printer.is_active.is_(True)).where(Printer.archived.is_(False)))
+    result = await db.execute(
+        select(Printer)
+        .where(Printer.is_active.is_(True))
+        .where(Printer.archived.is_(False))
+        .order_by(Printer.name, Printer.id)
+    )
     printers = result.scalars().all()
 
     overviews = []

@@ -306,6 +306,7 @@ export default {
       toastRestored: 'Printer restored',
       toastDeleted: 'Printer deleted',
       toastFailed: 'Failed to archive printer',
+      archivedSuffix: 'Archived',
     },
     // Sort options
     sort: {
@@ -4559,7 +4560,7 @@ export default {
     filamentDiameter: 'Filament diameter',
     lot: 'Lot',
     lotPlaceholder: 'e.g. 3',
-    autoIncrementLots: 'Auto-number lots (1…N)',
+    autoIncrementLots: 'Auto-number lots (+1 per copy)',
     measuredWeightError: 'Measured weight must be between {{min}}g and {{max}}g.',
     slicerPreset: 'Slicer Preset',
     searchPresets: 'Search filament presets...',

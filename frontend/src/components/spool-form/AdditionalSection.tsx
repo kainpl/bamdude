@@ -322,14 +322,33 @@ export function AdditionalSection({
         </select>
       </div>
 
-      {/* Lot (bundle position). Quick-add mode swaps this for an
-          "auto-increment lots" checkbox — bulk create then numbers 1..N. */}
+      {/* Lot (bundle position). In quick-add mode an extra "auto-increment"
+          checkbox sequences the lot from this starting value across the N
+          copies (lot, lot+1, …); unchecked, all copies share this lot. */}
       <div>
         <label className="block text-sm font-medium text-bambu-gray mb-1">
           {t('inventory.lot')}
         </label>
-        {quickAdd ? (
-          <label className="flex items-center gap-2 cursor-pointer">
+        <input
+          type="number"
+          value={formData.lot}
+          min={1}
+          step={1}
+          placeholder={t('inventory.lotPlaceholder')}
+          onChange={(e) => {
+            // 0 is explicitly forbidden — treat as empty (null on save).
+            const raw = e.target.value;
+            if (raw === '' || raw === '0') {
+              updateField('lot', '');
+              return;
+            }
+            const n = parseInt(raw, 10);
+            updateField('lot', Number.isFinite(n) && n > 0 ? String(n) : '');
+          }}
+          className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+        />
+        {quickAdd && (
+          <label className="flex items-center gap-2 cursor-pointer mt-2">
             <input
               type="checkbox"
               checked={formData.auto_increment_lot}
@@ -338,25 +357,6 @@ export function AdditionalSection({
             />
             <span className="text-sm text-white">{t('inventory.autoIncrementLots')}</span>
           </label>
-        ) : (
-          <input
-            type="number"
-            value={formData.lot}
-            min={1}
-            step={1}
-            placeholder={t('inventory.lotPlaceholder')}
-            onChange={(e) => {
-              // 0 is explicitly forbidden — treat as empty (null on save).
-              const raw = e.target.value;
-              if (raw === '' || raw === '0') {
-                updateField('lot', '');
-                return;
-              }
-              const n = parseInt(raw, 10);
-              updateField('lot', Number.isFinite(n) && n > 0 ? String(n) : '');
-            }}
-            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
-          />
         )}
       </div>
 

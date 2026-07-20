@@ -13,7 +13,7 @@ import type { InventorySpool, SpoolAssignment } from '../../api/client';
 
 // Replicate the grouping key function from InventoryPage (not exported)
 function spoolGroupKey(s: InventorySpool): string {
-  return `${s.material}|${s.subtype || ''}|${s.brand || ''}|${s.color_name || ''}|${s.rgba || ''}|${s.label_weight}`;
+  return `${s.material}|${s.subtype || ''}|${s.brand || ''}|${s.color_name || ''}|${s.rgba || ''}|${s.label_weight}|${s.lot ?? ''}`;
 }
 
 type DisplayItem =

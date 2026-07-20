@@ -1434,18 +1434,22 @@ async def bulk_create_spools(
     """Create multiple identical spools.
 
     With ``auto_increment_lot=True`` the per-row ``lot`` column is
-    overwritten with 1..N instead of copying the template value, so a
-    purchase bundle gets sequential lot numbers in one submit.
+    sequenced from the template's ``lot`` value (the number the user
+    entered) instead of copying it unchanged — e.g. a bundle starting at
+    lot 5 gets 5, 6, 7. Falls back to starting at 1 when no lot was given,
+    so a purchase bundle gets sequential lot numbers in one submit.
     """
     spools = []
     try:
         template = await prepare_internal_spool_payload(db, data.spool.model_dump(), set(data.spool.model_fields_set))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    base_lot = template.get("lot")
+    start_lot = base_lot if isinstance(base_lot, int) and base_lot > 0 else 1
     for i in range(data.quantity):
         values = dict(template)
         if data.auto_increment_lot:
-            values["lot"] = i + 1
+            values["lot"] = start_lot + i
         spool = Spool(**values)
         db.add(spool)
         spools.append(spool)

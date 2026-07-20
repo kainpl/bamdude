@@ -115,8 +115,14 @@ export function SpoolFormModal({
   // self-fetched path (parent-provided calibrations are already resolved).
   const calibrationsLoading = printersWithCalibrations.length === 0 && loadingCalibrations;
 
-  // Count selected PA profiles for tab badge
-  const selectedProfileCount = selectedProfiles.size;
+  // Count selected PA profiles for the tab badge — only those bound to a
+  // non-archived printer (the same active-printer set the list shows), so a
+  // spool still carrying a K-profile from a since-archived printer doesn't
+  // inflate the badge past the printers actually offered for assignment.
+  const activePrinterIds = new Set(resolvedCalibrations.map((pc) => pc.printer.id));
+  const selectedProfileCount = Array.from(selectedProfiles).filter((key) =>
+    activePrinterIds.has(Number(key.split(':')[0])),
+  ).length;
 
   // Fetch Spoolman filament catalog when in Spoolman mode
   // retry:false — Spoolman may be intentionally disabled (400); don't flood the server
@@ -731,9 +737,12 @@ export function SpoolFormModal({
         } else {
           dropped++;
         }
-      } else {
-        dropped++;
       }
+      // else: printer isn't in the active (non-archived) set — it was archived
+      // or deleted after this K-profile was assigned. Skip it silently rather
+      // than aborting the whole save; the stale association just isn't
+      // re-persisted. (An offline non-archived printer is still counted as
+      // `dropped` above, since its calibrations couldn't be loaded.)
     }
 
     if (dropped > 0) {

@@ -528,10 +528,12 @@ function SettingsSection({
   const [expandedType, setExpandedType] = useState<number | null>(null);
   const [pendingSystemDelete, setPendingSystemDelete] = useState<MaintenanceType | null>(null);
 
-  // Get unique printers from overview
+  // Get unique printers from overview, ordered by name for the selection chips.
   const printers = useMemo(() => {
     if (!overview) return [];
-    return overview.map(o => ({ id: o.printer_id, name: o.printer_name }));
+    return overview
+      .map(o => ({ id: o.printer_id, name: o.printer_name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
   }, [overview]);
 
   // Get which printers have a specific maintenance type assigned
@@ -1304,7 +1306,9 @@ function HistorySection({ t, printerId }: { t: (key: string, opts?: Record<strin
             title={t('maintenance.filterByPrinter')}
           >
             <option value="">{t('maintenance.allPrinters')}</option>
-            {printers?.map((p) => (
+            {[...(printers || [])]
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .map((p) => (
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>

@@ -97,7 +97,7 @@ async def list_queues(
         .join(Printer, Printer.id == PrinterQueue.printer_id)
         .where(Printer.archived.is_(False))
         .options(selectinload(PrinterQueue.printer))
-        .order_by(PrinterQueue.id)
+        .order_by(Printer.name, PrinterQueue.id)
     )
     queues = list(result.scalars().all())
     counts_by_queue = await _bulk_terminal_counts(db, [q.id for q in queues])

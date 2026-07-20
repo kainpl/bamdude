@@ -314,6 +314,7 @@ export default {
       toastRestored: 'Принтер відновлено',
       toastDeleted: 'Принтер видалено',
       toastFailed: 'Не вдалося архівувати принтер',
+      archivedSuffix: 'Архів',
     },
     // Sort options
     sort: {
@@ -4565,7 +4566,7 @@ export default {
     filamentDiameter: 'Діаметр філамента',
     lot: 'Лот',
     lotPlaceholder: 'напр. 3',
-    autoIncrementLots: 'Авто-нумерація лотів (1…N)',
+    autoIncrementLots: 'Авто-нумерація лотів (+1 на копію)',
     measuredWeightError: 'Виміряна вага повинна бути від {{min}}г до {{max}}г.',
     slicerPreset: 'Пресет слайсера',
     searchPresets: 'Пошук пресетів філаменту...',

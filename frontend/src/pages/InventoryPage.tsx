@@ -69,7 +69,9 @@ function spoolSwatchStyle(s: InventorySpool): CSSProperties {
 }
 
 function spoolGroupKey(s: InventorySpool): string {
-  return `${s.material}|${s.subtype || ''}|${s.brand || ''}|${s.color_name || ''}|${s.rgba || ''}|${s.label_weight}`;
+  // Lot is part of the key so sequential-lot copies (a purchase bundle) stay
+  // distinct cards instead of collapsing into one aggregate.
+  return `${s.material}|${s.subtype || ''}|${s.brand || ''}|${s.color_name || ''}|${s.rgba || ''}|${s.label_weight}|${s.lot ?? ''}`;
 }
 
 // Column definitions for the inventory table

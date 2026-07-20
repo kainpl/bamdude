@@ -60,6 +60,7 @@ import {
 import { MakerWorldIcon } from '../components/BrandIcons';
 import { api } from '../api/client';
 import { openInSlicer, type SlicerType } from '../utils/slicer';
+import { printerLabel, comparePrinterLike } from '../utils/printerLabel';
 import { getArchiveStatusBadge } from '../utils/archiveStatus';
 import { formatDateTime, formatDateOnly, type TimeFormat, type DateFormat, formatDuration } from '../utils/date';
 import { getCurrencySymbol } from '../utils/currency';
@@ -2947,7 +2948,8 @@ export function ArchivesPage() {
   }, [search]);
 
 
-  const printerMap = new Map(printers?.map((p) => [p.id, p.name]) || []);
+  // Archived printers read as "Printer N (Archived)" here too, matching stats.
+  const printerMap = new Map(printers?.map((p) => [p.id, printerLabel(p, p.id, t)]) || []);
 
   // Get unique filter values from server
   const uniqueMaterials = filterOptions?.materials || [];
@@ -3389,9 +3391,11 @@ export function ArchivesPage() {
                 }}
               >
                 <option value="">{t('archives.page.allPrinters')}</option>
-                {printers?.map((p) => (
+                {[...(printers || [])]
+                  .sort((a, b) => comparePrinterLike(a, b, t))
+                  .map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.name}
+                    {printerLabel(p, p.id, t)}
                   </option>
                 ))}
               </select>

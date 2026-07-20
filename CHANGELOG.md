@@ -8,6 +8,15 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Quick-add spool creation now numbers lots from the value you type, and sequential-lot copies stay as separate cards.** In "Quick Add (Stock)" mode the **Lot** field is shown again (it was hidden behind an auto-increment checkbox), and with "Auto-number lots" ticked the copies are numbered **from your starting value** — enter lot 5 with quantity 3 and you get lots 5, 6, 7 (an empty lot still starts at 1). The inventory grouping key now includes the lot too, so a bundle created this way shows as distinct cards instead of collapsing into a single aggregate row.
+- **The spool dialog's PA Profile tab no longer counts K-profiles from archived printers, and saving such a spool no longer fails.** The tab badge counted every K-profile still stored on the spool — including ones bound to printers you've since archived, which the profile list (correctly) already hides — so it could read higher than your active printer count. It now counts only profiles on non-archived printers, matching the list. Separately, saving a spool that still carried an archived printer's K-profile used to abort the profile save with a warning (it couldn't resolve the retired printer); it now skips those stale entries and saves the rest.
+
+### Changed
+
+- **Archived printers now read as "Printer N (Archived)" everywhere their history appears, and printer lists sort by name.** A retired printer used to show up inconsistently — Statistics fell back to a bare "Printer N" (it excluded archived printers) while the Archives page still showed its full name. Now an archived printer is labelled the same way — `Printer N (Archived)` — across Statistics, the Archives list/grid/calendar, and the Archives printer filter, so a decommissioned printer reads clearly no matter where its past prints surface. Alongside it, printer ordering is now alphabetical by name: the Queue view, the Statistics per-printer breakdowns and bar chart, the Archives printer filter, and the Maintenance page's printer list, selection chips, and history filter are all sorted by name — with archived printers sunk to the bottom of the Statistics lists and Archives filter.
+
 ## [0.4.7b3] - 2026-07-12
 
 Beta pre-release continuing toward the 0.4.7 stable. Image: `ghcr.io/kainpl/bamdude:0.4.7b3` / `kainpl/bamdude:0.4.7b3` (beta channel — `:latest` still tracks 0.4.6). The headline is **Archive a printer** — soft-retire a sold or decommissioned printer so it disappears from the whole app (Printers page, pickers, queues, dispatch, scheduler, MQTT) while its print history is kept, restorable from Settings → Printing. Alongside it: the Print dialog now **remembers your Preheat & heat-soak choice per printer model**, the **Heater History window shows the live "Current" reading** with a heating-state thermometer (now on non-H2 printers too), and the **multi-plate print preview** no longer 404s when a plate name contains spaces.
