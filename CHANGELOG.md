@@ -8,6 +8,10 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The floating "Report a bug" button no longer overlaps the pagination on the Inventory page.** The fixed bottom-right bug-report bubble sat on top of the pagination's right-hand controls — the "last page" arrow in particular — so it was hard to click when the table (or cards) filled the screen. The Inventory pagination now keeps clearance on the right in both table and card views, so its navigation buttons stay fully clickable.
+
 ## [0.4.7b4] - 2026-07-21
 
 Beta pre-release continuing toward the 0.4.7 stable. Image: `ghcr.io/kainpl/bamdude:0.4.7b4` / `kainpl/bamdude:0.4.7b4` (beta channel — `:latest` still tracks 0.4.6). A follow-up polish + fix pass on the b3 **Archived Printers** and inventory work: archived printers now read as **"Printer N (Archived)"** consistently across Statistics and the Archives page (and sink to the bottom of those lists), with printer lists sorted by name; **quick-add spool creation** numbers lots from the value you enter and keeps sequential-lot bundles as distinct cards; and the spool dialog's **PA Profile** tab no longer counts — or fails to save — K-profiles bound to archived printers.

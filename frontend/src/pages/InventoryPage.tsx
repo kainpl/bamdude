@@ -2114,8 +2114,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               </table>
             </div>
 
-            {/* Pagination inside card footer */}
-            <div className="flex items-center justify-between px-4 py-3 bg-bambu-dark-tertiary/50 border-t border-bambu-dark-tertiary text-sm">
+            {/* Pagination inside card footer. Extra right padding keeps the
+                last-page button clear of the fixed bottom-right bug-report
+                bubble (BugReportBubble, ~64px corner footprint). */}
+            <div className="flex items-center justify-between py-3 pl-4 pr-14 bg-bambu-dark-tertiary/50 border-t border-bambu-dark-tertiary text-sm">
               <span className="text-bambu-gray">
                 {showAll
                   ? `${totalDisplayItems} ${totalDisplayItems !== 1 ? t('inventory.spools') : t('inventory.spool')}`
@@ -2306,7 +2308,7 @@ function PaginationBar({
   if (totalPages <= 1 && !isShowAll) return null;
   const effectiveSize = isShowAll ? totalRows || 1 : pageSize;
   return (
-    <div className="flex items-center justify-between pt-2 text-sm">
+    <div className="flex items-center justify-between pt-2 pr-14 text-sm">
       <span className="text-bambu-gray">
         {isShowAll
           ? `${totalRows} ${totalRows !== 1 ? t('inventory.spools') : t('inventory.spool')}`
