@@ -724,7 +724,7 @@ class BambuMQTTClient:
         on_layer_change: Callable[[int], None] | None = None,
         on_macro_complete: Callable[[str, str], None] | None = None,
         on_kprofiles_changed: Callable[[], None] | None = None,
-        on_first_status: Callable[[str, str, str], None] | None = None,
+        on_first_status: Callable[[str, str, str, str], None] | None = None,
         on_drying_complete: Callable[[int], None] | None = None,
         on_print_running_observed: Callable[[dict], None] | None = None,
         on_finish_photo_moment: Callable[[dict], None] | None = None,
@@ -2568,7 +2568,14 @@ class BambuMQTTClient:
         # so a later disconnect/reconnect re-runs the sweep (#1542 follow-up).
         if not self._startup_reconcile_done and "gcode_state" in data and "gcode_file" in data and self.on_first_status:
             self._startup_reconcile_done = True
-            self.on_first_status(self.state.state, self.state.gcode_file or "", self.state.subtask_id or "")
+            # subtask_name is the reconcile fallback identity for H2/X-series
+            # firmware, whose gcode_file is a generic /data/Metadata/plate_N.gcode.
+            self.on_first_status(
+                self.state.state,
+                self.state.gcode_file or "",
+                self.state.subtask_id or "",
+                self.state.subtask_name or "",
+            )
 
         if "mc_percent" in data:
             # Save last non-zero progress for usage tracking (firmware resets to 0 on cancel)

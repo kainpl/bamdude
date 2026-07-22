@@ -10,6 +10,7 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **An active print on H2/X-series printers is no longer falsely marked "completed" (and duplicated) when the printer's MQTT connection reconnects.** On an X2D — and any H2-family printer (H2D, H2D Pro, H2C, H2S, P2S) — a running job could flip to "completed" on every reconnect (a stale-connection recovery, or a backend restart), leaving a stuck duplicate archive record for the same print. The cause: these printers report the running file under a generic internal path (`/data/Metadata/plate_1.gcode`) instead of the sliced filename, so the startup reconciliation sweep couldn't recognise the still-running job as *ours* and closed it as "finished while we were away". Reconciliation now also matches on the print's name (the printer reports it reliably), so an actively-printing job on these models is left alone. Other printer models (P1S, A1, etc.) were unaffected and behave exactly as before.
 - **The floating "Report a bug" button no longer overlaps the pagination on the Inventory page.** The fixed bottom-right bug-report bubble sat on top of the pagination's right-hand controls — the "last page" arrow in particular — so it was hard to click when the table (or cards) filled the screen. The Inventory pagination now keeps clearance on the right in both table and card views, so its navigation buttons stay fully clickable.
 
 ## [0.4.7b4] - 2026-07-21

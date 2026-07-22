@@ -12,9 +12,11 @@ from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services.print_reconciliation import (
     _classify,
     _file_matches,
+    _name_matches_subtask,
     _reconcile,
     _reconcile_complete_archive,
     _slicer_estimates,
+    _subtask_norm,
     _subtask_stale,
 )
 
@@ -71,6 +73,42 @@ def test_file_matches_tolerates_path_and_extension():
     assert _file_matches("widget.3mf", "") is False
 
 
+# ---------- _subtask_norm / _name_matches_subtask (pure) ----------
+
+
+def test_subtask_norm_strips_sliced_extensions_and_normalises():
+    assert _subtask_norm("2-foo-bar.gcode.3mf") == "2-foo-bar"
+    assert _subtask_norm("  Widget.3mf ") == "widget"
+    assert _subtask_norm("/data/Metadata/plate_1.gcode") == "plate_1"
+    assert _subtask_norm("plain-name") == "plain-name"
+    # Middle dots are preserved (human labels), unlike _file_matches' _stem.
+    assert _subtask_norm("v1.2-part") == "v1.2-part"
+    assert _subtask_norm("") == ""
+
+
+def _archive_stub(print_name="", filename=""):
+    return PrintArchive(printer_id=1, file_path="", file_size=0, print_name=print_name, filename=filename)
+
+
+def test_name_matches_subtask_matches_print_name_or_filename_stem():
+    # H2/X-series: gcode_file is generic, but subtask_name matches print_name.
+    a = _archive_stub(print_name="povitriano-viddilennia", filename="povitriano-viddilennia.gcode.3mf")
+    assert _name_matches_subtask(a, "povitriano-viddilennia") is True
+    assert _name_matches_subtask(a, "POVITRIANO-VIDDILENNIA") is True  # case-insensitive
+    assert _name_matches_subtask(a, "povitriano-viddilennia.gcode.3mf") is True  # extension-tolerant
+    # A user-renamed print_name still matches via the sliced filename stem.
+    b = _archive_stub(print_name="Custom Title", filename="povitriano-viddilennia.gcode.3mf")
+    assert _name_matches_subtask(b, "povitriano-viddilennia") is True
+
+
+def test_name_matches_subtask_rejects_mismatch_and_empty():
+    a = _archive_stub(print_name="foo", filename="foo.3mf")
+    assert _name_matches_subtask(a, "bar") is False
+    # An empty live subtask is ambiguous — never a match.
+    assert _name_matches_subtask(a, "") is False
+    assert _name_matches_subtask(a, "   ") is False
+
+
 # ---------- _slicer_estimates (pure, best-effort) ----------
 
 
@@ -95,6 +133,7 @@ async def _make_archive(db, **overrides):
         filename=overrides.get("filename", "widget.3mf"),
         file_path=overrides.get("file_path", ""),
         file_size=0,
+        print_name=overrides.get("print_name"),
         status="printing",
         started_at=datetime.now(timezone.utc),
         print_time_seconds=overrides.get("print_time_seconds"),
@@ -243,3 +282,55 @@ async def test_reconcile_is_idempotent(db_session):
     await _reconcile(db_session, printer_id=1, live_state="FINISH", live_file="widget.3mf")
     await _reconcile(db_session, printer_id=1, live_state="FINISH", live_file="widget.3mf")
     assert archive.status == "completed"  # second run is a harmless no-op
+
+
+# ---------- H2/X-series generic gcode_file (subtask-name fallback) ----------
+
+
+@pytest.mark.asyncio
+async def test_reconcile_h2x_generic_file_running_subtask_match_is_left_alone(db_session):
+    # H2/X-series firmware reports gcode_file as /data/Metadata/plate_1.gcode,
+    # which never stem-matches the sliced filename. Without the subtask-name
+    # fallback the ACTIVE print gets closed as uncertain on every reconnect
+    # (duplicate archive + false completion — the X2D bug). With it: left alone.
+    archive = await _make_archive(db_session, filename="povitriano.gcode.3mf", print_name="povitriano")
+    await _reconcile(
+        db_session,
+        printer_id=1,
+        live_state="RUNNING",
+        live_file="/data/Metadata/plate_1.gcode",
+        live_subtask_name="povitriano",
+    )
+    assert archive.status == "printing"  # NOT closed
+
+
+@pytest.mark.asyncio
+async def test_reconcile_h2x_generic_file_finished_subtask_match_completes_clean(db_session):
+    # Genuinely finished during downtime: generic file + matching subtask + FINISH
+    # → closed as completed (certain), not uncertain.
+    archive = await _make_archive(db_session, filename="povitriano.gcode.3mf", print_name="povitriano")
+    await _reconcile(
+        db_session,
+        printer_id=1,
+        live_state="FINISH",
+        live_file="/data/Metadata/plate_1.gcode",
+        live_subtask_name="povitriano",
+    )
+    assert archive.status == "completed"
+    assert "recovered_outcome_uncertain" not in (archive.extra_data or {})
+
+
+@pytest.mark.asyncio
+async def test_reconcile_h2x_generic_file_different_subtask_is_uncertain(db_session):
+    # Generic file AND no subtask match — the printer moved on to a different
+    # job; the tracked print is a real orphan → close it uncertain.
+    archive = await _make_archive(db_session, filename="povitriano.gcode.3mf", print_name="povitriano")
+    await _reconcile(
+        db_session,
+        printer_id=1,
+        live_state="RUNNING",
+        live_file="/data/Metadata/plate_1.gcode",
+        live_subtask_name="different-job",
+    )
+    assert archive.status == "completed"
+    assert archive.extra_data["recovered_outcome_uncertain"] is True

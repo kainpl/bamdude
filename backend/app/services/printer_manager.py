@@ -645,14 +645,16 @@ class PrinterManager:
             # list actually changed (connect / set / edit / delete / save).
             self._schedule_async(_sync_kprofiles_for_printer(printer_id))
 
-        def on_first_status(live_state: str, live_file: str, live_subtask_id: str = ""):
+        def on_first_status(live_state: str, live_file: str, live_subtask_id: str = "", live_subtask_name: str = ""):
             # First full status after each fresh connect — run the reconcile
             # sweep so a print that finished while BamDude was stopped or
             # disconnected (or a ghost-replay under a new subtask) gets its
             # archive closed and queue advanced.
             from backend.app.services.print_reconciliation import reconcile_printer_prints
 
-            self._schedule_async(reconcile_printer_prints(printer_id, live_state, live_file, live_subtask_id))
+            self._schedule_async(
+                reconcile_printer_prints(printer_id, live_state, live_file, live_subtask_id, live_subtask_name)
+            )
 
         client = BambuMQTTClient(
             ip_address=printer.ip_address,

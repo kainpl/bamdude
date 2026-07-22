@@ -67,6 +67,47 @@ def _file_matches(archive_filename: str, live_file: str) -> bool:
     return bool(a) and a == b
 
 
+def _subtask_norm(name: str) -> str:
+    """Normalise a subtask / print name for identity comparison.
+
+    Basename, trailing sliced-file extensions stripped (``.gcode.3mf`` /
+    ``.gcode`` / ``.3mf``), whitespace trimmed, lowercased. Deliberately does
+    NOT strip *every* dot the way :func:`_file_matches` does — subtask names are
+    human labels that may legitimately contain dots, and both sides here derive
+    from the same ``subtask_name`` so aggressive stripping only risks collisions.
+    """
+    s = os.path.basename((name or "").strip().replace("\\", "/").rstrip("/"))
+    for ext in (".gcode.3mf", ".gcode", ".3mf"):
+        if s.lower().endswith(ext):
+            s = s[: -len(ext)]
+            break
+    return s.strip().lower()
+
+
+def _name_matches_subtask(archive: PrintArchive, live_subtask_name: str) -> bool:
+    """True when the archive's print identity matches the printer's current
+    ``subtask_name`` — a fallback for firmware that hides the real filename.
+
+    H2/X-series firmware (H2D, H2D Pro, H2C, H2S, X2D, P2S) reports the live
+    ``gcode_file`` as a generic internal path — ``/data/Metadata/plate_1.gcode``
+    — which never shares a stem with the archive's sliced filename, so
+    :func:`_file_matches` yields a false negative. Without this fallback an
+    actively-RUNNING print is misclassified as "printer moved on" and closed as
+    outcome-uncertain on every reconnect (duplicate archive + false completion).
+    The printer still reports the real ``subtask_name``, which BamDude persists
+    as ``PrintArchive.print_name`` (and the sliced ``filename`` stem) — match on
+    that.
+
+    Requires both sides non-empty: an empty live subtask is ambiguous (printer
+    between jobs) and must fall through to the state-based classification, never
+    force a spurious match.
+    """
+    live = _subtask_norm(live_subtask_name)
+    if not live:
+        return False
+    return _subtask_norm(archive.print_name or "") == live or _subtask_norm(archive.filename or "") == live
+
+
 def _classify(live_state: str, *, file_match: bool, subtask_stale: bool = False) -> str:
     """Decide what to do with one orphan ``printing`` archive.
 
@@ -208,7 +249,12 @@ def _subtask_stale(archive_subtask_id: str | None, live_subtask_id: str) -> bool
 
 
 async def _reconcile(
-    db: AsyncSession, printer_id: int, live_state: str, live_file: str, live_subtask_id: str = ""
+    db: AsyncSession,
+    printer_id: int,
+    live_state: str,
+    live_file: str,
+    live_subtask_id: str = "",
+    live_subtask_name: str = "",
 ) -> None:
     """Reconcile every orphan ``printing`` archive for one printer.
 
@@ -241,7 +287,12 @@ async def _reconcile(
 
     closed = 0
     for archive in orphans:
-        file_match = _file_matches(archive.filename or "", live_file)
+        # File-name match (P1S/A1/etc.) OR subtask-name match (H2/X-series report
+        # a generic ``/data/Metadata/plate_N.gcode`` that never matches the
+        # sliced filename — see :func:`_name_matches_subtask`).
+        file_match = _file_matches(archive.filename or "", live_file) or _name_matches_subtask(
+            archive, live_subtask_name
+        )
         action = _classify(
             live_state,
             file_match=file_match,
@@ -261,14 +312,20 @@ async def _reconcile(
         logger.info("reconcile: closed %d orphan print(s) on startup for printer %d", closed, printer_id)
 
 
-async def reconcile_printer_prints(printer_id: int, live_state: str, live_file: str, live_subtask_id: str = "") -> None:
+async def reconcile_printer_prints(
+    printer_id: int,
+    live_state: str,
+    live_file: str,
+    live_subtask_id: str = "",
+    live_subtask_name: str = "",
+) -> None:
     """Entry point — runs on the first full MQTT status after each fresh
     connect. Opens its own session and commits."""
     from backend.app.core.database import async_session
 
     try:
         async with async_session() as db:
-            await _reconcile(db, printer_id, live_state, live_file, live_subtask_id)
+            await _reconcile(db, printer_id, live_state, live_file, live_subtask_id, live_subtask_name)
             await db.commit()
     except Exception:  # noqa: BLE001 — a background sweep must never crash the connect path
         logger.exception("reconcile: connect-edge sweep failed for printer %d", printer_id)
