@@ -8,6 +8,10 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Bed leveling, flow calibration and nozzle-offset calibration are now three-position (Off / Auto / On) on printers whose firmware supports it.** On the X2D and the H2 family (H2D, H2D Pro, H2C, H2S) — plus the P2S and A2L for bed leveling + flow calibration — the Print, Queue and Edit dialogs now offer an **Auto** position alongside Off and On, letting the printer itself decide whether each calibration step is needed for a given job instead of forcing it on or off every time. Printers without firmware support for the auto mode keep the familiar two-position Off / On toggle, and your choice is still remembered per printer model like the other print options (editable under Settings → Print → Saved Print Options Profiles). Everything already saved or queued keeps behaving exactly as before — Off/On are unchanged, and only the new Auto option reaches a printer that advertises it.
+
 ### Fixed
 
 - **An active print on H2/X-series printers is no longer falsely marked "completed" (and duplicated) when the printer's MQTT connection reconnects.** On an X2D — and any H2-family printer (H2D, H2D Pro, H2C, H2S, P2S) — a running job could flip to "completed" on every reconnect (a stale-connection recovery, or a backend restart), leaving a stuck duplicate archive record for the same print. The cause: these printers report the running file under a generic internal path (`/data/Metadata/plate_1.gcode`) instead of the sliced filename, so the startup reconciliation sweep couldn't recognise the still-running job as *ours* and closed it as "finished while we were away". Reconciliation now also matches on the print's name (the printer reports it reliably), so an actively-printing job on these models is left alone. Other printer models (P1S, A1, etc.) were unaffected and behave exactly as before.
