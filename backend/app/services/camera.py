@@ -46,6 +46,19 @@ def get_ffmpeg_path() -> str | None:
     if _ffmpeg_path is not None:
         return _ffmpeg_path
 
+    # Explicit override wins — lets an operator point straight at the binary when
+    # it isn't on the service's PATH (e.g. a fresh Windows winget install whose
+    # PATH change hasn't propagated to the running process).
+    from backend.app.core.config import settings
+
+    configured = (settings.ffmpeg_path or "").strip()
+    if configured and Path(configured).is_file():
+        _ffmpeg_path = configured
+        logger.info("Using configured ffmpeg path (FFMPEG_PATH): %s", configured)
+        return configured
+    if configured:
+        logger.warning("FFMPEG_PATH is set to %r but no file exists there; falling back to PATH search", configured)
+
     # Try PATH first
     ffmpeg_path = shutil.which("ffmpeg")
 

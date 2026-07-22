@@ -70,6 +70,14 @@ class Settings(BaseSettings):
     static_dir: Path = _app_dir / "static"  # Static files are part of app, not data
     database_url: str = _external_db_url or f"sqlite+aiosqlite:///{_db_path}"
 
+    # Explicit path to the ffmpeg executable, used for RTSP camera streaming on
+    # the X1 / X2 / H2 / P2 series (the A1 / P1 chamber-image protocol needs no
+    # ffmpeg). Optional — when unset, the app searches PATH + common install
+    # locations. Set this (env FFMPEG_PATH) when ffmpeg IS installed but not on
+    # the service's PATH — e.g. a fresh Windows winget install whose PATH change
+    # hasn't reached an already-running shell/service yet.
+    ffmpeg_path: str | None = None
+
     # Logging
     log_level: str = "INFO"  # Override with LOG_LEVEL env var (DEBUG, INFO, WARNING, ERROR)
     log_to_file: bool = True  # Set to false to disable file logging
