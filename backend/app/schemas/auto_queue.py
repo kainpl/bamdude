@@ -15,6 +15,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, PlainSerializer
 
+from backend.app.schemas.calibration_mode import CalibrationMode
 from backend.app.schemas.print_queue import serialize_utc_datetime
 
 UTCDatetime = Annotated[datetime | None, PlainSerializer(serialize_utc_datetime)]
@@ -47,9 +48,12 @@ class AutoQueueItemCreate(BaseModel):
     plate_id: int | None = None
     plate_ids: list[int] | None = None
 
-    # Print options (copied to print_queue on assignment)
-    bed_levelling: bool = True
-    flow_cali: bool = True
+    # Print options (copied to print_queue on assignment). Tri-state accepted
+    # (off/auto/on, or legacy bool), but auto-queue has no *_mode column, so
+    # 'auto' degrades to its bool mirror on assignment — auto only survives the
+    # primary PrintModal queue path (SAFE spec §2.1/§3.5).
+    bed_levelling: CalibrationMode = "on"
+    flow_cali: CalibrationMode = "on"
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True
@@ -84,8 +88,8 @@ class AutoQueueItemUpdate(BaseModel):
     manual_start: bool | None = None
     auto_off_after: bool | None = None
     require_previous_success: bool | None = None
-    bed_levelling: bool | None = None
-    flow_cali: bool | None = None
+    bed_levelling: CalibrationMode | None = None
+    flow_cali: CalibrationMode | None = None
     layer_inspect: bool | None = None
     timelapse: bool | None = None
     use_ams: bool | None = None
@@ -113,8 +117,8 @@ class AutoQueueItemResponse(BaseModel):
     auto_off_after: bool
     require_previous_success: bool
 
-    bed_levelling: bool
-    flow_cali: bool
+    bed_levelling: CalibrationMode
+    flow_cali: CalibrationMode
     layer_inspect: bool
     timelapse: bool
     use_ams: bool

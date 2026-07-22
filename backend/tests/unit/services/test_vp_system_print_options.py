@@ -30,6 +30,17 @@ def test_system_value_wins_when_slicer_silent():
     assert _resolve_print_option({}, {"flow_cali": False}, "flow_cali", "flow_cali", True) is False
 
 
+def test_calibration_string_pref_coerces_not_truthy():
+    # Saved calibration preferences now arrive as tri-state strings. A naive
+    # bool('off') is True — the coercion must read 'off'/'auto' as False and
+    # only 'on' as True, or a VP print would calibrate against the user's wish.
+    assert _resolve_print_option(None, {"bed_levelling": "off"}, "bed_leveling", "bed_levelling", True) is False
+    assert _resolve_print_option(None, {"bed_levelling": "auto"}, "bed_leveling", "bed_levelling", True) is False
+    assert _resolve_print_option(None, {"flow_cali": "on"}, "flow_cali", "flow_cali", False) is True
+    # a legacy bool preference still resolves correctly
+    assert _resolve_print_option(None, {"bed_levelling": False}, "bed_leveling", "bed_levelling", True) is False
+
+
 def test_column_default_when_both_silent():
     assert _resolve_print_option(None, None, "bed_leveling", "bed_levelling", True) is True
     assert _resolve_print_option({}, {}, "layer_inspect", "layer_inspect", False) is False

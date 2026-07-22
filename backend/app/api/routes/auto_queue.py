@@ -49,6 +49,7 @@ from backend.app.schemas.auto_queue import (
     AutoQueueReorder,
     AutoQueueStatsResponse,
 )
+from backend.app.schemas.calibration_mode import derive_mode, mode_to_bool
 from backend.app.services.auto_queue_eligibility import find_eligible_printer
 from backend.app.services.auto_queue_threemf import extract_auto_queue_requirements
 
@@ -116,8 +117,8 @@ def _to_response(item: AutoQueueItem) -> AutoQueueItemResponse:
         manual_start=item.manual_start,
         auto_off_after=item.auto_off_after,
         require_previous_success=item.require_previous_success,
-        bed_levelling=item.bed_levelling,
-        flow_cali=item.flow_cali,
+        bed_levelling=derive_mode(None, item.bed_levelling),
+        flow_cali=derive_mode(None, item.flow_cali),
         layer_inspect=item.layer_inspect,
         timelapse=item.timelapse,
         use_ams=item.use_ams,
@@ -281,8 +282,8 @@ async def add_to_auto_queue(
                     filament_overrides=overrides_json,
                     force_color_match=data.force_color_match,
                     plate_id=plate_id,
-                    bed_levelling=data.bed_levelling,
-                    flow_cali=data.flow_cali,
+                    bed_levelling=mode_to_bool(data.bed_levelling),
+                    flow_cali=mode_to_bool(data.flow_cali),
                     layer_inspect=data.layer_inspect,
                     timelapse=data.timelapse,
                     use_ams=data.use_ams,
@@ -421,6 +422,9 @@ async def update_auto_queue_item(
             value = json.dumps([o if isinstance(o, dict) else o.model_dump() for o in value])
         elif key == "required_filament_types" and value is not None or key == "swap_macro_events" and value is not None:
             value = json.dumps(value)
+        elif key in ("bed_levelling", "flow_cali"):
+            # No *_mode column on auto-queue — store the bool mirror only.
+            value = mode_to_bool(value)
         setattr(item, key, value)
 
     await db.commit()

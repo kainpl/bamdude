@@ -129,6 +129,20 @@ def _get_serial_for_model(model: str, serial_suffix: str) -> str:
     return f"{prefix}{serial_suffix}"
 
 
+def _coerce_flag(v: object) -> bool:
+    """Coerce a print-option value to a bool.
+
+    Handles the slicer's bool / int (0/1) shapes AND the tri-state calibration
+    string that now rides in saved preferences (``'on'`` → True, ``'off'`` /
+    ``'auto'`` → False). Critically NOT ``bool(v)`` — ``bool('off')`` is True.
+    The VP has no ``*_mode`` column, so ``'auto'`` degrades to its bool mirror
+    (secondary-path behaviour per the SAFE spec §3.5).
+    """
+    if isinstance(v, str):
+        return v.strip().lower() == "on"
+    return bool(v)
+
+
 def _resolve_print_option(
     slicer_opts: dict | None,
     system_opts: dict | None,
@@ -143,13 +157,14 @@ def _resolve_print_option(
 
     MQTT field naming differs from our column / preference names — the slicer
     sends ``bed_leveling`` (single L) while we store ``bed_levelling`` (double
-    L). Both bool and int (0/1) shapes appear in the wild depending on firmware
-    family, so coerce via ``bool()``.
+    L). Slicer values arrive as bool/int; a saved calibration preference now
+    arrives as a tri-state string — ``_coerce_flag`` handles both (a plain
+    ``bool()`` would read the string ``'off'`` as True).
     """
     if slicer_opts is not None and slicer_key in slicer_opts:
-        return bool(slicer_opts[slicer_key])
+        return _coerce_flag(slicer_opts[slicer_key])
     if system_opts is not None and pref_key in system_opts:
-        return bool(system_opts[pref_key])
+        return _coerce_flag(system_opts[pref_key])
     return column_default
 
 

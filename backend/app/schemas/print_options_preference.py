@@ -5,23 +5,27 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from backend.app.schemas.calibration_mode import CalibrationMode
+
 
 class PrintOptionsToggles(BaseModel):
-    """The boolean toggles from the PrintModal "Print options" panel.
+    """The toggles from the PrintModal "Print options" panel.
 
     Mirrors the frontend ``PrintOptions`` interface in
-    ``frontend/src/components/PrintModal/types.ts``.
+    ``frontend/src/components/PrintModal/types.ts``. bed_levelling / flow_cali /
+    nozzle_offset_cali are tri-state (off/auto/on); the CalibrationMode field
+    also accepts a legacy bool, so preferences saved before the tri-state parse.
     """
 
-    bed_levelling: bool
-    flow_cali: bool
+    bed_levelling: CalibrationMode
+    flow_cali: CalibrationMode
     layer_inspect: bool
     timelapse: bool
     mesh_mode_fast_check: bool
     gcode_injection: bool
     # Dual-nozzle-only toggle (#1682). Defaulted so preferences saved before it
     # existed still parse; the PrintModal only surfaces it on dual-nozzle printers.
-    nozzle_offset_cali: bool = True
+    nozzle_offset_cali: CalibrationMode = "on"
     # Per-item preheat / heat-soak override (#1468). Defaulted so preferences
     # saved before it existed still parse — 'inherit' means "follow the global
     # Settings → Printing preheat_enabled toggle"; 'on'/'off' force the decision.

@@ -4,6 +4,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from backend.app.schemas.calibration_mode import CalibrationMode
+
 
 class ProjectRef(BaseModel):
     """Tiny project reference embedded in file/folder responses (m044).
@@ -341,12 +343,13 @@ class FilePrintRequest(BaseModel):
     plate_id: int | None = None
     plate_name: str | None = None
     ams_mapping: list[int] | None = None
-    bed_levelling: bool = True
-    flow_cali: bool = False
+    # Tri-state calibration (off/auto/on) or legacy bool.
+    bed_levelling: CalibrationMode = "on"
+    flow_cali: CalibrationMode = "off"
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True
-    nozzle_offset_cali: bool = True  # Dual-nozzle printers only — MQTT-gated (#1682)
+    nozzle_offset_cali: CalibrationMode = "on"  # Dual-nozzle printers only — MQTT-gated (#1682)
     mesh_mode_fast_check: bool = True
     # Opt this print into per-model auto-print G-code injection (#1516). When on
     # with quantity > 1, ALL copies queue so every one is injected by the

@@ -2,6 +2,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, model_validator
 
+from backend.app.schemas.calibration_mode import CalibrationMode
+
 
 class ArchiveBase(BaseModel):
     print_name: str | None = None
@@ -294,13 +296,13 @@ class ReprintRequest(BaseModel):
     # Global tray ID = (ams_id * 4) + slot_id, external = 254
     ams_mapping: list[int] | None = None
 
-    # Print options
-    bed_levelling: bool = True
-    flow_cali: bool = False
+    # Print options — tri-state calibration (off/auto/on) or legacy bool.
+    bed_levelling: CalibrationMode = "on"
+    flow_cali: CalibrationMode = "off"
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True  # Not exposed in UI, but needed for API
-    nozzle_offset_cali: bool = True  # Dual-nozzle printers only — MQTT-gated (#1682)
+    nozzle_offset_cali: CalibrationMode = "on"  # Dual-nozzle printers only — MQTT-gated (#1682)
     mesh_mode_fast_check: bool = True
     # Opt this reprint into per-model auto-print G-code injection (#1516). When
     # on with quantity > 1, ALL copies queue so every one is injected by the
