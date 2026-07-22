@@ -56,6 +56,16 @@ class PrintQueueItem(Base):
     # (H2D/H2D Pro/H2C/X2D). Encoded as 1 (run) / 2 (skip) in the project_file
     # MQTT payload; forced to 2 on single-nozzle machines regardless (#1682).
     nozzle_offset_cali: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    # Tri-state calibration-mode overlay (off / auto / on) — SAFE spec
+    # 2026-07-22. NULLABLE with NO default on purpose: NULL means "derive from
+    # the legacy bool companion above" so every existing row is behaviour-
+    # identical without a backfill. The bool columns stay the source of truth
+    # for off/on; these carry only the extra 'auto' state (or mirror the bool).
+    # Readers: mode = <x>_mode or ('on' if <x> else 'off'). Added to existing
+    # DBs by migration m106; a boot self-check asserts they exist.
+    bed_levelling_mode: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    flow_cali_mode: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    nozzle_offset_cali_mode: Mapped[str | None] = mapped_column(String(8), nullable=True)
     # Mesh-mode fast check — operator intent only, processing to be wired up
     # later (unpacking → gcode patching → repacking on dispatch).
     mesh_mode_fast_check: Mapped[bool] = mapped_column(Boolean, default=True)

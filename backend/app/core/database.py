@@ -191,11 +191,44 @@ async def init_db():
 
     await run_all_migrations(engine, async_session)
 
+    # Boot self-check: fail loudly if the tri-state calibration columns are
+    # missing rather than serving a drifted schema (see the function docstring).
+    await _verify_calibration_mode_columns(engine)
+
     # Re-encrypt any legacy plaintext OIDC client_secret / TOTP secret rows
     # that exist from before the encryption key was configured. Runs on a
     # fresh AsyncSession (NOT the migration connection) to avoid SQLite WAL
     # writer contention.
     await _migrate_encrypt_legacy_secrets()
+
+
+async def _verify_calibration_mode_columns(engine) -> None:
+    """Boot self-check: assert the tri-state calibration ``*_mode`` columns
+    exist on ``print_queue`` after migrations have run.
+
+    Guardrail against the ORM↔DB schema drift that broke production once: the
+    moment ``PrintQueueItem`` maps these columns, SQLAlchemy names them in
+    EVERY ``select(PrintQueueItem)``; if the running DB lacks them (a migration
+    that never applied — e.g. a copied DB, or a ``--reload`` window before
+    ``init_db`` finished), the failure cascades across dispatch, the completion
+    handler, notifications and ``GET /queue`` as a mid-request 500. Surfacing it
+    here converts that silent catastrophe into a loud, obvious startup failure.
+
+    ``getattr`` fallbacks do NOT help — the fault is at the SQL SELECT layer,
+    before any Python attribute access — which is exactly why this check exists.
+    """
+    from backend.app.migrations.helpers import column_exists
+
+    required = ("bed_levelling_mode", "flow_cali_mode", "nozzle_offset_cali_mode")
+    async with engine.begin() as conn:
+        missing = [c for c in required if not await column_exists(conn, "print_queue", c)]
+    if missing:
+        raise RuntimeError(
+            "Startup aborted: print_queue is missing calibration-mode column(s) "
+            f"{missing}. Migration m106 (print_queue_calibration_modes) did not apply. "
+            "Refusing to serve with a drifted schema — inspect the _migrations table "
+            "and re-run migrations before starting."
+        )
 
 
 # Module-level counter exposing the number of rows skipped during the last
