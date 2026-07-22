@@ -4125,12 +4125,12 @@ class BambuMQTTClient:
         filename: str,
         plate_id: int = 1,
         ams_mapping: list[int] | None = None,
-        bed_levelling: bool = True,
-        flow_cali: bool = False,
+        bed_levelling: str | bool = True,
+        flow_cali: str | bool = False,
         layer_inspect: bool = False,
         timelapse: bool = False,
         use_ams: bool = True,
-        nozzle_offset_cali: bool = False,
+        nozzle_offset_cali: str | bool = False,
         nozzle_mapping: str | None = None,
     ):
         """Start a print job on the printer.
@@ -4272,6 +4272,30 @@ class BambuMQTTClient:
             # the (astronomically unlikely) zero case since task_id=0 is rejected.
             submission_id = str(int(time.time() * 1000) % 2_147_483_647 or 1)
 
+            # Tri-state calibration (off/auto/on) → wire values. Accepts the
+            # legacy bool from every existing caller (byte-identical: off/on map
+            # to today's 0/1 + False/True) and the new tri-state string. `auto`
+            # (2) is clamped down to `on` (1) on any model whose firmware lacks
+            # the auto mode, so 2 only ever reaches a supporting machine. The
+            # bool companions (`bed_leveling`/`flow_cali`) stay `mode=='on'`
+            # (auto → False), matching BambuStudio. nozzle stays dual-only.
+            from backend.app.schemas.calibration_mode import clamp_auto, mode_to_bool, mode_to_int
+            from backend.app.utils.printer_models import (
+                supports_auto_bed_leveling,
+                supports_auto_flow_cali,
+                supports_auto_nozzle_offset,
+            )
+
+            bed_leveling_bool = mode_to_bool(bed_levelling)
+            flow_cali_bool = mode_to_bool(flow_cali)
+            auto_bed_leveling_int = clamp_auto(mode_to_int(bed_levelling), supports_auto_bed_leveling(self.model))
+            extrude_cali_flag_int = clamp_auto(mode_to_int(flow_cali), supports_auto_flow_cali(self.model))
+            nozzle_offset_cali_int = (
+                clamp_auto(mode_to_int(nozzle_offset_cali), supports_auto_nozzle_offset(self.model))
+                if is_dual_nozzle
+                else 0
+            )
+
             command = {
                 "print": {
                     "sequence_id": "20000",
@@ -4282,9 +4306,9 @@ class BambuMQTTClient:
                     "md5": "",
                     "bed_type": "auto",
                     "timelapse": timelapse,
-                    "bed_leveling": bed_levelling,
-                    "auto_bed_leveling": 1 if bed_levelling else 0,
-                    "flow_cali": flow_cali,
+                    "bed_leveling": bed_leveling_bool,
+                    "auto_bed_leveling": auto_bed_leveling_int,
+                    "flow_cali": flow_cali_bool,
                     # Hardcoded off — upstream Bambu Studio does the same for
                     # every model. Kept in the payload only because older
                     # firmware versions reject the command if the key is
@@ -4303,7 +4327,7 @@ class BambuMQTTClient:
                     # physical pass still runs. A BambuStudio Send-dialog capture
                     # on the same firmware sends 0 when Flow Calibration is
                     # unchecked; 0 is what actually removes stage 8 (#1721 series).
-                    "extrude_cali_flag": 1 if flow_cali else 0,
+                    "extrude_cali_flag": extrude_cali_flag_int,
                     "extrude_cali_manual_mode": 0,
                     # 1 = run, 0 = drop the stage (stage 39, "Nozzle offset
                     # calibration"). Sending 2 for "off" left stage 39 queued on
@@ -4312,7 +4336,7 @@ class BambuMQTTClient:
                     # machines (H2D/H2D Pro/H2C/X2D); on single-nozzle printers we
                     # always drop it so firmware never wastes cycles on a
                     # calibration their head doesn't support (#1682).
-                    "nozzle_offset_cali": 1 if (nozzle_offset_cali and is_dual_nozzle) else 0,
+                    "nozzle_offset_cali": nozzle_offset_cali_int,
                     "subtask_name": filename.replace(".3mf", "").replace(".gcode", ""),
                     "profile_id": "0",
                     "project_id": submission_id,

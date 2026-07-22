@@ -58,6 +58,25 @@ def mode_to_bool(mode: str | bool | None) -> bool:
     return mode == "on"
 
 
+def mode_to_int(mode: str | bool | None) -> int:
+    """MQTT wire int for a calibration mode: ``off=0``, ``on=1``, ``auto=2``.
+
+    Matches BambuStudio ``getValueInt()`` (SelectMachine.cpp:7176). Accepts the
+    legacy bool (``True → 1`` / ``False → 0``). Unknown / ``None`` → ``0`` (off),
+    the safe default.
+    """
+    if isinstance(mode, bool):
+        return 1 if mode else 0
+    return {"off": 0, "on": 1, "auto": 2}.get(mode, 0)
+
+
+def clamp_auto(value: int, auto_supported: bool) -> int:
+    """Downgrade ``auto`` (2) to ``on`` (1) on a model whose firmware lacks the
+    auto mode, so ``2`` never reaches a non-supporting machine. ``off`` / ``on``
+    (0 / 1) pass through unchanged."""
+    return 1 if (value == 2 and not auto_supported) else value
+
+
 def derive_mode(mode: str | None, legacy_bool: bool) -> str:
     """Resolve the effective tri-state for reads.
 

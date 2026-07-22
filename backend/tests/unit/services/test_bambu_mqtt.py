@@ -5108,3 +5108,84 @@ class TestDeviceIdentificationProbe:
         msg = matches[0].getMessage()
         assert "no known id fields" in msg
         assert "model_name" in msg and "extruder" in msg
+
+
+class TestCalibrationPayloadEncoding:
+    """Golden wire-encoding of the tri-state calibration fields in start_print's
+    project_file payload (SAFE spec §4.2).
+
+    Invariant: for every legacy bool / off / on input the output is byte-identical
+    to the pre-tri-state code (bool companion + 0/1 int). ``auto`` encodes 2 only
+    on a model whose firmware advertises the auto mode, else clamps to 1; the
+    bool companion is False for auto (BambuStudio parity). Nozzle offset stays
+    dual-nozzle-gated to 0 on single-nozzle heads.
+    """
+
+    def _client(self, model=None, dual=False):
+        from unittest.mock import MagicMock
+
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        c = BambuMQTTClient(ip_address="192.168.1.100", serial_number="TEST123", access_code="12345678", model=model)
+        c._client = MagicMock()
+        c.state.connected = True
+        c.state.raw_data["ams"] = {"ams": [{"id": "0"}]}
+        c._is_dual_nozzle = dual
+        return c
+
+    def _cmd(self, c):
+        return json.loads(c._client.publish.call_args[0][1])["print"]
+
+    def test_bool_defaults_byte_identical(self):
+        c = self._client(model="P1S")
+        c.start_print("t.3mf", bed_levelling=True, flow_cali=False, nozzle_offset_cali=False)
+        cmd = self._cmd(c)
+        assert cmd["bed_leveling"] is True
+        assert cmd["auto_bed_leveling"] == 1
+        assert cmd["flow_cali"] is False
+        assert cmd["extrude_cali_flag"] == 0
+        assert cmd["nozzle_offset_cali"] == 0
+
+    def test_bool_bed_off_flow_on_byte_identical(self):
+        c = self._client(model="P1S")
+        c.start_print("t.3mf", bed_levelling=False, flow_cali=True)
+        cmd = self._cmd(c)
+        assert cmd["bed_leveling"] is False
+        assert cmd["auto_bed_leveling"] == 0
+        assert cmd["flow_cali"] is True
+        assert cmd["extrude_cali_flag"] == 1
+
+    def test_string_off_on_match_bool(self):
+        c = self._client(model="P1S")
+        c.start_print("t.3mf", bed_levelling="on", flow_cali="off")
+        cmd = self._cmd(c)
+        assert cmd["bed_leveling"] is True and cmd["auto_bed_leveling"] == 1
+        assert cmd["flow_cali"] is False and cmd["extrude_cali_flag"] == 0
+
+    def test_auto_encodes_2_on_supporting_model(self):
+        c = self._client(model="X2D")  # advertises auto bed + flow
+        c.start_print("t.3mf", bed_levelling="auto", flow_cali="auto")
+        cmd = self._cmd(c)
+        assert cmd["bed_leveling"] is False  # bool companion False for auto (BS parity)
+        assert cmd["auto_bed_leveling"] == 2
+        assert cmd["flow_cali"] is False
+        assert cmd["extrude_cali_flag"] == 2
+
+    def test_auto_clamps_to_1_on_unsupported_model(self):
+        c = self._client(model="P1S")  # no auto support → 2 downgrades to 1
+        c.start_print("t.3mf", bed_levelling="auto", flow_cali="auto")
+        cmd = self._cmd(c)
+        assert cmd["auto_bed_leveling"] == 1
+        assert cmd["extrude_cali_flag"] == 1
+
+    def test_nozzle_offset_auto_dual_supporting(self):
+        c = self._client(model="X2D", dual=True)
+        c.start_print("t.3mf", nozzle_offset_cali="auto")
+        assert self._cmd(c)["nozzle_offset_cali"] == 2
+
+    def test_nozzle_offset_forced_zero_on_single_nozzle(self):
+        # A genuinely single-nozzle printer (not dual at runtime, model not in
+        # the dual tuple) never gets the offset step, even for an explicit 'on'.
+        c = self._client(model="P1S", dual=False)
+        c.start_print("t.3mf", nozzle_offset_cali="on")
+        assert self._cmd(c)["nozzle_offset_cali"] == 0

@@ -7,9 +7,11 @@ from pydantic import BaseModel, ValidationError
 
 from backend.app.schemas.calibration_mode import (
     CalibrationMode,
+    clamp_auto,
     coerce_calibration_mode,
     derive_mode,
     mode_to_bool,
+    mode_to_int,
 )
 
 
@@ -65,6 +67,29 @@ class TestModeToBool:
     def test_only_on_is_true(self, mode, expected):
         # 'auto' mirrors to False (BS: task_bed_leveling = getValue=='on').
         assert mode_to_bool(mode) is expected
+
+
+class TestModeToInt:
+    @pytest.mark.parametrize(
+        ("mode", "expected"),
+        [("off", 0), ("on", 1), ("auto", 2), (False, 0), (True, 1), (None, 0), ("garbage", 0)],
+    )
+    def test_wire_ints(self, mode, expected):
+        assert mode_to_int(mode) == expected
+
+
+class TestClampAuto:
+    def test_auto_downgrades_on_unsupported(self):
+        assert clamp_auto(2, auto_supported=False) == 1
+
+    def test_auto_passes_on_supported(self):
+        assert clamp_auto(2, auto_supported=True) == 2
+
+    @pytest.mark.parametrize("v", [0, 1])
+    def test_off_on_pass_through(self, v):
+        # off/on never clamp, regardless of support.
+        assert clamp_auto(v, auto_supported=False) == v
+        assert clamp_auto(v, auto_supported=True) == v
 
 
 class TestDeriveMode:
