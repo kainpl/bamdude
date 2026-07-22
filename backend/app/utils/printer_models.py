@@ -225,6 +225,96 @@ def is_dual_nozzle_model(model: str | None) -> bool:
     return normalized in DUAL_NOZZLE_MODELS
 
 
+# ---------------------------------------------------------------------------
+# Auto-calibration capability matrix (off / auto / on tri-state gating).
+#
+# Some models' firmware supports an *automatic* calibration mode (the printer
+# itself decides whether the step is needed) in addition to plain off/on. The
+# print dialog surfaces a 3-position control (off / auto / on) ONLY on models
+# listed here; every other model keeps the 2-position off/on toggle. This is an
+# axis INDEPENDENT of nozzle count — auto bed-leveling / flow-cali apply to
+# single-nozzle models too (A2L, P2S, H2S).
+#
+# Source: BambuStudio resources/printers/*.json — `support_bed_leveling==2`
+# (auto), `support_auto_flow_calibration`, `support_nozzle_offset_calibration`.
+# Values must be uppercase with spaces/dashes stripped for normalized comparison.
+AUTO_BED_LEVELING_MODELS = frozenset(
+    [
+        # Display names (uppercase, no spaces/dashes)
+        "A2L",
+        "P2S",
+        "H2S",
+        "H2C",
+        "H2D",
+        "H2DPRO",
+        "X2D",
+        # Internal codes
+        "N9",  # A2L
+        "N7",  # P2S
+        "O1S",  # H2S
+        "O1C",  # H2C
+        "O1C2",  # H2C (dual nozzle variant)
+        "O1D",  # H2D
+        "O1E",  # H2D Pro
+        "O2D",  # H2D Pro (alternate)
+        "N6",  # X2D
+    ]
+)
+
+# Flow (extrusion) auto-calibration — same model set as auto bed-leveling
+# (BambuStudio advertises both on the same machines). Aliased so the two can
+# never drift apart by accident; split into its own frozenset only if a model
+# ever supports one but not the other.
+AUTO_FLOW_CALI_MODELS = AUTO_BED_LEVELING_MODELS
+
+# Nozzle-offset auto-calibration — dual-nozzle models only (a nozzle *offset*
+# only exists with two nozzles). Currently coincides with DUAL_NOZZLE_MODELS,
+# but kept as its own matrix because the capability axes are independent.
+AUTO_NOZZLE_OFFSET_MODELS = frozenset(
+    [
+        # Display names (uppercase, no spaces/dashes)
+        "H2C",
+        "H2D",
+        "H2DPRO",
+        "X2D",
+        # Internal codes
+        "O1C",  # H2C
+        "O1C2",  # H2C (dual nozzle variant)
+        "O1D",  # H2D
+        "O1E",  # H2D Pro
+        "O2D",  # H2D Pro (alternate)
+        "N6",  # X2D
+    ]
+)
+
+
+def supports_auto_bed_leveling(model: str | None) -> bool:
+    """Return True if the model's firmware supports *automatic* bed leveling
+    (the 3-position off/auto/on control); False → 2-position off/on only."""
+    if not model:
+        return False
+    normalized = model.strip().upper().replace(" ", "").replace("-", "")
+    return normalized in AUTO_BED_LEVELING_MODELS
+
+
+def supports_auto_flow_cali(model: str | None) -> bool:
+    """Return True if the model's firmware supports *automatic* flow (extrusion)
+    calibration (the 3-position off/auto/on control)."""
+    if not model:
+        return False
+    normalized = model.strip().upper().replace(" ", "").replace("-", "")
+    return normalized in AUTO_FLOW_CALI_MODELS
+
+
+def supports_auto_nozzle_offset(model: str | None) -> bool:
+    """Return True if the model's firmware supports *automatic* nozzle-offset
+    calibration (the 3-position off/auto/on control). Dual-nozzle models only."""
+    if not model:
+        return False
+    normalized = model.strip().upper().replace(" ", "").replace("-", "")
+    return normalized in AUTO_NOZZLE_OFFSET_MODELS
+
+
 # Models with a confirmed door-open sensor exposed via MQTT.
 # Only X1 family is reverse-engineered to publish door state on home_flag bit 23;
 # bit 23 of `stat` on other enclosed models (P1S/P2S/H2*) is undocumented and

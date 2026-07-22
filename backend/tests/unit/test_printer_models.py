@@ -13,6 +13,9 @@ from backend.app.utils.printer_models import (
     is_dual_nozzle_model,
     normalize_printer_model,
     normalize_printer_model_id,
+    supports_auto_bed_leveling,
+    supports_auto_flow_cali,
+    supports_auto_nozzle_offset,
 )
 
 
@@ -222,3 +225,49 @@ class TestHasExternalStorage:
     def test_none_and_empty_default_to_true(self):
         assert has_external_storage(None) is True
         assert has_external_storage("") is True
+
+
+class TestAutoCalibrationCapabilities:
+    """Which models advertise an *auto* calibration mode → the print dialog's
+    3-position off/auto/on control. Source: BambuStudio resources/printers/*.json.
+
+    Bed + flow auto: {A2L, P2S, H2S, H2C, H2D, H2D Pro, X2D} (independent of
+    nozzle count). Nozzle-offset auto: dual-nozzle only {H2C, H2D, H2D Pro, X2D}.
+    """
+
+    # ---- bed + flow (same matrix) ----
+    @pytest.mark.parametrize("model", ["A2L", "P2S", "H2S", "H2C", "H2D", "H2D Pro", "X2D"])
+    def test_bed_and_flow_auto_display_names(self, model: str):
+        assert supports_auto_bed_leveling(model) is True
+        assert supports_auto_flow_cali(model) is True
+
+    @pytest.mark.parametrize("model", ["N9", "N7", "O1S", "O1C", "O1C2", "O1D", "O1E", "O2D", "N6"])
+    def test_bed_and_flow_auto_internal_codes(self, model: str):
+        assert supports_auto_bed_leveling(model) is True
+        assert supports_auto_flow_cali(model) is True
+
+    @pytest.mark.parametrize("model", ["X1C", "X1", "X1E", "P1S", "P1P", "A1", "A1 Mini", None, ""])
+    def test_bed_and_flow_no_auto(self, model):
+        assert supports_auto_bed_leveling(model) is False
+        assert supports_auto_flow_cali(model) is False
+
+    # ---- nozzle-offset (dual-nozzle only) ----
+    @pytest.mark.parametrize("model", ["H2C", "H2D", "H2D Pro", "X2D", "O1C", "O1D", "O1E", "O2D", "N6"])
+    def test_nozzle_offset_auto(self, model: str):
+        assert supports_auto_nozzle_offset(model) is True
+
+    @pytest.mark.parametrize("model", ["A2L", "P2S", "H2S", "N9", "N7", "O1S"])
+    def test_bed_flow_auto_but_not_nozzle_offset(self, model: str):
+        """Single-nozzle auto-capable models advertise bed/flow auto but NOT
+        nozzle-offset auto (a nozzle offset only exists with two nozzles)."""
+        assert supports_auto_bed_leveling(model) is True
+        assert supports_auto_nozzle_offset(model) is False
+
+    @pytest.mark.parametrize("model", ["X1C", "P1S", "A1", "A1 Mini", None, ""])
+    def test_single_nozzle_no_nozzle_offset_auto(self, model):
+        assert supports_auto_nozzle_offset(model) is False
+
+    def test_case_and_dash_insensitive(self):
+        assert supports_auto_bed_leveling("h2d pro") is True
+        assert supports_auto_bed_leveling(" H2D-Pro ") is True
+        assert supports_auto_nozzle_offset("x2d") is True
