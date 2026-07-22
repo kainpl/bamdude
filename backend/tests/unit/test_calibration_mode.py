@@ -12,6 +12,7 @@ from backend.app.schemas.calibration_mode import (
     derive_mode,
     mode_to_bool,
     mode_to_int,
+    normalize_mode,
 )
 
 
@@ -67,6 +68,24 @@ class TestModeToBool:
     def test_only_on_is_true(self, mode, expected):
         # 'auto' mirrors to False (BS: task_bed_leveling = getValue=='on').
         assert mode_to_bool(mode) is expected
+
+
+class TestNormalizeMode:
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (True, "on"),
+            (False, "off"),
+            ("on", "on"),
+            ("auto", "auto"),
+            ("off", "off"),
+            (" AUTO ", "auto"),
+            (None, "off"),
+            ("garbage", "off"),
+        ],
+    )
+    def test_canonical_string(self, value, expected):
+        assert normalize_mode(value) == expected
 
 
 class TestModeToInt:

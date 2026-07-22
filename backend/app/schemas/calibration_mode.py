@@ -58,6 +58,21 @@ def mode_to_bool(mode: str | bool | None) -> bool:
     return mode == "on"
 
 
+def normalize_mode(value: str | bool | None) -> str:
+    """Coerce a legacy bool / arbitrary string into a canonical
+    ``'off' | 'auto' | 'on'`` for persisting the ``*_mode`` column.
+
+    ``True → 'on'`` / ``False → 'off'``; a valid tri-state string is lowercased;
+    anything else (``None``, junk) → ``'off'`` (the safe default).
+    """
+    if isinstance(value, str):
+        v = value.strip().lower()
+        return v if v in _VALID else "off"
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    return "off"
+
+
 def mode_to_int(mode: str | bool | None) -> int:
     """MQTT wire int for a calibration mode: ``off=0``, ``on=1``, ``auto=2``.
 

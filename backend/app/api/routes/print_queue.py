@@ -23,6 +23,7 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.project import Project
 from backend.app.models.user import User
+from backend.app.schemas.calibration_mode import derive_mode, mode_to_bool, normalize_mode
 from backend.app.schemas.print_queue import (
     PrintQueueBatchCreate,
     PrintQueueBulkUpdate,
@@ -154,6 +155,22 @@ def _extract_print_time_from_3mf(file_path: Path, plate_id: int | None = None) -
     return None
 
 
+# The three tri-state calibration fields. Each has a legacy bool column
+# (authoritative for off/on — read by the dispatcher + secondary sites) and a
+# nullable ``*_mode`` column that carries the extra 'auto' state.
+_CALI_MODE_FIELDS = ("bed_levelling", "flow_cali", "nozzle_offset_cali")
+
+
+def _set_calibration_mode(item: PrintQueueItem, field: str, value) -> None:
+    """Store a tri-state calibration value on ``item``: the legacy bool mirror
+    (``field``) plus the ``field_mode`` column. ``value`` is a CalibrationMode
+    string (the schema coercer already normalised any legacy bool), but a raw
+    bool is tolerated defensively."""
+    mode = normalize_mode(value)
+    setattr(item, field, mode == "on")
+    setattr(item, f"{field}_mode", mode)
+
+
 def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
     """Add nested archive/printer/library_file info to response."""
     # Parse ams_mapping from JSON string BEFORE model_validate
@@ -189,12 +206,12 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         "manual_start": item.manual_start,
         "ams_mapping": ams_mapping_parsed,
         "plate_id": item.plate_id,
-        "bed_levelling": item.bed_levelling,
-        "flow_cali": item.flow_cali,
+        "bed_levelling": derive_mode(item.bed_levelling_mode, item.bed_levelling),
+        "flow_cali": derive_mode(item.flow_cali_mode, item.flow_cali),
         "layer_inspect": item.layer_inspect,
         "timelapse": item.timelapse,
         "use_ams": item.use_ams,
-        "nozzle_offset_cali": item.nozzle_offset_cali,
+        "nozzle_offset_cali": derive_mode(item.nozzle_offset_cali_mode, item.nozzle_offset_cali),
         "mesh_mode_fast_check": item.mesh_mode_fast_check,
         "execute_swap_macros": item.execute_swap_macros,
         "swap_macro_events": json.loads(item.swap_macro_events) if item.swap_macro_events else None,
@@ -497,12 +514,15 @@ async def add_to_queue(
                 manual_start=data.manual_start,
                 ams_mapping=ams_mapping_json,
                 plate_id=data.plate_id,
-                bed_levelling=data.bed_levelling,
-                flow_cali=data.flow_cali,
+                bed_levelling=mode_to_bool(data.bed_levelling),
+                bed_levelling_mode=data.bed_levelling,
+                flow_cali=mode_to_bool(data.flow_cali),
+                flow_cali_mode=data.flow_cali,
                 layer_inspect=data.layer_inspect,
                 timelapse=data.timelapse,
                 use_ams=data.use_ams,
-                nozzle_offset_cali=data.nozzle_offset_cali,
+                nozzle_offset_cali=mode_to_bool(data.nozzle_offset_cali),
+                nozzle_offset_cali_mode=data.nozzle_offset_cali,
                 mesh_mode_fast_check=data.mesh_mode_fast_check,
                 execute_swap_macros=execute_swap_macros,
                 swap_macro_events=swap_macro_events_json,
@@ -632,7 +652,10 @@ async def bulk_update_queue_items(
             continue
 
         for field, value in update_data.items():
-            setattr(item, field, value)
+            if field in _CALI_MODE_FIELDS:
+                _set_calibration_mode(item, field, value)
+            else:
+                setattr(item, field, value)
         updated_count += 1
 
     await db.commit()
@@ -734,7 +757,10 @@ async def update_queue_item(
         update_data["swap_macro_events"] = json.dumps(events) if events else None
 
     for field, value in update_data.items():
-        setattr(item, field, value)
+        if field in _CALI_MODE_FIELDS:
+            _set_calibration_mode(item, field, value)
+        else:
+            setattr(item, field, value)
 
     await db.commit()
 
@@ -1482,7 +1508,10 @@ async def update_batch(
 
     for item in pending:
         for field, value in update_data.items():
-            setattr(item, field, value)
+            if field in _CALI_MODE_FIELDS:
+                _set_calibration_mode(item, field, value)
+            else:
+                setattr(item, field, value)
     await db.commit()
     return {"updated": len(pending), "batch_id": batch_id, "fields": list(update_data.keys())}
 

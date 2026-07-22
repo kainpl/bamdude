@@ -280,11 +280,33 @@ class TestPrintQueueAPI:
         response = await async_client.post("/api/v1/queue/", json=data)
         assert response.status_code == 200
         result = response.json()
-        assert result["bed_levelling"] is False
-        assert result["flow_cali"] is True
+        # Calibration fields are tri-state strings in the response; a legacy bool
+        # in the request coerces (False -> 'off', True -> 'on').
+        assert result["bed_levelling"] == "off"
+        assert result["flow_cali"] == "on"
         assert result["layer_inspect"] is True
         assert result["timelapse"] is True
         assert result["use_ams"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_add_to_queue_auto_calibration_mode(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """Tri-state 'auto' persists through create -> response -> GET."""
+        _printer, queue = await printer_factory()
+        archive = await archive_factory()
+        response = await async_client.post(
+            "/api/v1/queue/",
+            json={"queue_id": queue.id, "archive_id": archive.id, "bed_levelling": "auto", "flow_cali": "off"},
+        )
+        assert response.status_code == 200
+        result = response.json()
+        assert result["bed_levelling"] == "auto"
+        assert result["flow_cali"] == "off"
+        got = (await async_client.get(f"/api/v1/queue/{result['id']}")).json()
+        assert got["bed_levelling"] == "auto"
+        assert got["flow_cali"] == "off"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -310,7 +332,7 @@ class TestPrintQueueAPI:
         )
         assert response.status_code == 200
         result = response.json()
-        assert result["bed_levelling"] is False
+        assert result["bed_levelling"] == "off"
         assert result["timelapse"] is True
 
     @pytest.mark.asyncio
@@ -977,7 +999,7 @@ class TestQueueLibraryFileSupport:
         assert result["library_file_id"] == lib_file.id
         assert result["ams_mapping"] == [1, 2, -1, -1]
         assert result["plate_id"] == 2
-        assert result["bed_levelling"] is False
+        assert result["bed_levelling"] == "off"
         assert result["timelapse"] is True
         assert result["manual_start"] is True
 

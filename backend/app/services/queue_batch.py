@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
+from backend.app.schemas.calibration_mode import normalize_mode
 from backend.app.services.queue_counters import update_queue_counters
 
 
@@ -20,12 +21,12 @@ async def enqueue_batch_copies(
     library_file_id: int | None = None,
     plate_id: int | None = None,
     ams_mapping: list[int] | None = None,
-    bed_levelling: bool = True,
-    flow_cali: bool = True,
+    bed_levelling: str | bool = True,
+    flow_cali: str | bool = True,
     layer_inspect: bool = False,
     timelapse: bool = False,
     use_ams: bool = True,
-    nozzle_offset_cali: bool = True,
+    nozzle_offset_cali: str | bool = True,
     mesh_mode_fast_check: bool = True,
     gcode_injection: bool = False,
     execute_swap_macros: bool = False,
@@ -58,6 +59,11 @@ async def enqueue_batch_copies(
 
     if batch_id is None:
         batch_id = str(uuid.uuid4())
+    # Tri-state calibration → canonical mode string (accepts legacy bool from
+    # existing callers). Store the bool mirror + *_mode column on each copy.
+    bed_mode = normalize_mode(bed_levelling)
+    flow_mode = normalize_mode(flow_cali)
+    nozzle_mode = normalize_mode(nozzle_offset_cali)
     ams_mapping_json = json.dumps(ams_mapping) if ams_mapping else None
     swap_macro_events_json = json.dumps(swap_macro_events) if execute_swap_macros and swap_macro_events else None
 
@@ -89,12 +95,15 @@ async def enqueue_batch_copies(
                 library_file_id=library_file_id,
                 ams_mapping=ams_mapping_json,
                 plate_id=plate_id,
-                bed_levelling=bed_levelling,
-                flow_cali=flow_cali,
+                bed_levelling=bed_mode == "on",
+                bed_levelling_mode=bed_mode,
+                flow_cali=flow_mode == "on",
+                flow_cali_mode=flow_mode,
                 layer_inspect=layer_inspect,
                 timelapse=timelapse,
                 use_ams=use_ams,
-                nozzle_offset_cali=nozzle_offset_cali,
+                nozzle_offset_cali=nozzle_mode == "on",
+                nozzle_offset_cali_mode=nozzle_mode,
                 mesh_mode_fast_check=mesh_mode_fast_check,
                 gcode_injection=gcode_injection,
                 execute_swap_macros=execute_swap_macros,

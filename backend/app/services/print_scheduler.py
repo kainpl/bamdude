@@ -25,6 +25,7 @@ from backend.app.models.settings import Settings
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+from backend.app.schemas.calibration_mode import derive_mode
 from backend.app.services.notification_service import notification_service
 from backend.app.services.printer_manager import (
     first_drying_blocking_reason,
@@ -1863,8 +1864,12 @@ class PrintScheduler:
             "mesh_mode_fast_check": item.mesh_mode_fast_check,
             "ams_mapping": ams_mapping,
             "plate_id": item.plate_id or 1,
-            "bed_levelling": item.bed_levelling,
-            "flow_cali": item.flow_cali,
+            # Tri-state calibration → mode string (off/auto/on) so an 'auto'
+            # override reaches start_print. NULL *_mode derives from the legacy
+            # bool, so existing items emit 'on'/'off' — byte-identical downstream
+            # (start_print maps 'on'/'off' to today's exact bool + 0/1).
+            "bed_levelling": derive_mode(item.bed_levelling_mode, item.bed_levelling),
+            "flow_cali": derive_mode(item.flow_cali_mode, item.flow_cali),
             "layer_inspect": item.layer_inspect,
             # #1721: the user's explicit timelapse choice flows straight through
             # to the printer. The #1397 force-on at dispatch was removed because it
@@ -1873,7 +1878,7 @@ class PrintScheduler:
             # transition in bambu_mqtt.py, not by forcing a timelapse video.
             "timelapse": item.timelapse,
             "use_ams": item.use_ams,
-            "nozzle_offset_cali": item.nozzle_offset_cali,
+            "nozzle_offset_cali": derive_mode(item.nozzle_offset_cali_mode, item.nozzle_offset_cali),
             # H2C rack-swap nozzle pick (#1780) — opaque JSON string captured
             # from Bambu Studio's project_file on VP intake; the MQTT layer
             # parses + injects it only for dual-nozzle models, so a null on

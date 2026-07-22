@@ -3,6 +3,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, PlainSerializer, model_validator
 
+from backend.app.schemas.calibration_mode import CalibrationMode
+
 
 # Custom serializer to ensure UTC datetimes have Z suffix
 def serialize_utc_datetime(dt: datetime | None) -> str | None:
@@ -24,15 +26,17 @@ class PrintQueueItemCreate(BaseModel):
     manual_start: bool = False
     ams_mapping: list[int] | None = None
     plate_id: int | None = None
-    # Print options
-    bed_levelling: bool = True
-    flow_cali: bool = True
+    # Print options — bed_levelling / flow_cali / nozzle_offset_cali are
+    # tri-state (off/auto/on); the CalibrationMode field also accepts a legacy
+    # bool (True->'on', False->'off') so older API clients keep working.
+    bed_levelling: CalibrationMode = "on"
+    flow_cali: CalibrationMode = "on"
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True
-    # Nozzle offset calibration — dual-nozzle printers only (#1682). Default True
+    # Nozzle offset calibration — dual-nozzle printers only (#1682). Default 'on'
     # matches BambuStudio; the MQTT layer forces "skip" on single-nozzle printers.
-    nozzle_offset_cali: bool = True
+    nozzle_offset_cali: CalibrationMode = "on"
     mesh_mode_fast_check: bool = True
     execute_swap_macros: bool = True
     swap_macro_events: list[str] | None = None
@@ -56,13 +60,14 @@ class PrintQueueItemUpdate(BaseModel):
     manual_start: bool | None = None
     ams_mapping: list[int] | None = None
     plate_id: int | None = None
-    # Print options
-    bed_levelling: bool | None = None
-    flow_cali: bool | None = None
+    # Print options — tri-state calibration (off/auto/on) or legacy bool; None
+    # (field unset) means "leave unchanged".
+    bed_levelling: CalibrationMode | None = None
+    flow_cali: CalibrationMode | None = None
     layer_inspect: bool | None = None
     timelapse: bool | None = None
     use_ams: bool | None = None
-    nozzle_offset_cali: bool | None = None
+    nozzle_offset_cali: CalibrationMode | None = None
     mesh_mode_fast_check: bool | None = None
     execute_swap_macros: bool | None = None
     swap_macro_events: list[str] | None = None
@@ -89,15 +94,16 @@ class PrintQueueItemResponse(BaseModel):
     manual_start: bool
     ams_mapping: list[int] | None = None
     plate_id: int | None = None
-    # Print options
-    bed_levelling: bool = True
-    flow_cali: bool = True
+    # Print options — tri-state calibration (off/auto/on). Derived server-side
+    # from the *_mode column (falling back to the legacy bool) in _enrich_response.
+    bed_levelling: CalibrationMode = "on"
+    flow_cali: CalibrationMode = "on"
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True
-    # Nozzle offset calibration — dual-nozzle printers only (#1682). Default True
+    # Nozzle offset calibration — dual-nozzle printers only (#1682). Default 'on'
     # matches BambuStudio; the MQTT layer forces "skip" on single-nozzle printers.
-    nozzle_offset_cali: bool = True
+    nozzle_offset_cali: CalibrationMode = "on"
     mesh_mode_fast_check: bool = True
     execute_swap_macros: bool = True
     swap_macro_events: list[str] | None = None
@@ -191,13 +197,13 @@ class PrintQueueBulkUpdate(BaseModel):
     scheduled_time: datetime | None = None
     auto_off_after: bool | None = None
     manual_start: bool | None = None
-    # Print options
-    bed_levelling: bool | None = None
-    flow_cali: bool | None = None
+    # Print options — tri-state calibration (off/auto/on) or legacy bool.
+    bed_levelling: CalibrationMode | None = None
+    flow_cali: CalibrationMode | None = None
     layer_inspect: bool | None = None
     timelapse: bool | None = None
     use_ams: bool | None = None
-    nozzle_offset_cali: bool | None = None
+    nozzle_offset_cali: CalibrationMode | None = None
     mesh_mode_fast_check: bool | None = None
     execute_swap_macros: bool | None = None
     swap_macro_events: list[str] | None = None
