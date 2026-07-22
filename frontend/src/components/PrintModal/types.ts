@@ -1,4 +1,5 @@
-import type { PrintQueueItem, Printer } from '../../api/client';
+import type { CalibrationMode, PrintQueueItem, Printer } from '../../api/client';
+import type { AutoCalibrationCaps } from '../../utils/printerCapabilities';
 
 /**
  * Mode of operation for the PrintModal.
@@ -59,8 +60,11 @@ export type PreheatOverride = 'inherit' | 'on' | 'off';
  * Print options that can be configured for a print job.
  */
 export interface PrintOptions {
-  bed_levelling: boolean;
-  flow_cali: boolean;
+  // Tri-state calibration (off/auto/on). 'auto' is only offered on models whose
+  // firmware supports it (see utils/printerCapabilities); saved 'auto' on a
+  // non-auto printer displays as 'on'.
+  bed_levelling: CalibrationMode;
+  flow_cali: CalibrationMode;
   layer_inspect: boolean;
   timelapse: boolean;
   mesh_mode_fast_check: boolean;
@@ -68,7 +72,7 @@ export interface PrintOptions {
   gcode_injection: boolean;
   /** Nozzle offset calibration before print — dual-nozzle printers only (#1682).
    *  The MQTT layer forces "skip" on single-nozzle machines regardless. */
-  nozzle_offset_cali: boolean;
+  nozzle_offset_cali: CalibrationMode;
   // Per-item preheat / heat-soak override (#1468). 'inherit' uses the global
   // Settings → Printing toggle; 'on' / 'off' force the per-print decision.
   // chamber_target_override is non-null to bypass the per-filament-type
@@ -81,13 +85,13 @@ export interface PrintOptions {
  * Default print options values.
  */
 export const DEFAULT_PRINT_OPTIONS: PrintOptions = {
-  bed_levelling: true,
-  flow_cali: true,
+  bed_levelling: 'on',
+  flow_cali: 'on',
   layer_inspect: false,
   timelapse: false,
   mesh_mode_fast_check: true,
   gcode_injection: false,
-  nozzle_offset_cali: true,
+  nozzle_offset_cali: 'on',
   preheat_override: 'inherit',
   preheat_chamber_target_override: null,
 };
@@ -270,6 +274,9 @@ export interface PrintOptionsProps {
   /** Show the dual-nozzle-only options (nozzle offset calibration). Default false.
    *  Pass true when at least one selected printer is dual-nozzle. */
   showDualNozzleOptions?: boolean;
+  /** Which calibration steps expose the 3-position off/auto/on control for the
+   *  effective printer model. Omitted → all off/on (2-position) only. */
+  autoCaps?: AutoCalibrationCaps;
 }
 
 /**

@@ -2413,6 +2413,11 @@ export interface DiscoveredTasmotaDevice {
   discovered_at: string | null;
 }
 
+/** Tri-state print-calibration mode (off / auto / on). The API also accepts a
+ *  legacy bool on input (True->'on', False->'off') and always returns the
+ *  string form. 'auto' is only offered on models whose firmware supports it. */
+export type CalibrationMode = 'off' | 'auto' | 'on';
+
 // Print Queue types
 export interface PrintQueueItem {
   id: number;
@@ -2428,13 +2433,13 @@ export interface PrintQueueItem {
   manual_start: boolean;
   ams_mapping: number[] | null;
   plate_id: number | null;
-  // Print options
-  bed_levelling: boolean;
-  flow_cali: boolean;
+  // Print options — tri-state calibration (off/auto/on)
+  bed_levelling: CalibrationMode;
+  flow_cali: CalibrationMode;
   layer_inspect: boolean;
   timelapse: boolean;
   use_ams: boolean;
-  nozzle_offset_cali: boolean;
+  nozzle_offset_cali: CalibrationMode;
   mesh_mode_fast_check: boolean;
   execute_swap_macros: boolean;
   swap_macro_events: string[] | null;
@@ -2502,12 +2507,12 @@ export interface PrintQueueItemCreate {
   manual_start?: boolean;
   ams_mapping?: number[] | null;
   plate_id?: number | null;
-  bed_levelling?: boolean;
-  flow_cali?: boolean;
+  bed_levelling?: CalibrationMode;
+  flow_cali?: CalibrationMode;
   layer_inspect?: boolean;
   timelapse?: boolean;
   use_ams?: boolean;
-  nozzle_offset_cali?: boolean;
+  nozzle_offset_cali?: CalibrationMode;
   mesh_mode_fast_check?: boolean;
   execute_swap_macros?: boolean;
   swap_macro_events?: string[] | null;
@@ -2528,12 +2533,12 @@ export interface PrintQueueItemUpdate {
   manual_start?: boolean;
   ams_mapping?: number[];
   plate_id?: number | null;
-  bed_levelling?: boolean;
-  flow_cali?: boolean;
+  bed_levelling?: CalibrationMode;
+  flow_cali?: CalibrationMode;
   layer_inspect?: boolean;
   timelapse?: boolean;
   use_ams?: boolean;
-  nozzle_offset_cali?: boolean;
+  nozzle_offset_cali?: CalibrationMode;
   mesh_mode_fast_check?: boolean;
   execute_swap_macros?: boolean;
   swap_macro_events?: string[] | null;
@@ -2569,13 +2574,13 @@ export interface PrintQueueBulkUpdate {
   scheduled_time?: string | null;
   auto_off_after?: boolean;
   manual_start?: boolean;
-  // Print options
-  bed_levelling?: boolean;
-  flow_cali?: boolean;
+  // Print options — tri-state calibration (off/auto/on)
+  bed_levelling?: CalibrationMode;
+  flow_cali?: CalibrationMode;
   layer_inspect?: boolean;
   timelapse?: boolean;
   use_ams?: boolean;
-  nozzle_offset_cali?: boolean;
+  nozzle_offset_cali?: CalibrationMode;
   mesh_mode_fast_check?: boolean;
   execute_swap_macros?: boolean;
   swap_macro_events?: string[] | null;
@@ -2615,8 +2620,8 @@ export interface AutoQueueItem {
   manual_start: boolean;
   auto_off_after: boolean;
   require_previous_success: boolean;
-  bed_levelling: boolean;
-  flow_cali: boolean;
+  bed_levelling: CalibrationMode;
+  flow_cali: CalibrationMode;
   layer_inspect: boolean;
   timelapse: boolean;
   use_ams: boolean;
@@ -2660,8 +2665,8 @@ export interface AutoQueueItemCreate {
   force_color_match?: boolean;
   plate_id?: number | null;
   plate_ids?: number[] | null;
-  bed_levelling?: boolean;
-  flow_cali?: boolean;
+  bed_levelling?: CalibrationMode;
+  flow_cali?: CalibrationMode;
   layer_inspect?: boolean;
   timelapse?: boolean;
   use_ams?: boolean;
@@ -2686,8 +2691,8 @@ export interface AutoQueueItemUpdate {
   manual_start?: boolean | null;
   auto_off_after?: boolean | null;
   require_previous_success?: boolean | null;
-  bed_levelling?: boolean | null;
-  flow_cali?: boolean | null;
+  bed_levelling?: CalibrationMode | null;
+  flow_cali?: CalibrationMode | null;
   layer_inspect?: boolean | null;
   timelapse?: boolean | null;
   use_ams?: boolean | null;
@@ -3701,13 +3706,13 @@ export interface UserEmailPreferences {
 // PUT on submit (direct print, queue add, auto-queue add).
 export interface PrintOptionsPreferenceData {
   print_options: {
-    bed_levelling: boolean;
-    flow_cali: boolean;
+    bed_levelling: CalibrationMode;
+    flow_cali: CalibrationMode;
     layer_inspect: boolean;
     timelapse: boolean;
     mesh_mode_fast_check: boolean;
     gcode_injection: boolean;
-    nozzle_offset_cali: boolean;  // Dual-nozzle printers only (#1682)
+    nozzle_offset_cali: CalibrationMode;  // Dual-nozzle printers only (#1682)
     // Per-item preheat / heat-soak override (#1468). 'inherit' follows the
     // global Settings → Printing toggle; 'on'/'off' force it. Target override
     // (°C, 0–60) bypasses the per-filament-type chamber derivation; null keeps it.
@@ -5627,11 +5632,11 @@ export const api = {
       plate_name?: string;
       ams_mapping?: number[];
       timelapse?: boolean;
-      bed_levelling?: boolean;
-      flow_cali?: boolean;
+      bed_levelling?: CalibrationMode;
+      flow_cali?: CalibrationMode;
       layer_inspect?: boolean;
       use_ams?: boolean;
-      nozzle_offset_cali?: boolean;
+      nozzle_offset_cali?: CalibrationMode;
       mesh_mode_fast_check?: boolean;
       execute_swap_macros?: boolean;
       swap_macro_events?: string[] | null;
@@ -7349,12 +7354,12 @@ export const api = {
       plate_id?: number;
       plate_name?: string;
       ams_mapping?: number[];
-      bed_levelling?: boolean;
-      flow_cali?: boolean;
+      bed_levelling?: CalibrationMode;
+      flow_cali?: CalibrationMode;
       layer_inspect?: boolean;
       timelapse?: boolean;
       use_ams?: boolean;
-      nozzle_offset_cali?: boolean;
+      nozzle_offset_cali?: CalibrationMode;
       mesh_mode_fast_check?: boolean;
       execute_swap_macros?: boolean;
       swap_macro_events?: string[] | null;

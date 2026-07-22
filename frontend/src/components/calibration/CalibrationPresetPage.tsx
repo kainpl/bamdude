@@ -510,7 +510,7 @@ export function CalibrationPresetPage({
   // overrides these on apply.
   const CALIBRATION_PRINT_OPTIONS_DEFAULT: PrintOptions = {
     ...DEFAULT_PRINT_OPTIONS,
-    flow_cali: false,
+    flow_cali: 'off',
   };
   const CALIBRATION_SWAP_MACROS_DEFAULT: SwapMacrosOptions = {
     ...DEFAULT_SWAP_MACROS_OPTIONS,
@@ -572,10 +572,27 @@ export function CalibrationPresetPage({
       filament_presets?: PresetRef[];
       slicer?: 'orcaslicer' | 'bambu_studio';
       bed_type?: BedType;
-      print_options?: PrintOptions;
+      // The calibration StartSession has no 'auto' concept and forbids extra
+      // keys — send ONLY the six bool fields it accepts (no nozzle_offset_cali /
+      // preheat_*), converting the tri-state (auto/on -> run, off -> skip).
+      print_options?: {
+        bed_levelling: boolean;
+        flow_cali: boolean;
+        layer_inspect: boolean;
+        timelapse: boolean;
+        mesh_mode_fast_check: boolean;
+        gcode_injection: boolean;
+      };
       swap_macros?: { execute: boolean; events: Array<'swap_mode_start' | 'swap_mode_change_table'> };
     } = {};
-    extras.print_options = printOptions;
+    extras.print_options = {
+      bed_levelling: printOptions.bed_levelling !== 'off',
+      flow_cali: printOptions.flow_cali !== 'off',
+      layer_inspect: printOptions.layer_inspect,
+      timelapse: printOptions.timelapse,
+      mesh_mode_fast_check: printOptions.mesh_mode_fast_check,
+      gcode_injection: printOptions.gcode_injection,
+    };
     extras.swap_macros = {
       execute: swapMacros.execute,
       events: swapMacros.events,

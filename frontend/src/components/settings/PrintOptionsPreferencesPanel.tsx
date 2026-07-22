@@ -15,11 +15,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Trash2, Pencil, Copy, Flame } from 'lucide-react';
 import {
   api,
+  type CalibrationMode,
   type Printer,
   type PrintOptionsPreferenceAdminEntry,
   type PrintOptionsPreferenceData,
   type UserResponse,
 } from '../../api/client';
+import { CalibrationModeControl } from '../PrintModal/CalibrationModeControl';
+import { autoCalibrationCaps } from '../../utils/printerCapabilities';
 import { useToast } from '../../contexts/ToastContext';
 
 // Sentinel for the "System (slicer fallback)" pseudo-user. Real user ids
@@ -30,13 +33,13 @@ const SYSTEM_USER_ID = 0;
 
 const DEFAULT_PRINT_OPTIONS: PrintOptionsPreferenceData = {
   print_options: {
-    bed_levelling: true,
-    flow_cali: true,
+    bed_levelling: 'on',
+    flow_cali: 'on',
     layer_inspect: false,
     timelapse: false,
     mesh_mode_fast_check: true,
     gcode_injection: false,
-    nozzle_offset_cali: true,
+    nozzle_offset_cali: 'on',
     preheat_override: 'inherit',
     preheat_chamber_target_override: null,
   },
@@ -259,8 +262,9 @@ function summariseOptions(
   t: (k: string) => string,
 ): string {
   const enabled: string[] = [];
-  if (data.print_options.bed_levelling) enabled.push(t('printModal.bedLeveling'));
-  if (data.print_options.flow_cali) enabled.push(t('printModal.flowCalibration'));
+  // Tri-state: 'auto' and 'on' both mean the step runs, only 'off' disables it.
+  if (data.print_options.bed_levelling !== 'off') enabled.push(t('printModal.bedLeveling'));
+  if (data.print_options.flow_cali !== 'off') enabled.push(t('printModal.flowCalibration'));
   if (data.print_options.layer_inspect) enabled.push(t('printModal.layerInspection'));
   if (data.print_options.timelapse) enabled.push(t('printModal.timelapse'));
   if (data.print_options.mesh_mode_fast_check) enabled.push(t('printModal.meshModeFastCheck'));
@@ -348,6 +352,16 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
       print_options: { ...prev.print_options, [key]: !prev.print_options[key] },
     }));
   };
+
+  const setCalibrationMode = (key: 'bed_levelling' | 'flow_cali', mode: CalibrationMode) => {
+    setData((prev) => ({
+      ...prev,
+      print_options: { ...prev.print_options, [key]: mode },
+    }));
+  };
+
+  // Auto-mode availability for the model this preference targets.
+  const autoCaps = autoCalibrationCaps(printerModel);
 
   const toggleSwapEvent = (event: string) => {
     setData((prev) => {
@@ -465,11 +479,23 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
 
         <div className="border-t border-bambu-dark-tertiary pt-3 mb-4">
           <h4 className="text-sm font-medium text-white mb-2">{t('printModal.printOptions')}</h4>
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             {(
               [
                 ['bed_levelling', 'printModal.bedLeveling'],
                 ['flow_cali', 'printModal.flowCalibration'],
+              ] as const
+            ).map(([key, labelKey]) => (
+              <CalibrationModeControl
+                key={key}
+                label={t(labelKey)}
+                value={data.print_options[key]}
+                onChange={(mode) => setCalibrationMode(key, mode)}
+                autoSupported={autoCaps[key]}
+              />
+            ))}
+            {(
+              [
                 ['layer_inspect', 'printModal.layerInspection'],
                 ['timelapse', 'printModal.timelapse'],
                 ['mesh_mode_fast_check', 'printModal.meshModeFastCheck'],

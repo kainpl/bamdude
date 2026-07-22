@@ -25,6 +25,7 @@ import { FilamentMapping } from './FilamentMapping';
 import { PlateSelector } from './PlateSelector';
 import { PrinterSelector } from './PrinterSelector';
 import { PrintOptionsPanel } from './PrintOptions';
+import { autoCalibrationCaps } from '../../utils/printerCapabilities';
 import { ScheduleOptionsPanel } from './ScheduleOptions';
 import { SwapMacrosPanel } from './SwapMacros';
 import type {
@@ -262,6 +263,10 @@ export function PrintModal({
     if (!printers || selectedPrinters.length === 0) return false;
     return selectedPrinters.some((id) => printers.find((p) => p.id === id)?.nozzle_count === 2);
   }, [isAutoMode, autoModeOptions.target_model, printers, selectedPrinters, DUAL_NOZZLE_MODELS]);
+
+  // Which calibration steps expose the 3-position off/auto/on control for the
+  // effective model. Non-auto models get the plain off/on toggle.
+  const autoCaps = useMemo(() => autoCalibrationCaps(effectivePrinterModel), [effectivePrinterModel]);
 
   const { data: preferenceData } = useQuery({
     queryKey: ['print-options-preference', effectivePrinterModel],
@@ -1074,7 +1079,7 @@ export function PrintModal({
 
             {/* Print options */}
             {(mode === 'reprint' || effectivePrinterCount > 0 || isAutoMode) && (
-              <PrintOptionsPanel options={printOptions} onChange={setPrintOptions} defaultExpanded={!!initialSelectedPrinterIds?.length} showDualNozzleOptions={showDualNozzleOptions} />
+              <PrintOptionsPanel options={printOptions} onChange={setPrintOptions} defaultExpanded={!!initialSelectedPrinterIds?.length} showDualNozzleOptions={showDualNozzleOptions} autoCaps={autoCaps} />
             )}
 
             {/* Swap-mode macros — only relevant when at least one selected
