@@ -4946,6 +4946,8 @@ export default {
     airprint: 'Виявлення друку в повітрі',
     firstLayer: 'Перевірка першого шару',
     aiMonitoring: 'AI-моніторинг',
+    airprintNonvisual: 'Виявлення друку в повітрі (сенсор)',
+    smartBlobMode: { auto: 'Авто', on: 'Увімк.', off: 'Вимк.' },
     filamentTangle: 'Виявлення сплутування філаменту',
     nozzleBlob: 'Виявлення натікання сопла',
     fodCheck: 'Виявлення сторонніх обʼєктів',

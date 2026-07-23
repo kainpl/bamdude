@@ -14,7 +14,7 @@ from typing import TypedDict
 
 from backend.app.services.bambu_mqtt import PrinterState
 from backend.app.services.calibration_mode_registry import mode_state_map
-from backend.app.utils.printer_configs import supports_safety_options
+from backend.app.utils.printer_configs import air_print_detection_position, supports_safety_options
 from backend.app.utils.printer_models import has_door_sensor, is_dual_nozzle_model
 
 
@@ -29,8 +29,11 @@ class PrinterSupports(TypedDict):
     # Other sensors
     filament_tangle: bool
     nozzle_blob: bool
+    smart_nozzle_blob: bool
     fod_check: bool
     displacement_detection: bool
+    air_print_nonvisual: bool
+    ai_monitoring_legacy: bool
     # Door / air
     open_door_check: bool
     purify_air: bool
@@ -93,11 +96,17 @@ def compute_printer_supports(state: PrinterState, printer_model: str | None, mod
         airprinting_detector=_s("airprinting_detector", has_ai),
         first_layer_inspector=_s("first_layer_inspector", has_ai),
         ai_monitoring=_s("ai_monitoring", has_ai),
-        # Sensors
+        # Sensors — legacy nozzle-blob is hidden when the smart 3-mode variant is
+        # supported (BS mutual exclusion). Non-visual air-print + legacy AI
+        # monitoring are new BS-parity rows (unverified — no local hardware).
         filament_tangle=_s("filament_tangle", has_ai),
-        nozzle_blob=_s("nozzle_blob", m in _X1_FAMILY),
+        nozzle_blob=_s("nozzle_blob", m in _X1_FAMILY) and not bool(sup.get("smart_nozzle_blob", False)),
+        smart_nozzle_blob=bool(sup.get("smart_nozzle_blob", False)),
         fod_check=_s("fod_check", has_ai),
         displacement_detection=_s("displacement_detection", has_ai),
+        air_print_nonvisual=bool(sup.get("air_print_nonvisual", False))
+        and air_print_detection_position(printer_model) == "print_option",
+        ai_monitoring_legacy=bool(sup.get("ai_monitoring_devcfg", False)) and not bool(sup.get("ai_monitoring", False)),
         # Door / air — open-door detection moves to the Safety tab on
         # safety-capable models (X2D/P2S), mirroring BS's mutual exclusion.
         open_door_check=has_door_sensor(printer_model) and not supports_safety_options(printer_model),

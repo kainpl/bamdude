@@ -479,6 +479,10 @@ class PrintOptions:
     snapshot_enabled: bool | None = None
     fod_check: bool | None = None
     displacement_detection: bool | None = None
+    # Phase-3b BS-parity rows (unverified — no local hardware reports these)
+    nozzle_blob_v2: int | None = None  # smart nozzle blob: 0 off / 1 on / 2 auto (cfg 43-44)
+    air_print_nonvisual: bool | None = None  # sensor air-print (home_flag bit 28)
+    ai_monitoring_sensitivity: str | None = None  # legacy AI monitoring (cfg 13-14)
 
 
 @dataclass
@@ -1496,6 +1500,8 @@ class BambuMQTTClient:
                     po.filament_tangle_detect = bool((_hfu >> 20) & 0x1)
                 if not _ps_hold("nozzle_blob"):
                     po.nozzle_blob_detect = bool((_hfu >> 24) & 0x1)
+                if not _ps_hold("air_print_nonvisual"):
+                    po.air_print_nonvisual = bool((_hfu >> 28) & 0x1)  # BS ams_air_print_status
             # BS-parity: the top-level ``cfg`` hex bitfield carries steady-state
             # VALUES for most options (DevPrintOptionsParser cfg part, lines
             # 181-232). X2D-class printers send values here rather than as named
@@ -1528,6 +1534,12 @@ class BambuMQTTClient:
                         po.air_purification = (_c >> 36) & 0x3
                     if not _ps_hold("snapshot"):
                         po.snapshot_enabled = ((_c >> 38) & 0x3) == 2
+                    if not _ps_hold("smart_nozzle_blob"):
+                        po.nozzle_blob_v2 = (_c >> 43) & 0x3  # 0 off / 1 on / 2 auto
+                    if not _ps_hold("ai_monitoring"):
+                        po.ai_monitoring_sensitivity = {0: "never_halt", 1: "low", 2: "medium", 3: "high"}.get(
+                            (_c >> 13) & 0x3
+                        )
 
             # Accumulate per-option support (BS DevPrintOptionsParser parity).
             self._parse_print_option_support(print_data)
@@ -1885,6 +1897,7 @@ class BambuMQTTClient:
             sup["sound"] = bool((u >> 18) & 1)
             sup["filament_tangle"] = bool((u >> 19) & 1)
             sup["nozzle_blob"] = bool((u >> 25) & 1)
+            sup["air_print_nonvisual"] = bool((u >> 29) & 1)  # BS is_support_air_print_detection
 
         xcam = data.get("xcam")
         if isinstance(xcam, dict):
@@ -4878,6 +4891,10 @@ class BambuMQTTClient:
     def print_option_nozzle_blob(self, enabled: bool) -> tuple[bool, str | None]:
         return self._publish_print_option_bool("nozzle_blob_detect", "nozzle_blob", enabled)
 
+    def print_option_nozzle_blob_v2(self, value: int) -> tuple[bool, str | None]:
+        # Smart nozzle blob (BS): print_option nozzle_blob_detect_v2, 0 off / 1 on / 2 auto.
+        return self._publish_print_option_int("nozzle_blob_detect_v2", "smart_nozzle_blob", value)
+
     def _publish_xcam_setting(self, module: str, hold_key: str, enabled: bool) -> tuple[bool, str | None]:
         """xcam_control_set for a plate/mark toggle, stamping the settings hold
         under ``hold_key`` (so the matching value-read respects it). BS routes
@@ -4985,13 +5002,22 @@ class BambuMQTTClient:
         """
         if not self._client or not self.state.connected:
             return False, None
+        # Our API/frontend module keys differ from the wire names BS/the printer
+        # expect for several detectors — remap before publishing.
+        _wire = {
+            "purgechutepileup_detector": "pileup_detector",
+            "nozzleclumping_detector": "clump_detector",
+            "airprinting_detector": "airprint_detector",
+            "displacement_detection": "model_movement_check",
+            "ai_monitoring": "printing_monitor",
+        }.get(module, module)
         self._sequence_id += 1
         seq = str(self._sequence_id)
         command: dict = {
             "xcam": {
                 "command": "xcam_control_set",
                 "sequence_id": seq,
-                "module_name": module,
+                "module_name": _wire,
                 "control": bool(enabled),
                 "enable": bool(enabled),
                 "print_halt": True,
@@ -6698,6 +6724,7 @@ class BambuMQTTClient:
         }
         self._client.publish(self.topic_publish, json.dumps(command), qos=1)
         self.state.ams_settings_hold["ams_air_print_detect"] = time.time()
+        self.state.printer_settings_hold["air_print_nonvisual"] = time.time()
         logger.info(
             "[%s] print_option air_print_detect=%s seq=%s",
             self.serial_number,

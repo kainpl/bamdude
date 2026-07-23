@@ -53,10 +53,12 @@ _BOOL_KEY_METHODS = {
     "plate_type": "print_option_plate_type",
     "plate_align": "print_option_plate_align",
     "plate_mark": "print_option_plate_mark",
+    "air_print_nonvisual": "print_option_air_print_detect",
 }
 _INT_KEY_METHODS = {
     "purify_air": "print_option_purify_air",
     "save_remote_to_storage": "print_option_save_remote_to_storage",
+    "nozzle_blob_v2": "print_option_nozzle_blob_v2",
 }
 _BOOL_KEY_SUPPORTS = {
     "auto_recovery": "auto_recovery",
@@ -66,10 +68,12 @@ _BOOL_KEY_SUPPORTS = {
     "plate_type": "plate_type",
     "plate_align": "plate_align",
     "plate_mark": "plate_mark",
+    "air_print_nonvisual": "air_print_nonvisual",
 }
 _INT_KEY_SUPPORTS = {
     "purify_air": "purify_air",
     "save_remote_to_storage": "save_remote_to_storage",
+    "nozzle_blob_v2": "smart_nozzle_blob",
 }
 _XCAM_MODULE_SUPPORTS = {
     "spaghetti_detector": "spaghetti_detector",
@@ -77,7 +81,7 @@ _XCAM_MODULE_SUPPORTS = {
     "nozzleclumping_detector": "nozzleclumping_detector",
     "airprinting_detector": "airprinting_detector",
     "first_layer_inspector": "first_layer_inspector",
-    "ai_monitoring": "ai_monitoring",
+    "ai_monitoring": "ai_monitoring_legacy",
     "fod_check": "fod_check",
     "displacement_detection": "displacement_detection",
 }
@@ -180,6 +184,8 @@ async def get_printer_settings(
         snapshot=getattr(po, "snapshot_enabled", None),
         fod_check=getattr(po, "fod_check", None),
         displacement_detection=getattr(po, "displacement_detection", None),
+        nozzle_blob_v2=getattr(po, "nozzle_blob_v2", None),
+        air_print_nonvisual=getattr(po, "air_print_nonvisual", None),
         spaghetti_detector=AiDetectorState(
             enabled=getattr(po, "spaghetti_detector", None),
             sensitivity=getattr(po, "halt_print_sensitivity", None),
@@ -202,7 +208,7 @@ async def get_printer_settings(
         ),
         ai_monitoring=AiDetectorState(
             enabled=getattr(po, "printing_monitor", None),
-            sensitivity=None,
+            sensitivity=getattr(po, "ai_monitoring_sensitivity", None),
         ),
     )
 

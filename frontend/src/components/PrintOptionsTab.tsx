@@ -12,8 +12,8 @@ interface Props {
   isPending: (flag: string) => boolean;
 }
 
-type BoolKey = 'auto_recovery' | 'sound' | 'filament_tangle' | 'nozzle_blob' | 'plate_type' | 'plate_align' | 'plate_mark';
-type IntKey = 'save_remote_to_storage' | 'purify_air';
+type BoolKey = 'auto_recovery' | 'sound' | 'filament_tangle' | 'nozzle_blob' | 'plate_type' | 'plate_align' | 'plate_mark' | 'air_print_nonvisual';
+type IntKey = 'save_remote_to_storage' | 'purify_air' | 'nozzle_blob_v2';
 type XCamModule =
   | 'first_layer_inspector' | 'spaghetti_detector' | 'purgechutepileup_detector'
   | 'nozzleclumping_detector' | 'airprinting_detector' | 'fod_check'
@@ -45,8 +45,17 @@ export function PrintOptionsTab({ data, onSubmit, isPending }: Props) {
 
   return (
     <div className="space-y-5">
-      {(sup.spaghetti_detector || sup.pileup_detector || sup.nozzleclumping_detector || sup.airprinting_detector || sup.first_layer_inspector || sup.ai_monitoring) && (
+      {(sup.spaghetti_detector || sup.pileup_detector || sup.nozzleclumping_detector || sup.airprinting_detector || sup.first_layer_inspector || sup.ai_monitoring_legacy) && (
         <Group title={t('printerSettings.aiMonitoringGroup')}>
+          {sup.ai_monitoring_legacy && (
+            <XCamRow
+              title={t('printerSettings.aiMonitoring')}
+              state={s.ai_monitoring}
+              onChange={(en, sens) => toggleXcam('ai_monitoring', en, sens)}
+              sensitivityOptions={sensitivityOptions}
+              pending={P('ai_monitoring')}
+            />
+          )}
           {sup.first_layer_inspector && (
             <XCamRow
               title={t('printerSettings.firstLayer')}
@@ -95,7 +104,7 @@ export function PrintOptionsTab({ data, onSubmit, isPending }: Props) {
         </Group>
       )}
 
-      {(sup.filament_tangle || sup.nozzle_blob || sup.fod_check || sup.displacement_detection) && (
+      {(sup.filament_tangle || sup.nozzle_blob || sup.smart_nozzle_blob || sup.air_print_nonvisual || sup.fod_check || sup.displacement_detection) && (
         <Group title={t('printerSettings.sensorsGroup')}>
           {sup.filament_tangle && (
             <SimpleRow
@@ -111,6 +120,27 @@ export function PrintOptionsTab({ data, onSubmit, isPending }: Props) {
               checked={!!s.nozzle_blob}
               onChange={(v) => toggleBool('nozzle_blob', v)}
             pending={P('nozzle_blob')}
+            />
+          )}
+          {sup.smart_nozzle_blob && (
+            <SegmentedRow
+              title={t('printerSettings.nozzleBlob')}
+              value={s.nozzle_blob_v2 ?? 0}
+              options={[
+                { v: 2, label: t('printerSettings.smartBlobMode.auto') },
+                { v: 1, label: t('printerSettings.smartBlobMode.on') },
+                { v: 0, label: t('printerSettings.smartBlobMode.off') },
+              ]}
+              onChange={(v) => toggleInt('nozzle_blob_v2', v)}
+              pending={P('smart_nozzle_blob')}
+            />
+          )}
+          {sup.air_print_nonvisual && (
+            <SimpleRow
+              title={t('printerSettings.airprintNonvisual')}
+              checked={!!s.air_print_nonvisual}
+              onChange={(v) => toggleBool('air_print_nonvisual', v)}
+              pending={P('air_print_nonvisual')}
             />
           )}
           {sup.fod_check && (

@@ -34,6 +34,8 @@ class PrintOptionsState(BaseModel):
     ai_monitoring: AiDetectorState = AiDetectorState()
     fod_check: bool | None = None
     displacement_detection: bool | None = None
+    nozzle_blob_v2: int | None = None  # smart nozzle blob: 0 off / 1 on / 2 auto
+    air_print_nonvisual: bool | None = None
 
 
 class NozzleInfoOut(BaseModel):
@@ -56,8 +58,11 @@ class PrinterSettingsSupports(BaseModel):
     ai_monitoring: bool = False
     filament_tangle: bool = False
     nozzle_blob: bool = False
+    smart_nozzle_blob: bool = False
     fod_check: bool = False
     displacement_detection: bool = False
+    air_print_nonvisual: bool = False
+    ai_monitoring_legacy: bool = False
     open_door_check: bool = False
     purify_air: bool = False
     auto_recovery: bool = False
@@ -117,13 +122,14 @@ class PrintOptionBoolAction(BaseModel):
         "plate_type",
         "plate_align",
         "plate_mark",
+        "air_print_nonvisual",
     ]
     enabled: bool
 
 
 class PrintOptionIntAction(BaseModel):
     action: Literal["print_option_int"]
-    key: Literal["save_remote_to_storage", "purify_air"]
+    key: Literal["save_remote_to_storage", "purify_air", "nozzle_blob_v2"]
     value: int = Field(ge=0, le=10)
 
 

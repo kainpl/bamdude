@@ -4941,6 +4941,8 @@ export default {
     airprint: 'Air-printing detection',
     firstLayer: 'First layer inspection',
     aiMonitoring: 'AI monitoring',
+    airprintNonvisual: 'Air-print detection (sensor)',
+    smartBlobMode: { auto: 'Auto', on: 'On', off: 'Off' },
     filamentTangle: 'Filament tangle detection',
     nozzleBlob: 'Nozzle blob detection',
     fodCheck: 'FOD check',

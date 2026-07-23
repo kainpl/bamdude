@@ -4060,6 +4060,8 @@ export interface PrintOptionsState {
   snapshot: boolean | null;
   fod_check: boolean | null;
   displacement_detection: boolean | null;
+  nozzle_blob_v2: number | null;
+  air_print_nonvisual: boolean | null;
   spaghetti_detector: AiDetectorStateOut;
   pileup_detector: AiDetectorStateOut;
   nozzleclumping_detector: AiDetectorStateOut;
@@ -4081,8 +4083,11 @@ export interface PrinterSettingsSupports {
   ai_monitoring: boolean;
   filament_tangle: boolean;
   nozzle_blob: boolean;
+  smart_nozzle_blob: boolean;
   fod_check: boolean;
   displacement_detection: boolean;
+  air_print_nonvisual: boolean;
+  ai_monitoring_legacy: boolean;
   open_door_check: boolean;
   purify_air: boolean;
   auto_recovery: boolean;
@@ -4123,10 +4128,10 @@ export interface SafetyState {
 
 export type PrinterSettingsPostBody =
   | { action: 'print_option_bool';
-      key: 'auto_recovery' | 'sound' | 'filament_tangle' | 'nozzle_blob' | 'plate_type' | 'plate_align' | 'plate_mark';
+      key: 'auto_recovery' | 'sound' | 'filament_tangle' | 'nozzle_blob' | 'plate_type' | 'plate_align' | 'plate_mark' | 'air_print_nonvisual';
       enabled: boolean }
   | { action: 'print_option_int';
-      key: 'save_remote_to_storage' | 'purify_air';
+      key: 'save_remote_to_storage' | 'purify_air' | 'nozzle_blob_v2';
       value: number }
   | { action: 'xcam_control';
       module: 'first_layer_inspector' | 'spaghetti_detector' | 'purgechutepileup_detector'

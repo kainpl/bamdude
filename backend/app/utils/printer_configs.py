@@ -131,6 +131,16 @@ def supports_safety_options(model: str | None) -> bool:
     return bool(cfg and cfg.get("support_safety_options"))
 
 
+def air_print_detection_position(model: str | None) -> str | None:
+    """BS ``air_print_detection_position`` config string — routes the non-visual
+    air-print toggle. ``"print_option"`` → show it in Print Options (e.g. A2L);
+    ``"ams_setting"`` → it lives in the AMS dialog instead (A1/A1 mini). None when
+    the model doesn't declare it."""
+    cfg = load_printer_config(model)
+    val = cfg.get("air_print_detection_position") if cfg else None
+    return val if isinstance(val, str) else None
+
+
 def get_device_support_flags(model: str | None) -> dict:
     """The ``support_*`` device-capability flags for a model (from the config's
     ``print`` block). Empty dict when no config matches (unknown model)."""

@@ -36,6 +36,9 @@ def _client_with_state(printer_model="X1C", connected=True):
     c.state.print_options.airprint_sensitivity = "medium"
     c.state.print_options.first_layer_inspector = False
     c.state.print_options.printing_monitor = False
+    c.state.print_options.ai_monitoring_sensitivity = None
+    c.state.print_options.nozzle_blob_v2 = None
+    c.state.print_options.air_print_nonvisual = None
     c.state.nozzles = []
     c.module_vers = {}
     return c
