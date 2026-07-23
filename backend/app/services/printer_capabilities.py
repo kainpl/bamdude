@@ -67,31 +67,45 @@ def compute_printer_supports(state: PrinterState, printer_model: str | None, mod
     is_h2 = m in _H2_FAMILY
     is_h2d_pro = m == "H2DPRO"
 
+    # Live per-option support parsed from the printer (BS DevPrintOptionsParser
+    # parity — see bambu_mqtt._parse_print_option_support). Used when the printer
+    # actually reported the option's source; otherwise fall back to the model-
+    # family heuristic (covers the pre-pushall window + fields a printer omits).
+    sup = getattr(state, "print_option_support", None) or {}
+
+    def _s(key: str, fam: bool) -> bool:
+        return bool(sup[key]) if key in sup else fam
+
     return PrinterSupports(
-        # AI detectors
-        spaghetti_detector=has_ai,
-        pileup_detector=has_ai,
-        nozzleclumping_detector=has_ai,
-        airprinting_detector=has_ai,
-        first_layer_inspector=has_ai,
-        ai_monitoring=has_ai,
+        # AI detectors — modern printers advertise these via fun/fun2/xcam bits;
+        # P1/A1 series send no xcam.cfg so they correctly resolve to off.
+        spaghetti_detector=_s("spaghetti_detector", has_ai),
+        pileup_detector=_s("pileup_detector", has_ai),
+        nozzleclumping_detector=_s("nozzleclumping_detector", has_ai),
+        airprinting_detector=_s("airprinting_detector", has_ai),
+        first_layer_inspector=_s("first_layer_inspector", has_ai),
+        ai_monitoring=_s("ai_monitoring", has_ai),
         # Sensors
-        filament_tangle=has_ai,
-        nozzle_blob=m in _X1_FAMILY,  # BS gates this to X1 only
-        fod_check=has_ai,
-        displacement_detection=has_ai,
+        filament_tangle=_s("filament_tangle", has_ai),
+        nozzle_blob=_s("nozzle_blob", m in _X1_FAMILY),
+        fod_check=_s("fod_check", has_ai),
+        displacement_detection=_s("displacement_detection", has_ai),
         # Door / air — open-door detection moves to the Safety tab on
         # safety-capable models (X2D/P2S), mirroring BS's mutual exclusion.
         open_door_check=has_door_sensor(printer_model) and not supports_safety_options(printer_model),
-        purify_air=is_h2d_pro,
-        # Behaviour — universal where MQTT supports it
-        auto_recovery=True,
-        sound=True,
-        save_remote_to_storage=True,
-        snapshot=has_ai,
+        purify_air=_s("purify_air", is_h2d_pro),
+        # Behaviour — universal fallback; live flag wins when reported.
+        auto_recovery=_s("auto_recovery", True),
+        sound=_s("sound", True),
+        # "Store sent files on external storage" is gated purely on the DevConfig
+        # flag support_save_remote_print_file_to_storage (BS SupportSaveRemote,
+        # default false) — NOT on having storage. P1S has an SD slot but BS still
+        # hides it. Show only when the printer actually reports the flag.
+        save_remote_to_storage=_s("save_remote_to_storage", False),
+        snapshot=_s("snapshot", has_ai),
         # Build plate
-        plate_type=is_h2 or m in {"X2D", "P2S"},
-        plate_align=is_h2 or m in {"X2D"},
+        plate_type=_s("plate_type", is_h2 or m in {"X2D", "P2S"}),
+        plate_align=_s("plate_align", is_h2 or m in {"X2D"}),
         # Parts — dual-nozzle (L/R) layout for every twin-nozzle model, not just
         # H2D/H2D Pro: X2D and H2C also report two hotend nozzles (ids 0/1). Use
         # the canonical dual-nozzle set so the Parts dialog labels L/R on all of

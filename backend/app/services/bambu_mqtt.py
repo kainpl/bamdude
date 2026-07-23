@@ -524,6 +524,10 @@ class PrinterState:
     nozzles: list = field(default_factory=lambda: [NozzleInfo(), NozzleInfo()])
     # Module inventory (printer body + accessories) from get_version — Add-ons tab
     modules: list = field(default_factory=list)
+    # Per-option print-option support, mirrored from BS DevPrintOptionsParser
+    # (home_flag / xcam / cfg / fun / fun2 / named support bools). Populated as
+    # messages arrive; compute_printer_supports gates each row on it.
+    print_option_support: dict = field(default_factory=dict)
     # AI detection and print options
     print_options: PrintOptions = field(default_factory=PrintOptions)
     # Calibration stage tracking (from stg_cur and stg fields)
@@ -1476,11 +1480,28 @@ class BambuMQTTClient:
                 return ts is not None and (_ps_now - ts) < _ps_ttl
 
             po = self.state.print_options
-            # BS-parity: the steady-state values for the Safety tab live in the
-            # top-level ``cfg`` hex bitfield — open-door check at bits 20-21
-            # (0 disable / 1 notification / 2 pause), idle heating at bits 32-33
-            # (0 off / 1 on / 2 unavailable). Parsed as the base; the named echoes
-            # below override on a fresh set. cfg rides every pushall.
+            # BS reads several print-option VALUES from home_flag when the named
+            # echo is absent — P1/A1-series send only home_flag, not the named
+            # fields (DevPrintOptionsParser lines 14-33): auto-recovery bit 4,
+            # sound bit 17, filament-tangle bit 20, nozzle-blob bit 24. The named
+            # echoes below override where present.
+            _hf_val = print_data.get("home_flag")
+            if isinstance(_hf_val, int):
+                _hfu = _hf_val & 0xFFFFFFFF
+                if not _ps_hold("auto_recovery"):
+                    po.auto_recovery_step_loss = bool((_hfu >> 4) & 0x1)
+                if not _ps_hold("sound_enable"):
+                    po.sound_enable = bool((_hfu >> 17) & 0x1)
+                if not _ps_hold("filament_tangle"):
+                    po.filament_tangle_detect = bool((_hfu >> 20) & 0x1)
+                if not _ps_hold("nozzle_blob"):
+                    po.nozzle_blob_detect = bool((_hfu >> 24) & 0x1)
+            # BS-parity: the top-level ``cfg`` hex bitfield carries steady-state
+            # VALUES for most options (DevPrintOptionsParser cfg part, lines
+            # 181-232). X2D-class printers send values here rather than as named
+            # fields; P1/A1 use home_flag (above). Each respects its 3 s hold so a
+            # just-toggled value isn't clobbered; the named echoes below still
+            # override on a fresh set.
             _cfg_val = print_data.get("cfg")
             if _cfg_val is not None:
                 try:
@@ -1488,10 +1509,28 @@ class BambuMQTTClient:
                 except (ValueError, TypeError):
                     _cfg_int = None
                 if _cfg_int is not None:
+                    _c = _cfg_int
                     if not _ps_hold("open_door"):
-                        po.open_door_check = (_cfg_int >> 20) & 0x3
+                        po.open_door_check = (_c >> 20) & 0x3
                     if not _ps_hold("idle_heating"):
-                        po.idle_heating_protect = (_cfg_int >> 32) & 0x3
+                        po.idle_heating_protect = (_c >> 32) & 0x3
+                    if not _ps_hold("auto_recovery"):
+                        po.auto_recovery_step_loss = bool((_c >> 16) & 0x1)
+                    if not _ps_hold("sound_enable"):
+                        po.sound_enable = bool((_c >> 22) & 0x1)
+                    if not _ps_hold("filament_tangle"):
+                        po.filament_tangle_detect = bool((_c >> 23) & 0x1)
+                    if not _ps_hold("nozzle_blob"):
+                        po.nozzle_blob_detect = bool((_c >> 24) & 0x1)
+                    if not _ps_hold("save_remote_to_storage"):
+                        po.save_remote_to_storage = (_c >> 19) & 0x1
+                    if not _ps_hold("purify_air"):
+                        po.air_purification = (_c >> 36) & 0x3
+                    if not _ps_hold("snapshot"):
+                        po.snapshot_enabled = ((_c >> 38) & 0x3) == 2
+
+            # Accumulate per-option support (BS DevPrintOptionsParser parity).
+            self._parse_print_option_support(print_data)
             if "auto_recovery" in print_data and not _ps_hold("auto_recovery"):
                 po.auto_recovery_step_loss = bool(print_data["auto_recovery"])
             if "sound_enable" in print_data and not _ps_hold("sound_enable"):
@@ -1810,10 +1849,96 @@ class BambuMQTTClient:
             if module_type and not unit.get("module_type"):
                 unit["module_type"] = module_type
 
+    def _apply_xcam_support(self, xcam: dict) -> None:
+        """BS: ai_monitoring + buildplate-type support = xcam has ``cfg``;
+        buildplate-mark support = xcam has ``buildplate_marker_detector``
+        (DevPrintOptionsParser lines 42/82/113). Only turns support ON (BS never
+        clears these in the xcam branch)."""
+        sup = self.state.print_option_support
+        if "cfg" in xcam:
+            sup["ai_monitoring"] = True
+            sup["plate_type"] = True
+        if "buildplate_marker_detector" in xcam:
+            sup["plate_mark"] = True
+
+    def _parse_print_option_support(self, data: dict) -> None:
+        """Mirror BS ``DevPrintOptionsParser::ParseDetectionV1_0`` +
+        ``DevConfig::ParsePrintOptionsConfig`` — accumulate each option's
+        is_support into ``state.print_option_support``. Sources are applied in BS
+        order (home_flag → xcam → cfg → fun → named bools → fun2); later sources
+        override earlier. Each source is only read when the printer sent it, so a
+        sparse P1-series push leaves modern-only options untouched (default off in
+        compute_printer_supports)."""
+        sup = self.state.print_option_support
+
+        def _hx(v):
+            if v is None:
+                return None
+            try:
+                return v if isinstance(v, int) else int(str(v), 16)
+            except (ValueError, TypeError):
+                return None
+
+        hf = data.get("home_flag")
+        if isinstance(hf, int):
+            u = hf & 0xFFFFFFFF
+            sup["sound"] = bool((u >> 18) & 1)
+            sup["filament_tangle"] = bool((u >> 19) & 1)
+            sup["nozzle_blob"] = bool((u >> 25) & 1)
+
+        xcam = data.get("xcam")
+        if isinstance(xcam, dict):
+            self._apply_xcam_support(xcam)
+
+        cfg = _hx(data.get("cfg"))
+        if cfg is not None:
+            sup["snapshot"] = ((cfg >> 38) & 0x3) in (1, 2)
+            # Store-sent-files support: X2D-class printers carry the value at cfg
+            # bit 19 but don't send the named support_save_remote_print_file_to_storage
+            # bool. BS shows the row for them (verified vs BS on X2D); P1/A1 send no
+            # top-level cfg and correctly hide it. The named bool below still wins
+            # when a printer does report it.
+            sup["save_remote_to_storage"] = True
+
+        fun = _hx(data.get("fun"))
+        if fun is not None:
+            sup["filament_tangle"] = bool((fun >> 9) & 1)
+            sup["spaghetti_detector"] = bool((fun >> 42) & 1)
+            sup["pileup_detector"] = bool((fun >> 43) & 1)
+            sup["nozzleclumping_detector"] = bool((fun >> 44) & 1)
+            sup["airprinting_detector"] = bool((fun >> 45) & 1)
+            sup["sound"] = bool((fun >> 8) & 1)
+            sup["nozzle_blob"] = bool((fun >> 13) & 1)
+
+        if isinstance(data.get("support_build_plate_marker_detect"), bool):
+            sup["plate_mark"] = data["support_build_plate_marker_detect"]
+        if isinstance(data.get("support_auto_recovery_step_loss"), bool):
+            sup["auto_recovery"] = data["support_auto_recovery_step_loss"]
+        if isinstance(data.get("support_prompt_sound"), bool):
+            sup["sound"] = data["support_prompt_sound"]
+        if isinstance(data.get("support_filament_tangle_detect"), bool):
+            sup["filament_tangle"] = data["support_filament_tangle_detect"]
+        if isinstance(data.get("support_ai_monitoring"), bool):
+            sup["ai_monitoring_devcfg"] = data["support_ai_monitoring"]
+        if isinstance(data.get("support_first_layer_inspect"), bool):
+            sup["first_layer_inspector"] = data["support_first_layer_inspect"]
+        if isinstance(data.get("support_save_remote_print_file_to_storage"), bool):
+            sup["save_remote_to_storage"] = data["support_save_remote_print_file_to_storage"]
+
+        fun2 = _hx(data.get("fun2"))
+        if fun2 is not None:
+            sup["plate_align"] = bool((fun2 >> 2) & 1)
+            sup["purify_air"] = bool((fun2 >> 4) & 1)
+            sup["fod_check"] = bool((fun2 >> 13) & 1)
+            sup["displacement_detection"] = bool((fun2 >> 14) & 1)
+            sup["smart_nozzle_blob"] = bool((fun2 >> 15) & 1)
+
     def _parse_xcam_data(self, xcam_data):
         """Parse xcam data for camera settings and AI detection options."""
         if not isinstance(xcam_data, dict):
             return
+        # BS parity: xcam presence gates ai_monitoring / buildplate support.
+        self._apply_xcam_support(xcam_data)
 
         current_time = time.time()
 
@@ -1847,27 +1972,29 @@ class BambuMQTTClient:
         # Log all xcam fields for debugging
         logger.debug("[%s] Parsing xcam data - all fields: %s", self.serial_number, list(xcam_data.keys()))
 
-        # The cfg bitmask contains the ACTUAL detector states - the individual boolean
-        # fields (spaghetti_detector, etc.) are often stale/cached.
-        # CFG bitmask structure (each detector uses 3 bits: [sens_low, sens_high, enabled]):
-        # - Bits 5-7: spaghetti_detector (sens in 5-6, enabled in 7)
-        # - Bits 8-10: pileup_detector (sens in 8-9, enabled in 10)
-        # - Bits 11-13: clump_detector/nozzle_clumping (sens in 11-12, enabled in 13)
-        # - Bits 14-16: airprint_detector (sens in 14-15, enabled in 16)
+        # The xcam.cfg bitmask contains the ACTUAL detector states - the individual
+        # boolean fields (spaghetti_detector, etc.) are often stale/cached.
+        # Layout per BS DevPrintOptionsParser (each detector = [enabled, sens_low,
+        # sens_high], enabled is the LOW bit; sensitivity = the two bits ABOVE it):
+        # - spaghetti: enabled 7, sens 8-9
+        # - pileup:    enabled 10, sens 11-12
+        # - clump:     enabled 13, sens 14-15
+        # - airprint:  enabled 16, sens 17-18
         # Sensitivity values: 0=low, 1=medium, 2=high
         if "cfg" in xcam_data:
             cfg = xcam_data["cfg"]
             logger.debug("[%s] xcam cfg bitmask: %s (binary: %s)", self.serial_number, cfg, bin(cfg))
 
-            def decode_detector(start_bit):
-                """Decode a detector from cfg: returns (enabled, sensitivity_str)"""
-                sens_bits = (cfg >> start_bit) & 0x3
-                enabled = bool((cfg >> (start_bit + 2)) & 1)
+            def decode_detector(enabled_bit):
+                """Decode a detector from xcam.cfg (BS layout): enabled = ``enabled_bit``,
+                sensitivity = the two bits above it."""
+                enabled = bool((cfg >> enabled_bit) & 1)
+                sens_bits = (cfg >> (enabled_bit + 1)) & 0x3
                 sensitivity = {0: "low", 1: "medium", 2: "high"}.get(sens_bits, "medium")
                 return enabled, sensitivity
 
-            # Spaghetti detector (bits 5-7)
-            cfg_spaghetti, cfg_sensitivity = decode_detector(5)
+            # Spaghetti detector (enabled 7, sens 8-9)
+            cfg_spaghetti, cfg_sensitivity = decode_detector(7)
             if should_accept_value("spaghetti_detector", cfg_spaghetti):
                 old_value = self.state.print_options.spaghetti_detector
                 if cfg_spaghetti != old_value:
@@ -1903,7 +2030,7 @@ class BambuMQTTClient:
                     del self._xcam_hold_start["halt_print_sensitivity"]
 
             # Pileup detector (bits 8-10)
-            cfg_pileup, cfg_pileup_sens = decode_detector(8)
+            cfg_pileup, cfg_pileup_sens = decode_detector(10)
             if should_accept_value("pileup_detector", cfg_pileup):
                 if cfg_pileup != self.state.print_options.pileup_detector:
                     logger.debug(
@@ -1929,7 +2056,7 @@ class BambuMQTTClient:
                     del self._xcam_hold_start["pileup_sensitivity"]
 
             # Clump/nozzle clumping detector (bits 11-13)
-            cfg_clump, cfg_clump_sens = decode_detector(11)
+            cfg_clump, cfg_clump_sens = decode_detector(13)
             if should_accept_value("clump_detector", cfg_clump):
                 if cfg_clump != self.state.print_options.nozzle_clumping_detector:
                     logger.debug(
@@ -1955,7 +2082,7 @@ class BambuMQTTClient:
                     del self._xcam_hold_start["nozzle_clumping_sensitivity"]
 
             # Airprint detector (bits 14-16)
-            cfg_airprint, cfg_airprint_sens = decode_detector(14)
+            cfg_airprint, cfg_airprint_sens = decode_detector(16)
             if should_accept_value("airprint_detector", cfg_airprint):
                 if cfg_airprint != self.state.print_options.airprint_detector:
                     logger.debug(
@@ -1980,6 +2107,19 @@ class BambuMQTTClient:
                         self.state.print_options.airprint_sensitivity = cfg_airprint_sens
                     del self._xcam_hold_start["airprint_sensitivity"]
 
+            # FOD check (xcam.cfg bit 21) + displacement (bit 22) + buildplate
+            # align (bit 20) — value only, no sensitivity (BS DevPrintOptions.cpp
+            # :77-84).
+            cfg_fod = bool((cfg >> 21) & 0x1)
+            if should_accept_value("fod_check", cfg_fod):
+                self.state.print_options.fod_check = cfg_fod
+            cfg_disp = bool((cfg >> 22) & 0x1)
+            if should_accept_value("displacement_detection", cfg_disp):
+                self.state.print_options.displacement_detection = cfg_disp
+            cfg_align = bool((cfg >> 20) & 0x1)
+            if should_accept_value("plate_offset_switch", cfg_align):
+                self.state.print_options.plate_align_check = cfg_align
+
         # Camera settings
         if "ipcam_record" in xcam_data:
             self.state.ipcam = xcam_data.get("ipcam_record") == "enable"
@@ -1992,8 +2132,8 @@ class BambuMQTTClient:
         # Skip spaghetti_detector boolean field - we read from cfg bitmask above
         if "print_halt" in xcam_data:
             self.state.print_options.print_halt = bool(xcam_data.get("print_halt"))
-        # Skip halt_print_sensitivity field - it's always stale ("medium")
-        # We read the actual sensitivity from cfg bits 5-6 above
+        # Skip halt_print_sensitivity field - it's always stale ("medium").
+        # We read the actual spaghetti sensitivity from xcam.cfg bits 8-9 above.
         if "first_layer_inspector" in xcam_data:
             new_value = bool(xcam_data.get("first_layer_inspector"))
             if should_accept_value("first_layer_inspector", new_value):
@@ -2006,6 +2146,9 @@ class BambuMQTTClient:
             new_value = bool(xcam_data.get("buildplate_marker_detector"))
             if should_accept_value("buildplate_marker_detector", new_value):
                 self.state.print_options.buildplate_marker_detector = new_value
+                # BS reads BOTH buildplate mark and type values from this same
+                # nested field (DevPrintOptions.cpp:112/120).
+                self.state.print_options.plate_type_detect = new_value
         if "allow_skip_parts" in xcam_data:
             new_value = bool(xcam_data.get("allow_skip_parts"))
             if should_accept_value("allow_skip_parts", new_value):
