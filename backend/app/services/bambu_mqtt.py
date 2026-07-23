@@ -571,6 +571,14 @@ class PrinterState:
     # Capability flags from printer push.func bitfield + cfg overrides
     is_support_pa_calibration: bool = False
     is_support_auto_flow_calibration: bool = False
+    # Live device-calibration support flags (Device page → Calibration dialog),
+    # keyed by the MQTT field name (support_lidar_calibration,
+    # support_nozzle_offset_calibration, support_high_tempbed_calibration,
+    # support_clump_position_calibration, support_motor_noise_cali,
+    # support_ai_monitoring, support_bed_leveling). Only the keys the printer
+    # actually reported are present; the API resolver merges these OVER the
+    # per-model base matrix (hybrid gating, mirrors BambuStudio).
+    device_cali_support: dict = field(default_factory=dict)
     # Filament Track Switch (FTS) accessory — when installed, AMS info reports
     # bits 8-11 = 0xE (uninitialized) because routing is dynamic. Upstream #1162.
     fila_switch: "FilaSwitchState" = field(default_factory=lambda: FilaSwitchState())
@@ -2530,6 +2538,23 @@ class BambuMQTTClient:
                 self.state.is_support_pa_calibration = True
             if (func >> 15) & 0x1:
                 self.state.is_support_auto_flow_calibration = True
+
+        # Device-calibration support flags (Device page → Calibration dialog).
+        # Modern firmware sends explicit bool/int fields; only stash the keys the
+        # printer actually reported. The API resolver merges these OVER the
+        # mirrored per-model config base (hybrid gating; see printer_configs.py).
+        for _cali_flag in (
+            "support_lidar_calibration",
+            "support_ai_monitoring",
+            "support_nozzle_offset_calibration",
+            "support_high_tempbed_calibration",
+            "support_clump_position_calibration",
+            "support_motor_noise_cali",
+        ):
+            if isinstance(data.get(_cali_flag), bool):
+                self.state.device_cali_support[_cali_flag] = bool(data[_cali_flag])
+        if isinstance(data.get("support_bed_leveling"), int):
+            self.state.device_cali_support["support_bed_leveling"] = int(data["support_bed_leveling"])
 
         # Detect cali completion from ``mc_print_stage`` IDLE flip while a
         # cali session is active. BS DeviceManager.cpp:1003 uses the same

@@ -221,6 +221,16 @@ Permissions follow `resource:action` pattern. New permissions go in `backend/app
 | **Operators** | Full control, own items |
 | **Viewers** | Read-only |
 
+## Mirrored Bambu Studio data
+
+`backend/app/data/printers/*.json` are **byte-for-byte** copies of BambuStudio's
+`resources/printers/<code>.json` (one per model) — the data-driven source of truth
+for per-model **device capabilities** (`support_*_calibration`, bed leveling,
+chamber, camera). Read by `backend/app/utils/printer_configs.py`. **Don't hand-edit
+them.** When BambuStudio ships new firmware/models, re-copy the folder from a fresh
+BS checkout and `git diff` (byte-identical unless BS changed a model), then wire any
+new flags. Source tag + full re-sync protocol: `backend/app/data/printers/README.md`.
+
 ## Testing
 
 ```bash

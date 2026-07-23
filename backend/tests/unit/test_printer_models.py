@@ -271,3 +271,11 @@ class TestAutoCalibrationCapabilities:
         assert supports_auto_bed_leveling("h2d pro") is True
         assert supports_auto_bed_leveling(" H2D-Pro ") is True
         assert supports_auto_nozzle_offset("x2d") is True
+
+
+class TestP2SModelId:
+    """N7 -> P2S internal-code mapping. Required for the printer-config loader to
+    resolve a P2S (which reports code N7) to its mirrored JSON."""
+
+    def test_n7_is_p2s(self):
+        assert normalize_printer_model_id("N7") == "P2S"

@@ -38,6 +38,7 @@ PRINTER_MODEL_ID_MAP = {
     "P1S": "P1S",
     # P2 series
     "P2S": "P2S",
+    "N7": "P2S",  # SSDP/MQTT internal code for P2S
     # X2 series
     "N6": "X2D",
     # A2 series (A2L is single-FDM + integrated cutter/plotter — single nozzle)
@@ -313,6 +314,12 @@ def supports_auto_nozzle_offset(model: str | None) -> bool:
         return False
     normalized = model.strip().upper().replace(" ", "").replace("-", "")
     return normalized in AUTO_NOZZLE_OFFSET_MODELS
+
+
+# NOTE: per-model DEVICE-calibration availability (lidar / bed-level / vibration
+# / motor-noise / nozzle-offset / high-temp-bed / clump) is data-driven — read
+# from the mirrored BambuStudio config JSONs by ``utils/printer_configs.py``, not
+# a hardcoded table here. See that module + backend/app/data/printers/README.md.
 
 
 # Models with a confirmed door-open sensor exposed via MQTT.
