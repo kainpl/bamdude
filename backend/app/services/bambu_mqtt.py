@@ -3713,11 +3713,13 @@ class BambuMQTTClient:
 
         # Door open detection. The door-open bit is bit 23, but WHICH field
         # carries it is model-dependent (``door_sensor_field``): the X1 family
-        # (X1/X1C/X1E) uses ``home_flag`` bit 23; X2D uses ``stat`` bit 23
-        # (verified on hardware — X2D's home_flag bit 23 never flips, its ``stat``
-        # bit 23 does). Other enclosed models expose no trustworthy bit, so the
-        # field is None and we skip them (avoids the misleading permanent
-        # "Door Closed" / flapping badges previously seen on P1S/P2S/H2*).
+        # (X1/X1C/X1E) uses ``home_flag`` bit 23; X2D and P2S use ``stat`` bit 23
+        # (X2D verified on hardware — its home_flag bit 23 never flips, its ``stat``
+        # bit 23 does; P2S inferred from the shared X2D/P2S door-sensor part — see
+        # DOOR_SENSOR_STAT_MODELS in printer_models.py). Other enclosed models expose
+        # no trustworthy bit, so the field is None and we skip them (avoids the
+        # misleading permanent "Door Closed" / flapping badges previously seen on
+        # P1S/H2*).
         from backend.app.utils.printer_models import door_sensor_field
 
         _door_field = door_sensor_field(self.model)

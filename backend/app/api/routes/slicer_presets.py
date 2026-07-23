@@ -508,9 +508,11 @@ async def list_unified_presets(
     api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
     refresh: bool = Query(False, description="Bypass the in-process cloud + bundled preset caches (#1581)."),
 ) -> UnifiedPresetsResponse:
-    """List slicer presets across cloud / local / standard tiers, deduped by name.
+    """List slicer presets across the local / orca_cloud / cloud / standard source tiers.
 
-    Drives the SliceModal preset dropdowns. Permission gate matches the
+    See the module docstring for the tier priority order and the
+    no-cross-tier-dedup rule (each tier surfaces its full list; a name may
+    appear in several groups). Drives the SliceModal preset dropdowns. Permission gate matches the
     slice action itself (``LIBRARY_UPLOAD``) so any user who can slice can
     see the preset options for the dialog. The cloud branch is independently
     gated on ``CLOUD_AUTH`` inside :func:`_fetch_cloud_presets` so a user
