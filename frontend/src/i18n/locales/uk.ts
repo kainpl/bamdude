@@ -4920,6 +4920,12 @@ export default {
     tab: {
       printOptions: 'Параметри друку',
       parts: 'Частини принтера',
+      addons: 'Додатки',
+    },
+    addons: {
+      firmware: 'Прошивка',
+      hardware: 'Апаратна версія',
+      serial: 'Серійний номер',
     },
     aiMonitoringGroup: 'AI-моніторинг',
     sensorsGroup: 'Сенсори',

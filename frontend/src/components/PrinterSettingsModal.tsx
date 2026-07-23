@@ -6,9 +6,10 @@ import { useToast } from '../contexts/ToastContext';
 import { usePrinterSettings } from '../hooks/usePrinterSettings';
 import { PrintOptionsTab } from './PrintOptionsTab';
 import { PrinterPartsTab } from './PrinterPartsTab';
+import { PrinterAddonsTab } from './PrinterAddonsTab';
 import type { PrinterSettingsPostBody } from '../api/client';
 
-type TabId = 'print_options' | 'parts';
+type TabId = 'print_options' | 'parts' | 'addons';
 
 interface Props {
   isOpen: boolean;
@@ -54,6 +55,9 @@ export function PrinterSettingsModal({ isOpen, onClose, printerId }: Props) {
             <TabBtn id="parts" active={activeTab} onClick={setActiveTab}>
               {t('printerSettings.tab.parts')}
             </TabBtn>
+            <TabBtn id="addons" active={activeTab} onClick={setActiveTab}>
+              {t('printerSettings.tab.addons')}
+            </TabBtn>
           </div>
         </div>
 
@@ -66,8 +70,10 @@ export function PrinterSettingsModal({ isOpen, onClose, printerId }: Props) {
             </div>
           ) : activeTab === 'print_options' ? (
             <PrintOptionsTab data={data} onSubmit={onSubmit} />
-          ) : (
+          ) : activeTab === 'parts' ? (
             <PrinterPartsTab data={data} onRefetch={() => refetch()} />
+          ) : (
+            <PrinterAddonsTab data={data} onRefetch={() => refetch()} />
           )}
         </div>
       </div>

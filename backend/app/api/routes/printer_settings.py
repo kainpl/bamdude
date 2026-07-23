@@ -20,6 +20,7 @@ from backend.app.models.printer import Printer
 from backend.app.models.printer_setting_audit import PrinterSettingAudit
 from backend.app.models.user import User
 from backend.app.schemas.printer_settings import (
+    AddonInfo,
     AiDetectorState,
     CameraSnapshotAction,
     NozzleInfoOut,
@@ -85,6 +86,64 @@ def _action_tab(action: str) -> str:
     if action == "set_nozzle":
         return "parts"
     return "unknown"
+
+
+# Models that ship a dedicated printer thumbnail under frontend/src/assets/addons.
+_PRINTER_THUMB_SLUGS = frozenset(
+    {"x2d", "p2s", "h2d", "h2dpro", "h2c", "h2s", "x1c", "x1e", "p1p", "p1s", "a1", "a1mini"}
+)
+
+
+def _model_slug(model: str | None) -> str:
+    return (model or "").strip().lower().replace(" ", "").replace("-", "")
+
+
+def _resolve_addon(name: str, product_name: str, printer_model: str | None) -> tuple[str, str]:
+    """Return ``(category, image_key)`` for a get_version module — mirrors BS's
+    Update Device row routing (prefix on the module ``name``, substring on
+    ``product_name``). ``image_key`` maps 1:1 to a frontend asset; the frontend
+    falls back to a generic icon for unknown keys.
+    """
+    n = (name or "").lower()
+    p = product_name or ""
+    if n == "ota":  # the printer body
+        slug = _model_slug(printer_model)
+        return "printer", (f"printer_{slug}" if slug in _PRINTER_THUMB_SLUGS else "printer_generic")
+    if n.startswith("ams_f1"):
+        return "ams_lite", "ams_lite"
+    if n.startswith("n3s"):
+        return "ams_ht", "ams_ht"
+    if n.startswith(("n3f", "ams")):
+        return "ams", "ams"
+    if n == "ext":
+        return "ext", "ext"
+    # Accessories — BS substring rules on product_name (DevFirmware.h isXxx()).
+    if "Filament Buffer" in p:
+        slug = _model_slug(printer_model)
+        return "filament_buffer", (f"filament_buffer_{slug}" if slug in {"x2d", "p2s"} else "filament_buffer_x2d")
+    if "Exhaust Fan" in p:
+        return "exhaust_fan", "exhaust_fan"
+    if "Air Pump" in p:
+        return "air_pump", "air_pump"
+    if "Laser" in p:
+        return "laser", ("laser_40" if "40" in p else "laser")
+    if "Cutting Module" in p:
+        return "cutting", "cutting"
+    if "Extinguishing" in p:
+        return "extinguish", "extinguish"
+    if "Rotary" in p:
+        return "rotary", "rotary"
+    if "Filament Track" in p:
+        return "filament_track", "filament_track"
+    if "wtm" in n:
+        return "nozzle_rack", "nozzle_rack"
+    return "module", "module"  # generic fallback → frontend renders a lucide icon
+
+
+def _clean_ver(v: object) -> str | None:
+    """Normalise a hw/sw/serial string: empty or ``N/A`` → None."""
+    s = str(v or "").strip()
+    return None if not s or s.upper() == "N/A" else s
 
 
 @router.get("/{printer_id}/settings", response_model=PrinterSettingsGetResponse)
@@ -173,11 +232,26 @@ async def get_printer_settings(
         )
     parts = PartsState(nozzles=nozzles)
 
+    addons = []
+    for mod in getattr(client.state, "modules", []) or []:
+        category, image_key = _resolve_addon(getattr(mod, "name", ""), getattr(mod, "product_name", ""), printer.model)
+        addons.append(
+            AddonInfo(
+                name=str(getattr(mod, "name", "") or ""),
+                display_name=str(getattr(mod, "product_name", "") or ""),
+                category=category,
+                image_key=image_key,
+                hw_ver=_clean_ver(getattr(mod, "hw_ver", None)),
+                sw_ver=_clean_ver(getattr(mod, "sw_ver", None)),
+                serial=_clean_ver(getattr(mod, "serial", None)),
+            )
+        )
+
     supports = PrinterSettingsSupports(
         **compute_printer_supports(client.state, printer.model, getattr(client, "module_vers", {}))
     )
 
-    return PrinterSettingsGetResponse(print_options=state, parts=parts, supports=supports)
+    return PrinterSettingsGetResponse(print_options=state, parts=parts, supports=supports, addons=addons)
 
 
 @router.post("/{printer_id}/settings", response_model=PrinterSettingsPostResponse)

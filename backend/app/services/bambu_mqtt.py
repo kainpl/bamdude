@@ -358,6 +358,21 @@ class NozzleInfo:
 
 
 @dataclass
+class ModuleInfo:
+    """One entry from the get_version module list — the printer body or an
+    accessory (AMS unit, filament buffer/hub, exhaust fan, …). Populated in
+    ``_handle_version_info``; only modules with a display name (``product_name``)
+    are kept. Surfaced read-only in the Printer Settings → Add-ons tab.
+    """
+
+    name: str = ""  # module name, e.g. "ota", "n3f/0", "ahb", "eef"
+    product_name: str = ""  # e.g. "Bambu Lab X2D", "AMS 2 Pro (1)"
+    hw_ver: str = ""
+    sw_ver: str = ""
+    serial: str = ""
+
+
+@dataclass
 class ExtrusionCaliResult:
     """One row from push ``extrusion_cali_get_result`` (X1 auto-cali path).
 
@@ -499,6 +514,8 @@ class PrinterState:
     pause_started_at: float | None = None
     # Nozzle hardware info (for dual nozzle printers, index 0 = left, 1 = right)
     nozzles: list = field(default_factory=lambda: [NozzleInfo(), NozzleInfo()])
+    # Module inventory (printer body + accessories) from get_version — Add-ons tab
+    modules: list = field(default_factory=list)
     # AI detection and print options
     print_options: PrintOptions = field(default_factory=PrintOptions)
     # Calibration stage tracking (from stg_cur and stg fields)
@@ -1671,6 +1688,31 @@ class BambuMQTTClient:
                         if module_type:
                             ams_unit["module_type"] = module_type
                         break
+
+        # Full module inventory for the Printer Settings → Add-ons tab: keep the
+        # printer body + every accessory that advertises a display name
+        # (``product_name``) — AMS units, filament buffer/hub, exhaust fan, etc.
+        # Internal control boards (mc/th/ap/smc/ixmj/…) report an empty
+        # product_name and are dropped. Mirrors what BS lists on Update Device.
+        addon_modules: list[ModuleInfo] = []
+        for module in modules:
+            if not isinstance(module, dict):
+                continue
+            product_name = str(module.get("product_name", "") or "").strip()
+            if not product_name:
+                continue
+            addon_modules.append(
+                ModuleInfo(
+                    name=str(module.get("name", "") or ""),
+                    product_name=product_name,
+                    hw_ver=str(module.get("hw_ver", "") or ""),
+                    sw_ver=str(module.get("sw_ver", "") or ""),
+                    serial=str(module.get("sn", "") or ""),
+                )
+            )
+        if addon_modules:
+            self.state.modules = addon_modules
+            state_changed = True
 
         # Trigger state change callback AFTER both loops so AMS sn/sw_ver are
         # included in the broadcast (not just the printer firmware version).

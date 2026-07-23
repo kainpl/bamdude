@@ -4094,10 +4094,21 @@ export interface PrinterSettingsSupports {
   parts_dual: boolean;
 }
 
+export interface AddonInfo {
+  name: string;
+  display_name: string;
+  category: string;
+  image_key: string;
+  hw_ver: string | null;
+  sw_ver: string | null;
+  serial: string | null;
+}
+
 export interface PrinterSettingsGetResponse {
   print_options: PrintOptionsState;
   parts: PrinterPartsState;
   supports: PrinterSettingsSupports;
+  addons: AddonInfo[];
 }
 
 export type PrinterSettingsPostBody =

@@ -4915,6 +4915,12 @@ export default {
     tab: {
       printOptions: 'Print Options',
       parts: 'Printer Parts',
+      addons: 'Add-ons',
+    },
+    addons: {
+      firmware: 'Firmware',
+      hardware: 'Hardware',
+      serial: 'Serial',
     },
     aiMonitoringGroup: 'AI Monitoring',
     sensorsGroup: 'Sensors',

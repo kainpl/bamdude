@@ -69,10 +69,26 @@ class PrinterSettingsSupports(BaseModel):
     parts_dual: bool = False
 
 
+class AddonInfo(BaseModel):
+    """A printer module for the Add-ons tab — the printer body or an accessory
+    (AMS unit, filament buffer, exhaust fan, …). Read-only."""
+
+    name: str  # raw module name, e.g. "ota", "n3f/0", "ahb", "eef"
+    display_name: str  # product_name, e.g. "AMS 2 Pro (1)"
+    category: (
+        str  # "printer" | "ams" | "ams_ht" | "ams_lite" | "ext" | "filament_buffer" | "exhaust_fan" | ... | "module"
+    )
+    image_key: str  # frontend asset key, e.g. "printer_x2d", "ams", "exhaust_fan"
+    hw_ver: str | None = None
+    sw_ver: str | None = None
+    serial: str | None = None
+
+
 class PrinterSettingsGetResponse(BaseModel):
     print_options: PrintOptionsState
     parts: PartsState
     supports: PrinterSettingsSupports
+    addons: list[AddonInfo] = []
 
 
 # ---------------- POST body — discriminated union ----------------
