@@ -4671,11 +4671,26 @@ export const api = {
     motor_noise?: boolean;
     nozzle_offset?: boolean;
     high_temp_heatbed?: boolean;
+    lidar?: boolean;
+    clump_pos?: boolean;
   }) => {
     const params = new URLSearchParams();
     Object.entries(options).forEach(([k, v]) => { if (v) params.set(k, 'true'); });
     return request<{ success: boolean }>(`/printers/${printerId}/calibration?${params}`, { method: 'POST' });
   },
+
+  // Which device calibrations this printer's model+firmware supports (hybrid:
+  // mirrored BS config base + live support_* MQTT flags) — drives the dialog.
+  getCalibrationOptions: (printerId: number) =>
+    request<{
+      lidar: boolean;
+      bed_leveling: boolean;
+      vibration: boolean;
+      motor_noise: boolean;
+      nozzle_offset: boolean;
+      high_temp_heatbed: boolean;
+      clump_pos: boolean;
+    }>(`/printers/${printerId}/calibration/options`),
 
   // Get current print user (for reprint tracking - Issue #206)
   getCurrentPrintUser: (printerId: number) =>

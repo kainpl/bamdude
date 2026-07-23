@@ -404,9 +404,14 @@ export default {
       motorNoise: 'Motor Noise Cancellation',
       motorNoiseDesc: 'Reduces stepper motor resonance noise',
       nozzleOffset: 'Nozzle Offset',
-      nozzleOffsetDesc: 'Calibrates offset between dual nozzles (H2D)',
+      nozzleOffsetDesc: 'Calibrates offset between dual nozzles',
       highTempHeatbed: 'High-Temp Bed Leveling',
-      highTempHeatbedDesc: 'Bed leveling at elevated temperature for high-temp materials'
+      highTempHeatbedDesc: 'Bed leveling at elevated temperature for high-temp materials',
+      lidar: 'Micro Lidar Calibration',
+      lidarDesc: 'Calibrates the micro-lidar sensor (X1 series)',
+      clumpPos: 'Nozzle Clumping Detection',
+      clumpPosDesc: 'Calibrates nozzle-clumping detection',
+      noneAvailable: 'No calibrations are available for this printer model'
     },
     printerInformation: 'Printer Information',
     copyToClipboard: 'Copy',
