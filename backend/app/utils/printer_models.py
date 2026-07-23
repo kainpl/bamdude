@@ -330,44 +330,54 @@ def supports_auto_nozzle_offset(model: str | None) -> bool:
 # a hardcoded table here. See that module + backend/app/data/printers/README.md.
 
 
-# Models with a confirmed door-open sensor exposed via MQTT.
-# Only X1 family is reverse-engineered to publish door state on home_flag bit 23;
-# bit 23 of `stat` on other enclosed models (P1S/P2S/H2*) is undocumented and
-# cannot be trusted (observed to be permanently 0 on some firmwares, meaning
-# the UI would always show "Door Closed" regardless of actual state).
+# Models with a confirmed door-open sensor exposed via MQTT — split by WHICH
+# field carries the door-open bit (bit 23 == 0x800000 in both cases):
+#   * home_flag bit 23 — X1 family (X1 / X1C / X1E). Long-verified.
+#   * stat bit 23      — X2D. Verified 2026-07-23 on real hardware: X2D's
+#     home_flag bit 23 stays 0 regardless of the door, but ``stat`` bit 23 flips
+#     cleanly (closed 0x40258000 -> open 0x40A58000). BambuStudio reads door
+#     state from neither field, so this whole mechanism is BamDude-specific.
+#   * stat bit 23 — P2S, INFERRED (not yet hardware-verified): Bambu ships ONE
+#     door-sensor replacement part + guide for the P2S/X2D pair (identical
+#     hardware), so P2S almost certainly reports on the same stat bit 23. If a
+#     real P2S ever proves otherwise (stuck / flapping badge), drop N7/P2S here.
 #
-# Open-frame models (P1P, A1, A1 Mini) do not have a door at all — they must
-# NOT be in this set even if we later reverse-engineer a signal for other
-# enclosed printers.
+# Still absent: the H2 family (H2D/H2D Pro/H2C/H2S) HAS door sensors (hall-effect)
+# but the MQTT field/bit is unknown — add only after capturing it on hardware.
+# P1S has no door sensor at all; open-frame models (P1P, A1, A1 Mini) have no door.
 #
-# To add a model: verify with a real printer that bit 23 of the field we parse
-# actually flips when the enclosure door is opened/closed. Do not add on
-# protocol speculation.
-DOOR_SENSOR_MODELS = frozenset(
-    [
-        "X1",
-        "X1C",
-        "X1E",
-        # Internal codes
-        "C11",  # X1C
-        "C12",  # X1
-        "C13",  # X1E
-    ]
-)
+# To add a model: confirm on real hardware which field's bit 23 flips on
+# open/close, then add it to the matching set. Never add on protocol
+# speculation. (Internal codes are hyphen-stripped for lookup:
+# X1C=BLP001, X1=BLP002, X1E=C13, X2D=N6, P2S=N7.)
+DOOR_SENSOR_HOME_FLAG_MODELS = frozenset(["X1", "X1C", "X1E", "BLP001", "BLP002", "C13"])
+DOOR_SENSOR_STAT_MODELS = frozenset(["X2D", "N6", "P2S", "N7"])
+
+
+def door_sensor_field(model: str | None) -> str | None:
+    """Return which MQTT field carries this model's door-open bit (bit 23):
+    ``"home_flag"`` for the X1 family, ``"stat"`` for X2D, or ``None`` when the
+    model has no trustworthy door signal. See the model sets above.
+    """
+    if not model:
+        return None
+    normalized = model.strip().upper().replace(" ", "").replace("-", "")
+    if normalized in DOOR_SENSOR_HOME_FLAG_MODELS:
+        return "home_flag"
+    if normalized in DOOR_SENSOR_STAT_MODELS:
+        return "stat"
+    return None
 
 
 def has_door_sensor(model: str | None) -> bool:
-    """Return True if the printer model has a confirmed door-open sensor
-    exposed via MQTT.
+    """Return True if the printer model exposes a trustworthy door-open signal
+    over MQTT.
 
     Gates both the backend bit-23 parser and the frontend door-state badge —
     non-sensor models must not surface misleading "Door Closed" / "Door Open"
-    state. See ``DOOR_SENSOR_MODELS`` above for the rationale.
+    state. See the door-sensor model sets above for the rationale.
     """
-    if not model:
-        return False
-    normalized = model.strip().upper().replace(" ", "").replace("-", "")
-    return normalized in DOOR_SENSOR_MODELS
+    return door_sensor_field(model) is not None
 
 
 def get_rod_type(model: str | None) -> str | None:

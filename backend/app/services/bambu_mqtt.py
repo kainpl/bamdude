@@ -480,7 +480,7 @@ class PrinterState:
     ipcam: bool = False  # Live view / camera streaming enabled
     wifi_signal: int | None = None  # WiFi signal strength in dBm
     wired_network: bool = False  # Ethernet connection detected (home_flag bit 18)
-    door_open: bool = False  # Enclosure door open (home_flag bit 23 on X1*, stat bit 23 elsewhere)
+    door_open: bool = False  # Enclosure door open (home_flag bit 23 on X1 family, stat bit 23 on X2D)
     # Last classified pause reason — populated by main.on_printer_status_change
     # on the RUNNING→PAUSE edge using ``hms_errors.classify_pause_reason``,
     # cleared back to ``None`` on the PAUSE→RUNNING edge. Surfaces in the
@@ -3481,29 +3481,39 @@ class BambuMQTTClient:
                 )
             self.state.store_to_sdcard = store_to_sdcard
 
-        # Door open detection — only X1 series (X1, X1C, X1E) has a
-        # reverse-engineered door-sensor signal on home_flag bit 23. Bit 23
-        # of ``stat`` on other enclosed models (P1S/P2S/H2*) is undocumented
-        # and unreliable — previously parsed blindly on all non-X1 models,
-        # which surfaced misleading "Door Closed/Open" badges on:
-        #   * P1P (open-frame, no door exists — always shows Closed)
-        #   * P1S / P2S (enclosure without exposed sensor in current firmware)
-        #   * A1 / A1 Mini (open-frame)
-        # The ``has_door_sensor`` helper centralises the whitelist for both
-        # parser gate here and the frontend badge visibility.
-        from backend.app.utils.printer_models import has_door_sensor
+        # Door open detection. The door-open bit is bit 23, but WHICH field
+        # carries it is model-dependent (``door_sensor_field``): the X1 family
+        # (X1/X1C/X1E) uses ``home_flag`` bit 23; X2D uses ``stat`` bit 23
+        # (verified on hardware — X2D's home_flag bit 23 never flips, its ``stat``
+        # bit 23 does). Other enclosed models expose no trustworthy bit, so the
+        # field is None and we skip them (avoids the misleading permanent
+        # "Door Closed" / flapping badges previously seen on P1S/P2S/H2*).
+        from backend.app.utils.printer_models import door_sensor_field
 
-        if has_door_sensor(self.model) and home_flag is not None:
-            door_open = (home_flag & 0x00800000) != 0
-            if door_open != self.state.door_open:
-                logger.debug(
-                    "[%s] door_open changed: %s -> %s (home_flag=0x%08X)",
-                    self.serial_number,
-                    self.state.door_open,
-                    door_open,
-                    home_flag,
-                )
-            self.state.door_open = door_open
+        _door_field = door_sensor_field(self.model)
+        if _door_field:
+            _door_raw = None
+            if _door_field == "home_flag":
+                _door_raw = home_flag
+            elif _door_field == "stat":
+                _stat = data.get("stat")
+                if _stat is not None:
+                    try:
+                        _door_raw = int(str(_stat), 16)
+                    except (ValueError, TypeError):
+                        _door_raw = None
+            if _door_raw is not None:
+                door_open = (_door_raw & 0x00800000) != 0
+                if door_open != self.state.door_open:
+                    logger.debug(
+                        "[%s] door_open changed: %s -> %s (%s=0x%08X)",
+                        self.serial_number,
+                        self.state.door_open,
+                        door_open,
+                        _door_field,
+                        _door_raw,
+                    )
+                self.state.door_open = door_open
 
         # Parse timelapse status (recording active during print)
         if "timelapse" in data:

@@ -19,19 +19,18 @@ export function getPrinterImage(model: string | null | undefined): string {
 }
 
 // Models with a confirmed door-open sensor exposed via MQTT.
-// Mirrors backend/app/utils/printer_models.py::DOOR_SENSOR_MODELS — only X1
-// family has a reverse-engineered signal on home_flag bit 23. Bit 23 of
-// `stat` on other enclosed models (P1S/P2S/H2*) is undocumented and
-// unreliable, so we don't show a door badge there (it would either flap or
-// stay stuck on "Closed", misleading the operator).
-//
-// Open-frame models (P1P, A1, A1 Mini) MUST NOT appear here — they have no
-// door hardware at all.
+// Mirrors the backend door-sensor sets (printer_models.py). The X1 family
+// (X1/X1C/X1E) reports door state on home_flag bit 23; X2D and P2S on stat
+// bit 23. The backend resolves door_open from the right field per model; this
+// set only decides whether to show the badge. P2S is inferred from sharing
+// X2D's exact door-sensor part (pending hardware confirmation). The H2 family
+// has sensors but an unverified MQTT signal; P1S has no sensor; open-frame
+// models (P1P/A1/A1 Mini) have no door hardware — none belong here.
 //
 // To add a model: verify on a real printer that the bit actually flips when
 // the enclosure opens/closes, then update both this set AND the backend
 // counterpart. Never add on protocol speculation.
-const DOOR_SENSOR_MODELS = new Set(['X1', 'X1C', 'X1E']);
+const DOOR_SENSOR_MODELS = new Set(['X1', 'X1C', 'X1E', 'X2D', 'P2S']);
 
 export function hasDoorSensor(model: string | null | undefined): boolean {
   if (!model) return false;
