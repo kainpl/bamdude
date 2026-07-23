@@ -36,7 +36,9 @@ DEVICE_CALIBRATIONS = (
     "lidar",  # bit 0 (xcam_cali) — needs support_lidar_calibration AND support_ai_monitoring
     "bed_leveling",  # bit 1 — support_bed_leveling != 0
     "vibration",  # bit 2 — always available (BS never gates)
-    "motor_noise",  # bit 3 — support_motor_noise_cali
+    "motor_noise",  # bit 3 — LIVE runtime gate (BS parity): home_flag bit 21
+    # (P1/X1 series) OR fun bitfield bit 10 (H2/X2 series); the JSON
+    # support_motor_noise_cali is only the offline default
     "nozzle_offset",  # bit 4 (nozzle_cali) — support_nozzle_offset_calibration
     "high_temp_heatbed",  # bit 5 (bed_cali) — support_high_tempbed_calibration
     "clump_pos",  # bit 6 (clumppos_cali) — support_clump_position_calibration

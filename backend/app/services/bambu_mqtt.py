@@ -1352,6 +1352,19 @@ class BambuMQTTClient:
             except (ValueError, TypeError):
                 pass
 
+        # Motor-noise cali support is derived from the ``fun`` function bitfield,
+        # bit 10 (BS DeviceManager.cpp:4385). ``fun`` may arrive at the top level
+        # (here) or nested in ``print`` (handled in _update_state); parse both so
+        # every model/firmware layout is covered. Whichever message carries
+        # ``fun`` last wins — same key, same bit.
+        if "fun" in payload:
+            try:
+                _fun_val = payload["fun"]
+                _fun_int = _fun_val if isinstance(_fun_val, int) else int(str(_fun_val), 16)
+                self.state.device_cali_support["support_motor_noise_cali"] = bool((_fun_int >> 10) & 0x1)
+            except (ValueError, TypeError):
+                pass
+
         if "print" in payload:
             print_data = payload["print"]
             # Handle gcode_line ACK - resolve ACK listener for HTTP wait
@@ -2539,6 +2552,17 @@ class BambuMQTTClient:
             if (func >> 15) & 0x1:
                 self.state.is_support_auto_flow_calibration = True
 
+        # BS's legacy ``flag`` bitfield IS the printer's ``home_flag`` field
+        # (BS DeviceManager.cpp:1083 ``m_home_flag = flag``). P1/X1-series
+        # printers (e.g. P1S) advertise motor-noise cali support here at BIT 21
+        # (BS line 1116: ``is_support_motor_noise_cali = ((flag >> 21) & 0x1)``),
+        # NOT via the newer ``fun`` string bit 10 that H2/X2-series use. Parse it
+        # so those models expose Motor Noise Cancellation exactly like BS. Runs
+        # before the ``fun`` parse below, so ``fun`` wins when a printer sends
+        # both (mirrors BS: flag@1116 parsed before fun@4385).
+        if isinstance(data.get("home_flag"), int):
+            self.state.device_cali_support["support_motor_noise_cali"] = bool((int(data["home_flag"]) >> 21) & 0x1)
+
         # Device-calibration support flags (Device page → Calibration dialog).
         # Modern firmware sends explicit bool/int fields; only stash the keys the
         # printer actually reported. The API resolver merges these OVER the
@@ -2555,6 +2579,22 @@ class BambuMQTTClient:
                 self.state.device_cali_support[_cali_flag] = bool(data[_cali_flag])
         if isinstance(data.get("support_bed_leveling"), int):
             self.state.device_cali_support["support_bed_leveling"] = int(data["support_bed_leveling"])
+        # Motor-noise cali support is a LIVE-runtime gate in BS, not a static
+        # per-model flag: most models don't send an explicit bool and instead
+        # advertise it via the ``fun`` function bitfield, bit 10 — exactly what
+        # BS reads (DeviceManager.cpp:4385:
+        # ``is_support_motor_noise_cali = get_flag_bits(fun, 10)``, where
+        # ``get_flag_bits(str, 10)`` == ``(int(str, 16) >> 10) & 1``). ``fun`` is
+        # a hex string (occasionally already an int). Parsed AFTER the explicit
+        # bool above so ``fun`` wins when both are present (BS ordering). This
+        # applies to every model, so P1S/X2D/etc. now expose it like BS does.
+        _fun = data.get("fun")
+        if _fun is not None:
+            try:
+                _fun_int = _fun if isinstance(_fun, int) else int(str(_fun), 16)
+                self.state.device_cali_support["support_motor_noise_cali"] = bool((_fun_int >> 10) & 0x1)
+            except (ValueError, TypeError):
+                pass
 
         # Detect cali completion from ``mc_print_stage`` IDLE flip while a
         # cali session is active. BS DeviceManager.cpp:1003 uses the same
