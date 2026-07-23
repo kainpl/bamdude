@@ -5189,3 +5189,50 @@ class TestCalibrationPayloadEncoding:
         c = self._client(model="P1S", dual=False)
         c.start_print("t.3mf", nozzle_offset_cali="on")
         assert self._cmd(c)["nozzle_offset_cali"] == 0
+
+
+class TestStartCalibrationBitmask:
+    """Device-calibration MQTT ``option`` bitmask — byte-for-byte parity with
+    BambuStudio command_start_calibration (DeviceManager.cpp:1886-1892)."""
+
+    def _client(self):
+        from unittest.mock import MagicMock
+
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        c = BambuMQTTClient(ip_address="1.2.3.4", serial_number="T", access_code="12345678")
+        c._client = MagicMock()
+        c.state.connected = True
+        return c
+
+    def _option(self, c):
+        cmd = json.loads(c._client.publish.call_args[0][1])["print"]
+        assert cmd["command"] == "calibration"
+        return cmd["option"]
+
+    def test_each_bit(self):
+        c = self._client()
+        c.start_calibration(lidar=True)
+        assert self._option(c) == 1 << 0
+        c.start_calibration(bed_leveling=True)
+        assert self._option(c) == 1 << 1
+        c.start_calibration(vibration=True)
+        assert self._option(c) == 1 << 2
+        c.start_calibration(motor_noise=True)
+        assert self._option(c) == 1 << 3
+        c.start_calibration(nozzle_offset=True)
+        assert self._option(c) == 1 << 4
+        c.start_calibration(high_temp_heatbed=True)
+        assert self._option(c) == 1 << 5
+        c.start_calibration(clump_pos=True)
+        assert self._option(c) == 1 << 6
+
+    def test_combined_bits(self):
+        c = self._client()
+        c.start_calibration(bed_leveling=True, vibration=True, clump_pos=True)
+        assert self._option(c) == (1 << 1) | (1 << 2) | (1 << 6)
+
+    def test_no_option_returns_false_without_publish(self):
+        c = self._client()
+        assert c.start_calibration() is False
+        c._client.publish.assert_not_called()

@@ -4686,6 +4686,8 @@ class BambuMQTTClient:
         motor_noise: bool = False,
         nozzle_offset: bool = False,
         high_temp_heatbed: bool = False,
+        lidar: bool = False,
+        clump_pos: bool = False,
     ) -> bool:
         """Start printer calibration with selected options.
 
@@ -4695,6 +4697,8 @@ class BambuMQTTClient:
             motor_noise: Run motor noise cancellation calibration
             nozzle_offset: Run nozzle offset calibration (dual nozzle printers)
             high_temp_heatbed: Run high-temperature heatbed calibration
+            lidar: Run micro-lidar (xcam) calibration (X1 series)
+            clump_pos: Run nozzle-clumping-detection calibration (P2S / H2S)
 
         Returns:
             True if command was sent, False if not connected
@@ -4702,15 +4706,21 @@ class BambuMQTTClient:
         if not self._client or not self.state.connected:
             return False
 
-        # Build calibration bitmask based on OrcaSlicer DeviceManager.cpp
-        # Bit 0: xcam_cali (not exposed in UI)
+        # Build calibration bitmask — matches BambuStudio DeviceManager.cpp
+        # command_start_calibration (:1886-1892). The printer runs each selected
+        # step, then returns to IDLE. Which bits are *available* is gated
+        # per-model in the API (utils/printer_configs.py); the firmware ignores
+        # unsupported bits.
+        # Bit 0: xcam_cali (micro-lidar)
         # Bit 1: bed_leveling
         # Bit 2: vibration
         # Bit 3: motor_noise
-        # Bit 4: nozzle_cali
+        # Bit 4: nozzle_cali (nozzle offset)
         # Bit 5: bed_cali (high-temp heatbed)
-        # Bit 6: clumppos_cali (not exposed in UI)
+        # Bit 6: clumppos_cali (nozzle-clumping detection)
         option = 0
+        if lidar:
+            option |= 1 << 0
         if bed_leveling:
             option |= 1 << 1
         if vibration:
@@ -4721,6 +4731,8 @@ class BambuMQTTClient:
             option |= 1 << 4
         if high_temp_heatbed:
             option |= 1 << 5
+        if clump_pos:
+            option |= 1 << 6
 
         if option == 0:
             logger.warning("[%s] No calibration options selected", self.serial_number)
@@ -4740,9 +4752,9 @@ class BambuMQTTClient:
         self._client.publish(self.topic_publish, command_json, qos=1)
         logger.info(
             f"[{self.serial_number}] Starting calibration: "
-            f"bed_leveling={bed_leveling}, vibration={vibration}, "
+            f"lidar={lidar}, bed_leveling={bed_leveling}, vibration={vibration}, "
             f"motor_noise={motor_noise}, nozzle_offset={nozzle_offset}, "
-            f"high_temp_heatbed={high_temp_heatbed} (option={option})"
+            f"high_temp_heatbed={high_temp_heatbed}, clump_pos={clump_pos} (option={option})"
         )
 
         return True

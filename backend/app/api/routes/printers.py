@@ -2114,12 +2114,16 @@ async def start_calibration(
     motor_noise: bool = False,
     nozzle_offset: bool = False,
     high_temp_heatbed: bool = False,
+    lidar: bool = False,
+    clump_pos: bool = False,
     _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
     """Start printer calibration with selected options.
 
-    At least one option must be selected.
+    At least one option must be selected. Which options are *available* for a
+    given model is served by ``GET /{printer_id}/calibration/options``; the
+    firmware ignores bits it doesn't support.
 
     Options:
     - bed_leveling: Run bed leveling calibration
@@ -2127,6 +2131,8 @@ async def start_calibration(
     - motor_noise: Run motor noise cancellation calibration
     - nozzle_offset: Run nozzle offset calibration (dual nozzle printers)
     - high_temp_heatbed: Run high-temperature heatbed calibration
+    - lidar: Run micro-lidar (xcam) calibration (X1 series)
+    - clump_pos: Run nozzle-clumping-detection calibration (P2S / H2S)
     """
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     printer = result.scalar_one_or_none()
@@ -2142,7 +2148,7 @@ async def start_calibration(
         raise HTTPException(400, "Printer not connected")
 
     # Check that at least one option is selected
-    if not any([bed_leveling, vibration, motor_noise, nozzle_offset, high_temp_heatbed]):
+    if not any([bed_leveling, vibration, motor_noise, nozzle_offset, high_temp_heatbed, lidar, clump_pos]):
         raise HTTPException(400, "At least one calibration option must be selected")
 
     success = client.start_calibration(
@@ -2151,6 +2157,8 @@ async def start_calibration(
         motor_noise=motor_noise,
         nozzle_offset=nozzle_offset,
         high_temp_heatbed=high_temp_heatbed,
+        lidar=lidar,
+        clump_pos=clump_pos,
     )
 
     if not success:
@@ -2163,7 +2171,35 @@ async def start_calibration(
         "motor_noise": motor_noise,
         "nozzle_offset": nozzle_offset,
         "high_temp_heatbed": high_temp_heatbed,
+        "lidar": lidar,
+        "clump_pos": clump_pos,
     }
+
+
+@router.get("/{printer_id}/calibration/options")
+async def get_calibration_options(
+    printer_id: int,
+    _=RequirePermission(Permission.PRINTERS_READ),
+    db: AsyncSession = Depends(get_db),
+):
+    """Available device calibrations for this printer's model.
+
+    Hybrid gating (mirrors BambuStudio): the mirrored per-model config
+    (``backend/app/data/printers``) is the base, overridden by the printer's
+    live ``support_*`` MQTT flags where reported. Returns a bool per calibration
+    key (lidar / bed_leveling / vibration / motor_noise / nozzle_offset /
+    high_temp_heatbed / clump_pos) so the UI only offers what the model supports.
+    """
+    from backend.app.utils.printer_configs import resolve_device_calibrations
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    live = client.state.device_cali_support if client else None
+    return resolve_device_calibrations(printer.model, live)
 
 
 # ============================================================================
