@@ -4958,6 +4958,7 @@ export default {
     snapshot: 'Знімок',
     plateType: 'Виявлення маркера платформи',
     plateAlign: 'Вирівнювання платформи',
+    plateMark: 'Виявлення позиції платформи',
     sensitivity: { low: 'Низька', medium: 'Середня', high: 'Висока' },
     openDoorMode: { off: 'Вимк.', notification: 'Сповіщення', pause: 'Пауза' },
     purifyAirMode: { off: 'Вимк.', inside: 'Всередину', outside: 'Назовні' },

@@ -4056,6 +4056,7 @@ export interface PrintOptionsState {
   open_door: number | null;
   plate_type: boolean | null;
   plate_align: boolean | null;
+  plate_mark: boolean | null;
   snapshot: boolean | null;
   fod_check: boolean | null;
   displacement_detection: boolean | null;
@@ -4090,6 +4091,7 @@ export interface PrinterSettingsSupports {
   snapshot: boolean;
   plate_type: boolean;
   plate_align: boolean;
+  plate_mark: boolean;
   parts_editable: boolean;
   parts_dual: boolean;
   safety_tab: boolean;
@@ -4121,7 +4123,7 @@ export interface SafetyState {
 
 export type PrinterSettingsPostBody =
   | { action: 'print_option_bool';
-      key: 'auto_recovery' | 'sound' | 'filament_tangle' | 'nozzle_blob' | 'plate_type' | 'plate_align';
+      key: 'auto_recovery' | 'sound' | 'filament_tangle' | 'nozzle_blob' | 'plate_type' | 'plate_align' | 'plate_mark';
       enabled: boolean }
   | { action: 'print_option_int';
       key: 'save_remote_to_storage' | 'purify_air';

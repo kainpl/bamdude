@@ -4878,11 +4878,39 @@ class BambuMQTTClient:
     def print_option_nozzle_blob(self, enabled: bool) -> tuple[bool, str | None]:
         return self._publish_print_option_bool("nozzle_blob_detect", "nozzle_blob", enabled)
 
+    def _publish_xcam_setting(self, module: str, hold_key: str, enabled: bool) -> tuple[bool, str | None]:
+        """xcam_control_set for a plate/mark toggle, stamping the settings hold
+        under ``hold_key`` (so the matching value-read respects it). BS routes
+        these through command_xcam_control, not print_option."""
+        if not self._client or not self.state.connected:
+            return False, None
+        self._sequence_id += 1
+        seq = str(self._sequence_id)
+        command = {
+            "xcam": {
+                "command": "xcam_control_set",
+                "sequence_id": seq,
+                "module_name": module,
+                "control": bool(enabled),
+                "enable": bool(enabled),
+                "print_halt": True,
+            }
+        }
+        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+        self.state.printer_settings_hold[hold_key] = time.time()
+        return True, seq
+
     def print_option_plate_type(self, enabled: bool) -> tuple[bool, str | None]:
-        return self._publish_print_option_bool("build_plate_marker_detect", "plate_type", enabled)
+        # BS: buildplate type toggle rides xcam_control "buildplate_marker_detector".
+        return self._publish_xcam_setting("buildplate_marker_detector", "plate_type", enabled)
 
     def print_option_plate_align(self, enabled: bool) -> tuple[bool, str | None]:
-        return self._publish_print_option_bool("plate_align_check", "plate_align", enabled)
+        # BS: alignment toggle rides xcam_control "plate_offset_switch".
+        return self._publish_xcam_setting("plate_offset_switch", "plate_align", enabled)
+
+    def print_option_plate_mark(self, enabled: bool) -> tuple[bool, str | None]:
+        # Legacy "detection of build plate position" — same xcam module as type.
+        return self._publish_xcam_setting("buildplate_marker_detector", "plate_mark", enabled)
 
     def print_option_purify_air(self, value: int) -> tuple[bool, str | None]:
         return self._publish_print_option_int("air_purification", "purify_air", value)
@@ -4914,9 +4942,15 @@ class BambuMQTTClient:
         return True, seq
 
     def print_option_save_remote_to_storage(self, value: int) -> tuple[bool, str | None]:
-        return self._publish_print_option_int(
-            "xcam__save_remote_print_file_to_storage", "save_remote_to_storage", value
-        )
+        # BS: system/print_cache_set (config bool), NOT print_option.
+        if not self._client or not self.state.connected:
+            return False, None
+        self._sequence_id += 1
+        seq = str(self._sequence_id)
+        command = {"system": {"command": "print_cache_set", "sequence_id": seq, "config": bool(value)}}
+        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+        self.state.printer_settings_hold["save_remote_to_storage"] = time.time()
+        return True, seq
 
     def camera_snapshot_enable(self, enabled: bool) -> tuple[bool, str | None]:
         if not self._client or not self.state.connected:

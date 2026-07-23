@@ -42,6 +42,7 @@ class PrinterSupports(TypedDict):
     # Build plate
     plate_type: bool
     plate_align: bool
+    plate_mark: bool
     # Parts
     parts_editable: bool
     parts_dual: bool
@@ -76,6 +77,13 @@ def compute_printer_supports(state: PrinterState, printer_model: str | None, mod
     def _s(key: str, fam: bool) -> bool:
         return bool(sup[key]) if key in sup else fam
 
+    # Build-plate detection: BS shows the Type+Alignment group when either is
+    # supported, otherwise the legacy single "detection of build plate position"
+    # (plate_mark). Mutually exclusive — mark hidden whenever the group shows.
+    _plate_type = _s("plate_type", is_h2 or m in {"X2D", "P2S"})
+    _plate_align = _s("plate_align", is_h2 or m in {"X2D"})
+    _plate_mark = bool(sup.get("plate_mark", False)) and not (_plate_type or _plate_align)
+
     return PrinterSupports(
         # AI detectors — modern printers advertise these via fun/fun2/xcam bits;
         # P1/A1 series send no xcam.cfg so they correctly resolve to off.
@@ -104,8 +112,9 @@ def compute_printer_supports(state: PrinterState, printer_model: str | None, mod
         save_remote_to_storage=_s("save_remote_to_storage", False),
         snapshot=_s("snapshot", has_ai),
         # Build plate
-        plate_type=_s("plate_type", is_h2 or m in {"X2D", "P2S"}),
-        plate_align=_s("plate_align", is_h2 or m in {"X2D"}),
+        plate_type=_plate_type,
+        plate_align=_plate_align,
+        plate_mark=_plate_mark,
         # Parts — dual-nozzle (L/R) layout for every twin-nozzle model, not just
         # H2D/H2D Pro: X2D and H2C also report two hotend nozzles (ids 0/1). Use
         # the canonical dual-nozzle set so the Parts dialog labels L/R on all of

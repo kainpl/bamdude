@@ -24,6 +24,7 @@ class PrintOptionsState(BaseModel):
     open_door: int | None = None
     plate_type: bool | None = None
     plate_align: bool | None = None
+    plate_mark: bool | None = None
     snapshot: bool | None = None
     spaghetti_detector: AiDetectorState = AiDetectorState()
     pileup_detector: AiDetectorState = AiDetectorState()
@@ -65,6 +66,7 @@ class PrinterSettingsSupports(BaseModel):
     snapshot: bool = False
     plate_type: bool = False
     plate_align: bool = False
+    plate_mark: bool = False
     parts_editable: bool = False
     parts_dual: bool = False
     # Safety tab (BS Safety Options dialog — X2D / P2S)
@@ -114,6 +116,7 @@ class PrintOptionBoolAction(BaseModel):
         "nozzle_blob",
         "plate_type",
         "plate_align",
+        "plate_mark",
     ]
     enabled: bool
 

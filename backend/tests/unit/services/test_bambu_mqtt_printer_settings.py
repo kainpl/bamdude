@@ -39,8 +39,6 @@ def _payload(c) -> dict:
         ("print_option_sound", "sound_enable"),
         ("print_option_filament_tangle", "filament_tangle_detect"),
         ("print_option_nozzle_blob", "nozzle_blob_detect"),
-        ("print_option_plate_type", "build_plate_marker_detect"),
-        ("print_option_plate_align", "plate_align_check"),
     ],
 )
 def test_print_option_bool_payload(mqtt_client, method, field):
@@ -50,6 +48,35 @@ def test_print_option_bool_payload(mqtt_client, method, field):
     assert msg["print"]["command"] == "print_option"
     assert msg["print"][field] is True
     assert msg["print"]["sequence_id"] == seq
+
+
+# ---------- Build-plate toggles ride xcam_control_set (BS parity) ----------
+
+
+@pytest.mark.parametrize(
+    "method,module,hold",
+    [
+        ("print_option_plate_type", "buildplate_marker_detector", "plate_type"),
+        ("print_option_plate_align", "plate_offset_switch", "plate_align"),
+        ("print_option_plate_mark", "buildplate_marker_detector", "plate_mark"),
+    ],
+)
+def test_plate_toggle_uses_xcam_control(mqtt_client, method, module, hold):
+    ok, seq = getattr(mqtt_client, method)(True)
+    assert ok is True and seq is not None
+    msg = _payload(mqtt_client)
+    assert msg["xcam"]["command"] == "xcam_control_set"
+    assert msg["xcam"]["module_name"] == module
+    assert msg["xcam"]["control"] is True
+    assert mqtt_client.state.printer_settings_hold.get(hold) is not None
+
+
+def test_save_remote_uses_print_cache_set(mqtt_client):
+    ok, seq = mqtt_client.print_option_save_remote_to_storage(1)
+    assert ok is True and seq is not None
+    msg = _payload(mqtt_client)
+    assert msg["system"]["command"] == "print_cache_set"
+    assert msg["system"]["config"] is True
 
 
 def test_print_option_bool_stamps_hold(mqtt_client):
@@ -73,7 +100,6 @@ def test_print_option_returns_false_when_disconnected(mqtt_client):
     "method,field,value",
     [
         ("print_option_purify_air", "air_purification", 2),
-        ("print_option_save_remote_to_storage", "xcam__save_remote_print_file_to_storage", 1),
     ],
 )
 def test_print_option_int_payload(mqtt_client, method, field, value):

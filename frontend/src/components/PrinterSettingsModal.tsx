@@ -21,14 +21,14 @@ interface Props {
 export function PrinterSettingsModal({ isOpen, onClose, printerId }: Props) {
   const { t } = useTranslation();
   const { showToast } = useToast();
-  const { data, isLoading, mutate, refetch } = usePrinterSettings(printerId, isOpen);
+  const { data, isLoading, submit, isPending, refetch } = usePrinterSettings(printerId, isOpen);
   const [activeTab, setActiveTab] = useState<TabId>('print_options');
 
   if (!isOpen) return null;
 
   const onSubmit = async (body: PrinterSettingsPostBody) => {
     try {
-      await mutate(body);
+      await submit(body);
     } catch (e) {
       showToast((e as Error)?.message ?? t('printerSettings.requestFailed'), 'error');
     }
@@ -75,9 +75,9 @@ export function PrinterSettingsModal({ isOpen, onClose, printerId }: Props) {
               ))}
             </div>
           ) : activeTab === 'print_options' ? (
-            <PrintOptionsTab data={data} onSubmit={onSubmit} />
+            <PrintOptionsTab data={data} onSubmit={onSubmit} isPending={isPending} />
           ) : activeTab === 'safety' ? (
-            <PrinterSafetyTab data={data} onSubmit={onSubmit} />
+            <PrinterSafetyTab data={data} onSubmit={onSubmit} isPending={isPending} />
           ) : activeTab === 'parts' ? (
             <PrinterPartsTab data={data} onRefetch={() => refetch()} />
           ) : (

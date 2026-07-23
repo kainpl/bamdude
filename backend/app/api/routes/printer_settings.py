@@ -52,6 +52,7 @@ _BOOL_KEY_METHODS = {
     "nozzle_blob": "print_option_nozzle_blob",
     "plate_type": "print_option_plate_type",
     "plate_align": "print_option_plate_align",
+    "plate_mark": "print_option_plate_mark",
 }
 _INT_KEY_METHODS = {
     "purify_air": "print_option_purify_air",
@@ -64,6 +65,7 @@ _BOOL_KEY_SUPPORTS = {
     "nozzle_blob": "nozzle_blob",
     "plate_type": "plate_type",
     "plate_align": "plate_align",
+    "plate_mark": "plate_mark",
 }
 _INT_KEY_SUPPORTS = {
     "purify_air": "purify_air",
@@ -174,6 +176,7 @@ async def get_printer_settings(
         open_door=getattr(po, "open_door_check", None),
         plate_type=getattr(po, "plate_type_detect", None),
         plate_align=getattr(po, "plate_align_check", None),
+        plate_mark=getattr(po, "buildplate_marker_detector", None),
         snapshot=getattr(po, "snapshot_enabled", None),
         fod_check=getattr(po, "fod_check", None),
         displacement_detection=getattr(po, "displacement_detection", None),

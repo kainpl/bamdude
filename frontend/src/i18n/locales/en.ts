@@ -4953,6 +4953,7 @@ export default {
     snapshot: 'Snapshot',
     plateType: 'Build plate marker detection',
     plateAlign: 'Plate alignment',
+    plateMark: 'Build plate position detection',
     sensitivity: { low: 'Low', medium: 'Medium', high: 'High' },
     openDoorMode: { off: 'Off', notification: 'Notification', pause: 'Pause' },
     purifyAirMode: { off: 'Off', inside: 'Inside', outside: 'Outside' },
