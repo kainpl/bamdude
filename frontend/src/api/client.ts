@@ -557,6 +557,7 @@ export interface PrinterStatus {
   stg_cur: number;  // Current stage number (-1 = not calibrating)
   stg_cur_name: string | null;  // Human-readable current stage name
   stg: number[];  // List of stage numbers in calibration sequence
+  stg_names?: string[];  // Human-readable name per entry in `stg` (parallel) — drives the calibration flow
   // Air conditioning mode (0=cooling, 1=heating)
   airduct_mode: number;
   // Print speed level (1=silent, 2=standard, 3=sport, 4=ludicrous)

@@ -411,7 +411,12 @@ export default {
       lidarDesc: 'Calibrates the micro-lidar sensor (X1 series)',
       clumpPos: 'Nozzle Clumping Detection',
       clumpPosDesc: 'Calibrates nozzle-clumping detection',
-      noneAvailable: 'No calibrations are available for this printer model'
+      noneAvailable: 'No calibrations are available for this printer model',
+      runningTitle: 'Calibration in Progress',
+      starting: 'Starting calibration…',
+      stage: 'Stage',
+      complete: 'Calibration complete',
+      close: 'Close'
     },
     printerInformation: 'Printer Information',
     copyToClipboard: 'Copy',
