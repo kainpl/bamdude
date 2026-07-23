@@ -14,7 +14,7 @@ from typing import TypedDict
 
 from backend.app.services.bambu_mqtt import PrinterState
 from backend.app.services.calibration_mode_registry import mode_state_map
-from backend.app.utils.printer_models import has_door_sensor
+from backend.app.utils.printer_models import has_door_sensor, is_dual_nozzle_model
 
 
 class PrinterSupports(TypedDict):
@@ -87,9 +87,12 @@ def compute_printer_supports(state: PrinterState, printer_model: str | None, mod
         # Build plate
         plate_type=is_h2 or m in {"X2D", "P2S"},
         plate_align=is_h2 or m in {"X2D"},
-        # Parts
+        # Parts — dual-nozzle (L/R) layout for every twin-nozzle model, not just
+        # H2D/H2D Pro: X2D and H2C also report two hotend nozzles (ids 0/1). Use
+        # the canonical dual-nozzle set so the Parts dialog labels L/R on all of
+        # them (previously X2D showed two unlabelled, indistinguishable nozzles).
         parts_editable=False,  # read-only this iteration
-        parts_dual=is_h2 and m in {"H2D", "H2DPRO"},
+        parts_dual=is_dual_nozzle_model(printer_model),
     )
 
 

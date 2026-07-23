@@ -16,13 +16,18 @@ export function PrinterPartsTab({ data, onRefetch }: Props) {
     return <div className="text-bambu-gray">{t('printerSettings.waitingForPrinter')}</div>;
   }
 
+  // Dual-nozzle printers report id 0 = RIGHT (main) and id 1 = LEFT (deputy) —
+  // matching the printer card and Bambu Studio. Show the left nozzle in the left
+  // column, so render id 1 before id 0.
+  const ordered = dual ? [...nozzles].sort((a, b) => b.id - a.id) : nozzles;
+
   return (
     <div className="space-y-4">
       <div className={dual ? 'grid grid-cols-2 gap-6' : ''}>
-        {nozzles.map((n) => (
+        {ordered.map((n) => (
           <NozzleCard
             key={n.id}
-            label={dual ? (n.id === 0 ? t('printerSettings.parts.leftNozzle') : t('printerSettings.parts.rightNozzle')) : null}
+            label={dual ? (n.id === 1 ? t('printerSettings.parts.leftNozzle') : t('printerSettings.parts.rightNozzle')) : null}
             type={n.type}
             diameter={n.diameter}
             flowType={n.flow_type}

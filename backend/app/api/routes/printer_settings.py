@@ -36,6 +36,7 @@ from backend.app.schemas.printer_settings import (
 )
 from backend.app.services.printer_capabilities import compute_printer_supports
 from backend.app.services.printer_manager import printer_manager
+from backend.app.utils.printer_models import is_dual_nozzle_model
 
 router = APIRouter(prefix="/printers", tags=["printer-settings"])
 
@@ -155,8 +156,13 @@ async def get_printer_settings(
         except (TypeError, ValueError):
             return None
 
+    # ``state.nozzles`` always holds two default NozzleInfo entries; only
+    # dual-nozzle models actually have a second (left) nozzle. Single-nozzle
+    # printers must expose just one, otherwise the Parts dialog renders a phantom
+    # empty second nozzle (all "—").
+    nozzle_count = 2 if is_dual_nozzle_model(printer.model) else 1
     nozzles = []
-    for idx, n in enumerate(getattr(client.state, "nozzles", []) or []):
+    for idx, n in enumerate((getattr(client.state, "nozzles", []) or [])[:nozzle_count]):
         nozzles.append(
             NozzleInfoOut(
                 id=idx,
