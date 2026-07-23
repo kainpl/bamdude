@@ -50,18 +50,19 @@ const MODEL_DISPLAY_MAP: Record<string, string> = {
   'O1C': 'H2C',
   'O1C2': 'H2C',
   'O1S': 'H2S',
-  // X1 Series
+  // X1 Series (BS configs: X1C=BL-P001, X1=BL-P002, X1E=C13)
   'BL-P001': 'X1C',
   'BL-P002': 'X1',
   'BL-P003': 'X1E',
+  'C13': 'X1E',
   // X2 Series
   'N6': 'X2D',
   // A2 Series
   'N9': 'A2L',
-  // P Series
-  'C11': 'P1S',
-  'C12': 'P1P',
-  'C13': 'P2S',
+  // P Series (BS configs: P1P=C11, P1S=C12, P2S=N7)
+  'C11': 'P1P',
+  'C12': 'P1S',
+  'N7': 'P2S',
   // A1 Series
   'N2S': 'A1',
   'N1': 'A1 Mini',

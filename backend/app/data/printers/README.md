@@ -36,10 +36,10 @@ file using each JSON's own `display_name` / `model_id`, so it is independent of
 `N1`=A1 mini · `N2S`=A1 · `N6`=X2D · `N7`=P2S · `N9`=A2L · `O1C`/`O1C2`=H2C ·
 `O1D`=H2D · `O1E`=H2D Pro · `O1S`=H2S.
 
-> ⚠️ Note: `PRINTER_MODEL_ID_MAP` in `printer_models.py` has `C11`→X1C and
-> `C12`→X1, which the BS configs contradict (`C11`=P1P, `C12`=P1S). That stale
-> map is a separate pre-existing bug; this loader deliberately does **not** rely
-> on it.
+> `PRINTER_MODEL_ID_MAP` in `printer_models.py` was corrected to match these
+> JSONs (`C11`=P1P, `C12`=P1S; `BL-P001`=X1C, `BL-P002`=X1 added). This loader
+> still keys off each JSON's own `display_name`/`model_id`, so it stays
+> independent of that map regardless.
 
 ## Re-sync protocol (when BS ships new firmware/features)
 

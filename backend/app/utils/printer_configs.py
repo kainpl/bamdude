@@ -71,9 +71,9 @@ def _model_index() -> dict[str, str]:
     Keys per file: the file stem (= internal code, e.g. ``N6``), the config's
     ``model_id``, and the SHORT display name (``Bambu Lab X2D`` -> ``X2D`` via
     ``normalize_printer_model``). Using the JSONs' own ``display_name`` as the
-    authoritative code<->model mapping makes this immune to the stale
-    ``PRINTER_MODEL_ID_MAP`` (whose C11/C12 rows are wrong — C11 is P1P, C12 is
-    P1S per the BS configs, not X1C/X1).
+    authoritative code<->model mapping keeps this independent of
+    ``PRINTER_MODEL_ID_MAP`` (which was corrected to agree with these configs:
+    C11=P1P, C12=P1S, BL-P001=X1C, BL-P002=X1).
     """
     index: dict[str, str] = {}
     for path in sorted(_CONFIG_DIR.glob("*.json")):

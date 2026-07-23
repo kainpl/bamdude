@@ -29,11 +29,14 @@ PRINTER_MODEL_MAP = {
 # Map from printer_model_id (internal codes in slice_info.config) to short names
 # These are the codes Bambu Studio uses internally
 PRINTER_MODEL_ID_MAP = {
-    # X1 series
-    "C11": "X1C",
-    "C12": "X1",
+    # X1 series (SSDP/MQTT codes — BS configs: X1C=BL-P001, X1=BL-P002, X1E=C13).
+    # NB: C11/C12 are NOT X1 codes — they are P1P/P1S (see P1 series below).
+    "BL-P001": "X1C",
+    "BL-P002": "X1",
     "C13": "X1E",
-    # P1 series
+    # P1 series (BS configs: P1P=C11, P1S=C12)
+    "C11": "P1P",
+    "C12": "P1S",
     "P1P": "P1P",
     "P1S": "P1S",
     # P2 series
@@ -75,10 +78,13 @@ CARBON_ROD_MODELS = frozenset(
         "X1E",
         "P1P",
         "P1S",
-        # Internal codes
-        "C11",  # X1C
-        "C12",  # X1
+        # Internal codes (hyphen-stripped for get_rod_type lookup).
+        # X1 family: X1C=BLP001, X1=BLP002, X1E=C13. P1 family: P1P=C11, P1S=C12.
+        "BLP001",  # X1C
+        "BLP002",  # X1
         "C13",  # X1E
+        "C11",  # P1P
+        "C12",  # P1S
     ]
 )
 
@@ -155,10 +161,12 @@ ETHERNET_MODELS = frozenset(
         "H2DPRO",
         "H2C",
         "H2S",
-        # Internal codes
-        "C11",  # X1C
+        # Internal codes (hyphen-stripped). X1C=BLP001, X1E=C13, P1S=C12 have
+        # ethernet; plain X1 (BLP002) and P1P (C11) do NOT — their codes stay out.
+        "BLP001",  # X1C
         "C13",  # X1E
-        "P1S",  # P1S
+        "C12",  # P1S
+        "P1S",  # P1S (display)
         "N6",  # X2D
         "O1D",  # H2D
         "O1E",  # H2D Pro

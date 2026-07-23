@@ -46,7 +46,7 @@ def _make_3mf(path: Path, model_id: str = "C11", prediction: int = 3600, filamen
 class TestExtractAutoQueueRequirements:
     def test_extracts_model_and_single_filament(self, tmp_path: Path) -> None:
         f = tmp_path / "single.3mf"
-        # C11 → X1C in normalize_printer_model_id
+        # C11 → P1P in normalize_printer_model_id (BS configs)
         _make_3mf(f, model_id="C11", prediction=1800)
 
         reqs = extract_auto_queue_requirements(f)
