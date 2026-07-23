@@ -67,6 +67,9 @@ class PrinterSettingsSupports(BaseModel):
     plate_align: bool = False
     parts_editable: bool = False
     parts_dual: bool = False
+    # Safety tab (BS Safety Options dialog — X2D / P2S)
+    safety_tab: bool = False
+    idle_heating: bool = False
 
 
 class AddonInfo(BaseModel):
@@ -84,11 +87,19 @@ class AddonInfo(BaseModel):
     serial: str | None = None
 
 
+class SafetyState(BaseModel):
+    """Current values for the Safety tab (BS Safety Options dialog)."""
+
+    open_door: int | None = None  # 0 disable / 1 notification / 2 pause
+    idle_heating: int | None = None  # 0 off / 1 on / 2 unavailable (read-only)
+
+
 class PrinterSettingsGetResponse(BaseModel):
     print_options: PrintOptionsState
     parts: PartsState
     supports: PrinterSettingsSupports
     addons: list[AddonInfo] = []
+    safety: SafetyState = SafetyState()
 
 
 # ---------------- POST body — discriminated union ----------------
@@ -109,7 +120,7 @@ class PrintOptionBoolAction(BaseModel):
 
 class PrintOptionIntAction(BaseModel):
     action: Literal["print_option_int"]
-    key: Literal["save_remote_to_storage", "purify_air", "open_door"]
+    key: Literal["save_remote_to_storage", "purify_air"]
     value: int = Field(ge=0, le=10)
 
 
@@ -143,8 +154,26 @@ class SetNozzleAction(BaseModel):
     flow_type: str
 
 
+class SafetyOpenDoorAction(BaseModel):
+    # Open-door detection (BS DoorOpenCheckState): 0 disable / 1 notification / 2 pause.
+    # Shared by the Print Options tab (non-safety models) and the Safety tab.
+    action: Literal["safety_open_door"]
+    value: int = Field(ge=0, le=2)
+
+
+class SafetyIdleHeatingAction(BaseModel):
+    action: Literal["safety_idle_heating"]
+    enabled: bool
+
+
 PrinterSettingsPostBody = Annotated[
-    PrintOptionBoolAction | PrintOptionIntAction | XCamControlAction | CameraSnapshotAction | SetNozzleAction,
+    PrintOptionBoolAction
+    | PrintOptionIntAction
+    | XCamControlAction
+    | CameraSnapshotAction
+    | SetNozzleAction
+    | SafetyOpenDoorAction
+    | SafetyIdleHeatingAction,
     Field(discriminator="action"),
 ]
 

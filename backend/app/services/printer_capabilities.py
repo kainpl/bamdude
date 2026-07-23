@@ -14,6 +14,7 @@ from typing import TypedDict
 
 from backend.app.services.bambu_mqtt import PrinterState
 from backend.app.services.calibration_mode_registry import mode_state_map
+from backend.app.utils.printer_configs import supports_safety_options
 from backend.app.utils.printer_models import has_door_sensor, is_dual_nozzle_model
 
 
@@ -44,6 +45,9 @@ class PrinterSupports(TypedDict):
     # Parts
     parts_editable: bool
     parts_dual: bool
+    # Safety tab
+    safety_tab: bool
+    idle_heating: bool
 
 
 def _norm(model: str | None) -> str:
@@ -76,8 +80,9 @@ def compute_printer_supports(state: PrinterState, printer_model: str | None, mod
         nozzle_blob=m in _X1_FAMILY,  # BS gates this to X1 only
         fod_check=has_ai,
         displacement_detection=has_ai,
-        # Door / air
-        open_door_check=has_door_sensor(printer_model),
+        # Door / air — open-door detection moves to the Safety tab on
+        # safety-capable models (X2D/P2S), mirroring BS's mutual exclusion.
+        open_door_check=has_door_sensor(printer_model) and not supports_safety_options(printer_model),
         purify_air=is_h2d_pro,
         # Behaviour — universal where MQTT supports it
         auto_recovery=True,
@@ -93,6 +98,10 @@ def compute_printer_supports(state: PrinterState, printer_model: str | None, mod
         # them (previously X2D showed two unlabelled, indistinguishable nozzles).
         parts_editable=False,  # read-only this iteration
         parts_dual=is_dual_nozzle_model(printer_model),
+        # Safety tab — gated by the static JSON flag (X2D/P2S); rows self-gate on
+        # live fun bits. idle_heating row needs fun bit 62 (support_idle_heating).
+        safety_tab=supports_safety_options(printer_model),
+        idle_heating=bool(getattr(state.print_options, "support_idle_heating", False)),
     )
 
 

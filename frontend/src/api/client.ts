@@ -4092,6 +4092,8 @@ export interface PrinterSettingsSupports {
   plate_align: boolean;
   parts_editable: boolean;
   parts_dual: boolean;
+  safety_tab: boolean;
+  idle_heating: boolean;
 }
 
 export interface AddonInfo {
@@ -4109,6 +4111,12 @@ export interface PrinterSettingsGetResponse {
   parts: PrinterPartsState;
   supports: PrinterSettingsSupports;
   addons: AddonInfo[];
+  safety: SafetyState;
+}
+
+export interface SafetyState {
+  open_door: number | null;    // 0 disable / 1 notification / 2 pause
+  idle_heating: number | null; // 0 off / 1 on / 2 unavailable (read-only)
 }
 
 export type PrinterSettingsPostBody =
@@ -4116,7 +4124,7 @@ export type PrinterSettingsPostBody =
       key: 'auto_recovery' | 'sound' | 'filament_tangle' | 'nozzle_blob' | 'plate_type' | 'plate_align';
       enabled: boolean }
   | { action: 'print_option_int';
-      key: 'save_remote_to_storage' | 'purify_air' | 'open_door';
+      key: 'save_remote_to_storage' | 'purify_air';
       value: number }
   | { action: 'xcam_control';
       module: 'first_layer_inspector' | 'spaghetti_detector' | 'purgechutepileup_detector'
@@ -4125,6 +4133,8 @@ export type PrinterSettingsPostBody =
       enabled: boolean;
       sensitivity: 'low' | 'medium' | 'high' | null }
   | { action: 'camera_snapshot'; enabled: boolean }
+  | { action: 'safety_open_door'; value: number }
+  | { action: 'safety_idle_heating'; enabled: boolean }
   | { action: 'set_nozzle'; nozzle_id: number; type: string; diameter: number; flow_type: string };
 
 export interface PrinterSettingsPostResponse {

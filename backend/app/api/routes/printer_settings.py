@@ -32,6 +32,9 @@ from backend.app.schemas.printer_settings import (
     PrintOptionBoolAction,
     PrintOptionIntAction,
     PrintOptionsState,
+    SafetyIdleHeatingAction,
+    SafetyOpenDoorAction,
+    SafetyState,
     SetNozzleAction,
     XCamControlAction,
 )
@@ -52,7 +55,6 @@ _BOOL_KEY_METHODS = {
 }
 _INT_KEY_METHODS = {
     "purify_air": "print_option_purify_air",
-    "open_door": "print_option_open_door",
     "save_remote_to_storage": "print_option_save_remote_to_storage",
 }
 _BOOL_KEY_SUPPORTS = {
@@ -65,7 +67,6 @@ _BOOL_KEY_SUPPORTS = {
 }
 _INT_KEY_SUPPORTS = {
     "purify_air": "purify_air",
-    "open_door": "open_door_check",
     "save_remote_to_storage": "save_remote_to_storage",
 }
 _XCAM_MODULE_SUPPORTS = {
@@ -85,6 +86,8 @@ def _action_tab(action: str) -> str:
         return "print_options"
     if action == "set_nozzle":
         return "parts"
+    if action in {"safety_open_door", "safety_idle_heating"}:
+        return "safety"
     return "unknown"
 
 
@@ -251,7 +254,12 @@ async def get_printer_settings(
         **compute_printer_supports(client.state, printer.model, getattr(client, "module_vers", {}))
     )
 
-    return PrinterSettingsGetResponse(print_options=state, parts=parts, supports=supports, addons=addons)
+    safety = SafetyState(
+        open_door=getattr(po, "open_door_check", None),
+        idle_heating=getattr(po, "idle_heating_protect", None),
+    )
+
+    return PrinterSettingsGetResponse(print_options=state, parts=parts, supports=supports, addons=addons, safety=safety)
 
 
 @router.post("/{printer_id}/settings", response_model=PrinterSettingsPostResponse)
@@ -300,6 +308,18 @@ async def post_printer_settings(
             if not supports.get("snapshot"):
                 raise HTTPException(409, "snapshot not supported on this printer")
             ok, sequence_id = client.camera_snapshot_enable(body.enabled)
+
+        elif isinstance(body, SafetyOpenDoorAction):
+            # Open-door detection: valid in Print Options (non-safety models) or the
+            # Safety tab (X2D/P2S). Same MQTT command (system/set_door_stat) for both.
+            if not (supports.get("open_door_check") or supports.get("safety_tab")):
+                raise HTTPException(409, "open_door not supported on this printer")
+            ok, sequence_id = client.set_door_open_check(body.value)
+
+        elif isinstance(body, SafetyIdleHeatingAction):
+            if not supports.get("idle_heating"):
+                raise HTTPException(409, "idle_heating not supported on this printer")
+            ok, sequence_id = client.set_idle_heating(body.enabled)
 
         elif isinstance(body, SetNozzleAction):
             raise HTTPException(409, "parts_not_editable")

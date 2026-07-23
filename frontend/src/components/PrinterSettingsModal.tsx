@@ -5,11 +5,12 @@ import { X } from 'lucide-react';
 import { useToast } from '../contexts/ToastContext';
 import { usePrinterSettings } from '../hooks/usePrinterSettings';
 import { PrintOptionsTab } from './PrintOptionsTab';
+import { PrinterSafetyTab } from './PrinterSafetyTab';
 import { PrinterPartsTab } from './PrinterPartsTab';
 import { PrinterAddonsTab } from './PrinterAddonsTab';
 import type { PrinterSettingsPostBody } from '../api/client';
 
-type TabId = 'print_options' | 'parts' | 'addons';
+type TabId = 'print_options' | 'safety' | 'parts' | 'addons';
 
 interface Props {
   isOpen: boolean;
@@ -52,6 +53,11 @@ export function PrinterSettingsModal({ isOpen, onClose, printerId }: Props) {
             <TabBtn id="print_options" active={activeTab} onClick={setActiveTab}>
               {t('printerSettings.tab.printOptions')}
             </TabBtn>
+            {data?.supports.safety_tab && (
+              <TabBtn id="safety" active={activeTab} onClick={setActiveTab}>
+                {t('printerSettings.tab.safety')}
+              </TabBtn>
+            )}
             <TabBtn id="parts" active={activeTab} onClick={setActiveTab}>
               {t('printerSettings.tab.parts')}
             </TabBtn>
@@ -70,6 +76,8 @@ export function PrinterSettingsModal({ isOpen, onClose, printerId }: Props) {
             </div>
           ) : activeTab === 'print_options' ? (
             <PrintOptionsTab data={data} onSubmit={onSubmit} />
+          ) : activeTab === 'safety' ? (
+            <PrinterSafetyTab data={data} onSubmit={onSubmit} />
           ) : activeTab === 'parts' ? (
             <PrinterPartsTab data={data} onRefetch={() => refetch()} />
           ) : (

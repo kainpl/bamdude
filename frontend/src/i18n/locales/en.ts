@@ -4914,6 +4914,7 @@ export default {
     title: 'Printer Settings',
     tab: {
       printOptions: 'Print Options',
+      safety: 'Safety',
       parts: 'Printer Parts',
       addons: 'Add-ons',
     },
@@ -4921,6 +4922,13 @@ export default {
       firmware: 'Firmware',
       hardware: 'Hardware',
       serial: 'Serial',
+    },
+    safety: {
+      openDoor: 'Open Door Detection',
+      openDoorDesc: 'Choose what happens when the enclosure door is opened during a print.',
+      idleHeating: 'Idle Heating Protection',
+      idleHeatingDesc: 'Stops heating automatically after 5 min of idle to ensure safety.',
+      idleHeatingUnavailable: 'Unavailable while the heating maintenance function is on.',
     },
     aiMonitoringGroup: 'AI Monitoring',
     sensorsGroup: 'Sensors',
@@ -4946,7 +4954,7 @@ export default {
     plateType: 'Build plate marker detection',
     plateAlign: 'Plate alignment',
     sensitivity: { low: 'Low', medium: 'Medium', high: 'High' },
-    openDoorMode: { off: 'Off', pause: 'Pause', halt: 'Halt' },
+    openDoorMode: { off: 'Off', notification: 'Notification', pause: 'Pause' },
     purifyAirMode: { off: 'Off', inside: 'Inside', outside: 'Outside' },
     parts: {
       type: 'Type',

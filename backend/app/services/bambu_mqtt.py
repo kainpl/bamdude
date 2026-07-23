@@ -465,7 +465,15 @@ class PrintOptions:
     sound_enable: bool | None = None
     save_remote_to_storage: int | None = None
     air_purification: int | None = None  # 0 Off / 1 Inside / 2 Outside
-    open_door_check: int | None = None  # 0 Off / 1 Pause / 2 Halt
+    # Open-door detection setting (BS DoorOpenCheckState): 0 Disable / 1 Notification
+    # (warning) / 2 Pause print. Read from cfg bits 20-21; written via system/set_door_stat.
+    open_door_check: int | None = None
+    # Idle heating protection (BS): 0 Off / 1 On / 2 Unavailable (read-only — the
+    # printer's heating-maintenance function is active). Read from cfg bits 32-33.
+    idle_heating_protect: int | None = None
+    # Live capability bits for the Safety tab (fun bit 12 / bit 62).
+    support_open_door: bool = False
+    support_idle_heating: bool = False
     plate_type_detect: bool | None = None  # build_plate_marker_detect echo
     plate_align_check: bool | None = None
     snapshot_enabled: bool | None = None
@@ -1379,6 +1387,10 @@ class BambuMQTTClient:
                 _fun_val = payload["fun"]
                 _fun_int = _fun_val if isinstance(_fun_val, int) else int(str(_fun_val), 16)
                 self.state.device_cali_support["support_motor_noise_cali"] = bool((_fun_int >> 10) & 0x1)
+                # Safety tab support bits (BS): fun bit 12 = open-door check,
+                # bit 62 = idle heating protection.
+                self.state.print_options.support_open_door = bool((_fun_int >> 12) & 0x1)
+                self.state.print_options.support_idle_heating = bool((_fun_int >> 62) & 0x1)
             except (ValueError, TypeError):
                 pass
 
@@ -1464,6 +1476,22 @@ class BambuMQTTClient:
                 return ts is not None and (_ps_now - ts) < _ps_ttl
 
             po = self.state.print_options
+            # BS-parity: the steady-state values for the Safety tab live in the
+            # top-level ``cfg`` hex bitfield — open-door check at bits 20-21
+            # (0 disable / 1 notification / 2 pause), idle heating at bits 32-33
+            # (0 off / 1 on / 2 unavailable). Parsed as the base; the named echoes
+            # below override on a fresh set. cfg rides every pushall.
+            _cfg_val = print_data.get("cfg")
+            if _cfg_val is not None:
+                try:
+                    _cfg_int = _cfg_val if isinstance(_cfg_val, int) else int(str(_cfg_val), 16)
+                except (ValueError, TypeError):
+                    _cfg_int = None
+                if _cfg_int is not None:
+                    if not _ps_hold("open_door"):
+                        po.open_door_check = (_cfg_int >> 20) & 0x3
+                    if not _ps_hold("idle_heating"):
+                        po.idle_heating_protect = (_cfg_int >> 32) & 0x3
             if "auto_recovery" in print_data and not _ps_hold("auto_recovery"):
                 po.auto_recovery_step_loss = bool(print_data["auto_recovery"])
             if "sound_enable" in print_data and not _ps_hold("sound_enable"):
@@ -2635,6 +2663,10 @@ class BambuMQTTClient:
             try:
                 _fun_int = _fun if isinstance(_fun, int) else int(str(_fun), 16)
                 self.state.device_cali_support["support_motor_noise_cali"] = bool((_fun_int >> 10) & 0x1)
+                # Safety tab support bits (BS): fun bit 12 = open-door check,
+                # bit 62 = idle heating protection.
+                self.state.print_options.support_open_door = bool((_fun_int >> 12) & 0x1)
+                self.state.print_options.support_idle_heating = bool((_fun_int >> 62) & 0x1)
             except (ValueError, TypeError):
                 pass
 
@@ -4712,8 +4744,31 @@ class BambuMQTTClient:
     def print_option_purify_air(self, value: int) -> tuple[bool, str | None]:
         return self._publish_print_option_int("air_purification", "purify_air", value)
 
-    def print_option_open_door(self, value: int) -> tuple[bool, str | None]:
-        return self._publish_print_option_int("xcam_door_open_check", "open_door", value)
+    def set_door_open_check(self, value: int) -> tuple[bool, str | None]:
+        """Set open-door detection (BS DoorOpenCheckState): 0 disable / 1 notification
+        / 2 pause. Uses the ``system``/``set_door_stat`` command — NOT print_option
+        (mirrors BS ``command_set_door_open_check``)."""
+        if not self._client or not self.state.connected:
+            return False, None
+        self._sequence_id += 1
+        seq = str(self._sequence_id)
+        command = {"system": {"command": "set_door_stat", "sequence_id": seq, "config": int(value)}}
+        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+        self.state.printer_settings_hold["open_door"] = time.time()
+        return True, seq
+
+    def set_idle_heating(self, enabled: bool) -> tuple[bool, str | None]:
+        """Toggle idle heating protection (BS ``set_against_continued_heating_mode``)."""
+        if not self._client or not self.state.connected:
+            return False, None
+        self._sequence_id += 1
+        seq = str(self._sequence_id)
+        command = {
+            "print": {"command": "set_against_continued_heating_mode", "sequence_id": seq, "enable": bool(enabled)}
+        }
+        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+        self.state.printer_settings_hold["idle_heating"] = time.time()
+        return True, seq
 
     def print_option_save_remote_to_storage(self, value: int) -> tuple[bool, str | None]:
         return self._publish_print_option_int(

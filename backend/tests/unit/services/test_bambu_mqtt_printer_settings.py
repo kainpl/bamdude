@@ -73,7 +73,6 @@ def test_print_option_returns_false_when_disconnected(mqtt_client):
     "method,field,value",
     [
         ("print_option_purify_air", "air_purification", 2),
-        ("print_option_open_door", "xcam_door_open_check", 1),
         ("print_option_save_remote_to_storage", "xcam__save_remote_print_file_to_storage", 1),
     ],
 )
@@ -83,6 +82,28 @@ def test_print_option_int_payload(mqtt_client, method, field, value):
     msg = _payload(mqtt_client)
     assert msg["print"]["command"] == "print_option"
     assert msg["print"][field] == value
+
+
+# ---------- Safety tab: open door (system/set_door_stat) + idle heating ----------
+
+
+def test_set_door_open_check_payload(mqtt_client):
+    """Open-door detection writes system/set_door_stat (BS parity), not print_option."""
+    ok, seq = mqtt_client.set_door_open_check(2)
+    assert ok is True and seq is not None
+    msg = _payload(mqtt_client)
+    assert msg["system"]["command"] == "set_door_stat"
+    assert msg["system"]["config"] == 2
+    assert mqtt_client.state.printer_settings_hold.get("open_door") is not None
+
+
+def test_set_idle_heating_payload(mqtt_client):
+    ok, seq = mqtt_client.set_idle_heating(True)
+    assert ok is True and seq is not None
+    msg = _payload(mqtt_client)
+    assert msg["print"]["command"] == "set_against_continued_heating_mode"
+    assert msg["print"]["enable"] is True
+    assert mqtt_client.state.printer_settings_hold.get("idle_heating") is not None
 
 
 # ---------- Camera snapshot ----------

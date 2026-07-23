@@ -4919,6 +4919,7 @@ export default {
     title: 'Налаштування принтера',
     tab: {
       printOptions: 'Параметри друку',
+      safety: 'Безпека',
       parts: 'Частини принтера',
       addons: 'Додатки',
     },
@@ -4926,6 +4927,13 @@ export default {
       firmware: 'Прошивка',
       hardware: 'Апаратна версія',
       serial: 'Серійний номер',
+    },
+    safety: {
+      openDoor: 'Детекція відкритих дверей',
+      openDoorDesc: 'Оберіть, що робити, коли дверцята корпусу відкривають під час друку.',
+      idleHeating: 'Захист від нагріву в простої',
+      idleHeatingDesc: 'Автоматично припиняє нагрів після 5 хв простою задля безпеки.',
+      idleHeatingUnavailable: 'Недоступно, поки увімкнено функцію обслуговування нагріву.',
     },
     aiMonitoringGroup: 'AI-моніторинг',
     sensorsGroup: 'Сенсори',
@@ -4951,7 +4959,7 @@ export default {
     plateType: 'Виявлення маркера платформи',
     plateAlign: 'Вирівнювання платформи',
     sensitivity: { low: 'Низька', medium: 'Середня', high: 'Висока' },
-    openDoorMode: { off: 'Вимк.', pause: 'Пауза', halt: 'Стоп' },
+    openDoorMode: { off: 'Вимк.', notification: 'Сповіщення', pause: 'Пауза' },
     purifyAirMode: { off: 'Вимк.', inside: 'Всередину', outside: 'Назовні' },
     parts: {
       type: 'Тип',

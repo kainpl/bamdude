@@ -11,7 +11,7 @@ interface Props {
 }
 
 type BoolKey = 'auto_recovery' | 'sound' | 'filament_tangle' | 'nozzle_blob' | 'plate_type' | 'plate_align';
-type IntKey = 'save_remote_to_storage' | 'purify_air' | 'open_door';
+type IntKey = 'save_remote_to_storage' | 'purify_air';
 type XCamModule =
   | 'first_layer_inspector' | 'spaghetti_detector' | 'purgechutepileup_detector'
   | 'nozzleclumping_detector' | 'airprinting_detector' | 'fod_check'
@@ -130,10 +130,10 @@ export function PrintOptionsTab({ data, onSubmit }: Props) {
               value={s.open_door ?? 0}
               options={[
                 { v: 0, label: t('printerSettings.openDoorMode.off') },
-                { v: 1, label: t('printerSettings.openDoorMode.pause') },
-                { v: 2, label: t('printerSettings.openDoorMode.halt') },
+                { v: 1, label: t('printerSettings.openDoorMode.notification') },
+                { v: 2, label: t('printerSettings.openDoorMode.pause') },
               ]}
-              onChange={(v) => toggleInt('open_door', v)}
+              onChange={(v) => onSubmit({ action: 'safety_open_door', value: v })}
             />
           )}
           {sup.purify_air && (

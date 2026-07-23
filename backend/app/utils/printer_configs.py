@@ -122,6 +122,15 @@ def load_printer_config(model: str | None) -> dict | None:
     return _base_block(data) if isinstance(data, dict) else None
 
 
+def supports_safety_options(model: str | None) -> bool:
+    """Whether the model exposes BS's Safety Options dialog — the top-level
+    ``support_safety_options`` flag in the mirrored per-model config. Currently
+    true only for X2D (N6) and P2S (N7). Gates our Safety tab (BS ANDs it with
+    the live ``fun`` bit-12 door-check support)."""
+    cfg = load_printer_config(model)
+    return bool(cfg and cfg.get("support_safety_options"))
+
+
 def get_device_support_flags(model: str | None) -> dict:
     """The ``support_*`` device-capability flags for a model (from the config's
     ``print`` block). Empty dict when no config matches (unknown model)."""
