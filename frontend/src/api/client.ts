@@ -1567,6 +1567,10 @@ export interface CloudAuthStatus {
   is_authenticated: boolean;
   email: string | null;
   region?: 'global' | 'china' | null;
+  /** A credential is stored but Bambu no longer accepts it. The login form looks
+   *  the same as "never signed in", but only this case deserves an explanation
+   *  for why it reappeared. */
+  sign_in_expired?: boolean;
 }
 
 export interface CloudLoginResponse {

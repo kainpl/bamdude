@@ -52,6 +52,74 @@ router = APIRouter(prefix="/cloud", tags=["cloud"])
 CLOUD_TOKEN_KEY = "bambu_cloud_token"
 CLOUD_EMAIL_KEY = "bambu_cloud_email"
 CLOUD_REGION_KEY = "bambu_cloud_region"
+# Ownerless (API-key fallback) counterpart of ``User.cloud_token_invalid_at``.
+# Stores an ISO timestamp; absent/empty means "not known to be dead".
+CLOUD_TOKEN_INVALID_KEY = "bambu_cloud_token_invalid_at"
+
+
+async def is_cloud_token_invalid(db: AsyncSession, user: User | None = None) -> bool:
+    """Whether the stored Bambu token is known to have been rejected.
+
+    Set by :func:`mark_cloud_token_invalid` the first time Bambu answers its
+    genuine expiry 401, cleared on a fresh login/logout. This is the only durable
+    record we have: Bambu's access token is opaque (no readable expiry) and we do
+    not persist the refresh token, so without this flag a dead credential looks
+    exactly like a live one (upstream #2562).
+    """
+    if user is not None:
+        return user.cloud_token_invalid_at is not None
+    result = await db.execute(select(Settings).where(Settings.key == CLOUD_TOKEN_INVALID_KEY))
+    row = result.scalar_one_or_none()
+    return bool(row and row.value)
+
+
+async def mark_cloud_token_invalid(user_id: int | None) -> None:
+    """Record that Bambu rejected the stored token.
+
+    Opens its own session on purpose. This runs from
+    ``BambuCloudService._on_auth_failure``, i.e. in the middle of a route that is
+    about to fail — writing through that route's session would tie the flag to a
+    transaction the route may still roll back, and the fact that the credential
+    is dead is true regardless of how the request ends.
+
+    Best-effort: a bookkeeping failure must never replace the 401 the caller
+    actually needs to see.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import update
+
+    from backend.app.core.database import async_session
+
+    now = datetime.now(timezone.utc)
+    try:
+        async with async_session() as db:
+            if user_id is not None:
+                await db.execute(update(User).where(User.id == user_id).values(cloud_token_invalid_at=now))
+            else:
+                result = await db.execute(select(Settings).where(Settings.key == CLOUD_TOKEN_INVALID_KEY))
+                row = result.scalar_one_or_none()
+                if row:
+                    row.value = now.isoformat()
+                else:
+                    db.add(Settings(key=CLOUD_TOKEN_INVALID_KEY, value=now.isoformat()))
+            await db.commit()
+        logger.warning("Bambu Cloud rejected the stored token (user_id=%s) - marking the sign-in as expired", user_id)
+    except Exception:
+        logger.exception("Could not record the Bambu Cloud token as invalid")
+
+
+async def _clear_cloud_token_invalid(db: AsyncSession, user: User | None) -> None:
+    """Clear the rejected-token flag - called on every fresh login and logout."""
+    from sqlalchemy import update
+
+    if user is not None:
+        await db.execute(update(User).where(User.id == user.id).values(cloud_token_invalid_at=None))
+        return
+    result = await db.execute(select(Settings).where(Settings.key == CLOUD_TOKEN_INVALID_KEY))
+    row = result.scalar_one_or_none()
+    if row:
+        await db.delete(row)
 
 
 def _normalise_region(region: str | None) -> str:
@@ -85,17 +153,26 @@ async def get_stored_token(db: AsyncSession, user: User | None = None) -> tuple[
 async def store_token(db: AsyncSession, token: str, email: str, region: str, user: User | None = None) -> None:
     """Store cloud token, email, and region.
 
-    When a user is provided (auth enabled), stores on the user record.
-    When user is None (auth disabled), stores in global Settings table.
+    When a user is provided, stores on the user record; otherwise (ownerless
+    API-key fallback) in the global Settings table.
+
+    Always clears the rejected-token flag and the cached validation verdict:
+    this is a *fresh* credential, and leaving either behind would report the new
+    sign-in as expired (upstream #2562).
     """
+    from backend.app.services.bambu_cloud import invalidate_validation_cache
+
     region = _normalise_region(region)
+    invalidate_validation_cache(token)
     if user is not None:
         # User object is from the auth dependency's session (detached),
         # so use a direct UPDATE via the route's db session.
         from sqlalchemy import update
 
         await db.execute(
-            update(User).where(User.id == user.id).values(cloud_token=token, cloud_email=email, cloud_region=region)
+            update(User)
+            .where(User.id == user.id)
+            .values(cloud_token=token, cloud_email=email, cloud_region=region, cloud_token_invalid_at=None)
         )
         await db.commit()
         return
@@ -114,21 +191,35 @@ async def store_token(db: AsyncSession, token: str, email: str, region: str, use
 async def clear_token(db: AsyncSession, user: User | None = None) -> None:
     """Clear stored cloud token, email, and region.
 
-    When a user is provided (auth enabled), clears that user's credentials.
-    When user is None (auth disabled), clears from global Settings table.
+    When a user is provided, clears that user's credentials; otherwise
+    (ownerless API-key fallback) the global Settings rows.
+
+    The rejected-token flag goes with the token: once there is no credential,
+    "the credential is dead" is not a state worth remembering, and leaving it
+    behind would make the next login look expired the moment it is stored.
     """
+    from backend.app.services.bambu_cloud import invalidate_validation_cache
+
+    token, _email, _region = await get_stored_token(db, user)
+    if token:
+        invalidate_validation_cache(token)
+
     if user is not None:
         from sqlalchemy import update
 
         await db.execute(
-            update(User).where(User.id == user.id).values(cloud_token=None, cloud_email=None, cloud_region=None)
+            update(User)
+            .where(User.id == user.id)
+            .values(cloud_token=None, cloud_email=None, cloud_region=None, cloud_token_invalid_at=None)
         )
         await db.commit()
         return
 
-    # Fallback: global storage (auth disabled)
+    # Fallback: ownerless API-key path (global storage)
     result = await db.execute(
-        select(Settings).where(Settings.key.in_([CLOUD_TOKEN_KEY, CLOUD_EMAIL_KEY, CLOUD_REGION_KEY]))
+        select(Settings).where(
+            Settings.key.in_([CLOUD_TOKEN_KEY, CLOUD_EMAIL_KEY, CLOUD_REGION_KEY, CLOUD_TOKEN_INVALID_KEY])
+        )
     )
     for setting in result.scalars().all():
         await db.delete(setting)
@@ -145,7 +236,12 @@ async def build_authenticated_cloud(db: AsyncSession, user: User | None) -> Bamb
     token, _email, region = await get_stored_token(db, user)
     if not token:
         return None
-    cloud = BambuCloudService(region=region)
+    # Wire the rejected-token flag here so every route that builds a client this
+    # way makes the whole app agree the sign-in is dead - rather than each
+    # feature discovering it separately and reporting Bambu's own opaque
+    # "Please login." at the user (upstream #2562).
+    user_id = user.id if user is not None else None
+    cloud = BambuCloudService(region=region, on_auth_failure=lambda: mark_cloud_token_invalid(user_id))
     cloud.set_token(token)
     return cloud
 
@@ -208,25 +304,54 @@ async def get_auth_status(
 ):
     """Get current cloud authentication status.
 
-    Reads the stored credentials in one DB round-trip. ``region`` is exposed
-    so the frontend can show "Connected (China)" after a reload without
-    relying on local state.
+    "We hold a token" is not the same claim as "Bambu accepts it", and this
+    endpoint used to make the former while reporting the latter: it asked
+    ``cloud.is_authenticated``, which was a string-presence check behind a
+    self-renewing expiry, so it answered ``true`` for as long as any token
+    existed - including tokens Bambu had been rejecting for months (upstream
+    #2562). It now asks Bambu.
+
+    The verdict is cached for five minutes inside the service, so the several
+    components polling this endpoint don't each pay a round-trip. When Bambu
+    can't be reached the answer is ``None`` and we report the last known state
+    rather than signing the user out over a transient outage.
+
+    ``region`` is exposed so the frontend can show "Connected (China)" after a
+    reload without relying on local state.
     """
     token, email, region = await get_stored_token(db, current_user)
     if not token:
-        return CloudAuthStatus(is_authenticated=False, email=None, region=None)
+        return CloudAuthStatus(is_authenticated=False, email=None, region=None, sign_in_expired=False)
 
-    cloud = BambuCloudService(region=region)
+    known_invalid = await is_cloud_token_invalid(db, current_user)
+
+    user_id = current_user.id if current_user is not None else None
+    cloud = BambuCloudService(region=region, on_auth_failure=lambda: mark_cloud_token_invalid(user_id))
     cloud.set_token(token)
     try:
-        authenticated = cloud.is_authenticated
-        return CloudAuthStatus(
-            is_authenticated=authenticated,
-            email=email if authenticated else None,
-            region=region if authenticated else None,
-        )
+        if known_invalid:
+            # Already recorded as dead. Don't re-ask Bambu on every poll - only a
+            # new login can change this, and that clears the flag.
+            accepted: bool | None = False
+        else:
+            accepted = await cloud.validate_token()
     finally:
         await cloud.close()
+
+    if accepted is None:
+        # Bambu unreachable / 5xx / Cloudflare challenge. Report what we last
+        # knew - a cloud outage must not present as "your sign-in expired".
+        accepted = not known_invalid
+
+    return CloudAuthStatus(
+        is_authenticated=bool(accepted),
+        email=email if accepted else None,
+        region=region if accepted else None,
+        # Distinguishes "you were signed in and the token died" from "you never
+        # signed in" - the UI shows the same login form either way, but only the
+        # former deserves an explanation for why it reappeared.
+        sign_in_expired=not accepted,
+    )
 
 
 @router.post("/login", response_model=CloudLoginResponse)
@@ -823,9 +948,23 @@ async def get_filament_info(
                         if not name:
                             still_unresolved.append(setting_id)
                     except Exception as e:
-                        logger.warning(
-                            f"Failed to get cloud preset {setting_id} "
-                            f"(API ID: {_filament_id_to_setting_id(setting_id)}): {e}"
+                        # A 400 here is the *expected* answer, not a fault, and the
+                        # local-preset phase below exists to handle it. Two routine
+                        # causes: many official presets are only addressable with a
+                        # printer-variant suffix ("GFSA00" resolves, "GFSL05" does not
+                        # — only "GFSL05_07" @BBL A1 does), and the bare ID is all the
+                        # AMS reports; and personal "P…" presets belong to the Bambu
+                        # account that sliced the file, so another account will never
+                        # resolve them. One WARNING per AMS tray per tooltip refresh
+                        # trains users to ignore the log. Anything else — expired
+                        # token, 5xx, a connection failure — stays WARNING: a fault.
+                        expected_miss = isinstance(e, BambuCloudError) and e.status_code == 400
+                        logger.log(
+                            logging.DEBUG if expected_miss else logging.WARNING,
+                            "Failed to get cloud preset %s (API ID: %s): %s",
+                            setting_id,
+                            _filament_id_to_setting_id(setting_id),
+                            e,
                         )
                         still_unresolved.append(setting_id)
 

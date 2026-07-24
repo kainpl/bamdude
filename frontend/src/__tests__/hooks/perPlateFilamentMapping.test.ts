@@ -39,7 +39,6 @@ function twoTrayPrinter(): PrinterStatus {
 }
 
 const RED = 'FF0000';
-const BLACK = '000000';
 
 // Plate 1 prints red on slot 1; plate 2 prints red on slot 2. Both are
 // single-slot prints that happen to want the same colour on different slots.

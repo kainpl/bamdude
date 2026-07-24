@@ -3084,6 +3084,7 @@ export default {
     logout: 'Logout',
     noLogoutPermission: 'You do not have permission to logout',
     failedToLoad: 'Failed to load profiles',
+    signInExpired: 'Your Bambu Cloud sign-in has expired - Bambu no longer accepts the stored token. Sign in again to restore cloud profiles, MakerWorld and firmware checks.',
     retry: 'Retry',
     toast: {
       loggedOut: 'Logged out'

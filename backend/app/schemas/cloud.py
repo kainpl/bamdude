@@ -38,6 +38,10 @@ class CloudAuthStatus(BaseModel):
     is_authenticated: bool
     email: str | None = None
     region: Region | None = None
+    # True when a credential is stored but Bambu no longer accepts it — the UI
+    # shows the same login form as "never signed in", but only this case
+    # deserves an explanation for why it reappeared (upstream #2562).
+    sign_in_expired: bool = False
 
 
 class CloudTokenRequest(BaseModel):

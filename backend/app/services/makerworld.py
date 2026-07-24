@@ -20,12 +20,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
 from backend.app.core.config import APP_VERSION
+from backend.app.services.bambu_cloud import is_expiry_401
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +201,7 @@ class MakerWorldService:
         self,
         client: httpx.AsyncClient | None = None,
         auth_token: str | None = None,
+        on_auth_failure: Callable[[], Awaitable[None]] | None = None,
     ):
         if client is not None:
             self._client = client
@@ -210,10 +213,35 @@ class MakerWorldService:
             self._client = httpx.AsyncClient(timeout=30.0)
             self._owns_client = True
         self._auth_token = auth_token
+        # Fired once when Bambu answers its genuine expiry 401 to a call we made
+        # with the caller's stored token. MakerWorld carries the SAME Bambu Cloud
+        # token as the cloud service, so a real expiry here has to invalidate the
+        # one credential everywhere (upstream #2562).
+        self._on_auth_failure = on_auth_failure
+        self._auth_failure_reported = False
 
     async def close(self) -> None:
         if self._owns_client:
             await self._client.aclose()
+
+    async def _note_auth_failure(self, response: httpx.Response) -> None:
+        """Durably record a dead credential - only for Bambu's genuine expiry 401.
+
+        A MakerWorld 401 without the ``{"code":4,"error":"Please login."}``
+        signature is endpoint- or edge-specific noise, not an expired token;
+        invalidating on it would sign the user out of the whole cloud integration
+        on a single stray rejection. Best-effort, once per service instance.
+        """
+        if not is_expiry_401(response):
+            logger.info("MakerWorld returned 401 without the expiry signature - not signing the stored token out")
+            return
+        if self._on_auth_failure is None or self._auth_failure_reported:
+            return
+        self._auth_failure_reported = True
+        try:
+            await self._on_auth_failure()
+        except Exception:
+            logger.exception("Failed to record Bambu Cloud auth failure from MakerWorld")
 
     def _headers(self) -> dict[str, str]:
         headers = dict(_CLIENT_HEADERS)
@@ -253,6 +281,7 @@ class MakerWorldService:
         # because the UI remedy is completely different: 401 → re-login,
         # 403 → user has to go to MakerWorld and meet the access requirement.
         if response.status_code == 401:
+            await self._note_auth_failure(response)
             upstream = _extract_upstream_error(response)
             raise MakerWorldAuthError(upstream or f"MakerWorld rejected the Bambu Cloud token for {path}")
         if response.status_code == 403:
@@ -413,6 +442,7 @@ class MakerWorldService:
             raise MakerWorldUnavailableError(f"Bambu Lab API request failed: {exc}") from exc
 
         if response.status_code == 401:
+            await self._note_auth_failure(response)
             upstream = _extract_upstream_error(response)
             raise MakerWorldAuthError(
                 upstream or "Bambu Lab rejected the token — sign in again in Settings → Bambu Cloud"

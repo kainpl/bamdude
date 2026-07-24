@@ -43,6 +43,13 @@ class User(Base):
     cloud_token: Mapped[str | None] = mapped_column(String(500), nullable=True, default=None)
     cloud_email: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
     cloud_region: Mapped[str | None] = mapped_column(String(10), nullable=True, default=None)
+    # Stamped the first time Bambu answers its genuine expiry 401 to a call made
+    # with this user's stored token; cleared on a fresh login/logout. Bambu's
+    # access token is opaque (no readable expiry) and we don't persist the
+    # refresh token, so without this flag a dead credential is indistinguishable
+    # from a live one and every cloud surface keeps claiming "connected"
+    # (upstream #2562). Migration m109.
+    cloud_token_invalid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
 
     # Per-user Orca Cloud credentials. Unlike Bambu Cloud, Orca uses Supabase PKCE
     # with short-lived access tokens (1h) and rotating single-use refresh tokens,

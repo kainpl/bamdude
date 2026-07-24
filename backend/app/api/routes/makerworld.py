@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.api.routes.cloud import get_stored_token, resolve_api_key_cloud_owner
+from backend.app.api.routes.cloud import get_stored_token, mark_cloud_token_invalid, resolve_api_key_cloud_owner
 from backend.app.api.routes.library import save_3mf_bytes_to_library
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
@@ -68,7 +68,10 @@ async def _build_service(db: AsyncSession, user: User | None) -> MakerWorldServi
     optional; anonymous calls (metadata, URL resolution) still work.
     """
     token, _email, _region = await get_stored_token(db, user)
-    return MakerWorldService(auth_token=token)
+    # Same credential as the cloud service, so a genuine expiry seen here must
+    # invalidate it everywhere - see cloud.mark_cloud_token_invalid (#2562).
+    user_id = user.id if user is not None else None
+    return MakerWorldService(auth_token=token, on_auth_failure=lambda: mark_cloud_token_invalid(user_id))
 
 
 def _canonical_url(model_id: int, profile_id: int | None = None) -> str:

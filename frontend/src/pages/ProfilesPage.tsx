@@ -2940,7 +2940,18 @@ export function ProfilesPage() {
           )}
 
           {!status?.is_authenticated ? (
-            <LoginForm onSuccess={handleLoginSuccess} t={t} />
+            <>
+              {/* The login form looks identical whether you never signed in or
+                  your token died, so say which one this is - otherwise the form
+                  simply reappears one day with no explanation (upstream #2562). */}
+              {status?.sign_in_expired && (
+                <div className="flex items-start gap-2 p-3 mb-4 bg-orange-50 dark:bg-orange-500/10 border border-orange-300 dark:border-orange-500/30 rounded-lg text-sm">
+                  <AlertCircle className="w-4 h-4 text-orange-600 dark:text-orange-400 mt-0.5 flex-shrink-0" />
+                  <p className="text-orange-700 dark:text-orange-400">{t('profiles.signInExpired')}</p>
+                </div>
+              )}
+              <LoginForm onSuccess={handleLoginSuccess} t={t} />
+            </>
           ) : settingsLoading ? (
             <div className="flex items-center justify-center py-16">
               <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />

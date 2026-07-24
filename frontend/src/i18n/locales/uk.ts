@@ -3100,6 +3100,7 @@ export default {
     logout: 'Вийти',
     noLogoutPermission: 'У вас немає дозволу на вихід',
     failedToLoad: 'Не вдалося завантажити профілі',
+    signInExpired: 'Термін дії входу в Bambu Cloud минув — Bambu більше не приймає збережений токен. Увійдіть знову, щоб відновити хмарні профілі, MakerWorld і перевірку прошивок.',
     retry: 'Повторити',
     toast: {
       loggedOut: 'Вихід виконано'
