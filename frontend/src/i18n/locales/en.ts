@@ -466,6 +466,9 @@ export default {
     // Toast messages
     toast: {
       missingSpoolAssignment: 'Print started on {{printer}}. Missing spool assignment for: {{slots}}',
+      assignmentVerified: 'Filament loaded on slot {{slot}} ({{printer}})',
+      assignmentVerifiedNoKprofile: 'Slot {{slot}} on {{printer}} loaded, but the flow calibration (K-profile) was not applied',
+      assignmentNotConfirmed: 'Could not confirm the assignment for slot {{slot}} on {{printer}} — check the AMS slot',
       printPausedEvent: '{{printer}} paused: {{reason}}',
       printResumedEvent: '{{printer}} resumed (paused for {{duration}})',
       pauseReasonUnknown: 'Unknown reason',
@@ -711,6 +714,13 @@ export default {
     estimatedCompletion: 'Estimated completion time',
     plateNumber: 'Plate {{number}}',
     slotOptions: 'Slot options',
+    // Runout guidance: the slot the paused print now expects filament in
+    expectedSlot: {
+      title: 'The printer is waiting for filament in this slot',
+      ariaLabel: 'Expected filament slot {{n}}',
+      label: '{{ams}} · Slot {{slot}}',
+      external: 'External spool',
+    },
     // AMS hover popup
     amsPopup: {
       friendlyName: 'AMS Name',
@@ -2580,6 +2590,9 @@ export default {
     clearFailed: 'Failed to clear HMS errors',
     actionSuccess: 'Action sent to printer',
     actionFailed: 'Failed to send action',
+    runoutExpectedSlot: 'Filament ran out in {{ranOut}}. The printer is now waiting for compatible filament in {{expected}}. Insert a spool into {{expected}}, then select Retry.',
+    runoutExpectedSlotOnly: 'The printer is waiting for compatible filament in {{expected}}. Insert a spool there, then select Retry.',
+    runoutSlotUnknown: 'Filament ran out and the print is paused. BamDude could not determine which slot the printer now expects — check the printer screen for the requested slot.',
     actions: {
       RESUME_PRINTING: 'Resume Printing',
       RESUME_PRINTING_DEFECTS: 'Resume (defects acceptable)',

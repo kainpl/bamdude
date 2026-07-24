@@ -1486,6 +1486,10 @@ async def apply_active_calibration_to_slot(
             filament_id=cache_row.filament_id,
             nozzle_diameter=str(nozzle_diameter),
         )
+        # Hand the live cali_idx to any pending assignment read-back so the
+        # verification can flag "filament loaded but K-profile not applied"
+        # (upstream #2582). No-op when nothing is pending for this slot.
+        client.note_assignment_cali_idx(ams_id, slot_id, int(live_match.slot_id))
         return True, cache_row
     except Exception as e:
         logger.warning(

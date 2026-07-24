@@ -117,7 +117,7 @@ import { FileUploadModal } from '../components/FileUploadModal';
 import { PrintModal } from '../components/PrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { ConnectionDiagnosticModal, DiagnosticChecklist } from '../components/ConnectionDiagnostic';
-import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, getEmptySlotKind } from '../utils/amsHelpers';
+import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, getEmptySlotKind, resolveSlotNozzleDiameter } from '../utils/amsHelpers';
 import { getPrinterImage, getWifiStrength, hasDoorSensor, mapModelCode } from '../utils/printer';
 import { formatPrintName } from '../utils/printName';
 import { compareFwVersions } from '../utils/firmwareVersion';
@@ -1669,6 +1669,35 @@ function PrinterCard({
   const effectiveTrayNow = (currentTrayNow !== undefined && currentTrayNow !== 255)
     ? currentTrayNow
     : cachedTrayNow.current;
+
+  // Runout / filament-replacement guidance (upstream #2587). The backend fills
+  // these only while the print is PAUSED (global tray IDs, or null when idle /
+  // unresolvable):
+  //   expectedTray = the slot the firmware now expects filament in
+  //   previousTray = the slot that ran out
+  // With AMS Filament Backup the firmware advances to the next compatible slot,
+  // so these are often different — the graphic highlights the expected one.
+  const expectedTray = status?.expected_tray ?? null;
+  const previousTray = status?.previous_tray ?? null;
+  // Pre-format the runout slot labels (honoring user AMS friendly names) for the
+  // HMS modal. null when the slot can't be placed → honest fallback copy.
+  const formatRunoutSlotLabel = (globalId: number | null): string | null => {
+    if (globalId === null) return null;
+    if (globalId === 254) return t('printers.expectedSlot.external');
+    if (globalId >= 128 && globalId <= 135) {
+      return amsLabels?.[globalId] || getAmsLabel(globalId, 1);
+    }
+    const amsId = Math.floor(globalId / 4);
+    const slot = globalId % 4;
+    const amsName = amsLabels?.[amsId] || getAmsLabel(amsId, 4);
+    return t('printers.expectedSlot.label', { ams: amsName, slot: slot + 1 });
+  };
+  const runoutGuidance = status?.state === 'PAUSE'
+    ? {
+        expectedSlotLabel: formatRunoutSlotLabel(expectedTray),
+        ranOutSlotLabel: formatRunoutSlotLabel(previousTray),
+      }
+    : null;
 
   // Fetch smart plug for this printer
   const { data: smartPlug } = useQuery({
@@ -3865,6 +3894,10 @@ function PrinterCard({
                                 // Global tray ID = ams.id * 4 + slot index (for standard AMS)
                                 const globalTrayId = ams.id * 4 + slotIdx;
                                 const isActive = effectiveTrayNow === globalTrayId;
+                                // Runout guidance (upstream #2587): the slot the paused
+                                // print now expects filament in, and the one that ran out.
+                                const isExpectedSlot = expectedTray !== null && expectedTray === globalTrayId;
+                                const isRanOutSlot = previousTray !== null && previousTray === globalTrayId;
                                 // Get cloud preset info if available
                                 const cloudInfo = tray?.tray_info_idx ? filamentInfo?.[tray.tray_info_idx] : null;
                                 // Get saved slot preset mapping (for user-configured slots)
@@ -3939,8 +3972,25 @@ function PrinterCard({
                                 // Slot visual content (goes inside hover card)
                                 const slotVisual = (
                                   <div
-                                    className={`bg-bambu-dark-tertiary rounded p-1 text-center ${isEmpty ? 'opacity-50' : ''} ${isActive ? 'ring-2 ring-bambu-green ring-offset-1 ring-offset-bambu-dark' : ''}`}
+                                    className={`relative bg-bambu-dark-tertiary rounded p-1 text-center ${isEmpty ? 'opacity-50' : ''} ${
+                                      isExpectedSlot
+                                        ? 'ring-2 ring-amber-400 ring-offset-1 ring-offset-bambu-dark animate-pulse'
+                                        : isRanOutSlot
+                                          ? 'ring-2 ring-red-500/60 ring-offset-1 ring-offset-bambu-dark'
+                                          : isActive
+                                            ? 'ring-2 ring-bambu-green ring-offset-1 ring-offset-bambu-dark'
+                                            : ''
+                                    }`}
                                   >
+                                    {isExpectedSlot && (
+                                      <span
+                                        aria-label={t('printers.expectedSlot.ariaLabel', { n: slotIdx + 1 })}
+                                        title={t('printers.expectedSlot.title')}
+                                        className="absolute top-0.5 left-0.5 px-1 py-px text-[8px] font-bold text-bambu-dark bg-amber-400 rounded pointer-events-none leading-none"
+                                      >
+                                        ↓
+                                      </span>
+                                    )}
                                     {/* Filament color circle with 1-based slot number centered inside */}
                                     <FilamentSlotCircle
                                       trayColor={tray?.tray_color}
@@ -4204,6 +4254,9 @@ function PrinterCard({
                         // Check if this is the currently loaded tray
                         const globalTrayId = getGlobalTrayId(ams.id, tray?.id ?? 0, false);
                         const isActive = effectiveTrayNow === globalTrayId;
+                        // Runout guidance (upstream #2587): expected / ran-out slot on this HT unit.
+                        const isExpectedSlot = expectedTray !== null && expectedTray === globalTrayId;
+                        const isRanOutSlot = previousTray !== null && previousTray === globalTrayId;
                         // Get cloud preset info if available
                         const cloudInfo = tray?.tray_info_idx ? filamentInfo?.[tray.tray_info_idx] : null;
                         // Get saved slot preset mapping (for user-configured slots)
@@ -4266,8 +4319,25 @@ function PrinterCard({
                         // Slot visual content (goes inside hover card)
                         const slotVisual = (
                           <div
-                            className={`bg-bambu-dark-tertiary rounded p-1 text-center ${isEmpty ? 'opacity-50' : ''} ${isActive ? 'ring-2 ring-bambu-green ring-offset-1 ring-offset-bambu-dark' : ''}`}
+                            className={`relative bg-bambu-dark-tertiary rounded p-1 text-center ${isEmpty ? 'opacity-50' : ''} ${
+                              isExpectedSlot
+                                ? 'ring-2 ring-amber-400 ring-offset-1 ring-offset-bambu-dark animate-pulse'
+                                : isRanOutSlot
+                                  ? 'ring-2 ring-red-500/60 ring-offset-1 ring-offset-bambu-dark'
+                                  : isActive
+                                    ? 'ring-2 ring-bambu-green ring-offset-1 ring-offset-bambu-dark'
+                                    : ''
+                            }`}
                           >
+                            {isExpectedSlot && (
+                              <span
+                                aria-label={t('printers.expectedSlot.ariaLabel', { n: 1 })}
+                                title={t('printers.expectedSlot.title')}
+                                className="absolute top-0.5 left-0.5 px-1 py-px text-[8px] font-bold text-bambu-dark bg-amber-400 rounded pointer-events-none leading-none"
+                              >
+                                ↓
+                              </span>
+                            )}
                             {/* Filament color circle with 1-based slot number centered inside */}
                             <FilamentSlotCircle
                               trayColor={tray?.tray_color}
@@ -5659,6 +5729,7 @@ function PrinterCard({
           onClose={() => setShowHMSModal(false)}
           printerId={printer.id}
           hasPermission={hasPermission}
+          runoutGuidance={runoutGuidance}
         />
       )}
 
@@ -5756,6 +5827,7 @@ function PrinterCard({
           printerId={printer.id}
           slotInfo={configureSlotModal}
           printerModel={mapModelCode(printer.model) || undefined}
+          nozzleDiameter={resolveSlotNozzleDiameter(status, configureSlotModal.amsId)}
           onSuccess={() => {
             // Refresh slot presets to show updated profile name
             queryClient.invalidateQueries({ queryKey: ['slotPresets', printer.id] });

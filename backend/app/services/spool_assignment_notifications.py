@@ -27,6 +27,9 @@ def _slot_label_from_global_tray(global_tray_id: int) -> str:
         return "Ext-R"
     if global_tray_id >= 128:
         return f"HT-{chr(65 + (global_tray_id - 128))}"
+    # 24-27 = A2L AMS-Lite (normalised unit 6); see bambu_mqtt.a2l_lite_wire_ids.
+    if 24 <= global_tray_id <= 27:
+        return f"Lite-{(global_tray_id % 4) + 1}"
     ams_id = global_tray_id // 4
     tray_id = global_tray_id % 4
     return f"{chr(65 + ams_id)}{tray_id + 1}"

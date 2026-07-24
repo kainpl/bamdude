@@ -394,6 +394,7 @@ class PrinterManager:
         # #1349: fires when an AMS on the connected printer finishes a
         # drying cycle. Receives ``(printer_id, ams_id)``.
         self._on_drying_complete: Callable[[int, int], None] | None = None
+        self._on_assignment_verified: Callable[[int, int, int, bool, dict], None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         # Track who started the current print (Issue #206)
         self._current_print_user: dict[int, dict] = {}  # {printer_id: {"user_id": int, "username": str}}
@@ -568,6 +569,15 @@ class PrinterManager:
         """
         self._on_drying_complete = callback
 
+    def set_assignment_verified_callback(self, callback: Callable[[int, int, int, bool, dict], None]):
+        """Set callback for spool-assignment read-back verification (upstream #2582).
+
+        Receives ``(printer_id, ams_id, tray_id, verified, detail)``. Fires once
+        per assignment either when the tray telemetry confirms the pushed
+        filament id or when the verification window elapses without it.
+        """
+        self._on_assignment_verified = callback
+
     def _schedule_async(self, coro):
         """Schedule an async coroutine from a sync context.
 
@@ -636,6 +646,10 @@ class PrinterManager:
             if self._on_drying_complete:
                 self._schedule_async(self._on_drying_complete(printer_id, ams_id))
 
+        def on_assignment_verified(ams_id: int, tray_id: int, verified: bool, detail: dict):
+            if self._on_assignment_verified:
+                self._schedule_async(self._on_assignment_verified(printer_id, ams_id, tray_id, verified, detail))
+
         def on_macro_complete(macro_name: str, status: str):
             self._schedule_async(self._broadcast_macro_complete(printer_id, macro_name, status))
 
@@ -672,6 +686,7 @@ class PrinterManager:
             on_drying_complete=on_drying_complete,
             on_print_running_observed=on_print_running_observed,
             on_finish_photo_moment=on_finish_photo_moment,
+            on_assignment_verified=on_assignment_verified,
         )
 
         # Carry print-tracking state across the client recreation so a
@@ -1247,6 +1262,67 @@ def resolve_plate_id(state: PrinterState) -> int | None:
     return parse_plate_id(state.gcode_file)
 
 
+def resolve_expected_tray(
+    raw_slot: int | None,
+    ams_layout: list[tuple[int, bool]],
+    mapping_raw: object,
+) -> int | None:
+    """Globalise a raw firmware ``tray_tar``/``tray_pre`` value for the runout UI.
+
+    The firmware reports the target/previous slot as a bare number whose meaning
+    depends on the AMS layout (see ``PrinterState.tray_tar``). This mirrors the
+    ``tray_now`` handling so the resolved ID lines up with what the AMS graphic
+    already highlights via ``ams_id*4 + slot`` (upstream #2587).
+
+    ``ams_layout`` is a list of ``(ams_id, is_ams_ht)`` for the connected units.
+
+    - ``255``/``-1`` (none/idle) → ``None``
+    - ``254`` (external spool) → ``254``
+    - ``128``-``135`` (AMS-HT) → already global, returned as-is
+    - ``0``-``3`` local slot:
+        * exactly one regular AMS → ``ams_id*4 + slot``
+        * several regular AMS → resolved via the snow-encoded ``mapping`` field
+          (each entry = ``ams_hw_id*256 + slot``; ``65535`` = unmapped), or
+          ``None`` when it stays ambiguous (honest "can't determine")
+        * no regular AMS → ``None``
+    - ``4``-``15`` → already a global regular-AMS ID, returned as-is
+
+    Returns ``None`` for anything it can't place, so the caller surfaces a
+    "check the printer" message instead of pointing at the wrong slot.
+    """
+    if raw_slot is None or raw_slot in (255, -1):
+        return None
+    if raw_slot == 254:
+        return 254
+    if 128 <= raw_slot <= 135:
+        return raw_slot
+    if 0 <= raw_slot <= 3:
+        regular = [ams_id for ams_id, is_ht in ams_layout if not is_ht]
+        if len(regular) == 1:
+            return regular[0] * 4 + raw_slot
+        if len(regular) > 1:
+            if not isinstance(mapping_raw, list):
+                return None
+            candidates: set[int] = set()
+            for value in mapping_raw:
+                if not isinstance(value, int) or value >= 65535:
+                    continue
+                ams_hw_id = value >> 8
+                slot = value & 0xFF
+                if 0 <= ams_hw_id <= 3 and (slot & 0x03) == raw_slot:
+                    candidates.add(ams_hw_id * 4 + raw_slot)
+                elif 128 <= ams_hw_id <= 135 and raw_slot == 0:
+                    candidates.add(ams_hw_id)
+            return candidates.pop() if len(candidates) == 1 else None
+        return None
+    if 4 <= raw_slot <= 15:
+        return raw_slot
+    # 24-27 = A2L AMS-Lite (normalised unit 6) global tray ids, already resolved.
+    if 24 <= raw_slot <= 27:
+        return raw_slot
+    return None
+
+
 def printer_state_to_dict(
     state: PrinterState,
     printer_id: int | None = None,
@@ -1330,6 +1406,13 @@ def printer_state_to_dict(
                         "drying_temp": tray.get("drying_temp"),
                         "drying_time": tray.get("drying_time"),
                         "state": state_val,
+                        # Firmware's authoritative "spool physically present" bit
+                        # (tray_exist_bits, upstream #2527). Upstream only wired
+                        # this into the REST payload; we must emit it here too —
+                        # the WS status merges wholesale into the printerStatus
+                        # query cache, so an `ams` array without `exists` would
+                        # drop the flag again on the very next push.
+                        "exists": tray.get("exists"),
                     }
                 )
             # Prefer humidity_raw (actual percentage) over humidity (index 1-5)
@@ -1494,6 +1577,28 @@ def printer_state_to_dict(
         "ams_status_main": state.ams_status_main,
         "ams_status_sub": state.ams_status_sub,
         "tray_now": state.tray_now,
+        # Runout / filament-replacement guidance (upstream #2587). Only meaningful
+        # while PAUSED — resolve the firmware's target/previous slot to a global
+        # tray ID so the AMS graphic can highlight the slot the print now expects
+        # and name the one that ran out. None when idle, not paused, or unresolvable.
+        "expected_tray": (
+            resolve_expected_tray(
+                state.tray_tar,
+                [(u["id"], u.get("is_ams_ht", False)) for u in ams_units],
+                raw_data.get("mapping"),
+            )
+            if state.state == "PAUSE"
+            else None
+        ),
+        "previous_tray": (
+            resolve_expected_tray(
+                state.tray_pre,
+                [(u["id"], u.get("is_ams_ht", False)) for u in ams_units],
+                raw_data.get("mapping"),
+            )
+            if state.state == "PAUSE"
+            else None
+        ),
         # AMS Filament Backup (auto_switch_filament): True/False/None (#1766)
         "ams_auto_switch_filament": state.ams_auto_switch_filament,
         # Per-AMS extruder map: {ams_id: extruder_id} where 0=right, 1=left

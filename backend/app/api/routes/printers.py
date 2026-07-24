@@ -52,11 +52,13 @@ from backend.app.services.printer_manager import (
     get_stage_name,
     is_bed_slinger,
     printer_manager,
+    resolve_expected_tray,
     resolve_plate_id,
     supports_chamber_temp,
     supports_drying,
     supports_drying_while_printing,
 )
+from backend.app.utils.filament_ids import filament_id_to_setting_id
 from backend.app.utils.http import build_content_disposition
 
 logger = logging.getLogger(__name__)
@@ -599,6 +601,7 @@ async def get_printer_status(
                         drying_temp=tray_data.get("drying_temp"),
                         drying_time=tray_data.get("drying_time"),
                         state=tray_data.get("state"),
+                        exists=tray_data.get("exists"),
                     )
                 )
             # Prefer humidity_raw (percentage) over humidity (index 1-5)
@@ -828,6 +831,27 @@ async def get_printer_status(
         ams_mapping=ams_mapping,
         ams_extruder_map=ams_extruder_map,
         tray_now=tray_now,
+        # Runout guidance (upstream #2587): resolve the firmware's target/previous
+        # slot to a global tray ID, but only while PAUSED — the moment the operator
+        # needs it.
+        expected_tray=(
+            resolve_expected_tray(
+                state.tray_tar,
+                [(u.id, u.is_ams_ht) for u in ams_units],
+                raw_data.get("mapping"),
+            )
+            if state.state == "PAUSE"
+            else None
+        ),
+        previous_tray=(
+            resolve_expected_tray(
+                state.tray_pre,
+                [(u.id, u.is_ams_ht) for u in ams_units],
+                raw_data.get("mapping"),
+            )
+            if state.state == "PAUSE"
+            else None
+        ),
         ams_status_main=state.ams_status_main,
         ams_status_sub=state.ams_status_sub,
         mc_print_sub_stage=state.mc_print_sub_stage,
@@ -2489,6 +2513,20 @@ async def configure_ams_slot(
     # Send filament setting + K-profile commands
     filament_id_for_kprofile = kprofile_filament_id if kprofile_filament_id else effective_tray_info_idx
 
+    # Back-fill setting_id from the resolved filament id when the client sent
+    # none. Built-in / local / Orca-generic presets in the Configure AMS Slot
+    # modal leave setting_id empty (they carry only a GF* tray_info_idx), and
+    # the printer treats a filament-id-without-setting-id slot as half
+    # configured: it shows the new material briefly, then reverts to its
+    # previously stored profile (upstream #2604). This mirrors the derivation
+    # the inventory/assignment path already does (inventory.py).
+    # ``filament_id_to_setting_id`` leaves P* user presets and already-GFS*
+    # values unchanged, so only the empty-setting_id generic paths are affected;
+    # an explicit setting_id from the client still passes through untouched.
+    effective_setting_id = setting_id
+    if effective_tray_info_idx and not effective_setting_id:
+        effective_setting_id = filament_id_to_setting_id(effective_tray_info_idx)
+
     # Always send ams_set_filament_setting - the user explicitly clicked
     # "Configure Slot", so honor that.  Previous versions skipped this for
     # RFID-tagged slots to preserve the slicer eye icon, but printers cache
@@ -2503,7 +2541,7 @@ async def configure_ams_slot(
         tray_color=tray_color,
         nozzle_temp_min=nozzle_temp_min,
         nozzle_temp_max=nozzle_temp_max,
-        setting_id=setting_id,
+        setting_id=effective_setting_id,
     )
 
     if not success:
@@ -2545,6 +2583,17 @@ async def configure_ams_slot(
             name=tray_sub_brands or "",
             cali_idx=cali_idx,
         )
+
+    # Register a read-back verification (upstream #2582) so the tray telemetry
+    # that the status push below returns can confirm the printer accepted this
+    # manual slot configuration. Mirrors the inventory/assignment path.
+    client.register_assignment_verification(
+        ams_id=ams_id,
+        tray_id=tray_id,
+        tray_info_idx=effective_tray_info_idx,
+        tray_color=tray_color,
+        cali_idx=cali_idx,
+    )
 
     # Request fresh status push from printer so frontend gets updated data via WebSocket
     logger.info("[configure_ams_slot] Requesting status update from printer")
@@ -3439,7 +3488,10 @@ async def refresh_ams_slot(
 @router.post("/{printer_id}/ams/load")
 async def ams_load_filament(
     printer_id: int,
-    tray_id: int = Query(..., description="0..15 = AMS slot; 254 = ext spool / Ext-L; 255 = Ext-R (H2D)"),
+    tray_id: int = Query(
+        ...,
+        description="0..15 = AMS slot; 24..27 = A2L AMS-Lite; 254 = ext spool / Ext-L; 255 = Ext-R (H2D)",
+    ),
     _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):

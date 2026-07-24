@@ -63,6 +63,69 @@ describe('HMSErrorModal', () => {
     });
   });
 
+  // upstream #2587 — the firmware's runout text says "insert into the same AMS
+  // slot", which is wrong under AMS Filament Backup: the firmware won't re-accept
+  // the depleted slot and advances to the next compatible one.
+  describe('runout guidance', () => {
+    const runoutError: HMSError = {
+      attr: 0x0700,
+      code: '0x8011',
+      module: 0,
+      severity: 2,
+    };
+    const genericRunoutText = 'AMS filament ran out. Please insert a new filament into the same AMS slot.';
+
+    it('keeps the generic firmware text when no guidance is supplied', () => {
+      render(<HMSErrorModal {...defaultProps} errors={[runoutError]} />);
+      expect(screen.getByText(genericRunoutText)).toBeInTheDocument();
+    });
+
+    it('names both the expected and the ran-out slot when both resolve', () => {
+      render(
+        <HMSErrorModal
+          {...defaultProps}
+          errors={[runoutError]}
+          runoutGuidance={{ expectedSlotLabel: 'AMS-A · Slot 3', ranOutSlotLabel: 'AMS-A · Slot 2' }}
+        />
+      );
+      expect(screen.queryByText(genericRunoutText)).not.toBeInTheDocument();
+      expect(screen.getByText(/AMS-A · Slot 2/)).toBeInTheDocument();
+      expect(screen.getByText(/AMS-A · Slot 3/)).toBeInTheDocument();
+    });
+
+    it('names only the expected slot when the ran-out slot is unknown', () => {
+      render(
+        <HMSErrorModal
+          {...defaultProps}
+          errors={[runoutError]}
+          runoutGuidance={{ expectedSlotLabel: 'AMS-A · Slot 3', ranOutSlotLabel: null }}
+        />
+      );
+      expect(screen.getByText(/waiting for compatible filament in AMS-A · Slot 3/)).toBeInTheDocument();
+    });
+
+    it('falls back to honest "check the printer" copy when nothing resolves', () => {
+      render(
+        <HMSErrorModal
+          {...defaultProps}
+          errors={[runoutError]}
+          runoutGuidance={{ expectedSlotLabel: null, ranOutSlotLabel: null }}
+        />
+      );
+      expect(screen.getByText(/could not determine which slot the printer now expects/)).toBeInTheDocument();
+    });
+
+    it('leaves non-runout error codes untouched', () => {
+      render(
+        <HMSErrorModal
+          {...defaultProps}
+          runoutGuidance={{ expectedSlotLabel: 'AMS-A · Slot 3', ranOutSlotLabel: 'AMS-A · Slot 2' }}
+        />
+      );
+      expect(screen.getByText('The task was canceled.')).toBeInTheDocument();
+    });
+  });
+
   describe('clear errors button', () => {
     it('shows clear button when there are known errors', () => {
       render(<HMSErrorModal {...defaultProps} />);

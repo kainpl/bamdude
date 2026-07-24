@@ -165,4 +165,47 @@ describe('FilamentHoverCard', () => {
       });
     });
   });
+
+  // upstream #2631 — the card sits at z-[60] (so it can escape sibling printer
+  // cards' stacking contexts), which puts it above the z-50 dialogs its own
+  // buttons open. Nothing dismissed it, and a touch device never sends the
+  // mouseleave that would, so on a tablet both layers stayed on screen.
+  describe('dismiss before opening a dialog', () => {
+    it('hides the card when Configure is clicked', async () => {
+      const onConfigure = vi.fn();
+      renderWithHover(
+        <FilamentHoverCard data={baseFilamentData} configureSlot={{ enabled: true, onConfigure }}>
+          <div>trigger</div>
+        </FilamentHoverCard>
+      );
+
+      vi.advanceTimersByTime(100);
+      await waitFor(() => expect(screen.getByText('PLA Basic')).toBeInTheDocument());
+
+      fireEvent.click(screen.getByTitle('Configure Slot'));
+
+      expect(onConfigure).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(screen.queryByText('PLA Basic')).not.toBeInTheDocument());
+    });
+
+    it('stays dismissed even if a pending show timer was queued', async () => {
+      const onConfigure = vi.fn();
+      const result = renderWithHover(
+        <FilamentHoverCard data={baseFilamentData} configureSlot={{ enabled: true, onConfigure }}>
+          <div>trigger</div>
+        </FilamentHoverCard>
+      );
+
+      vi.advanceTimersByTime(100);
+      await waitFor(() => expect(screen.getByText('PLA Basic')).toBeInTheDocument());
+
+      // Re-enter queues an 80ms show timer; the dismiss must clear it, otherwise
+      // the card pops back over the dialog it just opened.
+      fireEvent.mouseEnter(result.container.firstElementChild as HTMLElement);
+      fireEvent.click(screen.getByTitle('Configure Slot'));
+      vi.advanceTimersByTime(200);
+
+      await waitFor(() => expect(screen.queryByText('PLA Basic')).not.toBeInTheDocument());
+    });
+  });
 });

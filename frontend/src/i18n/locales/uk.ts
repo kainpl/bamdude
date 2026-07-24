@@ -474,6 +474,9 @@ export default {
     // Toast messages
     toast: {
       missingSpoolAssignment: 'Друк розпочато на {{printer}}. Відсутнє призначення котушки для: {{slots}}',
+      assignmentVerified: 'Філамент завантажено у слот {{slot}} ({{printer}})',
+      assignmentVerifiedNoKprofile: 'Слот {{slot}} на {{printer}} завантажено, але калібрування потоку (K-профіль) не застосовано',
+      assignmentNotConfirmed: 'Не вдалося підтвердити призначення для слота {{slot}} на {{printer}} — перевірте слот AMS',
       printPausedEvent: '{{printer}} на паузі: {{reason}}',
       printResumedEvent: '{{printer}} відновлено (стояв на паузі {{duration}})',
       pauseReasonUnknown: 'Невідома причина',
@@ -721,6 +724,13 @@ export default {
     estimatedCompletion: 'Орієнтовний час завершення',
     plateNumber: 'Плита {{number}}',
     slotOptions: 'Параметри слота',
+    // Runout guidance: the slot the paused print now expects filament in
+    expectedSlot: {
+      title: 'Принтер очікує на філамент у цьому слоті',
+      ariaLabel: 'Очікуваний слот філаменту {{n}}',
+      label: '{{ams}} · Слот {{slot}}',
+      external: 'Зовнішня котушка',
+    },
     // AMS hover popup
     amsPopup: {
       friendlyName: 'Назва AMS',
@@ -2596,6 +2606,9 @@ export default {
     clearFailed: 'Не вдалося очистити помилки HMS',
     actionSuccess: 'Команду надіслано на принтер',
     actionFailed: 'Не вдалося надіслати команду',
+    runoutExpectedSlot: 'Філамент закінчився у {{ranOut}}. Тепер принтер очікує сумісний філамент у {{expected}}. Вставте котушку у {{expected}}, тоді натисніть «Повторити».',
+    runoutExpectedSlotOnly: 'Принтер очікує сумісний філамент у {{expected}}. Вставте туди котушку, тоді натисніть «Повторити».',
+    runoutSlotUnknown: 'Філамент закінчився, друк на паузі. BamDude не зміг визначити, якого слота тепер очікує принтер — перевірте екран принтера.',
     actions: {
       RESUME_PRINTING: 'Продовжити друк',
       RESUME_PRINTING_DEFECTS: 'Продовжити (дефекти прийнятні)',

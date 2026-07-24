@@ -450,6 +450,21 @@ async def apply_spool_to_slot_via_mqtt(
         setting_id=effective_setting_id,
     )
 
+    # Register a read-back verification so the next AMS pushes can confirm the
+    # tray actually accepted this assignment (upstream #2582). We record the same
+    # effective filament id we pushed; the client fires on_assignment_verified on
+    # match/timeout. Colour is informational only — the match keys on the filament
+    # id the printer echoes back. ``cali_idx`` starts unknown because our K-profile
+    # push below resolves it live inside ``apply_active_calibration_to_slot``,
+    # which calls ``note_assignment_cali_idx`` to fill it in.
+    client.register_assignment_verification(
+        ams_id=ams_id,
+        tray_id=tray_id,
+        tray_info_idx=effective_tray_info_idx,
+        tray_color=tray_color,
+        cali_idx=None,
+    )
+
     # b. Push extrusion calibration via the unified helper. The helper
     # re-resolves cali_idx live (stable-identity match) and fires
     # extrusion_cali_sel; stored cali_idx is just a hint.
@@ -2026,6 +2041,19 @@ async def assign_spool(
             )
         except Exception as e:
             logger.warning("MQTT auto-configure failed for spool %d: %s", spool.id, e)
+        else:
+            # Nudge a fresh pushall so the read-back verification registered in
+            # apply_spool_to_slot_via_mqtt (upstream #2582) has current tray
+            # telemetry to compare against within its window, instead of waiting
+            # for the next idle push. Best-effort — the periodic push is the
+            # fallback.
+            if configured:
+                try:
+                    client = printer_manager.get_client(data.printer_id)
+                    if client:
+                        client.request_status_update()
+                except Exception:
+                    pass
 
     # Return assignment with spool data
     result = await db.execute(

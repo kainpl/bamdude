@@ -42,4 +42,28 @@ describe('getEmptySlotKind', () => {
   it('treats an empty-string tray_type as unconfigured', () => {
     expect(getEmptySlotKind({ tray_type: '', state: 11 })).toBe('reset');
   });
+
+  // upstream #2527 — tray_exist_bits is firmware's authoritative presence signal
+  // and overrides the state heuristic when available.
+  describe('tray_exist_bits (exists)', () => {
+    it('returns "reset" for a present-but-unidentified spool despite state 9', () => {
+      // The non-RFID case: the AMS reports an empty tray_type + state=9, which is
+      // structurally identical to a truly empty slot, but the bitmask says a
+      // spool is physically there — Studio draws "?" here, so must we.
+      expect(getEmptySlotKind({ tray_type: '', state: 9, exists: true })).toBe('reset');
+    });
+
+    it('returns "physical" when the bitmask says the slot is empty', () => {
+      expect(getEmptySlotKind({ tray_type: null, state: 11, exists: false })).toBe('physical');
+    });
+
+    it('still returns null for a configured slot', () => {
+      expect(getEmptySlotKind({ tray_type: 'PLA', state: 9, exists: true })).toBeNull();
+    });
+
+    it('falls back to the state heuristic when the bitmask was unavailable', () => {
+      expect(getEmptySlotKind({ tray_type: null, state: 9, exists: null })).toBe('physical');
+      expect(getEmptySlotKind({ tray_type: null, state: 11, exists: null })).toBe('reset');
+    });
+  });
 });

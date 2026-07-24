@@ -92,6 +92,51 @@ def _mapping_is_all_unresolved(mapping: list | None) -> bool:
     return all(t is None or (isinstance(t, int) and t < 0) for t in mapping)
 
 
+def _installed_nozzle_diameters(status) -> list[float]:
+    """Parse the installed nozzle diameters from a PrinterState (upstream #1899).
+
+    Returns the diameters the printer actually reports (e.g. ``[0.4]``
+    single-nozzle, ``[0.4, 0.6]`` dual-nozzle), skipping the empty-string
+    defaults that populate a ``NozzleInfo`` before MQTT fills it in. An empty
+    list means "the printer hasn't told us its nozzle hardware" — callers must
+    treat that as unknown, not as a mismatch, so we never block a print on
+    missing data.
+    """
+    diameters: list[float] = []
+    for nozzle in getattr(status, "nozzles", None) or []:
+        raw = getattr(nozzle, "nozzle_diameter", "") or ""
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            diameters.append(value)
+    return diameters
+
+
+def _nozzle_mismatch_message(sliced_nozzle: float | None, installed: list[float]) -> str | None:
+    """Return an actionable error message when the sliced nozzle can't be printed
+    on any installed nozzle, else None (upstream #1899).
+
+    Fail-safe: returns None whenever we lack the data to judge — no sliced
+    diameter, or the printer reported no nozzles — so a print is only ever
+    blocked on a POSITIVE mismatch. On dual-nozzle printers a match against
+    EITHER installed nozzle passes (a 0.6 slice is fine if one hotend is 0.6).
+    The 0.05 tolerance absorbs float noise while staying well inside the 0.2 gap
+    between adjacent nozzle sizes (0.2/0.4/0.6/0.8).
+    """
+    if not sliced_nozzle or not installed:
+        return None
+    if any(abs(d - sliced_nozzle) < 0.05 for d in installed):
+        return None
+    installed_str = " / ".join(f"{d:g}mm" for d in installed)
+    return (
+        f"File sliced for a {sliced_nozzle:g}mm nozzle, but the printer has "
+        f"{installed_str} installed. Re-slice for the installed nozzle, or "
+        f"install the matching nozzle before printing."
+    )
+
+
 class _StaggerSlot:
     """Tracks a printer that recently started and is heating up."""
 
@@ -1936,6 +1981,36 @@ class PrintScheduler:
             logger.error("Queue item %s: File not found: %s", item.id, file_path)
             await self._power_off_if_needed(db, item)
             return
+
+        # Nozzle-diameter mismatch guard (upstream #1899). A file sliced for one
+        # nozzle size dispatched to a printer with a different nozzle installed is
+        # rejected by the firmware with a cryptic HMS ("Failed to get AMS mapping
+        # table" 0700_8012, or "nozzle diameter … not consistent" 0500_4038) that
+        # gives the user no idea what went wrong. Catch it here — before the
+        # pending→printing flip, so nothing has to be unwound — and fail with an
+        # actionable message instead of spending time preheating and uploading.
+        # Fail-safe by construction: only a POSITIVE mismatch blocks. When the
+        # slice carries no nozzle diameter (``archive.nozzle_diameter`` is None,
+        # and library files never carry one) or the printer hasn't reported its
+        # nozzles yet, we fall through and dispatch exactly as before. On
+        # dual-nozzle printers (H2D) a match against EITHER installed nozzle
+        # passes, so a 0.6 slice is fine as long as one hotend is a 0.6.
+        sliced_nozzle = archive.nozzle_diameter if archive else None
+        if sliced_nozzle:
+            installed = _installed_nozzle_diameters(printer_manager.get_status(item.queue_id))
+            mismatch_msg = _nozzle_mismatch_message(sliced_nozzle, installed)
+            if mismatch_msg:
+                await self._fail_item(db, item, mismatch_msg)
+                logger.warning("Queue item %s: nozzle mismatch — %s", item.id, mismatch_msg)
+                await notification_service.on_queue_job_failed(
+                    job_name=archive.filename.replace(".gcode.3mf", "").replace(".3mf", ""),
+                    printer_id=printer.id,
+                    printer_name=printer.name,
+                    reason=mismatch_msg,
+                    db=db,
+                )
+                await self._power_off_if_needed(db, item)
+                return
 
         # Flip item to "printing" BEFORE dispatch starts so that a crash
         # mid-FTP doesn't leave the item re-dispatchable. Backed by

@@ -43,6 +43,10 @@ export function getAmsLabel(amsId: number | string, trayCount: number): string {
   const id = typeof amsId === 'string' ? parseInt(amsId, 10) : amsId;
   const safeId = isNaN(id) ? 0 : id;
   if (safeId === 255) return 'External';
+  // A2L "AMS Lite": the backend normalises its physical unit id 16 to 6 at
+  // ingest (see bambu_mqtt.normalize_am_unit_id). No regular AMS uses id 6, so
+  // this is a safe, self-scoping label for the Lite's 4-slot unit.
+  if (safeId === 6) return 'AMS Lite';
   const isHt = trayCount === 1;
   const normalizedId = safeId >= 128 ? safeId - 128 : safeId;
   const letter = String.fromCharCode(65 + normalizedId);
@@ -139,21 +143,57 @@ export function formatSlotLabel(
  *
  * A slot with no ``tray_type`` used to render identically to a truly empty slot,
  * so a spool that was physically loaded but never had its filament type set
- * looked empty (#1694). This distinguishes the two using the firmware tray
- * state (9 = empty, 10 = present-but-not-fed, 11 = loaded):
+ * looked empty (#1694). This distinguishes the two:
  *   - configured slot (tray_type set)  → null
- *   - state 9 or 10 (empty / not fed)  → 'physical'  (render "-"/Empty)
- *   - otherwise (loaded, no type)      → 'reset'     (render "?", amber accent)
+ *   - `exists` (firmware tray_exist_bits) when present — authoritative
+ *   - else the firmware tray state (9 = empty, 10 = present-but-not-fed):
+ *     state 9 or 10 → 'physical' (render "-"/Empty), otherwise 'reset'
+ *     (render "?", amber accent)
+ *
+ * `exists` is firmware's authoritative presence signal (what BambuStudio uses):
+ * a non-RFID spool the standard AMS can't identify is physically present
+ * (exists === true) but carries an empty tray_type and state=9 — structurally
+ * identical to a truly empty slot — so without the bitmask it rendered "Empty"
+ * where Studio correctly shows "?" (upstream #2527). AMS-HT and missing-bitmask
+ * paths keep the old state heuristic.
  *
  * The 'reset' bucket also covers the "no firmware state available" case: without
  * proof the slot is physically empty we err toward "?" rather than silently "-".
  */
 export function getEmptySlotKind(
-  tray: { tray_type?: string | null; state?: number | null } | undefined
+  tray: { tray_type?: string | null; state?: number | null; exists?: boolean | null } | undefined
 ): 'physical' | 'reset' | null {
   if (tray?.tray_type) return null;
+  if (tray?.exists === true) return 'reset';
+  if (tray?.exists === false) return 'physical';
   const state = tray?.state ?? null;
   return state === 9 || state === 10 ? 'physical' : 'reset';
+}
+
+/**
+ * Resolve the installed nozzle diameter feeding a given AMS unit, so the
+ * Configure-AMS-Slot picker filters filament presets by the nozzle actually on
+ * the machine instead of assuming 0.4mm (upstream #1899).
+ *
+ * On dual-nozzle printers (H2D) each AMS is bound to one extruder via
+ * `ams_extruder_map` (amsId → extruder index, 0=right, 1=left), so we read that
+ * nozzle's diameter. Single-nozzle printers have no map entry and fall back to
+ * the primary nozzle (index 0). Returns undefined when the printer hasn't
+ * reported nozzle hardware yet, letting the caller keep its own default.
+ * Diameter is the bare decimal string the status carries, e.g. "0.4" / "0.6".
+ */
+export function resolveSlotNozzleDiameter(
+  status: {
+    nozzles?: { nozzle_diameter?: string }[];
+    ams_extruder_map?: Record<string, number>;
+  } | null | undefined,
+  amsId: number,
+): string | undefined {
+  const nozzles = status?.nozzles;
+  if (!nozzles || nozzles.length === 0) return undefined;
+  const extruderIdx = status?.ams_extruder_map?.[String(amsId)] ?? 0;
+  const diameter = nozzles[extruderIdx]?.nozzle_diameter || nozzles[0]?.nozzle_diameter;
+  return diameter || undefined;
 }
 
 /**
