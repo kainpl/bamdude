@@ -97,6 +97,12 @@ class PrintArchive(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
 
+    # Real print duration + estimate accuracy, persisted (kept in sync by the
+    # before_flush event in core/database.py; formula in services/archive_time_metrics).
+    # Completed prints only; NULL for failed/cancelled/printing. m107.
+    actual_time_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    time_accuracy: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     # Extended metadata (JSON blob for flexibility)
     extra_data: Mapped[dict | None] = mapped_column(JSON)
 
