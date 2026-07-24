@@ -803,21 +803,22 @@ class TestArchiveColorsFromSpools:
         ]
         assert _archive_colors_from_spools(usage, results) == ["#000000"]
 
-    def test_partial_match_returns_none(self):
-        """Slot 2 was used but never matched to a spool — leave the 3MF colour
-        untouched rather than dropping slot 2 from the archive."""
+    def test_partial_match_falls_back_per_slot(self):
+        """Slot 2 was used but never matched to a spool — keep its own 3MF colour
+        (per-slot fallback) rather than dropping it or discarding the match."""
         usage = [
             {"slot_id": 1, "used_g": 10.0, "color": "#111111"},
             {"slot_id": 2, "used_g": 20.0, "color": "#222222"},
         ]
         results = [{"slot_id": 1, "color": "#000000"}]
-        assert _archive_colors_from_spools(usage, results) is None
+        assert _archive_colors_from_spools(usage, results) == ["#000000", "#222222"]
 
-    def test_matched_spool_without_color_returns_none(self):
-        """A spool with no rgba (color None) does not count as matched."""
+    def test_matched_spool_without_color_falls_back_to_3mf(self):
+        """A spool with no rgba (color None) does not count as matched — the slot
+        keeps its 3MF colour."""
         usage = [{"slot_id": 1, "used_g": 15.0, "color": "#161616"}]
         results = [{"slot_id": 1, "color": None}]
-        assert _archive_colors_from_spools(usage, results) is None
+        assert _archive_colors_from_spools(usage, results) == ["#161616"]
 
     def test_unused_slot_not_required(self):
         """A slot with zero usage need not be matched."""
@@ -833,7 +834,8 @@ class TestArchiveColorsFromSpools:
 
     def test_ams_fallback_results_excluded(self):
         """AMS remain%-delta fallback results carry slot_id=None and must not
-        satisfy the match for a real 3MF slot."""
+        satisfy the match for a real 3MF slot — the slot keeps its 3MF colour
+        rather than adopting the slot-less fallback colour."""
         usage = [{"slot_id": 1, "used_g": 15.0, "color": "#161616"}]
         results = [{"slot_id": None, "color": "#000000"}]
-        assert _archive_colors_from_spools(usage, results) is None
+        assert _archive_colors_from_spools(usage, results) == ["#161616"]

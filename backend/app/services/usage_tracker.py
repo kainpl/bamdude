@@ -80,41 +80,45 @@ def _spool_color_to_hex(rgba: str | None) -> str | None:
 
 
 def _archive_colors_from_spools(filament_usage: list[dict], results: list[dict]) -> list[str] | None:
-    """Slot-ordered, de-duplicated hex colours for an archive's ``filament_color``,
-    taken from the inventory spools that actually fed the print (#1494).
+    """Slot-ordered, de-duplicated hex colours for an archive's ``filament_color``.
 
-    The slicer's 3MF carries its own ``filament_colour`` per slot — a value
-    picked independently of the colour the user curates on the matched
-    inventory spool. So an archive printed from a ``#000000`` inventory spool
-    would otherwise show the slicer's near-black ``#161616``. Once usage
-    tracking has resolved the used slots to spools, the spool colours are the
-    authoritative source and replace the 3MF values.
+    Per slot, the resolved inventory-spool colour wins; a slot with no matched
+    spool (or a spool that carries no colour) falls back to that slot's own 3MF
+    ``filament_colour``. Both are normalised to ``#RRGGBB`` (alpha dropped) via
+    :func:`_spool_color_to_hex`, so the archive-row colour circles and the Color
+    Distribution graph stay renderable and consistent.
 
-    Returns ``None`` — leave the 3MF colour untouched — unless *every* slot
-    with non-zero usage was matched to a spool that carries a colour. A
-    partial rewrite would silently drop the unmatched slots' colours from the
-    archive (and the Color Distribution graph), so it is all-or-nothing.
+    The slicer's 3MF carries its own ``filament_colour`` per slot — picked
+    independently of the colour the user curates on the matched inventory spool.
+    So an archive printed from a ``#000000`` inventory spool would otherwise show
+    the slicer's near-black ``#161616``; the curated spool colour is authoritative.
+
+    Replaces the earlier all-or-nothing behaviour: a partial match no longer
+    drops the unmatched slots' colours — they keep their 3MF colour — so a print
+    that mixes loaded-spool and sliced colours is represented faithfully (#1494
+    follow-up). Returns ``None`` only when no used slot yields any colour.
     """
-    used_slots = {u["slot_id"] for u in filament_usage if u.get("used_g", 0) > 0 and u.get("slot_id") is not None}
-    if not used_slots:
+    used: list[tuple[int, str | None]] = [
+        (u["slot_id"], u.get("color"))
+        for u in filament_usage
+        if u.get("used_g", 0) > 0 and u.get("slot_id") is not None
+    ]
+    if not used:
         return None
 
-    slot_color: dict[int, str] = {}
+    spool_color: dict[int, str] = {}
     for r in results:
         slot_id = r.get("slot_id")
         color = r.get("color")
         if slot_id is not None and color:
-            slot_color.setdefault(slot_id, color)
-
-    if not used_slots.issubset(slot_color):
-        return None
+            spool_color.setdefault(slot_id, color)
 
     ordered: list[str] = []
-    for slot_id in sorted(used_slots):
-        color = slot_color[slot_id]
-        if color not in ordered:
+    for slot_id, mf_color in sorted(used, key=lambda x: x[0]):
+        color = spool_color.get(slot_id) or _spool_color_to_hex(mf_color)
+        if color and color not in ordered:
             ordered.append(color)
-    return ordered
+    return ordered or None
 
 
 def _match_slots_by_color(

@@ -1193,9 +1193,9 @@ async def _apply_spool_colors_to_archive(
     """Overwrite an archive's ``filament_color`` with the colours of the
     Spoolman spools that fed the print (#1494).
 
-    All-or-nothing, exactly like the built-in inventory path: the colour is
-    only rewritten when every used slot resolved to a spool that carries a
-    colour, so a partial match never drops slots from the archive.
+    Per-slot, exactly like the built-in inventory path: each used slot takes its
+    Spoolman spool colour when matched, else its own 3MF colour (see
+    :func:`usage_tracker._archive_colors_from_spools`).
     """
     if not slot_colors:
         return
