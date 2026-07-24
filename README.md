@@ -207,7 +207,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - **File Manager mode** — saves received 3MF files to the library instead of archiving or printing
 - SSDP discovery or manual IP
 - **Per-VP G-code injection toggle** for auto-eject / plate-clear rigs; Bambu Studio "Send all plates" queues one item per plate
-- **Tailscale Let's Encrypt cert** — opt-in per-VP toggle; when on, asks the local `tailscale` CLI for an LE cert and advertises the tailnet FQDN over SSDP so slicers connect via a hostname matching a trusted cert (no manual CA install)
+- **Tailscale reach** — when the host runs Tailscale, the VP card shows the tailnet IP and MagicDNS name to paste into the slicer. The CLI ships in the Docker image; mount `/var/run/tailscale/tailscaled.sock` (see `docker-compose.yml`) to enable it. Trust still goes through the one-time `bbl_ca.crt` import — slicers validate MQTT only against the bundled BBL CA store, so a publicly-signed cert can't replace it
 
 ### Authentication
 - Group-based permissions (80+ granular)

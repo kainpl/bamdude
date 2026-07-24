@@ -63,6 +63,17 @@ services:
       # PUID:PGID on first start so the container user can write to it.
       #- ./virtual_printer:/app/data/virtual_printer
       #
+      # Tailscale integration (optional): mount the host's tailscaled socket so
+      # the Virtual Printer card can show your tailnet IP and MagicDNS name to
+      # paste into the slicer. The Tailscale CLI ships in the image, but it can
+      # only talk to the daemon through this socket. Requires:
+      #   1. Tailscale installed + `tailscale up` completed on the host
+      #   2. `sudo tailscale set --operator=<container-user>` on the host so the
+      #      user running the container may call `tailscale status`
+      # Without this mount nothing breaks — the VP card simply shows Tailscale
+      # as unavailable, and reaching a VP over LAN is unaffected.
+      #- /var/run/tailscale/tailscaled.sock:/var/run/tailscale/tailscaled.sock
+      #
       # Using a self-signed certificate (e.g. for a local Home Assistant
       # instance reachable over HTTPS). Drop your .crt files into the host
       # directory you mount here; the entrypoint installs them into the

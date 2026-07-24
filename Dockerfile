@@ -24,11 +24,27 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ffmpeg \
+    gnupg \
     gosu \
     iproute2 \
     libcap2-bin \
     openssh-client \
     ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install the Tailscale CLI only (no tailscaled — the daemon runs on the host).
+# `services/virtual_printer/tailscale.py` shells out to `tailscale status --json`
+# via the host's socket, which the user mounts in through docker-compose when
+# they want the tailnet IP / MagicDNS name on the VP card. Without the binary
+# the feature can never report anything in Docker (shutil.which returns None →
+# available=False), no matter how the socket is mounted. Without the socket
+# mount the binary is harmless — the code logs a one-time hint and the card just
+# shows Tailscale as unavailable.
+RUN curl -fsSL https://pkgs.tailscale.com/stable/debian/trixie.noarmor.gpg \
+        -o /usr/share/keyrings/tailscale-archive-keyring.gpg \
+    && curl -fsSL https://pkgs.tailscale.com/stable/debian/trixie.tailscale-keyring.list \
+        -o /etc/apt/sources.list.d/tailscale.list \
+    && apt-get update && apt-get install -y --no-install-recommends tailscale \
     && rm -rf /var/lib/apt/lists/*
 
 # Allow binding to privileged ports (e.g. 990/FTPS) as non-root user.
