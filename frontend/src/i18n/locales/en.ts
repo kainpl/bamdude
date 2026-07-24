@@ -5237,6 +5237,7 @@ export default {
   printModal: {
     selectPrinter: 'Select Printer',
     filamentMapping: 'Filament Mapping',
+    plateFilamentsUnreadable: 'The filaments of a selected plate could not be read, so it cannot be mapped. Deselect it to queue the others.',
     filamentTypeNotFound: 'Type not found',
     filamentColorMismatch: 'Color mismatch',
     filamentReady: 'Ready',

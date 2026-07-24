@@ -30,15 +30,24 @@ def coerce_calibration_mode(v: object) -> object:
     """Normalize a calibration-mode input for the :data:`CalibrationMode` field.
 
     - legacy bool: ``True → 'on'`` / ``False → 'off'`` (old clients keep working)
-    - str: trimmed + lowercased (validated against the ``Literal`` downstream)
+    - int: the MQTT wire encoding ``0/1/2`` (see :func:`mode_to_int`). Not a shape
+      our own clients ever sent — our legacy column was BOOLEAN — but an API
+      caller mirroring the wire ints shouldn't get a validation error for a value
+      we already understand everywhere else (upstream parity, #2e45893d).
+    - str: trimmed + lowercased, and the legacy ``"true"``/``"false"``/``"0"``/
+      ``"1"`` spellings mapped, then validated against the ``Literal`` downstream
     - ``None`` / anything else: passed through unchanged, so ``Optional`` fields
       keep ``None`` and genuinely-invalid values surface as a normal ``Literal``
       validation error rather than being silently swallowed here.
     """
+    # bool must be checked before int — bool IS a subclass of int in Python.
     if isinstance(v, bool):
         return "on" if v else "off"
+    if isinstance(v, int):
+        return {0: "off", 1: "on", 2: "auto"}.get(v, v)
     if isinstance(v, str):
-        return v.strip().lower()
+        low = v.strip().lower()
+        return {"true": "on", "1": "on", "false": "off", "0": "off"}.get(low, low)
     return v
 
 

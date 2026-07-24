@@ -5242,6 +5242,7 @@ export default {
   printModal: {
     selectPrinter: 'Виберіть принтер',
     filamentMapping: 'Призначення філаменту',
+    plateFilamentsUnreadable: 'Не вдалося прочитати філаменти однієї з обраних плит, тож призначити її неможливо. Зніміть з неї вибір, щоб поставити в чергу решту.',
     filamentTypeNotFound: 'Тип не знайдено',
     filamentColorMismatch: 'Колір не збігається',
     filamentReady: 'Готово',

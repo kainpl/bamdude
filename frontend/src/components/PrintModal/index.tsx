@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertCircle, AlertTriangle, Calendar, Loader2, Pencil, Printer, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -14,7 +14,12 @@ import { Card, CardContent } from '../Card';
 import { Button } from '../Button';
 import { ConfirmModal } from '../ConfirmModal';
 import { useToast } from '../../contexts/ToastContext';
-import { buildLoadedFilaments, useFilamentMapping } from '../../hooks/useFilamentMapping';
+import {
+  buildAmsMapping,
+  buildFilamentComparison,
+  buildLoadedFilaments,
+  useFilamentMapping,
+} from '../../hooks/useFilamentMapping';
 import { useMultiPrinterFilamentMapping, type PerPrinterConfig } from '../../hooks/useMultiPrinterFilamentMapping';
 import { getCurrencySymbol } from '../../utils/currency';
 import { toDateTimeLocalValue, parseUTCDate } from '../../utils/date';
@@ -29,6 +34,7 @@ import { autoCalibrationCaps } from '../../utils/printerCapabilities';
 import { ScheduleOptionsPanel } from './ScheduleOptions';
 import { SwapMacrosPanel } from './SwapMacros';
 import type {
+  FilamentReqsData,
   PrintModalProps,
   PrintOptions,
   ScheduleOptions,
@@ -399,6 +405,100 @@ export function PrintModal({
   // Get AMS mapping from hook (only when single printer selected)
   const { amsMapping } = useFilamentMapping(effectiveFilamentReqs, printerStatus, manualMappings);
 
+  // --- Per-plate filament mapping (multi-plate submissions) ---------------
+  // Each plate prints its own subset of the file's slots and needs its own AMS
+  // mapping. `effectiveFilamentReqs` above is keyed on `selectedPlate`, which is
+  // null the moment two plates are ticked, so it holds the UNION of every plate's
+  // filaments — and tray assignment is stateful, so matching against that union
+  // lets two plates that share a colour on different slots compete for the same
+  // tray, sending the loser to a worse tray or to none. That one union mapping
+  // then went out with every plate and the scheduler uses a stored mapping
+  // verbatim, so a plate could print the wrong colour — decided by a panel the
+  // user never saw, because it is hidden for a multi-plate selection.
+  // So when several plates are selected we fetch each plate's requirements and
+  // map them separately (upstream #2551).
+  const selectedPlateIds = useMemo(() => [...selectedPlates].sort((a, b) => a - b), [selectedPlates]);
+  const isMultiPlateSelection = selectedPlates.size > 1;
+
+  const perPlateReqQueries = useQueries({
+    queries: (isMultiPlateSelection ? selectedPlateIds : []).map((plateId) => ({
+      queryKey: isLibraryFile
+        ? ['library-file-filaments', libraryFileId, plateId]
+        : ['archive-filaments', archiveId, plateId],
+      queryFn: () =>
+        isLibraryFile
+          ? api.getLibraryFileFilamentRequirements(libraryFileId!, plateId)
+          : api.getArchiveFilamentRequirements(archiveId!, plateId),
+      enabled: isLibraryFile ? !!libraryFileId : !!archiveId,
+      // Same policy as the single-plate query above: these keys are shared, and a
+      // retrying observer would leave the plate looking merely slow for seconds.
+      retry: false,
+    })),
+  });
+
+  // A plate that has not answered yet and a plate whose 3MF cannot be read look
+  // identical from here - both are simply absent from `perPlateReqs`. Neither may
+  // be treated as "this plate needs no filament": that would queue it with no
+  // mapping at all and it would print in whatever happens to be loaded. Both
+  // states gate submission instead (see `canSubmit`).
+  // `isPending` is "no data yet", not "a request is in flight" - a background
+  // refetch of a plate we already have must not disable the button under the user.
+  const perPlateReqsPending = perPlateReqQueries.some((q) => q.isPending);
+  const perPlateReqsFailed = perPlateReqQueries.some((q) => q.isError);
+
+  const perPlateReqs = useMemo(() => {
+    const byPlate = new Map<number, FilamentReqsData>();
+    selectedPlateIds.forEach((plateId, i) => {
+      const data = perPlateReqQueries[i]?.data;
+      if (data) byPlate.set(plateId, data);
+    });
+    return byPlate;
+    // Keyed on each query's last update stamp, not on the query objects (fresh every
+    // render) and not on a spread of their data (a dep array whose *length* changes
+    // with the plate count, which React treats as always-changed and warns about).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPlateIds, perPlateReqQueries.map((q) => q.dataUpdatedAt).join('|')]);
+
+  // Manual slot overrides are per plate: slot 3 of plate 1 and slot 3 of plate 2
+  // are different prints and may want different trays.
+  const [manualMappingsByPlate, setManualMappingsByPlate] = useState<Record<number, Record<number, number>>>({});
+
+  // Only ever computed for a single target printer: a global tray id names a
+  // different spool on a different machine, so a fan-out must not reuse these.
+  const perPlateAmsMappings = useMemo(() => {
+    const byPlate = new Map<number, number[] | undefined>();
+    if (!isMultiPlateSelection || !effectivePrinterId || selectedPrinters.length !== 1) return byPlate;
+
+    const loaded = buildLoadedFilaments(printerStatus);
+    const ftsActive = printerStatus?.fila_switch?.installed === true;
+
+    for (const plateId of selectedPlateIds) {
+      const reqs = perPlateReqs.get(plateId);
+      if (!reqs) continue;
+      byPlate.set(
+        plateId,
+        buildAmsMapping(
+          buildFilamentComparison(
+            reqs,
+            loaded,
+            manualMappingsByPlate[plateId] ?? {},
+            ftsActive,
+            printerStatus?.tray_now,
+          ),
+        ),
+      );
+    }
+    return byPlate;
+  }, [
+    isMultiPlateSelection,
+    effectivePrinterId,
+    printerStatus,
+    selectedPlateIds,
+    perPlateReqs,
+    manualMappingsByPlate,
+    selectedPrinters.length,
+  ]);
+
   // Multi-printer filament mapping (for per-printer configuration)
   const multiPrinterMapping = useMultiPrinterFilamentMapping(
     selectedPrinters,
@@ -433,6 +533,7 @@ export function PrintModal({
       const printersChanged = JSON.stringify(selectedPrinters.sort()) !== JSON.stringify(initialPrinterIds.sort());
       if (printersChanged || selectedPlate !== initialPlateId) {
         setManualMappings({});
+        setManualMappingsByPlate({});
         setPerPrinterConfigs({});
         setInitialExpandApplied(new Set());
       }
@@ -536,6 +637,31 @@ export function PrintModal({
     },
   });
 
+  // Get mapping for a specific printer (per-printer override or default).
+  // A multi-plate submission maps each plate on its own — `amsMapping` and the
+  // per-printer mappings are both derived from the union of every selected
+  // plate's filaments, which is not this plate's print (upstream #2551).
+  // Without a per-plate mapping we send NONE at all and let the scheduler
+  // compute one at dispatch (which it already does per plate); a union mapping
+  // would be used verbatim and could feed a slot from the wrong tray.
+  const getMappingForPrinter = (printerId: number, plateId: number | null): number[] | undefined => {
+    if (isMultiPlateSelection) {
+      // Fanning several plates across several printers would be a mapping per
+      // plate *per printer*; those items go out without one and the scheduler
+      // maps each plate against the printer it actually picks.
+      if (plateId === null || selectedPrinters.length !== 1) return undefined;
+      return perPlateAmsMappings.get(plateId);
+    }
+    // For multi-printer selection, check if this printer has an override
+    if (selectedPrinters.length > 1) {
+      const printerConfig = perPrinterConfigs[printerId];
+      if (printerConfig && !printerConfig.useDefault) {
+        return multiPrinterMapping.getFinalMapping(printerId);
+      }
+    }
+    return amsMapping;
+  };
+
   const handleSubmit = async (e?: React.FormEvent, options?: { skipFilamentCheck?: boolean }) => {
     e?.preventDefault();
 
@@ -588,9 +714,17 @@ export function PrintModal({
       (mode === 'reprint' || mode === 'add-to-queue')
     ) {
       const warningItems: FilamentWarningItem[] = [];
-      const filamentReqs = effectiveFilamentReqs?.filaments ?? [];
 
-      if (filamentReqs.length > 0 && spoolAssignmentsByPrinter.size > 0) {
+      // The spool check follows what is actually dispatched: one job per selected
+      // plate, each with the mapping that plate's queue item carries. Two plates
+      // can also draw on the same spool, so the demand is summed per tray before
+      // it is weighed against what is left on it - 60 g left does not cover two
+      // plates of 40 g, even though it covers either one of them (upstream #2551).
+      const plateJobs = isMultiPlateSelection
+        ? selectedPlateIds.map((plateId) => ({ plateId, reqs: perPlateReqs.get(plateId)?.filaments ?? [] }))
+        : [{ plateId: selectedPlate, reqs: effectiveFilamentReqs?.filaments ?? [] }];
+
+      if (plateJobs.some((job) => job.reqs.length > 0) && spoolAssignmentsByPrinter.size > 0) {
         const getRemainingWeight = (labelWeight: number, weightUsed: number) => {
           if (!Number.isFinite(labelWeight) || labelWeight <= 0) return null;
           if (!Number.isFinite(weightUsed) || weightUsed < 0) return null;
@@ -598,11 +732,6 @@ export function PrintModal({
         };
 
         for (const printerId of selectedPrinters) {
-          const printerMapping = selectedPrinters.length > 1
-            ? multiPrinterMapping.getFinalMapping(printerId)
-            : amsMapping;
-          if (!printerMapping) continue;
-
           const printerStatusForWarning = selectedPrinters.length > 1
             ? multiPrinterMapping.printerResults.find((result) => result.printerId === printerId)?.status
             : printerStatus;
@@ -614,26 +743,36 @@ export function PrintModal({
 
           if (!assignments) continue;
 
-          filamentReqs.forEach((req) => {
-            if (!req.slot_id || req.slot_id <= 0) return;
-            const globalTrayId = printerMapping[req.slot_id - 1];
-            if (!Number.isFinite(globalTrayId) || globalTrayId < 0) return;
+          const gramsByTray = new Map<number, number>();
+          for (const job of plateJobs) {
+            // No mapping means the scheduler picks the trays at dispatch, against
+            // an AMS state we cannot see from here - nothing to weigh.
+            const printerMapping = getMappingForPrinter(printerId, job.plateId);
+            if (!printerMapping) continue;
 
-            const assignment = assignments.get(globalTrayId);
-            const spool = assignment?.spool;
-            if (!spool) return;
+            job.reqs.forEach((req) => {
+              if (!req.slot_id || req.slot_id <= 0) return;
+              const globalTrayId = printerMapping[req.slot_id - 1];
+              if (!Number.isFinite(globalTrayId) || globalTrayId < 0) return;
+              gramsByTray.set(globalTrayId, (gramsByTray.get(globalTrayId) ?? 0) + req.used_grams);
+            });
+          }
+
+          for (const [globalTrayId, requiredGrams] of gramsByTray) {
+            const spool = assignments.get(globalTrayId)?.spool;
+            if (!spool) continue;
 
             const remainingGrams = getRemainingWeight(spool.label_weight, spool.weight_used);
-            if (remainingGrams === null) return;
-            if (remainingGrams >= req.used_grams) return;
+            if (remainingGrams === null) continue;
+            if (remainingGrams >= requiredGrams) continue;
 
             warningItems.push({
               printerName,
-              slotLabel: slotLabelByTray.get(globalTrayId) ?? `Slot ${req.slot_id}`,
-              requiredGrams: req.used_grams,
+              slotLabel: slotLabelByTray.get(globalTrayId) ?? `Tray ${globalTrayId}`,
+              requiredGrams,
               remainingGrams,
             });
-          });
+          }
         }
       }
 
@@ -663,17 +802,6 @@ export function PrintModal({
       errors: [],
     };
 
-    // Get mapping for a specific printer (per-printer override or default)
-    const getMappingForPrinter = (printerId: number): number[] | undefined => {
-      // For multi-printer selection, check if this printer has an override
-      if (selectedPrinters.length > 1) {
-        const printerConfig = perPrinterConfigs[printerId];
-        if (printerConfig && !printerConfig.useDefault) {
-          return multiPrinterMapping.getFinalMapping(printerId);
-        }
-      }
-      return amsMapping;
-    };
 
     // Swap-macro payload is only meaningful on a swap-enabled printer AND
     // when the source file doesn't already ship with swap macros baked in
@@ -692,15 +820,17 @@ export function PrintModal({
     };
 
     // Common queue data for add-to-queue and edit modes
-    const getQueueData = (printerId: number, plateOverride?: number | null): PrintQueueItemCreate => ({
+    const getQueueData = (printerId: number, plateOverride?: number | null): PrintQueueItemCreate => {
+      const plateId = plateOverride !== undefined ? plateOverride : selectedPlate;
+      return {
       queue_id: printerId,  // queue_id == printer_id (always per-printer queue)
       // Use library_file_id for library files, archive_id for archives
       archive_id: isLibraryFile ? undefined : archiveId,
       library_file_id: isLibraryFile ? libraryFileId : undefined,
       auto_off_after: scheduleOptions.autoOffAfter,
       manual_start: scheduleOptions.scheduleType === 'manual',
-      ams_mapping: getMappingForPrinter(printerId),
-      plate_id: plateOverride !== undefined ? plateOverride : selectedPlate,
+      ams_mapping: getMappingForPrinter(printerId, plateId),
+      plate_id: plateId,
       scheduled_time: scheduleOptions.scheduleType === 'scheduled' && scheduleOptions.scheduledTime
         ? new Date(scheduleOptions.scheduledTime).toISOString()
         : undefined,
@@ -708,7 +838,8 @@ export function PrintModal({
       ...getSwapPayloadForPrinter(printerId),
       quantity: mode === 'edit-queue-item' ? 1 : quantity,
       project_id: projectId,
-    });
+      };
+    };
 
     // Loop through plates × printers
     let progressCounter = 0;
@@ -723,7 +854,7 @@ export function PrintModal({
         try {
           if (mode === 'reprint') {
             // Reprint mode - start print immediately (single plate only, multi-select not available)
-            const printerMapping = getMappingForPrinter(printerId);
+            const printerMapping = getMappingForPrinter(printerId, plateId);
             const swapPayload = getSwapPayloadForPrinter(printerId);
             if (isLibraryFile) {
               await api.printLibraryFile(libraryFileId!, printerId, {
@@ -750,7 +881,7 @@ export function PrintModal({
             }
           } else if (mode === 'edit-queue-item' && progressCounter === 1) {
             // Edit mode - update the original queue item for the first entry
-            const printerMapping = getMappingForPrinter(printerId);
+            const printerMapping = getMappingForPrinter(printerId, plateId);
             const updateData: PrintQueueItemUpdate = {
               queue_id: printerId,  // queue_id == printer_id
               auto_off_after: scheduleOptions.autoOffAfter,
@@ -825,8 +956,22 @@ export function PrintModal({
     // For multi-plate files, need at least one plate selected
     if (isMultiPlate && selectedPlates.size === 0) return false;
 
+    // Every selected plate has to have answered before we can queue it: a plate
+    // still in flight would be sent with no mapping, and one that failed to load
+    // cannot be mapped at all. Deselect the failing plate to queue the rest - the
+    // banner below the plate list says which state we are in (upstream #2552).
+    if (perPlateReqsPending || perPlateReqsFailed) return false;
+
     return true;
-  }, [isAutoMode, selectedPrinters.length, isMultiPlate, selectedPlates.size, isPending]);
+  }, [
+    isAutoMode,
+    selectedPrinters.length,
+    isMultiPlate,
+    selectedPlates.size,
+    isPending,
+    perPlateReqsPending,
+    perPlateReqsFailed,
+  ]);
 
   // Modal title and action button text based on mode
   const getModalConfig = () => {
@@ -883,6 +1028,13 @@ export function PrintModal({
   const showFilamentMapping = effectivePrinterId && selectedPlates.size <= 1 && (
     isLibraryFile || (isMultiPlate ? selectedPlate !== null : true)
   );
+
+  // Several plates on one printer: one mapping panel per plate, each mapping only
+  // the slots its own plate prints. A multi-printer fan-out would be a panel per
+  // plate *per printer*, so those items ship without a mapping and the scheduler
+  // computes one per plate when it picks the printer (upstream #2551).
+  const showPerPlateFilamentMapping =
+    !!effectivePrinterId && isMultiPlateSelection && selectedPrinters.length === 1;
 
   return (
     <div
@@ -1030,7 +1182,12 @@ export function PrintModal({
                 showInactive={mode === 'edit-queue-item'}
                 disableBusy={mode === 'reprint'}
                 printerMappingResults={multiPrinterMapping.printerResults}
-                filamentReqs={effectiveFilamentReqs}
+                // The per-printer tray editor inside the selector maps ONE filament list
+                // onto each printer. Several plates have several lists, and a fan-out across
+                // printers ships no mapping at all (the scheduler maps each plate against
+                // the printer it picks), so the editor would be collecting tray choices it
+                // then throws away. Withhold its input (upstream #2552).
+                filamentReqs={isMultiPlateSelection ? undefined : effectiveFilamentReqs}
                 onAutoConfigurePrinter={multiPrinterMapping.autoConfigurePrinter}
                 onUpdatePrinterConfig={multiPrinterMapping.updatePrinterConfig}
                 slicedForModel={slicedForModel}
@@ -1064,6 +1221,18 @@ export function PrintModal({
               </div>
             )}
 
+            {/* A selected plate whose filaments could not be read cannot be mapped, so
+                it is not queued silently - say so and hold the button until the plate
+                is deselected (upstream #2552). */}
+            {perPlateReqsFailed && (
+              <div className="flex items-start gap-2 p-3 mb-2 bg-orange-50 dark:bg-orange-500/10 border border-orange-300 dark:border-orange-500/30 rounded-lg text-sm">
+                <AlertCircle className="w-4 h-4 text-orange-600 dark:text-orange-400 mt-0.5 flex-shrink-0" />
+                <p className="text-orange-700 dark:text-orange-400">
+                  {t('printModal.plateFilamentsUnreadable')}
+                </p>
+              </div>
+            )}
+
             {/* Filament mapping - only show when single printer selected (not in auto mode) */}
             {!isAutoMode && showFilamentMapping && !archiveDataMissing && selectedPrinters.length === 1 && (
               <FilamentMapping
@@ -1076,6 +1245,29 @@ export function PrintModal({
                 defaultCostPerKg={defaultCostPerKg}
               />
             )}
+
+            {/* Filament mapping, one panel per selected plate — each plate is its
+                own print with its own slots, so it gets its own AMS mapping. */}
+            {!isAutoMode && showPerPlateFilamentMapping && !archiveDataMissing && selectedPlateIds.map((plateId) => {
+              const plateReqs = perPlateReqs.get(plateId);
+              if (!plateReqs) return null;
+              const plate = platesData?.plates?.find((p) => p.index === plateId);
+              return (
+                <FilamentMapping
+                  key={plateId}
+                  printerId={effectivePrinterId!}
+                  plateLabel={plate?.name || t('printModal.plateNumber', { number: plateId })}
+                  filamentReqs={plateReqs}
+                  manualMappings={manualMappingsByPlate[plateId] ?? {}}
+                  onManualMappingChange={(mappings) =>
+                    setManualMappingsByPlate((prev) => ({ ...prev, [plateId]: mappings }))
+                  }
+                  defaultExpanded={false}
+                  currencySymbol={currencySymbol}
+                  defaultCostPerKg={defaultCostPerKg}
+                />
+              );
+            })}
 
             {/* Print options */}
             {(mode === 'reprint' || effectivePrinterCount > 0 || isAutoMode) && (
