@@ -1028,6 +1028,13 @@ class BackgroundDispatchService:
                         await db.execute(select(_PQ.id).where(_PQ.printer_id == job.printer_id))
                     ).scalar_one_or_none()
 
+                # Prefer the loaded built-in-inventory spool colours (per-slot) over
+                # the slicer's 3MF colours as soon as the archive exists; usage
+                # tracking refines this at completion. See services/archive_colors.py.
+                from backend.app.services.archive_colors import apply_loaded_spool_colors
+
+                await apply_loaded_spool_colors(db, archive, job.printer_id, job.options.get("ams_mapping"))
+
                 await db.commit()
             finally:
                 self._startup_lock.release()
@@ -1535,6 +1542,13 @@ class BackgroundDispatchService:
                     archive.queue_id = (
                         await db.execute(select(_PQ.id).where(_PQ.printer_id == job.printer_id))
                     ).scalar_one_or_none()
+
+                # Prefer the loaded built-in-inventory spool colours (per-slot) over
+                # the slicer's 3MF colours as soon as the archive exists; usage
+                # tracking refines this at completion. See services/archive_colors.py.
+                from backend.app.services.archive_colors import apply_loaded_spool_colors
+
+                await apply_loaded_spool_colors(db, archive, job.printer_id, job.options.get("ams_mapping"))
 
                 # Commit closes the write txn — was a flush() before, which
                 # left an open txn that other jobs' archive_print INSERTs
