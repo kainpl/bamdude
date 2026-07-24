@@ -949,6 +949,20 @@ async def stop_queue_item(
     item.completed_at = datetime.now(timezone.utc)
     item.error_message = "Stopped by user" if stop_sent else "Stopped by user (printer was offline)"
 
+    # Reconcile the linked archive when the printer is offline (#2603). When the
+    # stop command reaches the printer it later reports the stop over MQTT and
+    # on_print_complete flips the archive to cancelled. When the printer is
+    # offline no such event ever arrives, so the archive would stay "printing"
+    # forever (queue row cancelled, archive still printing). Close it out here,
+    # mirroring the MQTT cancelled-branch. Only touch a still-"printing" archive
+    # so a real completion that raced in is never overwritten.
+    if not stop_sent and item.archive_id:
+        archive = await db.get(PrintArchive, item.archive_id)
+        if archive and archive.status == "printing":
+            archive.status = "cancelled"
+            archive.completed_at = datetime.now(timezone.utc)
+            archive.failure_reason = "Stopped by user (printer was offline)"
+
     # User-initiated stop pauses the queue (not idle) so the operator
     # explicitly resumes after inspecting the printer / dealing with the
     # reason they stopped. Mirrors ``_cancel_item`` in the scheduler and

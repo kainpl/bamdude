@@ -120,6 +120,15 @@ _install_paho_publish_guard()
 #   "n3s/<id>"  – AMS HT (H2D Pro and similar; IDs typically start at 128)
 _AMS_MODULE_PREFIXES = ("ams/", "n3f/", "n3s/")
 
+# gcode_state values that mean the printer is not idle and must not be handed a
+# new start-print (#2598). Firmware rejects a project_file while busy with
+# 0500_4004 "Device is busy and cannot start a new task", and on some models
+# (A1 mini reported) that error cancels the RUNNING job. IDLE / FINISH / FAILED
+# are valid start targets and are deliberately excluded. Mirrors
+# printer_manager.ACTIVE_PRINT_STATES / print_scheduler._ACTIVE_PRINT_STATES /
+# background_dispatch._ACTIVE_PRINT_STATES.
+_ACTIVE_PRINT_STATES = frozenset({"PREPARE", "SLICING", "RUNNING", "PAUSE"})
+
 
 def apply_tray_exist_bits(
     units: list,
@@ -4475,7 +4484,28 @@ class BambuMQTTClient:
         also hardcodes it off for every model (per-print vibration calibration
         was removed from the Studio UI); the standalone calibration wizard
         remains the only way to run it.
+
+        Returns True when the start command was published, False/None otherwise
+        (not connected, or the printer is already busy — see the run-state guard).
         """
+        # Never dispatch project_file to a printer that is not idle (#2598). This
+        # is the single publish choke point for every dispatch path — the queue
+        # scheduler, a manual start, a webhook, and a Virtual-Printer forwarded
+        # job all funnel through here — so one guard covers them all. Firmware
+        # rejects a start while busy with 0500_4004 ("Device is busy and cannot
+        # start a new task"), and on an A1 mini that error cancels the RUNNING
+        # job. IDLE / FINISH / FAILED are valid start targets; only active-print
+        # states are refused. Callers treat False here as a DEFER (leave the queue
+        # item pending), not a failure.
+        if self.state.state in _ACTIVE_PRINT_STATES:
+            logger.warning(
+                "[%s] start_print refused: printer busy (gcode_state=%s) — not publishing project_file for %s",
+                self.serial_number,
+                self.state.state,
+                filename,
+            )
+            return False
+
         if self._client and self.state.connected:
             # Bambu print command format - matches Bambu Studio's format
             # Build ams_mapping2 from ams_mapping (detailed format with ams_id/slot_id)
@@ -4546,11 +4576,36 @@ class BambuMQTTClient:
                 self.model and self.model.upper().strip() in ("H2D", "H2D PRO", "H2DPRO", "H2C", "X2D")
             )
 
-            # If all mapped slots are external spool (no real AMS trays), force use_ams=False.
-            # P1S/P1P with no AMS rejects use_ams=True with "Failed to get AMS mapping table".
-            # Skip for dual-nozzle — use_ams controls nozzle routing on those printers.
-            if ams_mapping and use_ams and not is_dual_nozzle:
-                if all(t is None or int(t) < 0 or int(t) >= 254 for t in ams_mapping):
+            # Reconcile use_ams against the resolved ams_mapping for single-nozzle
+            # printers — the mapping is authoritative about whether this print
+            # actually feeds from the AMS. Skip for dual-nozzle printers, where
+            # use_ams encodes nozzle routing rather than an AMS on/off flag.
+            #
+            # Two symmetric corrections:
+            # (a) A mapping that resolves a *real* AMS tray (0-253) forces
+            #     use_ams=True even if it arrived False. A print sliced against a
+            #     Virtual Printer (which advertises no AMS) carries use_ams=false on
+            #     its queue item, but at dispatch the AutoQueue colour-matches a real
+            #     printer and resolves a real AMS slot; without this the stale False
+            #     reaches the printer, which ignores the mapped slot and aborts at
+            #     layer 0 on the empty external spool (#2595).
+            # (b) Only an *explicit* external/virtual spool (254/255) may downgrade
+            #     to use_ams=False (P1S/P1P with no AMS rejects use_ams=True). An
+            #     unresolved slot (-1) does NEITHER — treating it as external
+            #     silently started the print against an empty feed (#2589). Real tray
+            #     0-253, external >=254, unresolved -1 stay distinct so an unresolved
+            #     mapping fails loudly (or is recomputed upstream) instead of going
+            #     external, and is never force-enabled by (a).
+            if ams_mapping and not is_dual_nozzle:
+                has_real_tray = any(t is not None and 0 <= int(t) <= 253 for t in ams_mapping)
+                all_external = all(t is None or int(t) >= 254 for t in ams_mapping)
+                if has_real_tray and not use_ams:
+                    use_ams = True
+                    logger.info(
+                        "[%s] AMS mapping resolved a real slot — setting use_ams=True (#2595)",
+                        self.serial_number,
+                    )
+                elif use_ams and all_external:
                     use_ams = False
                     logger.info(
                         "[%s] All filament slots use external spool — setting use_ams=False",
