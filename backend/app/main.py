@@ -1262,21 +1262,25 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         if current_milestone > last_milestone:
             _last_progress_milestone[printer_id] = current_milestone
             try:
-                async with async_session() as db:
-                    from backend.app.models.printer import Printer
+                from backend.app.models.printer import Printer
 
+                # Read the printer in a short session and release the connection
+                # BEFORE the ~15s camera snapshot below — holding it across the grab
+                # pinned a pooled connection per milestone, per printer (#2572).
+                async with async_session() as db:
                     result = await db.execute(select(Printer).where(Printer.id == printer_id))
                     printer = result.scalar_one_or_none()
-                    printer_name = printer.name if printer else f"Printer {printer_id}"
-                    filename = state.subtask_name or state.gcode_file or "Unknown"
-                    # remaining_time is in minutes, convert to seconds for notification
-                    remaining_time_seconds = state.remaining_time * 60 if state.remaining_time else None
 
-                    # Capture camera snapshot for notification image attachment
-                    image_data = await _capture_snapshot_for_notification(
-                        printer_id, printer, logging.getLogger(__name__)
-                    )
+                printer_name = printer.name if printer else f"Printer {printer_id}"
+                filename = state.subtask_name or state.gcode_file or "Unknown"
+                # remaining_time is in minutes, convert to seconds for notification
+                remaining_time_seconds = state.remaining_time * 60 if state.remaining_time else None
 
+                # Capture camera snapshot for notification image attachment (no DB held).
+                image_data = await _capture_snapshot_for_notification(printer_id, printer, logging.getLogger(__name__))
+
+                # Notification send needs a session (provider/template lookups).
+                async with async_session() as db:
                     await notification_service.on_print_progress(
                         printer_id,
                         printer_name,
@@ -1319,30 +1323,36 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
             new_errors = [e for e in current_hms_errors if f"{e.attr:08x}" in new_error_codes and e.severity >= 2]
 
             try:
-                async with async_session() as db:
-                    from backend.app.models.printer import Printer
+                from backend.app.models.printer import Printer
 
+                # Read the printer in a short session and release the connection
+                # BEFORE the ~15s camera snapshot below (#2572).
+                async with async_session() as db:
                     result = await db.execute(select(Printer).where(Printer.id == printer_id))
                     printer = result.scalar_one_or_none()
-                    printer_name = printer.name if printer else f"Printer {printer_id}"
 
-                    # Format error details for notification
-                    # Module 0x07 = AMS/Filament, 0x05 = Nozzle, 0x0C = Motion Controller, etc.
-                    module_names = {
-                        0x03: "Print/Task",
-                        0x05: "Nozzle/Extruder",
-                        0x07: "AMS/Filament",
-                        0x0C: "Motion Controller",
-                        0x12: "Chamber",
-                    }
+                printer_name = printer.name if printer else f"Printer {printer_id}"
 
-                    from backend.app.services.hms_errors import get_error_description
+                # Format error details for notification
+                # Module 0x07 = AMS/Filament, 0x05 = Nozzle, 0x0C = Motion Controller, etc.
+                module_names = {
+                    0x03: "Print/Task",
+                    0x05: "Nozzle/Extruder",
+                    0x07: "AMS/Filament",
+                    0x0C: "Motion Controller",
+                    0x12: "Chamber",
+                }
 
-                    # Capture camera snapshot once for all error notifications
-                    error_image_data = await _capture_snapshot_for_notification(
-                        printer_id, printer, logging.getLogger(__name__)
-                    )
+                from backend.app.services.hms_errors import get_error_description
 
+                # Capture camera snapshot once for all error notifications (no DB held).
+                error_image_data = await _capture_snapshot_for_notification(
+                    printer_id, printer, logging.getLogger(__name__)
+                )
+
+                # The send loop + MQTT relay run in a fresh session (the read one
+                # was released before the snapshot).
+                async with async_session() as db:
                     sent_count = 0
                     for error in new_errors:
                         module_name = module_names.get(error.module, f"Module 0x{error.module:02X}")

@@ -70,6 +70,18 @@ class Settings(BaseSettings):
     static_dir: Path = _app_dir / "static"  # Static files are part of app, not data
     database_url: str = _external_db_url or f"sqlite+aiosqlite:///{_db_path}"
 
+    # Database connection-pool sizing. ``None`` = use the built-in, dialect-aware
+    # default (PostgreSQL: pool_size 20 + max_overflow 80 + pre-ping + recycle
+    # 1800 + LIFO; SQLite: 20 + 200). Large PostgreSQL printer farms can raise
+    # these via the DB_POOL_SIZE / DB_MAX_OVERFLOW / DB_POOL_TIMEOUT /
+    # DB_POOL_RECYCLE / DB_POOL_USE_LIFO env vars (issue #2572). Ensure PostgreSQL
+    # ``max_connections`` comfortably exceeds (pool_size + max_overflow) x workers.
+    db_pool_size: int | None = None
+    db_max_overflow: int | None = None
+    db_pool_timeout: int | None = None
+    db_pool_recycle: int | None = None
+    db_pool_use_lifo: bool | None = None
+
     # Explicit path to the ffmpeg executable, used for RTSP camera streaming on
     # the X1 / X2 / H2 / P2 series (the A1 / P1 chamber-image protocol needs no
     # ffmpeg). Optional — when unset, the app searches PATH + common install

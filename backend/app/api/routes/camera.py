@@ -11,6 +11,7 @@ from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core import database
 from backend.app.core.auth import (
     RequireCameraStreamToken,
     RequirePermission,
@@ -621,7 +622,6 @@ async def camera_stream(
     request: Request,
     fps: int = 10,
     _token: None = RequireCameraStreamToken,
-    db: AsyncSession = Depends(get_db),
 ):
     """Stream live video from printer camera as MJPEG.
 
@@ -640,7 +640,18 @@ async def camera_stream(
         printer_id: Printer ID
         fps: Target frames per second (default: 10, max: 30)
     """
-    printer = await get_printer_or_404(printer_id, db)
+    # Fetch the printer in a short-lived session so the pooled DB connection is
+    # released BEFORE we start streaming. A live MJPEG stream runs for as long as
+    # the browser tab stays open (potentially hours); holding the Depends(get_db)
+    # session across it pinned one pooled connection per open camera tab per
+    # printer — a top contributor to pool exhaustion on large farms (#2572).
+    # expire_on_commit=False keeps the printer's already-loaded columns readable
+    # after the session closes, and everything below reads only scalar attributes
+    # (model, ip_address, access_code, external_camera_*) — no lazy loads.
+    # Reference async_session via the module so the maker is looked up at call
+    # time (stays in sync with reinitialize_database() + test patches).
+    async with database.async_session() as db:
+        printer = await get_printer_or_404(printer_id, db)
 
     # Check for external camera first
     if printer.external_camera_enabled and printer.external_camera_url:
@@ -876,7 +887,6 @@ async def stop_camera_stream(
 async def camera_snapshot(
     printer_id: int,
     _token: None = RequireCameraStreamToken,
-    db: AsyncSession = Depends(get_db),
 ):
     """Capture a single frame from the printer camera.
 
@@ -888,7 +898,15 @@ async def camera_snapshot(
     import tempfile
     from pathlib import Path
 
-    printer = await get_printer_or_404(printer_id, db)
+    # Fetch the printer in a short-lived session and release the pooled DB
+    # connection BEFORE the camera capture below (up to 15s, longer under a
+    # saturated FTP/camera pool). Holding a Depends(get_db) session across the
+    # grab pinned one connection per snapshot — and the Cam Wall polls this per
+    # tile — so overlapping captures could pile up connections on a large farm
+    # (#2572, sibling of the camera_stream fix). Everything below reads only
+    # already-loaded scalar columns (expire_on_commit=False).
+    async with database.async_session() as db:
+        printer = await get_printer_or_404(printer_id, db)
 
     # Check for external camera first
     if printer.external_camera_enabled and printer.external_camera_url:

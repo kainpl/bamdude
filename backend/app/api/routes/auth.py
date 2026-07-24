@@ -765,7 +765,9 @@ async def get_current_user_info(
             )
 
         jti = payload.get("jti")
-        if jti and await is_jti_revoked(jti):
+        # Reuse the session already open below for the revocation check, so this
+        # request makes a single pooled checkout instead of two (#2572).
+        if jti and await is_jti_revoked(jti, db):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Could not validate credentials",

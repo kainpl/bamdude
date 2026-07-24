@@ -1000,12 +1000,20 @@ async def download_file_try_paths_async(
     local_path: Path,
     socket_timeout: float | None = None,
     printer_model: str | None = None,
+    timeout: float = 90.0,
 ) -> bool:
     """Try downloading a file from multiple paths using a single connection.
 
     Args:
         socket_timeout: FTP socket timeout for slow connections (e.g., A1 printers)
         printer_model: Printer model for A1-specific workarounds
+        timeout: overall async cap. The per-socket timeout only bounds an
+            in-flight worker; it does NOT bound how long this coroutine waits for
+            a free executor slot. On a large farm where offline printers keep
+            workers busy on dead connects, that wait is otherwise unbounded — and
+            any caller holding a DB connection while awaiting this would pin it
+            until the pool is exhausted (#2572). The cap converts that into a
+            bounded wait; the orphaned worker finishes and its result is discarded.
     """
     loop = asyncio.get_event_loop()
 
@@ -1028,7 +1036,11 @@ async def download_file_try_paths_async(
         finally:
             client.disconnect()
 
-    return await loop.run_in_executor(None, _download)
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(None, _download), timeout=timeout)
+    except TimeoutError:
+        logger.warning("FTP download_try_paths exceeded its %ss cap for %s (#2572)", timeout, ip_address)
+        return False
 
 
 @_ftp_serialized
@@ -1150,6 +1162,7 @@ async def delete_file_async(
     remote_path: str,
     socket_timeout: float | None = None,
     printer_model: str | None = None,
+    timeout: float = 60.0,
 ) -> DeleteResult:
     """Async wrapper for deleting a file.
 
@@ -1160,6 +1173,8 @@ async def delete_file_async(
     Args:
         socket_timeout: FTP socket timeout for slow connections (e.g., A1 printers)
         printer_model: Printer model for A1-specific workarounds
+        timeout: overall async cap so a saturated executor can't pin the caller
+            (and any DB connection it holds) indefinitely (#2572).
     """
     loop = asyncio.get_event_loop()
 
@@ -1172,7 +1187,11 @@ async def delete_file_async(
                 client.disconnect()
         return DeleteResult.FAILED
 
-    return await loop.run_in_executor(None, _delete)
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(None, _delete), timeout=timeout)
+    except TimeoutError:
+        logger.warning("FTP delete_file exceeded its %ss cap for %s (#2572)", timeout, ip_address)
+        return DeleteResult.FAILED
 
 
 @_ftp_serialized
@@ -1239,12 +1258,18 @@ async def download_file_bytes_async(
     remote_path: str,
     socket_timeout: float | None = None,
     printer_model: str | None = None,
+    timeout: float = 300.0,
 ) -> bytes | None:
     """Async wrapper for downloading file as bytes.
 
     Args:
         socket_timeout: FTP socket timeout for slow connections (e.g., A1 printers)
         printer_model: Printer model for A1-specific workarounds
+        timeout: overall async cap so a saturated executor can't pin the caller
+            (and any DB connection it holds) indefinitely (#2572). Generous by
+            default — this pulls whole files (timelapse video, gcode) that can
+            legitimately take minutes over slow Wi-Fi; the cap only guards against
+            a permanently-starved pool, not a slow-but-progressing transfer.
     """
     loop = asyncio.get_event_loop()
 
@@ -1257,7 +1282,11 @@ async def download_file_bytes_async(
                 client.disconnect()
         return None
 
-    return await loop.run_in_executor(None, _download)
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(None, _download), timeout=timeout)
+    except TimeoutError:
+        logger.warning("FTP download_bytes exceeded its %ss cap for %s (#2572)", timeout, ip_address)
+        return None
 
 
 @_ftp_serialized
@@ -1290,12 +1319,15 @@ async def get_storage_info_async(
     access_code: str,
     socket_timeout: float | None = None,
     printer_model: str | None = None,
+    timeout: float = 60.0,
 ) -> dict | None:
     """Async wrapper for getting storage info.
 
     Args:
         socket_timeout: FTP socket timeout for slow connections (e.g., A1 printers)
         printer_model: Printer model for A1-specific workarounds
+        timeout: overall async cap so a saturated executor can't pin the caller
+            (and any DB connection it holds) indefinitely (#2572).
     """
     loop = asyncio.get_event_loop()
 
@@ -1308,7 +1340,11 @@ async def get_storage_info_async(
                 client.disconnect()
         return None
 
-    return await loop.run_in_executor(None, _get_storage)
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(None, _get_storage), timeout=timeout)
+    except TimeoutError:
+        logger.warning("FTP get_storage_info exceeded its %ss cap for %s (#2572)", timeout, ip_address)
+        return None
 
 
 async def get_ftp_retry_settings() -> tuple[bool, int, float, float]:

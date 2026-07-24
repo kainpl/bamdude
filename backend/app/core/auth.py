@@ -671,16 +671,30 @@ async def revoke_jti(jti: str, expires_at: datetime, username: str | None = None
             await db.rollback()  # jti already revoked — desired state, ignore
 
 
-async def is_jti_revoked(jti: str) -> bool:
-    """Return True if the given ``jti`` has been revoked."""
-    async with async_session() as db:
-        result = await db.execute(
+async def is_jti_revoked(jti: str, db: AsyncSession | None = None) -> bool:
+    """Return True if the given ``jti`` has been revoked.
+
+    Pass ``db`` to reuse the caller's session instead of opening a new one
+    (issue #2572): callers that already hold a session (e.g. ``/auth/me``)
+    otherwise checked out a second pooled connection per request, doubling pool
+    pressure — a login burst then exhausted the pool. With ``db`` omitted a
+    short session is opened as before, for callers that check the jti before
+    they have a session open.
+    """
+
+    async def _query(session: AsyncSession) -> bool:
+        result = await session.execute(
             select(AuthEphemeralToken).where(
                 AuthEphemeralToken.token == jti,
                 AuthEphemeralToken.token_type == TokenType.REVOKED_JTI,
             )
         )
         return result.scalar_one_or_none() is not None
+
+    if db is not None:
+        return await _query(db)
+    async with async_session() as own_db:
+        return await _query(own_db)
 
 
 async def get_user_by_username(db: AsyncSession, username: str) -> User | None:
@@ -818,10 +832,11 @@ async def get_current_user_optional(
         return None
 
     jti = payload.get("jti")
-    if jti and await is_jti_revoked(jti):
-        return None
-
     async with async_session() as db:
+        # Reuse this one session for the revocation check too, so each request
+        # makes a single pooled checkout instead of two (#2572).
+        if jti and await is_jti_revoked(jti, db):
+            return None
         user = await get_user_by_username(db, username)
         if user is None or not user.is_active:
             return None
@@ -855,10 +870,11 @@ async def get_current_user(
         raise credentials_exception
 
     jti = payload.get("jti")
-    if jti and await is_jti_revoked(jti):
-        raise credentials_exception
-
     async with async_session() as db:
+        # Reuse this one session for the revocation check too, so each request
+        # makes a single pooled checkout instead of two (#2572).
+        if jti and await is_jti_revoked(jti, db):
+            raise credentials_exception
         user = await get_user_by_username(db, username)
         if user is None:
             raise credentials_exception

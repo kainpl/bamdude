@@ -681,6 +681,15 @@ async def get_filament_info(
     # Phase 2: Try cloud for uncached IDs
     if unresolved_ids:
         cloud = await build_authenticated_cloud(db, current_user)
+        # Release the request's DB transaction before the sequential Bambu Cloud
+        # round-trips below (#2572). build_authenticated_cloud has read the
+        # stored token — the only DB access this phase needs — and nothing until
+        # the fallback phase touches the DB again. Without this the session sat
+        # "idle in transaction" for the full duration of N external HTTP calls
+        # (the printer overview mounts one filament-info request per card, so a
+        # farm dashboard pins a pooled connection per in-flight request). A later
+        # DB read transparently opens a fresh transaction on the same session.
+        await db.rollback()
         if cloud is not None and cloud.is_authenticated:
             try:
                 still_unresolved: list[str] = []

@@ -273,6 +273,15 @@ async def preheat_and_soak(
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.warning("Preheat chamber M141 failed on printer %s: %s", printer.id, exc)
 
+    # Release the pooled DB connection before the (potentially many-minute)
+    # heat-soak wait below (#2572). Every setting this stage needs was read
+    # above; the wait/soak loop only polls printer_manager state and sleeps — it
+    # never touches the DB. Without this the caller's transaction sat "idle in
+    # transaction" for the whole soak, pinning one pooled connection per
+    # preheating printer. expire_on_commit=False keeps printer/archive readable;
+    # there are no pending writes to lose here.
+    await db.commit()
+
     # Wait for convergence. Bed warm-up is fast; chamber via M141 a few minutes;
     # chamber via bed radiation can take 20+. "Converged" = bed reached target AND
     # (no chamber phase, no sensor, or sensor reached target).

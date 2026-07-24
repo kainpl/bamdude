@@ -27,6 +27,14 @@ def _make_client():
     return client
 
 
+def _make_db():
+    """DB stand-in whose ``commit()`` is awaitable — ``preheat_and_soak`` now
+    commits to release the pooled connection before the heat-soak wait (#2572)."""
+    db = MagicMock()
+    db.commit = AsyncMock()
+    return db
+
+
 def _make_state(bed=100.0, chamber=60.0, airduct_mode=0, ams=None):
     return SimpleNamespace(
         temperatures={"bed": bed, "chamber": chamber},
@@ -129,7 +137,7 @@ async def test_on_runs_despite_global_off():
         patch.object(preheat.asyncio, "sleep", AsyncMock()),
     ):
         await preheat_and_soak(
-            MagicMock(), _make_printer("H2D"), _make_archive(bed_temperature=100), options={"preheat_override": "on"}
+            _make_db(), _make_printer("H2D"), _make_archive(bed_temperature=100), options={"preheat_override": "on"}
         )
     client.set_bed_temperature.assert_called_once_with(100)
 
@@ -151,7 +159,7 @@ async def test_explicit_chamber_override_beats_filament_map():
     ):
         # H2D is a chamber-heater model → explicit target 55 fires M141 at 55.
         await preheat_and_soak(
-            MagicMock(),
+            _make_db(),
             _make_printer("H2D"),
             _make_archive(),
             options={"preheat_override": "on", "preheat_chamber_target_override": 55},
@@ -173,7 +181,7 @@ async def test_sensor_only_model_no_m141():
         patch.object(preheat.asyncio, "sleep", AsyncMock()),
     ):
         await preheat_and_soak(
-            MagicMock(),
+            _make_db(),
             _make_printer("X1C"),
             _make_archive(),
             options={"preheat_override": "on", "preheat_chamber_target_override": 50},
@@ -196,7 +204,7 @@ async def test_airduct_flip_to_heating_on_airduct_model():
         patch.object(preheat.asyncio, "sleep", AsyncMock()),
     ):
         await preheat_and_soak(
-            MagicMock(),
+            _make_db(),
             _make_printer("H2D"),
             _make_archive(),
             options={"preheat_override": "on", "preheat_chamber_target_override": 50},
@@ -218,7 +226,7 @@ async def test_airduct_not_flipped_when_already_correct():
         patch.object(preheat.asyncio, "sleep", AsyncMock()),
     ):
         await preheat_and_soak(
-            MagicMock(),
+            _make_db(),
             _make_printer("H2D"),
             _make_archive(),
             options={"preheat_override": "on", "preheat_chamber_target_override": 50},
@@ -268,7 +276,7 @@ async def test_cancel_check_propagates():
         pytest.raises(_Cancel),
     ):
         await preheat_and_soak(
-            MagicMock(),
+            _make_db(),
             _make_printer("H2D"),
             _make_archive(),
             options={"preheat_override": "on", "preheat_chamber_target_override": 50},
