@@ -2,29 +2,55 @@ import { useTranslation } from 'react-i18next';
 import { Cpu } from 'lucide-react';
 
 import type { AddonInfo, PrinterSettingsGetResponse } from '../api/client';
+import { getPrinterImage } from '../utils/printer';
 
 interface Props {
   data: PrinterSettingsGetResponse;
   onRefetch: () => void;
 }
 
-// Bundle every add-on image (printer thumbnails + accessory icons) mirrored from
-// BambuStudio under assets/addons. Keyed by filename stem == the backend's
-// `image_key` (e.g. "printer_x2d", "ams", "exhaust_fan").
-const _addonImageModules = import.meta.glob('../assets/addons/*.{svg,png}', {
-  eager: true,
-  query: '?url',
-  import: 'default',
-}) as Record<string, string>;
+// Accessory thumbnails, served statically from `public/img/addons/` — they are NOT
+// bundled into the JS; the browser loads them from the server on demand, exactly like
+// the printer images under `public/img/printers/`.
+//
+// EDIT THIS MAP to swap or rename accessory images: keys are the backend's `image_key`,
+// values are the filenames sitting in `public/img/addons/`. To use your own picture,
+// drop the file into that folder and point the key's value at it (svg or png both work).
+// (The printer's OWN row does NOT use this map — see `imageFor` below.)
+// Mirrored from BambuStudio — attribution in `public/img/addons/NOTICE.md`.
+const ADDON_IMG_BASE = '/img/addons';
 
-const ADDON_IMAGES: Record<string, string> = {};
-for (const [path, url] of Object.entries(_addonImageModules)) {
-  const stem = path.split('/').pop()?.replace(/\.(svg|png)$/, '');
-  if (stem) ADDON_IMAGES[stem] = url;
-}
+const ADDON_IMAGE_FILES: Record<string, string> = {
+  // AMS + filament handling
+  ams: 'ams.svg',
+  ams_lite: 'ams_lite.svg',
+  ams_ht: 'ams_ht.png',
+  air_pump: 'air_pump.png',
+  filament_buffer_p2s: 'filament_buffer_p2s.png',
+  filament_buffer_x2d: 'filament_buffer_x2d.png',
+  filament_track: 'filament_track.png',
+  // Accessories
+  cutting: 'cutting.png',
+  exhaust_fan: 'exhaust_fan.png',
+  ext: 'ext.png',
+  extinguish: 'extinguish.png',
+  laser: 'laser.png',
+  laser_40: 'laser_40.png',
+  nozzle_rack: 'nozzle_rack.png',
+  rotary: 'rotary.png',
+};
 
 function imageFor(key: string): string | undefined {
-  return ADDON_IMAGES[key] ?? (key.startsWith('printer_') ? ADDON_IMAGES['printer_generic'] : undefined);
+  // The printer's own row (`image_key` = "printer_<slug>") reuses the SHARED printer
+  // thumbnails under public/img/printers/ — the same images as the printer cards, via
+  // getPrinterImage — so there is no duplicate copy. "printer_generic" (unknown model)
+  // uses the generic printer illustration moved into public/img/printers/generic.svg.
+  if (key.startsWith('printer_')) {
+    if (key === 'printer_generic') return '/img/printers/generic.svg';
+    return getPrinterImage(key.slice('printer_'.length)); // slug e.g. "x2d" → /img/printers/x2d.png
+  }
+  const file = ADDON_IMAGE_FILES[key];
+  return file ? `${ADDON_IMG_BASE}/${file}` : undefined;
 }
 
 export function PrinterAddonsTab({ data, onRefetch }: Props) {
