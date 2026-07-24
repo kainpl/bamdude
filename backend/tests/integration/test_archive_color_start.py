@@ -96,3 +96,39 @@ async def test_start_noop_in_spoolman_mode(db_session, printer_factory):
     await db_session.refresh(archive)
 
     assert archive.filament_color == "#161616,#0011FF"  # Spoolman applies at completion instead
+
+
+@pytest.mark.asyncio
+async def test_no_3mf_uses_spool_colours_from_mapping(db_session, printer_factory):
+    # No plates in extra_data (no 3MF) -> spool colours only, best-effort.
+    printer = await printer_factory(name="P3", serial_number="COLOR3")
+    spool = Spool(material="PLA", rgba="000000FF")
+    db_session.add(spool)
+    await db_session.flush()
+    db_session.add(SpoolAssignment(spool_id=spool.id, printer_id=printer.id, ams_id=0, tray_id=0))
+    await db_session.commit()
+
+    archive = await _make_archive(db_session, printer.id, plates=None, filament_color="ABCDEFFF")
+    # slot 1 -> global 0 (assigned black); slot 2 -> unmapped (-1) -> nothing.
+    await apply_loaded_spool_colors(db_session, archive, printer.id, [0, -1])
+    await db_session.commit()
+    await db_session.refresh(archive)
+
+    assert archive.filament_color == "#000000"
+
+
+@pytest.mark.asyncio
+async def test_no_3mf_without_mapping_leaves_unchanged(db_session, printer_factory):
+    printer = await printer_factory(name="P4", serial_number="COLOR4")
+    spool = Spool(material="PLA", rgba="000000FF")
+    db_session.add(spool)
+    await db_session.flush()
+    db_session.add(SpoolAssignment(spool_id=spool.id, printer_id=printer.id, ams_id=0, tray_id=0))
+    await db_session.commit()
+
+    archive = await _make_archive(db_session, printer.id, plates=None, filament_color="ABCDEFFF")
+    await apply_loaded_spool_colors(db_session, archive, printer.id, None)  # external start, no mapping
+    await db_session.commit()
+    await db_session.refresh(archive)
+
+    assert archive.filament_color == "ABCDEFFF"  # not covered

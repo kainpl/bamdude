@@ -3337,6 +3337,17 @@ async def on_print_start(printer_id: int, data: dict):
                 await db.commit()
                 await db.refresh(fallback_archive)
 
+                # Best-effort: no 3MF means no sliced colour to fall back to, but
+                # the used slots may still carry loaded built-in-inventory spools —
+                # prefer their colours over the raw MQTT tray_color fallback above.
+                # No-op without an ams_mapping (external start) or in Spoolman mode.
+                from backend.app.services.archive_colors import apply_loaded_spool_colors
+
+                await apply_loaded_spool_colors(
+                    db, fallback_archive, printer_id, _get_start_ams_mapping(data, fallback_archive.id)
+                )
+                await db.commit()
+
                 logger.info("Created fallback archive %s for %s (no 3MF available)", fallback_archive.id, print_name)
 
                 # Start timelapse session if external camera is enabled
