@@ -3,7 +3,7 @@ import logging
 
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, Session
 
 from backend.app.core.config import settings
 from backend.app.core.db_dialect import is_sqlite
@@ -97,6 +97,22 @@ async def reinitialize_database():
 
 class Base(DeclarativeBase):
     pass
+
+
+@event.listens_for(Session, "before_flush")
+def _recompute_archive_time_metrics(session, flush_context, instances):
+    """Keep ``PrintArchive.actual_time_seconds`` / ``time_accuracy`` in sync with the
+    row's timestamps + status on every flush, across all write paths (completion,
+    cleanup-closure, dispatch finalize, attach_3mf, manual create, re-parse). Pure
+    arithmetic on each dirty/new archive's own attributes — no queries, no re-loop."""
+    from backend.app.models.archive import PrintArchive  # lazy: avoid models↔database cycle
+    from backend.app.services.archive_time_metrics import compute_time_metrics
+
+    for obj in (*session.new, *session.dirty):
+        if isinstance(obj, PrintArchive):
+            obj.actual_time_seconds, obj.time_accuracy = compute_time_metrics(
+                obj.started_at, obj.completed_at, obj.status, obj.print_time_seconds
+            )
 
 
 async def get_db() -> AsyncSession:
