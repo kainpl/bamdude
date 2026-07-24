@@ -98,33 +98,6 @@ def _apply_user_filter(conditions: list, created_by_id: int | None):
             conditions.append(PrintArchive.created_by_id == created_by_id)
 
 
-def compute_time_accuracy(archive: PrintArchive) -> dict:
-    """Compute actual print time and accuracy for an archive.
-
-    Returns dict with actual_time_seconds and time_accuracy.
-    time_accuracy = (estimated / actual) * 100
-    - 100% = perfect estimate
-    - >100% = print was faster than estimated
-    - <100% = print took longer than estimated
-    """
-    result = {"actual_time_seconds": None, "time_accuracy": None}
-
-    if archive.started_at and archive.completed_at and archive.status == "completed":
-        actual_seconds = int((archive.completed_at - archive.started_at).total_seconds())
-        if actual_seconds > 0:
-            result["actual_time_seconds"] = actual_seconds
-
-            if archive.print_time_seconds and archive.print_time_seconds > 0:
-                # Calculate accuracy as percentage
-                accuracy = (archive.print_time_seconds / actual_seconds) * 100
-                # Sanity check: skip unreasonable values (e.g., manually changed status)
-                # Valid range: 5% to 500% (print took 20x longer to 5x faster than estimated)
-                if 5 <= accuracy <= 500:
-                    result["time_accuracy"] = round(accuracy, 1)
-
-    return result
-
-
 def _parse_applied_patches(raw: str | None) -> list[str] | None:
     """Decode the ``applied_patches`` TEXT column into a list for response."""
     if not raw:
@@ -202,9 +175,9 @@ def archive_to_response(
         "created_by_username": archive.created_by.username if archive.created_by else None,
     }
 
-    # Add computed time accuracy fields
-    accuracy_data = compute_time_accuracy(archive)
-    data.update(accuracy_data)
+    # Persisted at write time by the before_flush event (services/archive_time_metrics).
+    data["actual_time_seconds"] = archive.actual_time_seconds
+    data["time_accuracy"] = archive.time_accuracy
 
     return data
 
@@ -451,6 +424,7 @@ async def list_archives_slim(
             PrintArchive.print_name,
             PrintArchive.filename,
             PrintArchive.print_time_seconds,
+            PrintArchive.actual_time_seconds,
             PrintArchive.started_at,
             PrintArchive.completed_at,
             PrintArchive.filament_used_grams,
@@ -477,14 +451,7 @@ async def list_archives_slim(
             "print_name": r.print_name,
             "filename": r.filename,
             "print_time_seconds": r.print_time_seconds,
-            "actual_time_seconds": (
-                int((r.completed_at - r.started_at).total_seconds())
-                if r.started_at
-                and r.completed_at
-                and r.status == "completed"
-                and (r.completed_at - r.started_at).total_seconds() > 0
-                else None
-            ),
+            "actual_time_seconds": r.actual_time_seconds,
             "filament_used_grams": r.filament_used_grams,
             "filament_type": r.filament_type,
             "filament_color": r.filament_color,
@@ -1085,15 +1052,14 @@ async def get_archive_stats(
         printer_accuracies: dict[str, list[float]] = {}
 
         for archive in archives_with_times:
-            acc_data = compute_time_accuracy(archive)
-            if acc_data["time_accuracy"] is not None:
-                accuracies.append(acc_data["time_accuracy"])
+            if archive.time_accuracy is not None:
+                accuracies.append(archive.time_accuracy)
 
                 # Group by printer
                 printer_key = str(archive.printer_id) if archive.printer_id else "unknown"
                 if printer_key not in printer_accuracies:
                     printer_accuracies[printer_key] = []
-                printer_accuracies[printer_key].append(acc_data["time_accuracy"])
+                printer_accuracies[printer_key].append(archive.time_accuracy)
 
         if accuracies:
             average_accuracy = round(sum(accuracies) / len(accuracies), 1)
