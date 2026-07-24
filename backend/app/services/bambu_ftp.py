@@ -136,7 +136,14 @@ class ImplicitFTP_TLS(FTP_TLS):
         self.ssl_context = ssl.create_default_context()
         self.ssl_context.check_hostname = False
         self.ssl_context.verify_mode = ssl.CERT_NONE
+        # ``create_default_context()`` leaves ``minimum_version`` at
+        # MINIMUM_SUPPORTED, so the floor comes from the interpreter's OpenSSL
+        # build, not from us — Docker (python:3.13-slim) is floored at TLS 1.2,
+        # but bare-metal / appliance venvs could silently negotiate TLS 1.0/1.1.
+        # Every Bambu printer speaks TLS 1.2, so declare the floor explicitly.
+        self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
         if cap_tls_v1_2:
+            # With the floor above this pins the connection to exactly TLS 1.2.
             self.ssl_context.maximum_version = ssl.TLSVersion.TLSv1_2
 
     def connect(self, host="", port=990, timeout=-999, source_address=None):

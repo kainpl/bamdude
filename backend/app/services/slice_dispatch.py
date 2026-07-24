@@ -36,6 +36,11 @@ class SliceJob:
     kind: Literal["library_file", "archive"]
     source_id: int
     source_name: str
+    # JWT user id that started the job, for per-row scoping of the polling
+    # endpoint (security IDOR fix). None for API-key / auth-disabled callers
+    # (no per-row identity); those jobs are visible only to READ_ALL pollers —
+    # see slice_jobs.py::get_slice_job.
+    owner_id: int | None = None
     status: SliceJobStatus = "pending"
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     started_at: datetime | None = None
@@ -74,6 +79,7 @@ class SliceDispatchService:
         kind: Literal["library_file", "archive"],
         source_id: int,
         source_name: str,
+        owner_id: int | None = None,
         run: Callable[[int], Awaitable[dict[str, Any]]],
     ) -> SliceJob:
         """Register a new slice job and start it on the event loop.
@@ -89,6 +95,7 @@ class SliceDispatchService:
                 kind=kind,
                 source_id=source_id,
                 source_name=source_name,
+                owner_id=owner_id,
             )
             self._next_id += 1
             self._jobs[job.id] = job

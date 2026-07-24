@@ -5,7 +5,10 @@ pytest-cov>=4.1.0
 pytest-xdist>=3.5.0
 pytest-timeout>=2.4.0
 httpx>=0.27.0
-ruff>=0.8.0
+# Exact pin, deliberately: a floor lets a contributor's older ruff enforce a
+# different rule set than CI (removed rules, format drift). Pin == the version CI
+# installs so local and CI enforce identical rules and `format --check` agrees.
+ruff==0.15.15
 
 # Required by pyftpdlib TLS_FTPHandler for mock FTP server tests
 pyOpenSSL>=26.3.0  # avoids capping cryptography <47 in the test env
