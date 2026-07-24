@@ -1501,9 +1501,11 @@ class VirtualPrinterInstance:
             )
         )
 
-        # SSDP server. When Tailscale is in play, ``advertise_addr`` is the
-        # tailnet FQDN — broadcasting it lets slicers connect via a hostname
-        # that matches the trusted LE cert (no manual CA install required).
+        # SSDP server. ``advertise_addr`` is always an IP (remote_interface_ip
+        # or bind_ip) — see ``_prepare_tls``. It is NEVER the tailnet FQDN: the
+        # Tailscale LE-cert path was removed (#1070 post-rip-out) because the
+        # slicers validate MQTT only against the bundled BBL CA, and their Add
+        # Printer dialog takes an IP anyway. Tailscale is network reach only.
         self._ssdp = VirtualPrinterSSDPServer(
             name=self.name,
             serial=self.serial,

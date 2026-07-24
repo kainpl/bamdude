@@ -800,11 +800,12 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
               <p className="text-xs text-bambu-gray mt-1">{t('virtualPrinter.bindIp.hint')}</p>
             </div>
 
-            {/* Tailscale per-VP toggle (#1070) — when enabled, the VP asks
-                the local tailscale CLI for an LE cert and broadcasts the
-                tailnet FQDN over SSDP, so slicers connect via a hostname
-                that matches the trusted cert. Off by default since most
-                installs don't have Tailscale. */}
+            {/* Tailscale per-VP toggle (#1070) — informational only since the
+                LE-cert rip-out. When enabled, the card fetches the host's
+                Tailscale identity and shows the tailnet IP + MagicDNS name to
+                paste into the slicer; certificates and SSDP are unaffected
+                (trust still goes through the one-time bbl_ca.crt import). Off
+                by default since most installs don't have Tailscale. */}
             <div className="pt-2 border-t border-bambu-dark-tertiary">
               <div className="flex items-center justify-between">
                 <div>
