@@ -121,6 +121,11 @@ class PrintQueueItem(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Times the start-watchdog reverted this row from 'printing' back to
+    # 'pending' because the printer accepted the file but never started. Capped
+    # at DISPATCH_MAX_ATTEMPTS (print_scheduler) so a wedged printer isn't
+    # retried forever (#2555). Added to existing DBs by migration m108.
+    dispatch_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

@@ -49,6 +49,15 @@ logger = logging.getLogger(__name__)
 # duplicated rather than imported to avoid coupling the two services.
 _ACTIVE_PRINT_STATES: frozenset[str] = frozenset({"PREPARE", "SLICING", "RUNNING", "PAUSE"})
 
+# Max times the start-watchdog may revert a 'printing' row back to 'pending'
+# before failing it (#2555). A printer that accepts the file but never starts
+# would otherwise re-upload + re-wait forever, and each lap also eats an upload
+# slot the rest of the farm is queueing for. 3 clears the transient causes the
+# watchdog already recovers from — a lost MQTT publish on a half-broken session
+# is fixed by the force-reconnect on the very next attempt — while bounding the
+# loop for a genuinely wedged printer.
+DISPATCH_MAX_ATTEMPTS = 3
+
 # Filament type equivalence groups - types within the same group are
 # interchangeable on the printer side (Bambu Lab firmware treats them as compatible).
 _FILAMENT_TYPE_GROUPS: list[list[str]] = [
@@ -114,6 +123,12 @@ class PrintScheduler:
     def __init__(self):
         self._running = False
         self._check_interval = 30  # seconds
+        # After a pass that actually dispatched something, loop again in a few
+        # seconds instead of the full interval so a draining batch (fan-out over
+        # several passes, a reverted head-of-line job, a freed printer) doesn't
+        # stall behind the idle sleep (#2555). Falls back to _check_interval when
+        # a pass dispatches nothing, so this can never tight-loop.
+        self._fast_check_interval = 3  # seconds
         self._power_on_wait_time = 180  # seconds to wait for printer after power on (3 min)
         self._power_on_check_interval = 10  # seconds between connection checks
         # Track which printers are currently auto-drying (printer_id -> start timestamp)
@@ -152,20 +167,27 @@ class PrintScheduler:
         logger.info("Print scheduler started")
 
         while self._running:
+            dispatched = False
             try:
-                await self.check_queue()
+                dispatched = await self.check_queue()
             except Exception as e:
                 logger.error("Scheduler error: %s", e)
 
-            await asyncio.sleep(self._check_interval)
+            # Re-check quickly after a productive pass so a draining batch doesn't
+            # stall behind the idle interval; otherwise sleep normally (#2555).
+            await asyncio.sleep(self._fast_check_interval if dispatched else self._check_interval)
 
     def stop(self):
         """Stop the scheduler."""
         self._running = False
         logger.info("Print scheduler stopped")
 
-    async def check_queue(self):
-        """Check for prints ready to start."""
+    async def check_queue(self) -> bool:
+        """Check for prints ready to start.
+
+        Returns True if this pass dispatched at least one item, so the caller can
+        loop again quickly instead of sleeping the full interval (#2555).
+        """
         async with async_session() as db:
             # Get all pending items with queue loaded, ordered by queue and position
             from sqlalchemy.orm import selectinload
@@ -177,6 +199,7 @@ class PrintScheduler:
                 .order_by(PrintQueueItem.queue_id, PrintQueueItem.position)
             )
             items = list(result.scalars().all())
+            dispatched = False
 
             if not items:
                 # No pending items - still check auto-drying on idle printers.
@@ -194,7 +217,7 @@ class PrintScheduler:
                 )
                 busy_seed: set[int] = {pid for (pid,) in busy_seed_result.all() if pid is not None}
                 await self._check_auto_drying(db, [], busy_seed)
-                return
+                return False
 
             logger.info(
                 "Queue check: found %d pending items: %s",
@@ -386,6 +409,7 @@ class PrintScheduler:
                 # the next loop iteration dispatch a different printer in
                 # parallel instead of serialising through one global await.
                 await self._start_print(db, item)
+                dispatched = True
                 busy_printers.add(printer_id)
 
             # Log summary of skip reasons (helps diagnose why queue items aren't starting)
@@ -408,6 +432,7 @@ class PrintScheduler:
 
             # Auto-drying: start drying on idle printers that have no pending queue items
             await self._check_auto_drying(db, items, busy_printers)
+            return dispatched
 
     async def _ensure_ams_mapping(self, db: AsyncSession, printer_id: int, item: PrintQueueItem) -> None:
         """Ensure the queue item carries a usable AMS mapping before dispatch.
@@ -2299,16 +2324,42 @@ class PrintScheduler:
                 item = await db.get(PrintQueueItem, queue_item_id)
                 if not item or item.status != "printing":
                     return  # Already moved on (completed/cancelled/etc.)
-                item.status = "pending"
+                item.dispatch_attempts = (item.dispatch_attempts or 0) + 1
                 item.started_at = None
+                if item.dispatch_attempts >= DISPATCH_MAX_ATTEMPTS:
+                    # Wedge cap (#2555): a genuinely stuck printer would otherwise
+                    # re-upload + re-wait forever. Fail the item after N attempts
+                    # so it stops eating an upload slot the rest of the farm needs.
+                    from backend.app.services.queue_counters import set_queue_error, update_queue_counters
+
+                    item.status = "failed"
+                    item.error_message = (
+                        f"The printer accepted the file but never started printing, after "
+                        f"{item.dispatch_attempts} attempts. Check the printer's screen for a prompt or "
+                        f"error, confirm its SD card is readable, and start the job again."
+                    )
+                    item.completed_at = datetime.now(timezone.utc)
+                    await set_queue_error(db, item.queue_id, failed_item_id=item.id)
+                    await update_queue_counters(db, item.queue_id)
+                    await db.commit()
+                    logger.warning(
+                        "Queue item %s: printer %d never started after %d attempts — giving up (#2555)",
+                        queue_item_id,
+                        printer_id,
+                        item.dispatch_attempts,
+                    )
+                    return
+                item.status = "pending"
                 await db.commit()
                 logger.warning(
                     "Queue item %s: printer %d did not respond to print command within "
-                    "%.0fs (state still %s) — reverted to 'pending' for retry (#967)",
+                    "%.0fs (state still %s) — reverted to 'pending' for retry %d/%d (#967/#2555)",
                     queue_item_id,
                     printer_id,
                     timeout,
                     pre_state,
+                    item.dispatch_attempts,
+                    DISPATCH_MAX_ATTEMPTS,
                 )
             # Drop any swap config that was registered post-start_print so a
             # subsequent dispatch can arm it fresh.

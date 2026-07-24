@@ -4,8 +4,10 @@ import json
 import logging
 import uuid
 import zipfile
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 
 import defusedxml.ElementTree as ET
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -35,6 +37,7 @@ from backend.app.schemas.print_queue import (
 )
 from backend.app.services.notification_service import notification_service
 from backend.app.utils.filename import InvalidFilenameError, validate_print_filename
+from backend.app.utils.printer_models import is_gcode_compatible
 from backend.app.utils.threemf_tools import extract_bed_type_from_3mf, extract_filament_usage_from_3mf
 
 logger = logging.getLogger(__name__)
@@ -155,6 +158,52 @@ def _extract_print_time_from_3mf(file_path: Path, plate_id: int | None = None) -
     return None
 
 
+# Per-plate 3MF metadata cache for queue listing (#2573). A queue poll enriches
+# every row, and each row previously opened + parsed its 3MF THREE times (print
+# time, filament usage, bed type). On a farm with a busy queue, several browsers
+# polling every few seconds re-parsed the same unchanged files constantly. Cache
+# the combined (print_time, filament_grams, bed_type) tuple keyed by file
+# revision — an unchanged file is parsed at most once; a replaced/edited file
+# (different mtime/size) re-parses automatically. LRU-bounded so it can't grow
+# without limit. Locked because FastAPI runs handlers across a thread pool.
+_PLATE_META_CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
+_PLATE_META_LOCK = Lock()
+_PLATE_META_MAX = 512
+
+
+def clear_plate_metadata_cache() -> None:
+    """Drop all cached per-plate metadata (used by tests)."""
+    with _PLATE_META_LOCK:
+        _PLATE_META_CACHE.clear()
+
+
+def _plate_metadata_cached(file_path: Path, plate_id: int | None) -> tuple[int | None, float, str | None]:
+    """Return (print_time_seconds, filament_grams, bed_type) for a plate, cached
+    by file revision so queue polling parses each 3MF once instead of 3x (#2573)."""
+    try:
+        st = file_path.stat()
+    except OSError:
+        return None, 0.0, None
+    key = (str(file_path), plate_id, st.st_mtime_ns, st.st_size)
+    with _PLATE_META_LOCK:
+        hit = _PLATE_META_CACHE.get(key)
+        if hit is not None:
+            _PLATE_META_CACHE.move_to_end(key)
+            return hit
+
+    print_time = _extract_print_time_from_3mf(file_path, plate_id)
+    filament_grams = sum(f["used_g"] for f in extract_filament_usage_from_3mf(file_path, plate_id))
+    bed_type = extract_bed_type_from_3mf(file_path, plate_id)
+    result: tuple[int | None, float, str | None] = (print_time, filament_grams, bed_type)
+
+    with _PLATE_META_LOCK:
+        _PLATE_META_CACHE[key] = result
+        _PLATE_META_CACHE.move_to_end(key)
+        while len(_PLATE_META_CACHE) > _PLATE_META_MAX:
+            _PLATE_META_CACHE.popitem(last=False)
+    return result
+
+
 # The three tri-state calibration fields. Each has a legacy bool column
 # (authoritative for off/on — read by the dispatcher + secondary sites) and a
 # nullable ``*_mode`` column that carries the extra 'auto' state.
@@ -253,11 +302,7 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
             if item.plate_id:
                 archive_path = settings.base_dir / item.archive.file_path
                 if archive_path.exists():
-                    plate_time = _extract_print_time_from_3mf(archive_path, item.plate_id)
-                    plate_weight = sum(
-                        f["used_g"] for f in extract_filament_usage_from_3mf(archive_path, item.plate_id)
-                    )
-                    plate_bed = extract_bed_type_from_3mf(archive_path, item.plate_id)
+                    plate_time, plate_weight, plate_bed = _plate_metadata_cached(archive_path, item.plate_id)
                     if plate_time is not None:
                         response.print_time_seconds = plate_time
                     if plate_weight > 0:
@@ -285,11 +330,7 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
             lib_path = Path(item.library_file.file_path)
             library_file_path = lib_path if lib_path.is_absolute() else settings.base_dir / item.library_file.file_path
             if library_file_path.exists():
-                plate_time = _extract_print_time_from_3mf(library_file_path, item.plate_id)
-                plate_weight = sum(
-                    f["used_g"] for f in extract_filament_usage_from_3mf(library_file_path, item.plate_id)
-                )
-                plate_bed = extract_bed_type_from_3mf(library_file_path, item.plate_id)
+                plate_time, plate_weight, plate_bed = _plate_metadata_cached(library_file_path, item.plate_id)
                 if plate_time is not None:
                     response.print_time_seconds = plate_time
                 if plate_weight > 0:
@@ -442,6 +483,28 @@ async def add_to_queue(
             validate_print_filename(library_file.filename)
         except InvalidFilenameError as e:
             raise HTTPException(400, str(e))
+
+    # Cross-model safety gate (#2578): a G-code 3MF sliced for one model must not
+    # be queued to a printer it can't run on. This is the per-printer tier — the
+    # item binds to this queue's printer and the dispatcher hands it straight over
+    # with no human in the loop — so an API-created (or UI) mismatch is rejected
+    # here. Missing slice metadata never blocks (see is_gcode_compatible).
+    sliced_for = None
+    if archive:
+        sliced_for = archive.sliced_for_model
+    elif library_file and library_file.file_metadata:
+        sliced_for = library_file.file_metadata.get("sliced_for_model")
+    if sliced_for and queue.printer_id is not None:
+        from backend.app.models.printer import Printer
+
+        printer_model = (
+            await db.execute(select(Printer.model).where(Printer.id == queue.printer_id))
+        ).scalar_one_or_none()
+        if not is_gcode_compatible(sliced_for, printer_model):
+            raise HTTPException(
+                400,
+                f"File was sliced for {sliced_for} and cannot be dispatched to a {printer_model} printer",
+            )
 
     # Serialize concurrent inserts into the same queue so two appends can't both
     # read the same MAX(position) and land on a duplicate position in an empty
@@ -736,9 +799,36 @@ async def update_queue_item(
 
     # Validate new queue_id if being changed
     if "queue_id" in update_data and update_data["queue_id"] is not None:
-        result = await db.execute(select(PrinterQueue).where(PrinterQueue.id == update_data["queue_id"]))
-        if not result.scalar_one_or_none():
+        new_queue = (
+            await db.execute(select(PrinterQueue).where(PrinterQueue.id == update_data["queue_id"]))
+        ).scalar_one_or_none()
+        if not new_queue:
             raise HTTPException(400, "Queue not found")
+
+        # Cross-model safety gate (#2578) — moving an item to another printer's
+        # queue can't drop a G-code 3MF onto a model it wasn't sliced for.
+        sliced_for = None
+        if item.archive_id:
+            sliced_for = (
+                await db.execute(select(PrintArchive.sliced_for_model).where(PrintArchive.id == item.archive_id))
+            ).scalar_one_or_none()
+        elif item.library_file_id:
+            lib = (
+                await db.execute(select(LibraryFile).where(LibraryFile.id == item.library_file_id))
+            ).scalar_one_or_none()
+            if lib and lib.file_metadata:
+                sliced_for = lib.file_metadata.get("sliced_for_model")
+        if sliced_for and new_queue.printer_id is not None:
+            from backend.app.models.printer import Printer
+
+            printer_model = (
+                await db.execute(select(Printer.model).where(Printer.id == new_queue.printer_id))
+            ).scalar_one_or_none()
+            if not is_gcode_compatible(sliced_for, printer_model):
+                raise HTTPException(
+                    400,
+                    f"File was sliced for {sliced_for} and cannot be dispatched to a {printer_model} printer",
+                )
 
     # Serialize ams_mapping to JSON for TEXT column storage
     if "ams_mapping" in update_data:

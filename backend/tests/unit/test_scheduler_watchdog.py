@@ -76,6 +76,7 @@ class TestWatchdogGating:
 
         mock_item = MagicMock()
         mock_item.status = "printing"
+        mock_item.dispatch_attempts = 0
         mock_db = AsyncMock()
         mock_db.get.return_value = mock_item
         mock_db.commit = AsyncMock()
@@ -167,6 +168,7 @@ class TestWatchdogGating:
 
         mock_item = MagicMock()
         mock_item.status = "printing"
+        mock_item.dispatch_attempts = 0
 
         mock_db = AsyncMock()
         mock_db.get.return_value = mock_item
@@ -236,6 +238,7 @@ class TestWatchdogGating:
         """
         mock_item = MagicMock()
         mock_item.status = "printing"
+        mock_item.dispatch_attempts = 0
 
         mock_db = AsyncMock()
         mock_db.get.return_value = mock_item

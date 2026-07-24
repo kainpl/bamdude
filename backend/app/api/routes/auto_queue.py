@@ -52,6 +52,7 @@ from backend.app.schemas.auto_queue import (
 from backend.app.schemas.calibration_mode import derive_mode, mode_to_bool
 from backend.app.services.auto_queue_eligibility import find_eligible_printer
 from backend.app.services.auto_queue_threemf import extract_auto_queue_requirements
+from backend.app.services.filament_requirements import overrides_for_plate
 
 logger = logging.getLogger(__name__)
 
@@ -247,9 +248,8 @@ async def add_to_auto_queue(
 
     batch_id = str(uuid.uuid4()) if (data.quantity > 1 or len(plate_ids) > 1) else None
 
-    overrides_json = None
-    if data.filament_overrides:
-        overrides_json = json.dumps([o.model_dump() for o in data.filament_overrides])
+    # Raw override dicts; narrowed per-plate inside the loop below (#2551).
+    overrides_list = [o.model_dump() for o in data.filament_overrides] if data.filament_overrides else []
     swap_events_json = json.dumps(data.swap_macro_events) if data.swap_macro_events else None
 
     items: list[AutoQueueItem] = []
@@ -269,6 +269,11 @@ async def add_to_auto_queue(
 
         required_types_json = json.dumps(required_types) if required_types is not None else None
 
+        # Narrow force-colour overrides to the slots THIS plate prints (#2551) —
+        # otherwise a single-colour plate waits on every colour in the batch.
+        plate_overrides = overrides_for_plate(overrides_list, file_path, plate_id)
+        plate_overrides_json = json.dumps(plate_overrides) if plate_overrides else None
+
         for _ in range(data.quantity):
             pos_offset += 1
             items.append(
@@ -279,7 +284,7 @@ async def add_to_auto_queue(
                     target_model=target_model,
                     target_location=data.target_location,
                     required_filament_types=required_types_json,
-                    filament_overrides=overrides_json,
+                    filament_overrides=plate_overrides_json,
                     force_color_match=data.force_color_match,
                     plate_id=plate_id,
                     bed_levelling=mode_to_bool(data.bed_levelling),
