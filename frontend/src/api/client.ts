@@ -1563,6 +1563,43 @@ export interface MQTTStatus {
 }
 
 // Cloud types
+// Cam Wall kiosk feed (upstream #2531). Exactly what a wall tile draws and
+// nothing more — deliberately no serial_number / ip_address (a kiosk URL on a
+// lobby screen is about as private as a sticky note), and deliberately no print
+// filename: a token wall never names the part to the room.
+export interface CamWallPrinter {
+  id: number;
+  name: string;
+  camera_rotation: number;
+  connected: boolean;
+  state: string | null;
+  progress: number | null;
+  remaining_time: number | null;
+  layer_num: number | null;
+  total_layers: number | null;
+  hms_errors: HMSError[];
+}
+
+// Streaming-overlay feed (upstream #2613). The subset of print state the
+// /overlay page draws for one printer, served behind an `overlay`-scoped token
+// so OBS embeds with no login session can read it. It names the file being
+// printed, which is why the scope is separate from `camera_stream`.
+export interface OverlayStatus {
+  id: number;
+  name: string;
+  camera_rotation: number;
+  connected: boolean;
+  state: string | null;
+  current_print: string | null;
+  gcode_file: string | null;
+  progress: number | null;
+  remaining_time: number | null;
+  layer_num: number | null;
+  total_layers: number | null;
+  stg_cur_name: string | null;
+  time_format: 'system' | '12h' | '24h';
+}
+
 export interface CloudAuthStatus {
   is_authenticated: boolean;
   email: string | null;
@@ -5782,6 +5819,19 @@ export const api = {
 
   // Cloud
   getCloudStatus: () => request<CloudAuthStatus>('/cloud/status'),
+
+  // Token-authenticated Cam Wall feed (upstream #2531). One call for the whole
+  // wall — a kiosk polls on a fixed interval with no WebSocket to invalidate it.
+  getCamWallPrinters: (token: string) =>
+    request<CamWallPrinter[]>(`/camwall/printers?token=${encodeURIComponent(token)}`),
+
+  // Token-authenticated streaming-overlay feed (upstream #2613). OBS — or any
+  // embed with no login session — loads /overlay/{id}?token=... and this backs
+  // it. Auth is always on here, so the token is always required.
+  getOverlayStatus: (printerId: number, token: string) =>
+    request<OverlayStatus>(
+      `/printers/${printerId}/overlay-status?token=${encodeURIComponent(token)}`,
+    ),
   cloudLogin: (email: string, password: string, region = 'global') =>
     request<CloudLoginResponse>('/cloud/login', {
       method: 'POST',

@@ -10,7 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.core import database
-from backend.app.core.auth import RequireCameraStreamToken, RequirePermission, require_permission
+from backend.app.core.auth import (
+    RequireCameraStreamToken,
+    RequireOverlayToken,
+    RequirePermission,
+    require_permission,
+)
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -883,6 +888,71 @@ async def get_printer_status(
             else None
         ),
     )
+
+
+@router.get("/{printer_id}/overlay-status")
+async def get_overlay_status(
+    printer_id: int,
+    _: None = RequireOverlayToken,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Everything the streaming overlay draws for one printer (upstream #2613).
+
+    A token-authenticated sibling of ``get_printer_status`` for embeds with no
+    login session — OBS loads ``/overlay/{id}?token=...`` and this feeds it.
+    Deliberately flat and minimal (name, camera rotation, live print state, and
+    the one setting the overlay reads) rather than the full ``PrinterStatus``: a
+    token holder gets exactly the fields the overlay renders, nothing more — no
+    serial number, no IP address.
+
+    It *does* include the print filename, because the overlay names the part on
+    screen. That is why it sits behind its own ``overlay`` scope instead of the
+    ``camera_stream`` scope already handed out for video alone.
+    """
+    from backend.app.api.routes.settings import get_setting
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    time_format = await get_setting(db, "time_format") or "system"
+    state = printer_manager.get_status(printer_id)
+
+    if not state:
+        # Never connected this run — mirror get_printer_status()'s disconnected
+        # shape so the overlay renders its offline state rather than erroring.
+        return {
+            "id": printer_id,
+            "name": printer.name,
+            "camera_rotation": printer.camera_rotation or 0,
+            "connected": False,
+            "state": None,
+            "current_print": None,
+            "gcode_file": None,
+            "progress": None,
+            "remaining_time": None,
+            "layer_num": None,
+            "total_layers": None,
+            "stg_cur_name": None,
+            "time_format": time_format,
+        }
+
+    return {
+        "id": printer_id,
+        "name": printer.name,
+        "camera_rotation": printer.camera_rotation or 0,
+        "connected": state.connected,
+        "state": state.state,
+        "current_print": state.current_print,
+        "gcode_file": state.gcode_file,
+        "progress": state.progress,
+        "remaining_time": state.remaining_time,
+        "layer_num": state.layer_num,
+        "total_layers": state.total_layers,
+        "stg_cur_name": get_derived_status_name(state, printer.model),
+        "time_format": time_format,
+    }
 
 
 @router.get("/{printer_id}/current-print-user")

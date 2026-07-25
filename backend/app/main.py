@@ -24,6 +24,7 @@ from backend.app.api.routes import (
     background_dispatch as background_dispatch_routes,
     bug_report,
     camera,
+    camwall,
     cloud,
     discovery,
     external_links,
@@ -7042,6 +7043,19 @@ PUBLIC_API_PATTERNS = [
     "/timelapse",  # /archives/{id}/timelapse (video)
     "/cover",  # /printers/{id}/cover
     "/icon",  # /external-links/{id}/icon
+    # Streaming-overlay status feed (upstream #2613). OBS is a fresh browser
+    # with no session, so the overlay carries a long-lived ``overlay``-scoped
+    # token in the URL instead of a JWT. Listed as a PATTERN, not a PREFIX:
+    # prefixes are matched with startswith, so "/printers/" would open every
+    # printer route — this substring can only ever match this one endpoint.
+    # The route's own RequireOverlayToken gate is what authenticates it; this
+    # entry only lets the request reach that gate.
+    "/overlay-status",  # /printers/{id}/overlay-status
+    # Cam Wall kiosk feed (upstream #2531). Same reasoning as the overlay feed
+    # above: a TV or Pi has no login session, so the wall carries a long-lived
+    # ``camwall``-scoped token in the URL. The route's own RequireCamWallToken
+    # gate authenticates it; this entry only lets the request reach that gate.
+    "/camwall/printers",
     # Camera (streams loaded via <img> tag)
     "/camera/stream",  # /printers/{id}/camera/stream
     "/camera/snapshot",  # /printers/{id}/camera/snapshot
@@ -7468,6 +7482,7 @@ app.include_router(updates.router, prefix=app_settings.api_prefix)
 app.include_router(macros.router, prefix=app_settings.api_prefix)
 app.include_router(maintenance.router, prefix=app_settings.api_prefix)
 app.include_router(camera.router, prefix=app_settings.api_prefix)
+app.include_router(camwall.router, prefix=app_settings.api_prefix)
 app.include_router(external_links.router, prefix=app_settings.api_prefix)
 app.include_router(projects.router, prefix=app_settings.api_prefix)
 app.include_router(library.router, prefix=app_settings.api_prefix)

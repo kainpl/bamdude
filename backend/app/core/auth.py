@@ -288,9 +288,12 @@ async def verify_camera_stream_token(token: str) -> bool:
 
         # Long-lived path. Imported lazily so the auth module stays importable
         # at startup before the long_lived_tokens model is registered.
-        from backend.app.services.long_lived_tokens import verify_token as verify_long_lived
+        from backend.app.services.long_lived_tokens import STREAM_SCOPES, verify_token as verify_long_lived
 
-        record = await verify_long_lived(db, token, scope="camera_stream")
+        # An overlay token has to be able to pull the video its own view shows,
+        # so the stream gate honours every scope in STREAM_SCOPES (upstream
+        # #2613). It is still an explicit list — never "any scope".
+        record = await verify_long_lived(db, token, scope=STREAM_SCOPES)
         return record is not None
 
 
@@ -1580,6 +1583,79 @@ def RequireAnyPermission(*permissions: str | Permission):
     return Depends(require_any_permission(*permissions))
 
 
+async def verify_camwall_token(token: str) -> bool:
+    """Verify a Cam Wall kiosk token (upstream #2531). Reusable — not consumed.
+
+    Only the matching long-lived scope passes. A bare ``camera_stream`` token is
+    refused: those are already in the wild, minted to hand out video, and must
+    not gain the ability to enumerate the fleet by name. The 60-minute ephemeral
+    token belongs to a logged-in browser, which reaches the same data through
+    the ordinary printers API.
+    """
+    async with async_session() as db:
+        from backend.app.services.long_lived_tokens import verify_token as verify_long_lived
+
+        record = await verify_long_lived(db, token, scope="camwall")
+        return record is not None
+
+
+def require_camwall_token():
+    """Dependency that validates a Cam Wall token passed as ``?token=``.
+
+    Auth is always on here, so unlike upstream there is no "if enabled" escape:
+    the token is always required.
+    """
+
+    async def checker(token: str | None = None) -> None:
+        if not token or not await verify_camwall_token(token):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=(
+                    "Valid Cam Wall token required. Create one under Settings > API Keys with the 'Cam Wall' scope."
+                ),
+            )
+
+    return checker
+
+
+async def verify_overlay_token(token: str) -> bool:
+    """Verify a streaming-overlay token (upstream #2613). Reusable — not consumed.
+
+    Only the matching long-lived scope passes. The overlay status feed names the
+    file being printed, so it must not be reachable by a bare ``camera_stream``
+    token (handed out for video alone). The 60-minute ephemeral token belongs to
+    a logged-in browser, which reaches the same data through the ordinary
+    printers API and has no need of this endpoint.
+    """
+    async with async_session() as db:
+        from backend.app.services.long_lived_tokens import verify_token as verify_long_lived
+
+        record = await verify_long_lived(db, token, scope="overlay")
+        return record is not None
+
+
+def require_overlay_token():
+    """Dependency that validates a streaming-overlay token passed as ``?token=``.
+
+    Used by the read-only overlay status feed (upstream #2613), which OBS — or
+    any embed with no login session — loads with the token in the URL because it
+    has no JWT to carry. Auth is always on here, so unlike upstream there is no
+    "if enabled" escape: the token is always required.
+    """
+
+    async def checker(token: str | None = None) -> None:
+        if not token or not await verify_overlay_token(token):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=(
+                    "Valid overlay token required. Create one under Settings > API Keys "
+                    "with the 'Streaming Overlay' scope."
+                ),
+            )
+
+    return checker
+
+
 def require_camera_stream_token():
     """Dependency that validates a camera-stream token passed as ``?token=...``.
 
@@ -1601,6 +1677,8 @@ def require_camera_stream_token():
 
 
 RequireCameraStreamToken = Depends(require_camera_stream_token())
+RequireOverlayToken = Depends(require_overlay_token())
+RequireCamWallToken = Depends(require_camwall_token())
 
 
 def require_ownership_permission(

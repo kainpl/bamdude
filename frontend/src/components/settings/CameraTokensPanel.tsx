@@ -44,6 +44,10 @@ function CreateTokenForm({ onCreated }: CreateTokenFormProps) {
   const { showToast } = useToast();
   const [name, setName] = useState('');
   const [days, setDays] = useState<number>(DEFAULT_LIFETIME_DAYS);
+  // Each scope is a separate grant, never implied by another (upstream #2613).
+  // 'overlay' additionally reveals the file being printed, which is exactly why
+  // it can't just be folded into 'camera_stream'.
+  const [scope, setScope] = useState<'camera_stream' | 'camwall' | 'overlay'>('camera_stream');
   const [submitting, setSubmitting] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -54,10 +58,12 @@ function CreateTokenForm({ onCreated }: CreateTokenFormProps) {
       const created = await api.createLongLivedToken({
         name: name.trim(),
         expires_in_days: days,
+        scope,
       });
       onCreated(created);
       setName('');
       setDays(DEFAULT_LIFETIME_DAYS);
+      setScope('camera_stream');
       showToast(t('cameraTokens.toast.created'));
     } catch (err) {
       showToast(
@@ -77,7 +83,7 @@ function CreateTokenForm({ onCreated }: CreateTokenFormProps) {
       <h3 className="text-base font-semibold text-white mb-3">
         {t('cameraTokens.create.title')}
       </h3>
-      <div className="grid gap-3 md:grid-cols-[1fr_140px_auto]">
+      <div className="grid gap-3 md:grid-cols-[1fr_170px_140px_auto]">
         <input
           type="text"
           maxLength={100}
@@ -88,6 +94,16 @@ function CreateTokenForm({ onCreated }: CreateTokenFormProps) {
           className="px-3 py-2 bg-bambu-dark rounded-md text-white border border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none"
           aria-label={t('cameraTokens.create.nameLabel')}
         />
+        <select
+          value={scope}
+          onChange={(e) => setScope(e.target.value as 'camera_stream' | 'camwall' | 'overlay')}
+          className="px-3 py-2 bg-bambu-dark rounded-md text-white border border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none"
+          aria-label={t('cameraTokens.create.scopeLabel')}
+        >
+          <option value="camera_stream">{t('cameraTokens.scope.cameraStream')}</option>
+          <option value="camwall">{t('cameraTokens.scope.camwall')}</option>
+          <option value="overlay">{t('cameraTokens.scope.overlay')}</option>
+        </select>
         <input
           type="number"
           min={1}

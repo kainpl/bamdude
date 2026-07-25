@@ -109,8 +109,14 @@ async def test_create_rejects_expiry_above_policy_cap(db_session, alice: User):
 
 
 async def test_create_rejects_unsupported_scope(db_session, alice: User):
-    """V1 only allows ``camera_stream``."""
-    assert {"camera_stream"} == set(ALLOWED_SCOPES)
+    """Only the enumerated scopes are mintable.
+
+    Pinned as an exact set on purpose: each scope is a separate grant, and a new
+    one must be added here deliberately rather than appearing by accident — the
+    whole point of ``overlay`` being its own scope (upstream #2613) is that it
+    reveals the print filename, which a ``camera_stream`` token must never gain.
+    """
+    assert {"camera_stream", "camwall", "overlay"} == set(ALLOWED_SCOPES)
     with pytest.raises(ValueError, match="unsupported scope"):
         await create_token(
             db_session,

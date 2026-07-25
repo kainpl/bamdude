@@ -20,6 +20,7 @@ import { ArchiveTrashPage } from './pages/ArchiveTrashPage';
 import { MakerworldPage } from './pages/MakerworldPage';
 import { CameraPage } from './pages/CameraPage';
 import { StreamOverlayPage } from './pages/StreamOverlayPage';
+import { CamWallPage } from './pages/CamWallPage';
 import { ExternalLinkPage } from './pages/ExternalLinkPage';
 import { GroupEditPage } from './pages/GroupEditPage';
 import InventoryPage from './pages/InventoryPage';
@@ -235,6 +236,10 @@ function App() {
 
                 {/* Stream overlay page - standalone for OBS/streaming embeds, no auth required */}
                 <Route path="/overlay/:printerId" element={<StreamOverlayPage />} />
+
+                {/* Cam Wall - bookmarkable, and runnable on a login-less kiosk
+                    screen via ?token= (upstream #2531) */}
+                <Route path="/camwall" element={<CamWallPage />} />
 
                 {/* Main app with WebSocket for real-time updates */}
                 <Route element={<ProtectedRoute><LanguageSync><WebSocketProvider><Layout /></WebSocketProvider></LanguageSync></ProtectedRoute>}>

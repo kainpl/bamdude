@@ -6650,10 +6650,19 @@ export default {
     historyTitle: 'Recent Detections',
     noHistory: 'No detections yet.'
   },
+  camWall: {
+    pageTitle: 'Cam Wall',
+    tokenRejected: 'This Cam Wall link was rejected. The token may have expired or been revoked - create a new one under Settings > API Keys with the "Cam Wall" scope.',
+  },
   cameraTokens: {
     title: 'Camera API Tokens',
     description:
-      'Long-lived tokens for embedding the camera stream into Home Assistant, Frigate, kiosks, or any other tool that needs a stable URL. Each token is camera-stream-only and can be revoked at any time.',
+      'Long-lived tokens for embedding the camera stream into Home Assistant, Frigate, kiosks, or any other tool that needs a stable URL. Pick what each token may reach; every token can be revoked at any time.',
+    scope: {
+      cameraStream: 'Camera stream only',
+      camwall: 'Cam Wall',
+      overlay: 'Streaming overlay',
+    },
     loading: 'Loading…',
     confirmRevoke: {
       title: 'Revoke this token?',
@@ -6664,6 +6673,7 @@ export default {
     create: {
       title: 'Create new token',
       nameLabel: 'Token name',
+      scopeLabel: 'Token scope',
       namePlaceholder: 'e.g. Home Assistant',
       daysLabel: 'Days until expiry',
       submit: 'Create',

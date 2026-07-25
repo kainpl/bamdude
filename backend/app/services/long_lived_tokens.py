@@ -22,6 +22,7 @@ tokens — a leaked permanent token would be irrevocable footgun-by-design).
 from __future__ import annotations
 
 import secrets
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -37,7 +38,27 @@ MAX_TOKEN_LIFETIME_DAYS = 365
 
 # Only V1 scope. Adding "snapshot" or "control" later means adding a value
 # to this tuple and an `if scope == ...` branch in the route, no schema work.
-ALLOWED_SCOPES: frozenset[str] = frozenset({"camera_stream"})
+# Every scope is a separate grant, never implied by another. A token minted for
+# one purpose must not silently widen when a later scope is added.
+#
+#   camera_stream — the MJPEG stream / snapshot endpoints and nothing else
+#                   (#1108). What a Home Assistant or Frigate card needs.
+#   camwall       — those same streams *plus* the read-only tile metadata the
+#                   Cam Wall draws: printer names and print state (upstream
+#                   #2531). Strictly wider than camera_stream, so it gets its
+#                   own scope rather than quietly extending tokens already
+#                   handed out. Notably it does NOT expose the print filename.
+#   overlay       — the streaming overlay (upstream #2613): the camera stream
+#                   plus the single-printer status the /overlay page draws,
+#                   which *includes the print filename*. A distinct grant
+#                   precisely because it reveals the part name; folding it into
+#                   camera_stream would silently give every token already handed
+#                   out for video the ability to read what is being printed.
+ALLOWED_SCOPES: frozenset[str] = frozenset({"camera_stream", "camwall", "overlay"})
+
+# Scopes the camera stream / snapshot endpoints honour. A Cam Wall or overlay
+# token has to be able to pull the video its own view is showing.
+STREAM_SCOPES: tuple[str, ...] = ("camera_stream", "camwall", "overlay")
 
 # Don't write to last_used_at more than once per minute per token. MJPEG
 # streams call verify() at most once per fetch (the browser holds the
@@ -142,7 +163,9 @@ async def create_token(
     return CreatedToken(record=record, plaintext=plaintext)
 
 
-async def verify_token(db: AsyncSession, token: str, *, scope: str = "camera_stream") -> LongLivedToken | None:
+async def verify_token(
+    db: AsyncSession, token: str, *, scope: str | Collection[str] = "camera_stream"
+) -> LongLivedToken | None:
     """Validate a token. Returns the matching record on success, None otherwise.
 
     The pbkdf2 verify is the slow step (intentional — pbkdf2 by design),
@@ -154,11 +177,17 @@ async def verify_token(db: AsyncSession, token: str, *, scope: str = "camera_str
         return None
     lookup_prefix, full_token = parsed
 
+    # ``scope`` accepts a single scope or a collection of acceptable ones — the
+    # stream endpoints pass ``STREAM_SCOPES`` because more than one scope may
+    # legitimately pull video. A token is still only ever accepted on the
+    # strength of a scope it actually holds.
+    scopes = (scope,) if isinstance(scope, str) else tuple(scope)
+
     now = datetime.now(timezone.utc)
     result = await db.execute(
         select(LongLivedToken).where(
             LongLivedToken.lookup_prefix == lookup_prefix,
-            LongLivedToken.scope == scope,
+            LongLivedToken.scope.in_(scopes),
             LongLivedToken.revoked_at.is_(None),
         )
     )

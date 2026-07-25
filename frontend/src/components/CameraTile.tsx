@@ -24,6 +24,10 @@ interface CameraTileProps {
   layerNum?: number | null;
   totalLayers?: number | null;
   printName?: string | null;
+  /** Kiosk mode (upstream #2531): authenticate the stream with this long-lived
+   *  token instead of the module-cached short-lived one, which only a logged-in
+   *  browser ever holds. */
+  streamToken?: string;
   hmsErrorCount?: number;
 }
 
@@ -73,6 +77,7 @@ export function CameraTile({
   totalLayers = null,
   printName = null,
   hmsErrorCount = 0,
+  streamToken,
 }: CameraTileProps) {
   const { t } = useTranslation();
   const [bust, setBust] = useState(0);
@@ -121,10 +126,14 @@ export function CameraTile({
     return () => clearInterval(interval);
   }, [mode, snapshotIntervalMs]);
 
-  const liveUrl = withStreamToken(
+  // A kiosk carries its own token; everything else rides the module-cached
+  // short-lived one that only a signed-in browser holds (upstream #2531).
+  const withToken = (path: string) =>
+    streamToken ? `${path}&token=${encodeURIComponent(streamToken)}` : withStreamToken(path);
+  const liveUrl = withToken(
     `/api/v1/printers/${printerId}/camera/stream?fps=${LIVE_FPS}&t=${bust}`,
   );
-  const snapshotUrl = withStreamToken(
+  const snapshotUrl = withToken(
     `/api/v1/printers/${printerId}/camera/snapshot?t=${bust}`,
   );
 
@@ -145,11 +154,23 @@ export function CameraTile({
   const hasLayers = layerNum != null && totalLayers != null && totalLayers > 0;
   const hasRemaining = remainingMin != null && remainingMin > 0;
 
+  // A kiosk wall passes no onClick — there is no pointer at a TV, and the page
+  // is authenticated by a token that cannot open the single-camera view. Render
+  // the tile as plain, non-focusable content rather than a button that looks
+  // clickable and then does nothing.
+  const interactive = onClick != null;
+  const rootClass =
+    'group relative aspect-video w-full overflow-hidden rounded-lg border border-bambu-dark-tertiary bg-black text-left' +
+    (interactive ? ' focus:outline-none focus:ring-2 focus:ring-bambu-green' : ' cursor-default');
+  const Root = interactive ? 'button' : 'div';
+  const rootProps = interactive
+    ? ({ type: 'button', onClick: handleClick } as const)
+    : ({} as const);
+
   return (
-    <button
-      type="button"
-      onClick={handleClick}
-      className="group relative aspect-video w-full overflow-hidden rounded-lg border border-bambu-dark-tertiary bg-black text-left focus:outline-none focus:ring-2 focus:ring-bambu-green"
+    <Root
+      {...rootProps}
+      className={rootClass}
       title={printerName}
     >
       {!connected || mode === 'paused' ? (
@@ -243,6 +264,6 @@ export function CameraTile({
         )}
         <span className="block truncate text-xs font-medium">{printerName}</span>
       </div>
-    </button>
+    </Root>
   );
 }
