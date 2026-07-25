@@ -244,6 +244,74 @@ class TestPushStatusCache:
         await bridge.stop()
 
     @pytest.mark.asyncio
+    async def test_every_active_interface_is_rewritten_not_just_the_tracked_one(self):
+        """Multi-NIC leak. A printer on WiFi *and* Ethernet reports two active
+        `net.info` entries with different IPs, and only one is the address we
+        connect on. Rewriting just that one hands BambuStudio a live route
+        straight to the printer, past the VP — the #1429 / #1302 symptom. Every
+        non-zero entry must land on the VP; zero entries are inactive
+        placeholders and stay put."""
+        server = _make_server(bind_address=VP_IP)
+        bridge = _make_bridge(server)
+        await bridge.start()
+
+        vp_le = _ip_to_uint32_le(VP_IP)
+        wifi_le = _ip_to_uint32_le(H2D_IP)  # the interface we connect on
+        eth_le = _ip_to_uint32_le("192.168.7.42")  # second active NIC
+        payload = json.dumps(
+            {
+                "print": {
+                    "command": "push_status",
+                    "net": {
+                        "info": [
+                            {"ip": wifi_le, "mask": 0xFFFFFF},
+                            {"ip": eth_le, "mask": 0xFFFFFF},
+                            {"ip": 0, "mask": 0},
+                        ]
+                    },
+                }
+            }
+        ).encode()
+        bridge._on_printer_raw(f"device/{H2D_SERIAL}/report", payload)
+        await asyncio.sleep(0.01)
+
+        info = bridge.get_latest_print_state()["net"]["info"]
+        assert info[0]["ip"] == vp_le
+        assert info[1]["ip"] == vp_le, "the secondary interface leaked the real printer IP"
+        assert info[2]["ip"] == 0  # placeholder untouched
+
+    @pytest.mark.asyncio
+    async def test_encoding_rearms_on_a_later_tick_and_sweeps_the_cache(self):
+        """The encoding used to be computed only when the client OBJECT changed,
+        so a client built before its `ip_address` was known stayed disarmed for
+        its whole life — `ensure_fresh_connection` is on-demand only, so an idle
+        printer never rebuilt it. The refresh loop now re-encodes every tick,
+        and a newly-armed encoding sweeps the already-cached push_status, which
+        would otherwise carry the poisoned IP forward across incrementals."""
+        server = _make_server(bind_address=VP_IP)
+        bridge = _make_bridge(server)
+        client = bridge._printer_manager.get_client(bridge.target_printer_id)
+        client.ip_address = None  # not known yet at bind time
+        await bridge.start()
+        assert bridge._vp_ip_uint32_le is None, "must not arm without a target IP"
+
+        # A push arrives while disarmed — the real IP gets cached as-is.
+        h2d_le = _ip_to_uint32_le(H2D_IP)
+        payload = json.dumps(
+            {"print": {"command": "push_status", "net": {"info": [{"ip": h2d_le, "mask": 0xFFFFFF}]}}}
+        ).encode()
+        bridge._on_printer_raw(f"device/{H2D_SERIAL}/report", payload)
+        await asyncio.sleep(0.01)
+        assert bridge.get_latest_print_state()["net"]["info"][0]["ip"] == h2d_le
+
+        # DHCP/DNS settles; the same client object now knows its address.
+        client.ip_address = H2D_IP
+        bridge._resolve_client()
+
+        assert bridge._vp_ip_uint32_le == _ip_to_uint32_le(VP_IP)
+        assert bridge.get_latest_print_state()["net"]["info"][0]["ip"] == _ip_to_uint32_le(VP_IP)
+
+    @pytest.mark.asyncio
     async def test_net_info_ip_rewritten_when_bind_is_wildcard(self):
         """#1429 residual: with bind_address=0.0.0.0 (flat-LAN default) the
         encoding must still arm by auto-resolving the host interface, otherwise

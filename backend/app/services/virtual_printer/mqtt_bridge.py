@@ -325,55 +325,35 @@ class MQTTBridge:
             # a client it will never re-resolve (upstream Bambuddy v0.2.4.5).
             self._unbind_client()
 
-    def _resolve_client(self) -> None:
-        """Look up the current client for ``target_printer_id`` and rebind if it changed."""
-        try:
-            current = self._printer_manager.get_client(self.target_printer_id)
-        except Exception:
-            logger.exception("[%s] MQTT bridge: get_client failed", self.vp_name)
-            return
+    def _refresh_ip_encoding(self, client) -> None:
+        """(Re-)encode the target/VP IPs used to rewrite ``net.info[*].ip``.
 
-        if current is self._target_client:
-            return
+        BambuStudio reads that field for its FTP destination — without the
+        rewrite the slicer bypasses the VP and FTPs straight to the real
+        printer. Called on every refresh tick, not only on client-identity
+        change: ``ip_address`` can fill in after the client object was built,
+        and the VP bind address can change under us, so an encoding that failed
+        to arm at bind time would otherwise stay disarmed for the life of the
+        client. Each not-armed path names its reason (deduped) so a silent
+        no-op is visible in the logs instead of just an absent "armed" line
+        (#1429 follow-up).
 
-        # Client identity changed — unregister from the old, register on the new.
-        if self._target_client is not None:
-            try:
-                self._target_client.unregister_raw_message_handler(self._on_printer_raw)
-            except Exception:
-                logger.exception(
-                    "[%s] MQTT bridge: unregister_raw_message_handler on previous client failed", self.vp_name
-                )
+        When the encoding CHANGES, the cached push_status is swept immediately —
+        our cache carries fields forward across incrementals, so a poisoned
+        ``net.info[].ip`` cached while disarmed would otherwise outlive the fix.
+        """
 
-        if current is None:
-            self._target_client = None
-            self._target_serial = None
-            return
-
-        try:
-            current.register_raw_message_handler(self._on_printer_raw)
-        except Exception:
-            logger.exception("[%s] MQTT bridge: register_raw_message_handler failed", self.vp_name)
-            return
-
-        self._target_client = current
-        self._target_serial = getattr(current, "serial_number", None)
-
-        # Cache printer IP and VP bind IP encoded as little-endian uint32, so we
-        # can rewrite ``net.info[*].ip`` in cached push_status. BambuStudio reads
-        # that field for the FTP destination IP — without rewriting, the slicer
-        # bypasses the VP and FTPs straight to the real printer. Each not-armed
-        # path names its reason (deduped) so a silent no-op is visible in the
-        # logs instead of just an absent "armed" line (#1429 follow-up).
         def _log_not_armed(reason: str) -> None:
             if reason != self._not_armed_reason:
                 logger.info("[%s] MQTT bridge IP encoding NOT armed: %s", self.vp_name, reason)
                 self._not_armed_reason = reason
 
+        prev_vp_le = self._vp_ip_uint32_le
+
         # The printer may be configured by hostname/FQDN (p1s.fritz.box) — resolve
         # to a concrete IPv4 because net.info[].ip is a uint32 LE that can't carry
         # a name or an IPv6 address (#1429 follow-up).
-        configured_target = getattr(current, "ip_address", None)
+        configured_target = getattr(client, "ip_address", None)
         target_ip = _resolve_target_to_ipv4(configured_target) if configured_target else None
         vp_ip = getattr(self._mqtt_server, "bind_address", None)
         vp_ip_source = "bind_address"
@@ -402,24 +382,112 @@ class MQTTBridge:
                 )
             else:
                 try:
-                    self._target_ip_uint32_le = _ip_to_uint32_le(target_ip)
-                    self._vp_ip_uint32_le = _ip_to_uint32_le(vp_ip)
-                    # Carry configured->resolved in the armed line when they differ,
-                    # so a bad-DNS regression stays legible in `docker logs`.
-                    target_disp = target_ip if target_ip == configured_target else f"{configured_target}->{target_ip}"
-                    logger.info(
-                        "[%s] MQTT bridge net.info IP encoding armed: target=%s vp=%s (%s)",
-                        self.vp_name,
-                        target_disp,
-                        vp_ip,
-                        vp_ip_source,
-                    )
-                    # Cleared on arm so a future failure re-emits the diagnostic.
-                    self._not_armed_reason = None
+                    new_target_le = _ip_to_uint32_le(target_ip)
+                    new_vp_le = _ip_to_uint32_le(vp_ip)
                 except ValueError as e:
                     self._target_ip_uint32_le = None
                     self._vp_ip_uint32_le = None
                     _log_not_armed(f"invalid IPv4 (target={target_ip!r}, vp={vp_ip!r}): {e}")
+                    return
+                if new_target_le == self._target_ip_uint32_le and new_vp_le == self._vp_ip_uint32_le:
+                    return  # unchanged — stay quiet, this runs on every tick
+                self._target_ip_uint32_le = new_target_le
+                self._vp_ip_uint32_le = new_vp_le
+                # Carry configured->resolved in the armed line when they differ,
+                # so a bad-DNS regression stays legible in `docker logs`.
+                target_disp = target_ip if target_ip == configured_target else f"{configured_target}->{target_ip}"
+                logger.info(
+                    "[%s] MQTT bridge net.info IP encoding armed: target=%s vp=%s (%s)",
+                    self.vp_name,
+                    target_disp,
+                    vp_ip,
+                    vp_ip_source,
+                )
+                # Cleared on arm so a future failure re-emits the diagnostic.
+                self._not_armed_reason = None
+                if prev_vp_le != new_vp_le and self._latest_print_state is not None:
+                    swept = self._rewrite_net_info_ips(self._latest_print_state)
+                    if swept:
+                        logger.info(
+                            "[%s] MQTT bridge swept %d cached net.info[].ip entries after re-arm",
+                            self.vp_name,
+                            swept,
+                        )
+
+    def _rewrite_net_info_ips(self, print_state: dict) -> int:
+        """Point every real ``net.info[].ip`` at the VP. Returns entries rewritten.
+
+        Rewrites ALL entries carrying a non-zero ``ip``, not only the one equal
+        to the tracked printer IP. A printer can report two active interfaces —
+        WiFi and Ethernet — with different addresses (X1C, H2D Pro), and only
+        one of them is the address we connect on; leaving the other intact hands
+        BambuStudio a route straight to the printer, past the VP, which is the
+        #1429 / #1302 symptom. Entries with ``ip == 0`` are inactive
+        placeholders and are left alone so the slicer can still tell which
+        interfaces are down.
+        """
+        if self._vp_ip_uint32_le is None:
+            return 0
+        net = print_state.get("net")
+        if not isinstance(net, dict):
+            return 0
+        info = net.get("info")
+        if not isinstance(info, list):
+            return 0
+        rewritten = 0
+        for entry in info:
+            if not isinstance(entry, dict):
+                continue
+            ip = entry.get("ip")
+            if isinstance(ip, int) and ip != 0 and ip != self._vp_ip_uint32_le:
+                entry["ip"] = self._vp_ip_uint32_le
+                rewritten += 1
+        return rewritten
+
+    def _resolve_client(self) -> None:
+        """Look up the current client for ``target_printer_id`` and rebind if it changed."""
+        try:
+            current = self._printer_manager.get_client(self.target_printer_id)
+        except Exception:
+            logger.exception("[%s] MQTT bridge: get_client failed", self.vp_name)
+            return
+
+        if current is self._target_client:
+            # Same client object — but its ``ip_address`` can fill in AFTER we
+            # first encoded it (a client built before DHCP/DNS settled), and the
+            # VP's bind address can change under us (reconfigure, lease renewal).
+            # Re-running the encoding here is what lets a bridge that failed to
+            # arm at bind time self-heal; the identity-change branch below never
+            # fires again for a long-lived client, and `ensure_fresh_connection`
+            # is only called on demand from routes/dispatch, so an idle printer's
+            # client could otherwise keep a disarmed encoding indefinitely.
+            self._refresh_ip_encoding(current)
+            return
+
+        # Client identity changed — unregister from the old, register on the new.
+        if self._target_client is not None:
+            try:
+                self._target_client.unregister_raw_message_handler(self._on_printer_raw)
+            except Exception:
+                logger.exception(
+                    "[%s] MQTT bridge: unregister_raw_message_handler on previous client failed", self.vp_name
+                )
+
+        if current is None:
+            self._target_client = None
+            self._target_serial = None
+            return
+
+        try:
+            current.register_raw_message_handler(self._on_printer_raw)
+        except Exception:
+            logger.exception("[%s] MQTT bridge: register_raw_message_handler failed", self.vp_name)
+            return
+
+        self._target_client = current
+        self._target_serial = getattr(current, "serial_number", None)
+
+        self._refresh_ip_encoding(current)
 
         logger.info(
             "[%s] MQTT bridge bound to printer %s (serial=%s)",
@@ -522,14 +590,7 @@ class MQTTBridge:
             # its target). Rewrite real printer IP → VP bind IP in
             # ``net.info[*].ip`` so the slicer's FTP destination resolves to
             # the VP, not the real printer.
-            if self._target_ip_uint32_le is not None and self._vp_ip_uint32_le is not None:
-                net = print_data.get("net")
-                if isinstance(net, dict):
-                    info = net.get("info")
-                    if isinstance(info, list):
-                        for entry in info:
-                            if isinstance(entry, dict) and entry.get("ip") == self._target_ip_uint32_le:
-                                entry["ip"] = self._vp_ip_uint32_le
+            self._rewrite_net_info_ips(print_data)
             # Defensive deep copy on store so the cache is fully decoupled
             # from the freshly-parsed tree and from any reader's reference.
             new_state = copy.deepcopy(print_data)
