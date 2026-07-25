@@ -370,4 +370,69 @@ describe('ConfigureAmsSlotModal', () => {
     // Scoped to a different printer → mismatch → hidden.
     expect(screen.queryByText('My PETG (X1C)')).not.toBeInTheDocument();
   });
+
+  // --- K-profile matching (#1688 / #1689) ---------------------------------
+  //
+  // The audit row that closed fdcc063d compared only `isMatchingCalibration`
+  // and never looked at this modal. Two consequences shipped: an actively
+  // bound K-profile could vanish from the dropdown (and then get CLEARED on
+  // the printer, because Save only requires a preset and caliIdx falls to -1),
+  // and presets that resolve no filament_id at all had a permanently empty
+  // list.
+
+  it('surfaces the bound K-profile of a slot even when it matches neither by id nor name (#1689)', async () => {
+    // Profile 7 is bound on the printer (cali_idx 7) but carries a different
+    // filament_id AND an unrelated name — under the old id-only filter the
+    // dropdown came up empty and Save would have written cali_idx: -1.
+    (api.getKProfiles as ReturnType<typeof vi.fn>).mockResolvedValue({
+      profiles: [
+        { id: 1, name: 'PLA Basic', k_value: '0.020', filament_id: 'GFL05', setting_id: '', extruder_id: 1, cali_idx: 1, slot_id: 1 },
+        { id: 7, name: 'Sunlu custom blend', k_value: '0.031', filament_id: 'GFG99', setting_id: '', extruder_id: 1, cali_idx: 7, slot_id: 7 },
+      ],
+    });
+    const slotInfo = { ...defaultProps.slotInfo, savedPresetId: 'GFSL05_09', caliIdx: 7, extruderId: 1 };
+    render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={slotInfo} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Bambu PLA Basic @BBL X1C')).toBeInTheDocument();
+    });
+    // The bound profile is present despite matching nothing about the preset.
+    await waitFor(() => {
+      expect(screen.getAllByText(/Sunlu custom blend/).length).toBeGreaterThan(0);
+    });
+  });
+
+  it('does not inject an unrelated profile when nothing is bound (caliIdx 0/absent)', async () => {
+    (api.getKProfiles as ReturnType<typeof vi.fn>).mockResolvedValue({
+      profiles: [
+        { id: 7, name: 'Sunlu custom blend', k_value: '0.031', filament_id: 'GFG99', setting_id: '', extruder_id: 1, cali_idx: 7, slot_id: 7 },
+      ],
+    });
+    const slotInfo = { ...defaultProps.slotInfo, savedPresetId: 'GFSL05_09', caliIdx: 0, extruderId: 1 };
+    render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={slotInfo} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Bambu PLA Basic @BBL X1C')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Sunlu custom blend/)).not.toBeInTheDocument();
+  });
+
+  it('shows the bound K-profile even when no preset resolves at all (#1689 follow-up)', async () => {
+    // Audit row D1 of the same cycle: a physically-loaded but unconfigured
+    // slot resolves no preset, so the old `!targetFilamentId` guard returned
+    // an empty list and the modal claimed "no profile, default 0.020" while
+    // the printer had one bound. The guard no longer short-circuits, so the
+    // safety net still runs.
+    (api.getKProfiles as ReturnType<typeof vi.fn>).mockResolvedValue({
+      profiles: [
+        { id: 7, name: 'Sunlu custom blend', k_value: '0.031', filament_id: 'GFG99', setting_id: '', extruder_id: 1, cali_idx: 7, slot_id: 7 },
+      ],
+    });
+    const slotInfo = { ...defaultProps.slotInfo, caliIdx: 7, extruderId: 1 };
+    render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={slotInfo} />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/Sunlu custom blend/).length).toBeGreaterThan(0);
+    });
+  });
 });

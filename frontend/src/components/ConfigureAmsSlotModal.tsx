@@ -5,7 +5,7 @@ import { matchesPrinterModelSuffix, presetCompatibility, buildCompatibilityIndex
 import { X, Loader2, Settings2, ChevronDown, CheckCircle2, RotateCcw } from 'lucide-react';
 import { api } from '../api/client';
 import type { KProfile } from '../api/client';
-import { resolveTargetFilamentId } from './spool-form/utils';
+import { isMatchingCalibration, resolveTargetFilamentId } from './spool-form/utils';
 import { Button } from './Button';
 
 interface SlotInfo {
@@ -855,6 +855,9 @@ export function ConfigureAmsSlotModal({
       fullName: nameWithoutSuffix,
       material: parsed.material,
       brand: parsed.brand,
+      // Carried for the K-profile name-fallback match (#1689) — the shared
+      // `isMatchingCalibration` takes brand/material/subtype.
+      variant: parsed.variant,
     };
   }, [selectedPresetId, cloudSettings?.filament, localPresets?.filament, builtinFilaments, orcaCloudList?.filament]);
 
@@ -944,9 +947,29 @@ export function ConfigureAmsSlotModal({
   }, [selectedPresetId, localPresets?.filament, cloudSettingDetailQuery.data]);
 
   const matchingKProfiles = useMemo(() => {
-    if (!kprofilesData?.profiles || !targetFilamentId) return [];
+    if (!kprofilesData?.profiles) return [];
 
-    const filtered = kprofilesData.profiles.filter(p => p.filament_id === targetFilamentId);
+    // Match through the shared helper rather than a bare `filament_id ===`
+    // (#1688/#1689). It keeps our id-is-authoritative precedence — the id
+    // comes from `resolveTargetFilamentId`, which collapses a custom preset
+    // onto its inherited base, so an id mismatch is a real mismatch — but it
+    // also gives us the name fallback for presets that resolve NO id at all.
+    // That last part matters: an Orca Cloud preset's id is a UUID that
+    // normalises to null, and the old id-only filter short-circuited to an
+    // empty list, so the K-profile dropdown was permanently blank there.
+    const filtered = selectedPresetInfo
+      ? kprofilesData.profiles.filter(p =>
+          isMatchingCalibration(
+            { name: p.name, filament_id: p.filament_id },
+            {
+              material: selectedPresetInfo.material,
+              brand: selectedPresetInfo.brand,
+              subtype: selectedPresetInfo.variant,
+            },
+            targetFilamentId,
+          ),
+        )
+      : [];
 
     // Deduplicate profiles with same name and k_value (multi-nozzle printers
     // have duplicates). Prefer the profile matching the slot's extruder
@@ -961,8 +984,28 @@ export function ConfigureAmsSlotModal({
         seen.set(key, profile);
       }
     }
-    return Array.from(seen.values());
-  }, [kprofilesData?.profiles, targetFilamentId, slotInfo.extruderId]);
+
+    const result = Array.from(seen.values());
+
+    // Safety net (#1689): always surface the slot's CURRENTLY-BOUND K-profile
+    // (by cali_idx / slot_id) even when it matched neither by id nor by name.
+    // A spool assigned under "Generic PLA" can have a custom profile actively
+    // bound on the printer whose filament_id differs from the preset. Without
+    // this the dropdown is empty, and because Save only requires a preset,
+    // `caliIdx` falls to -1 and the configure mutation sends
+    // `extrusion_cali_sel: -1` — silently CLEARING the printer's binding while
+    // the printer card's hover-card still shows the profile. Gated on
+    // activeIdx > 0 so caliIdx 0/null can't leak an unrelated profile in.
+    const activeIdx = slotInfo.caliIdx;
+    if (activeIdx != null && activeIdx > 0 && !result.some(p => p.slot_id === activeIdx)) {
+      const active = kprofilesData.profiles.find(
+        p => p.slot_id === activeIdx && (slotInfo.extruderId === undefined || p.extruder_id === slotInfo.extruderId),
+      );
+      if (active) result.unshift(active);
+    }
+
+    return result;
+  }, [kprofilesData?.profiles, selectedPresetInfo, targetFilamentId, slotInfo.extruderId, slotInfo.caliIdx]);
 
   // Pre-select current profile when modal opens, reset when closes
   useEffect(() => {
