@@ -719,6 +719,10 @@ export default {
     plateNumber: 'Plate {{number}}',
     slotOptions: 'Slot options',
     // Runout guidance: the slot the paused print now expects filament in
+    activeJobSlot: {
+      ariaLabel: 'Print slot {{n}} of the running job',
+      title: 'The running print pulls its slot {{n}} filament from here'
+    },
     expectedSlot: {
       title: 'The printer is waiting for filament in this slot',
       ariaLabel: 'Expected filament slot {{n}}',

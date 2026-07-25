@@ -729,6 +729,10 @@ export default {
     plateNumber: 'Плита {{number}}',
     slotOptions: 'Параметри слота',
     // Runout guidance: the slot the paused print now expects filament in
+    activeJobSlot: {
+      ariaLabel: 'Слот друку {{n}} поточного завдання',
+      title: 'Поточний друк бере філамент для свого слота {{n}} звідси'
+    },
     expectedSlot: {
       title: 'Принтер очікує на філамент у цьому слоті',
       ariaLabel: 'Очікуваний слот філаменту {{n}}',

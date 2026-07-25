@@ -1699,6 +1699,16 @@ function PrinterCard({
   // so these are often different — the graphic highlights the expected one.
   const expectedTray = status?.expected_tray ?? null;
   const previousTray = status?.previous_tray ?? null;
+  // #1762 (comment 2): while a print is running or paused, each AMS slot the
+  // job actually pulls from gets a small "P1 / P2 / P3" pill naming the
+  // print-slot mapped to it. Catches the reported scenario — an "any X1C"
+  // queue job staged onto a printer with mismatched filament — because the
+  // wrong-slot pill is visible the moment printing starts. Same wire data we
+  // already receive (`PrinterStatus.ams_mapping`); this is purely surface.
+  const activeMapping: number[] =
+    (status?.state === 'RUNNING' || status?.state === 'PAUSE') && Array.isArray(status?.ams_mapping)
+      ? status.ams_mapping
+      : [];
   // Pre-format the runout slot labels (honoring user AMS friendly names) for the
   // HMS modal. null when the slot can't be placed → honest fallback copy.
   const formatRunoutSlotLabel = (globalId: number | null): string | null => {
@@ -4080,6 +4090,10 @@ function PrinterCard({
                                 const isRefreshing = refreshingSlot?.amsId === ams.id &&
                                   refreshingSlot?.slotId === slotIdx;
 
+                                // Which print-slot the running job maps to THIS tray (#1762).
+                                const activePrintSlotIdx = activeMapping.indexOf(globalTrayId);
+                                const activePrintSlotLabel = activePrintSlotIdx >= 0 ? `P${activePrintSlotIdx + 1}` : null;
+
                                 // Slot visual content (goes inside hover card)
                                 const slotVisual = (
                                   <div
@@ -4093,6 +4107,15 @@ function PrinterCard({
                                             : ''
                                     }`}
                                   >
+                                    {activePrintSlotLabel && (
+                                      <span
+                                        aria-label={t('printers.activeJobSlot.ariaLabel', { n: activePrintSlotIdx + 1 })}
+                                        title={t('printers.activeJobSlot.title', { n: activePrintSlotIdx + 1 })}
+                                        className="absolute top-0.5 right-0.5 px-1 py-px text-[8px] font-bold text-bambu-dark bg-bambu-green rounded pointer-events-none leading-none"
+                                      >
+                                        {activePrintSlotLabel}
+                                      </span>
+                                    )}
                                     {isExpectedSlot && (
                                       <span
                                         aria-label={t('printers.expectedSlot.ariaLabel', { n: slotIdx + 1 })}
@@ -4427,6 +4450,10 @@ function PrinterCard({
                         const isHtRefreshing = refreshingSlot?.amsId === ams.id &&
                           refreshingSlot?.slotId === htSlotId;
 
+                        // Which print-slot the running job maps to THIS tray (#1762).
+                        const activePrintSlotIdx = activeMapping.indexOf(globalTrayId);
+                        const activePrintSlotLabel = activePrintSlotIdx >= 0 ? `P${activePrintSlotIdx + 1}` : null;
+
                         // Slot visual content (goes inside hover card)
                         const slotVisual = (
                           <div
@@ -4440,6 +4467,15 @@ function PrinterCard({
                                     : ''
                             }`}
                           >
+                            {activePrintSlotLabel && (
+                              <span
+                                aria-label={t('printers.activeJobSlot.ariaLabel', { n: activePrintSlotIdx + 1 })}
+                                title={t('printers.activeJobSlot.title', { n: activePrintSlotIdx + 1 })}
+                                className="absolute top-0.5 right-0.5 px-1 py-px text-[8px] font-bold text-bambu-dark bg-bambu-green rounded pointer-events-none leading-none"
+                              >
+                                {activePrintSlotLabel}
+                              </span>
+                            )}
                             {isExpectedSlot && (
                               <span
                                 aria-label={t('printers.expectedSlot.ariaLabel', { n: 1 })}
