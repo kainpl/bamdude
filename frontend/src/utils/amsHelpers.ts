@@ -375,3 +375,142 @@ export function isBambuLabSpool(tray: {
   if (tray.tag_uid && tray.tag_uid !== '0000000000000000') return true;
   return false;
 }
+
+export interface AmsTrayLike {
+  id: number;
+  tray_type: string | null | undefined;
+  tray_sub_brands: string | null | undefined;
+  tray_color: string | null | undefined;
+  tray_info_idx: string | null | undefined;
+}
+
+export interface AmsUnitLike {
+  id: number;
+  tray: AmsTrayLike[];
+}
+
+/**
+ * One row in the AMS Backup modal: a group of slots that back each other up
+ * (length >= 2), or a single non-empty slot with no peer (length === 1).
+ */
+export interface BackupGroup {
+  /** Stable key — same across renders for the same material+extruder. */
+  key: string;
+  /** Bambu preset ID (tray_info_idx) when matched on preset; null otherwise. */
+  presetId: string | null;
+  /** 0 = right / single, 1 = left. Scoping field for dual-nozzle. */
+  extruder: number;
+  /** Display name from the first slot's tray_sub_brands (or tray_type). */
+  displayName: string;
+  /** Tray colour from the first slot, for the swatch in the modal. */
+  trayColor: string | null;
+  /** Member slots, in (ams_id, slot_idx) order. */
+  members: Array<{ amsId: number; slotIdx: number; globalTrayId: number }>;
+}
+
+/**
+ * Canonicalise a hex colour for identity comparison. Mirrors the backend
+ * `_normalize_color_for_id`. Strips the leading `#`, uppercases, and drops
+ * the alpha channel when 8 chars long so `1A1A1AFF` matches `1A1A1A`.
+ */
+function normalizeColorForId(raw: string | null | undefined): string {
+  let s = (raw || '').trim().replace(/^#/, '').toUpperCase();
+  if (s.length === 8) s = s.slice(0, 6);
+  return s;
+}
+
+/**
+ * Compute backup pairs for the AMS Backup modal (#1762).
+ *
+ * Strict identity rule (mirrors backend `_material_identity_internal` /
+ * `_material_identity_spoolman`): slots pair ONLY when they share the same
+ * Bambu preset ID (`tray_info_idx`, e.g. "GFA00") AND the same colour. The
+ * preset identifies the filament profile (PETG HF, PLA Basic, etc.); the
+ * colour pins the variant — three PETG HF spools in different colours
+ * absolutely don't back each other up. User-tagged spools without a preset
+ * never pair — Bambu's firmware backup logic relies on the preset, and
+ * pairing on cosmetic name/colour match alone would let two visually-
+ * identical but materially-different spools be treated as backups.
+ *
+ * Empty slots are skipped entirely. Every non-empty slot is returned — slots
+ * without a peer come back as 1-member entries so the modal can list them as
+ * "Slots without a backup peer".
+ *
+ * On dual-extruder printers (H2D / H2C / X2D), pairs are scoped per extruder
+ * side — the firmware can't cross extruders even with the global backup bit
+ * set.
+ */
+export function computeBackupGroups(
+  amsUnits: AmsUnitLike[] | undefined,
+  amsExtruderMap: Record<string, number> | undefined,
+  isDualNozzle: boolean,
+): BackupGroup[] {
+  if (!amsUnits || amsUnits.length === 0) return [];
+
+  // Defensive dedup: ``status.ams`` is expected to be unique by `ams.id`, but
+  // observed in the wild to occasionally contain duplicate entries (e.g. on
+  // VP-aggregated switch printers or during MQTT partial-update merges). A
+  // duplicate would surface as "AMS-A slot 1" rendered twice with different
+  // materials, which is impossible physically and visually broken. First
+  // occurrence per `ams.id` wins.
+  const seenIds = new Set<number>();
+  const uniqueAms: AmsUnitLike[] = [];
+  for (const ams of amsUnits) {
+    if (seenIds.has(ams.id)) continue;
+    seenIds.add(ams.id);
+    uniqueAms.push(ams);
+  }
+
+  const byKey = new Map<string, BackupGroup>();
+
+  for (const ams of uniqueAms) {
+    const extruder = isDualNozzle ? Number(amsExtruderMap?.[String(ams.id)] ?? 0) : 0;
+    ams.tray.forEach((tray, slotIdx) => {
+      if (!tray?.tray_type) return; // empty slot
+      const preset = (tray.tray_info_idx || '').trim();
+      const globalTrayId = getGlobalTrayId(ams.id, slotIdx, false);
+      const member = { amsId: ams.id, slotIdx, globalTrayId };
+
+      let key: string;
+      let presetId: string | null;
+      if (preset) {
+        // Same Bambu profile is necessary but NOT sufficient — different colours
+        // of the same PETG HF profile can't back each other up. Bake the colour
+        // into the identity key, normalised to strip alpha and case.
+        const color = normalizeColorForId(tray.tray_color);
+        key = `preset:${preset}|color:${color}#${extruder}`;
+        presetId = preset;
+      } else {
+        // No preset → never group with anything else. Unique-per-slot key.
+        key = `unmatched:${ams.id}:${slotIdx}#${extruder}`;
+        presetId = null;
+      }
+
+      const existing = byKey.get(key);
+      if (existing) {
+        existing.members.push(member);
+      } else {
+        byKey.set(key, {
+          key,
+          presetId,
+          extruder,
+          displayName: tray.tray_sub_brands || tray.tray_type || '',
+          trayColor: tray.tray_color ?? null,
+          members: [member],
+        });
+      }
+    });
+  }
+
+  // Stable sort: extruder first (so the modal can section per side on
+  // dual-nozzle), then pairs before lone slots, then by name, then by first
+  // member's global tray id for deterministic rendering.
+  return Array.from(byKey.values()).sort((a, b) => {
+    if (a.extruder !== b.extruder) return a.extruder - b.extruder;
+    const aLone = a.members.length === 1 ? 1 : 0;
+    const bLone = b.members.length === 1 ? 1 : 0;
+    if (aLone !== bLone) return aLone - bLone;
+    if (a.displayName !== b.displayName) return a.displayName.localeCompare(b.displayName);
+    return a.members[0].globalTrayId - b.members[0].globalTrayId;
+  });
+}

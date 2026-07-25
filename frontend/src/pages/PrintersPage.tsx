@@ -106,6 +106,7 @@ import { LinkSpoolModal } from '../components/LinkSpoolModal';
 import { AssignSpoolModal } from '../components/AssignSpoolModal';
 import { ConfigureAmsSlotModal } from '../components/ConfigureAmsSlotModal';
 import { AMSSettingsModal } from '../components/AMSSettingsModal';
+import { AmsBackupModal } from '../components/AmsBackupModal';
 import { PrinterSettingsModal } from '../components/PrinterSettingsModal';
 import { FilamentCalibrationModal } from '../components/FilamentCalibrationModal';
 import { CalibrationHistoryModal } from '../components/CalibrationHistoryModal';
@@ -1494,6 +1495,7 @@ function PrinterCard({
     mode: 'humidity' | 'temperature';
   } | null>(null);
   const [amsSettingsOpen, setAmsSettingsOpen] = useState(false);
+  const [amsBackupModalOpen, setAmsBackupModalOpen] = useState(false);
   const [heaterHistoryOpen, setHeaterHistoryOpen] = useState(false);
   const [printerSettingsOpen, setPrinterSettingsOpen] = useState(false);
   const [filamentCaliOpen, setFilamentCaliOpen] = useState(false);
@@ -2131,6 +2133,17 @@ function PrinterCard({
       }
       showToast(error.message || t('printers.toast.failedToSetSpeed'), 'error');
     },
+  });
+
+  // Backup toggle from the AMS Backup modal. Deliberately the SAME wire call
+  // the AMS settings dialog makes (`action: 'auto_switch_filament'`) rather
+  // than upstream's separate /ams-backup route, which we never ported — one
+  // write path for one printer flag.
+  const amsBackupToggleMutation = useMutation({
+    mutationFn: (enabled: boolean) =>
+      api.postAmsSettings(printer.id, { action: 'auto_switch_filament', enabled }),
+    onError: (error: Error) =>
+      showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
   });
 
   const bedJogMutation = useMutation({
@@ -3825,8 +3838,10 @@ function PrinterCard({
                       {t('printers.filaments')}
                     </span>
                     <div className="flex-1 h-px bg-bambu-dark-tertiary/30" />
-                    {/* AMS Filament Backup status badge (#1766) — glanceable ON/OFF/Unknown;
-                        click opens the AMS settings modal where the toggle lives. */}
+                    {/* AMS Filament Backup status badge (#1766) — glanceable ON/OFF/Unknown.
+                        Click opens the backup modal (#1762): the toggle plus a ring per
+                        backup pair, showing the rotation order the firmware will follow.
+                        The gear button beside it still opens the full AMS settings. */}
                     {amsData.length > 0 && (status?.connected ?? false) && status?.ams_auto_switch_filament !== undefined && (() => {
                       const backup = status.ams_auto_switch_filament;
                       const title = backup === true
@@ -3839,15 +3854,13 @@ function PrinterCard({
                         : backup === false
                           ? 'text-bambu-gray'
                           : 'text-bambu-gray/50';
-                      const canToggle = hasPermission('printers:update');
                       return (
                         <button
                           type="button"
-                          onClick={canToggle ? () => setAmsSettingsOpen(true) : undefined}
-                          disabled={!canToggle}
+                          onClick={() => setAmsBackupModalOpen(true)}
                           title={title}
                           aria-label={title}
-                          className={`flex items-center p-1 rounded ${color} ${canToggle ? 'hover:bg-bambu-dark-tertiary/30' : 'cursor-default'}`}
+                          className={`flex items-center p-1 rounded ${color} hover:bg-bambu-dark-tertiary/30`}
                         >
                           <Repeat className="w-3 h-3" />
                         </button>
@@ -5911,6 +5924,18 @@ function PrinterCard({
       )}
 
       {/* AMS Settings Modal */}
+      <AmsBackupModal
+        isOpen={amsBackupModalOpen}
+        state={status?.ams_auto_switch_filament ?? null}
+        amsUnits={status?.ams}
+        amsExtruderMap={cachedAmsExtruderMap.current ?? status?.ams_extruder_map}
+        isDualNozzle={printer.nozzle_count === 2 || status?.temperatures?.nozzle_2 !== undefined}
+        canToggle={hasPermission('printers:update')}
+        pending={amsBackupToggleMutation.isPending}
+        onToggle={(next) => amsBackupToggleMutation.mutate(next)}
+        onClose={() => setAmsBackupModalOpen(false)}
+      />
+
       <AMSSettingsModal
         isOpen={amsSettingsOpen}
         onClose={() => setAmsSettingsOpen(false)}
