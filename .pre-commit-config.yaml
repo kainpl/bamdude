@@ -50,7 +50,11 @@ repos:
         files: ^backend/app/
       - id: frontend-typecheck
         name: TypeScript type check
-        entry: bash -c 'cd frontend && npx tsc --noEmit'
+        # `tsc -b`, NOT `tsc --noEmit`: the root tsconfig is `{"files": [],
+        # "references": [...]}`, so a plain --noEmit run has nothing in its
+        # program and exits 0 without checking a single file. -b walks the
+        # referenced projects. Matches what `npm run build` does.
+        entry: bash -c 'cd frontend && npx tsc -b --noEmit'
         language: system
         pass_filenames: false
         files: ^frontend/src/

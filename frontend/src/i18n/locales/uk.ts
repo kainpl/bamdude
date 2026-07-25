@@ -3019,33 +3019,20 @@ export default {
       noLogoutPermission: 'У вас немає дозволу на відключення',
       noConnectPermission: 'У вас немає дозволу на підключення до Orca Cloud',
       retry: 'Повторити',
-      back: 'Інший спосіб входу',
+      connectedShort: 'Підключено до Orca Cloud',
+      connectButton: 'Підключити Orca Cloud',
       connect: {
         title: 'Підключення до Orca Cloud',
-        description: 'Увійдіть до свого облікового запису Orca Cloud, щоб синхронізувати профілі слайсера в BamDude.'
+        description: 'Підтвердьте BamDude один раз у налаштуваннях Orca Cloud, щоб синхронізувати профілі слайсера. Без пароля й без вставляння URL.'
       },
-      providers: {
-        google: 'Увійти через Google',
-        apple: 'Увійти через Apple',
-        github: 'Увійти через GitHub',
-        email: 'Увійти через email і пароль'
-      },
-      password: {
-        title: 'Увійти через email і пароль',
-        email: 'Email',
-        emailPlaceholder: 'you@example.com',
-        password: 'Пароль',
-        submit: 'Увійти'
-      },
-      paste: {
-        title: 'Завершіть вхід',
-        step1: 'У новій вкладці відкрилася сторінка входу Orca Cloud. Увійдіть у свій обліковий запис Orca.',
-        step2: 'Браузер буде перенаправлено на адресу "localhost", яка не завантажиться. Це нормально — саме ця адреса нам потрібна.',
-        step3: 'Скопіюйте всю адресу з рядка браузера й вставте її нижче.',
-        signInUrl: 'Якщо вкладка входу не відкрилася, натисніть це посилання:',
-        label: 'Вставте адресу зворотного виклику сюди',
-        placeholder: 'http://localhost:41172/callback?code=...&state=...',
-        submit: 'Завершити підключення'
+      device: {
+        title: 'Підтвердьте BamDude в Orca Cloud',
+        instruction: 'Відкрийте Orca Cloud і підтвердьте цей код. BamDude підключиться автоматично, щойно ви підтвердите.',
+        codeLabel: 'Ваш код пари',
+        openButton: 'Відкрити сторінку підтвердження Orca Cloud',
+        manualHint: 'Або перейдіть на {{url}} і введіть код вище.',
+        waiting: 'Очікуємо на ваше підтвердження…',
+        cancel: 'Скасувати'
       },
       profiles: {
         title: 'Ваші профілі Orca Cloud ({{count}})',
@@ -3057,12 +3044,10 @@ export default {
         disconnected: 'Відключено від Orca Cloud'
       },
       errors: {
-        startFailed: 'Не вдалося розпочати вхід до Orca Cloud.',
-        finishFailed: 'Не вдалося завершити вхід до Orca Cloud.',
-        passwordFailed: 'Не вдалося увійти з цим email і паролем.',
-        passwordEmpty: 'Введіть, будь ласка, і email, і пароль.',
-        emptyPaste: 'Вставте, будь ласка, адресу зворотного виклику з браузера.',
-        noCode: 'Ця адреса не схожа на зворотний виклик Orca Cloud (немає параметра code). Скопіюйте повну адресу з рядка браузера.'
+        startFailed: 'Не вдалося розпочати підключення до Orca Cloud.',
+        denied: 'Підключення було відхилено в Orca Cloud.',
+        expired: 'Код пари протермінувався. Натисніть «Підключити», щоб спробувати ще раз.',
+        pollFailed: 'Втрачено зв’язок під час очікування підтвердження. Спробуйте ще раз.'
       }
     },
     localProfiles: {
