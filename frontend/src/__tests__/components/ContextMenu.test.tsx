@@ -115,4 +115,34 @@ describe('ContextMenu', () => {
       expect(itemsWithDivider[1].divider).toBe(true);
     });
   });
+
+  describe('scroll dismissal (#1151)', () => {
+    const projectItems = [
+      { label: 'Add to Project', onClick: vi.fn(), submenu: [
+        { label: 'Alpha', onClick: vi.fn() },
+        { label: 'Beta', onClick: vi.fn() },
+      ] },
+    ];
+
+    it('closes on a page-level scroll', () => {
+      render(<ContextMenu x={10} y={10} items={menuItems} onClose={mockOnClose} />);
+      document.dispatchEvent(new Event('scroll', { bubbles: true }));
+      expect(mockOnClose).toHaveBeenCalled();
+    });
+
+    it('does NOT close when the scroll comes from inside the menu', async () => {
+      // The listener is capture-phase on `document`, so it also receives
+      // scrolls of descendants — and the submenu panel is max-h-300 with
+      // overflow-y-auto, so scrolling a long project list used to slam the
+      // whole menu shut.
+      const user = userEvent.setup();
+      render(<ContextMenu x={10} y={10} items={projectItems} onClose={mockOnClose} />);
+      await user.hover(screen.getByText('Add to Project'));
+      const inner = await screen.findByText('Alpha');
+      mockOnClose.mockClear();
+
+      inner.dispatchEvent(new Event('scroll', { bubbles: true }));
+      expect(mockOnClose).not.toHaveBeenCalled();
+    });
+  });
 });

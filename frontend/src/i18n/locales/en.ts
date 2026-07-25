@@ -870,6 +870,7 @@ export default {
       edit: 'Edit',
       goToProject: 'Go to {{name}}',
       addToProject: 'Add to Project',
+      searchProjects: 'Search projects…',
       removeFromProject: 'Remove from Project',
       loading: 'Loading...',
       noProjectsAvailable: 'No projects available',

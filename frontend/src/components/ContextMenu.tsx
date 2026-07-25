@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, useLayoutEffect } from 'react';
-import { ChevronRight } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
+import { ChevronRight, Search } from 'lucide-react';
 
 export interface ContextMenuItem {
   label: string;
@@ -9,6 +9,10 @@ export interface ContextMenuItem {
   disabled?: boolean;
   divider?: boolean;
   submenu?: ContextMenuItem[];
+  // When set on an item with a submenu, render a search input above the
+  // submenu items that filters by label (case-insensitive). Only shown once
+  // the list is long enough to be worth filtering (#1151).
+  submenuSearchPlaceholder?: string;
   title?: string;
 }
 
@@ -17,6 +21,89 @@ interface ContextMenuProps {
   y: number;
   items: ContextMenuItem[];
   onClose: () => void;
+}
+
+interface SubmenuPanelProps {
+  items: ContextMenuItem[];
+  searchPlaceholder?: string;
+  onClose: () => void;
+  className: string;
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
+}
+
+// Extracted so the search box can hold its own state — it remounts (and so
+// resets) whenever the submenu is closed and reopened.
+const SUBMENU_SEARCH_THRESHOLD = 5;
+
+function SubmenuPanel({ items, searchPlaceholder, onClose, className, onMouseEnter, onMouseLeave }: SubmenuPanelProps) {
+  const [query, setQuery] = useState('');
+  // Only the leading non-project entries ("Remove from Project", loading,
+  // empty-state) are actionless or disabled; filtering counts the real ones.
+  const showSearch = Boolean(searchPlaceholder) && items.length > SUBMENU_SEARCH_THRESHOLD;
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return items;
+    return items.filter(i => i.label.toLowerCase().includes(q));
+  }, [items, query]);
+
+  const pick = (item: ContextMenuItem) => {
+    if (item.disabled) return;
+    item.onClick();
+    onClose();
+  };
+
+  return (
+    <div className={className} onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave}>
+      {showSearch && (
+        <div className="sticky top-0 bg-bambu-dark-secondary px-2 pb-1 pt-0.5">
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 text-bambu-gray absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="text"
+              autoFocus
+              value={query}
+              placeholder={searchPlaceholder}
+              onChange={e => setQuery(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  const first = filtered.find(i => !i.disabled);
+                  if (first) pick(first);
+                } else if (e.key === 'Escape') {
+                  // Clear the filter first; a second Escape closes the menu
+                  // through the document-level handler.
+                  if (query) {
+                    e.stopPropagation();
+                    setQuery('');
+                  }
+                }
+              }}
+              className="w-full pl-7 pr-2 py-1 text-xs bg-bambu-dark border border-bambu-dark-tertiary rounded text-white placeholder:text-bambu-gray focus:outline-none focus:border-bambu-green"
+            />
+          </div>
+        </div>
+      )}
+      {filtered.map((subItem, subIndex) => (
+        <button
+          key={subIndex}
+          onClick={() => pick(subItem)}
+          disabled={subItem.disabled}
+          title={subItem.title ?? subItem.label}
+          className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors ${
+            subItem.disabled
+              ? 'text-bambu-gray cursor-not-allowed'
+              : subItem.danger
+              ? 'text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-400/10'
+              : 'text-white hover:bg-bambu-dark-tertiary'
+          }`}
+        >
+          {subItem.icon && <span className="w-4 h-4 flex-shrink-0 flex items-center justify-center">{subItem.icon}</span>}
+          <span className="flex-1 min-w-0 truncate">{subItem.label}</span>
+        </button>
+      ))}
+    </div>
+  );
 }
 
 export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
@@ -40,7 +127,15 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
       }
     };
 
-    const handleScroll = () => {
+    // Only PAGE-level scrolls dismiss the menu. The listener is capture-phase
+    // on `document`, so it also receives scrolls of descendant elements — and
+    // our submenu panel is `max-h-[300px] overflow-y-auto`, which means any
+    // wheel / arrow-key / scrollbar drag inside a long "Add to Project" list
+    // used to slam the whole menu shut (#1151).
+    const handleScroll = (e: Event) => {
+      if (menuRef.current && e.target instanceof Node && menuRef.current.contains(e.target)) {
+        return;
+      }
       onClose();
     };
 
@@ -179,7 +274,10 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
             </button>
             {/* Submenu */}
             {hasSubmenu && activeSubmenu === index && (
-              <div
+              <SubmenuPanel
+                items={item.submenu!}
+                searchPlaceholder={item.submenuSearchPlaceholder}
+                onClose={onClose}
                 className={`absolute min-w-[160px] max-w-[280px] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 overflow-hidden max-h-[300px] overflow-y-auto z-[60] whitespace-nowrap ${
                   openSubmenuLeft ? 'right-full mr-1' : 'left-full ml-1'
                 } ${submenuPositions[index] === 'bottom' ? 'bottom-0' : 'top-0'}`}
@@ -190,31 +288,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
                   }
                 }}
                 onMouseLeave={() => handleMouseLeaveSubmenu()}
-              >
-                {item.submenu!.map((subItem, subIndex) => (
-                  <button
-                    key={subIndex}
-                    onClick={() => {
-                      if (!subItem.disabled) {
-                        subItem.onClick();
-                        onClose();
-                      }
-                    }}
-                    disabled={subItem.disabled}
-                    title={subItem.title ?? subItem.label}
-                    className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors ${
-                      subItem.disabled
-                        ? 'text-bambu-gray cursor-not-allowed'
-                        : subItem.danger
-                        ? 'text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-400/10'
-                        : 'text-white hover:bg-bambu-dark-tertiary'
-                    }`}
-                  >
-                    {subItem.icon && <span className="w-4 h-4 flex-shrink-0 flex items-center justify-center">{subItem.icon}</span>}
-                    <span className="flex-1 min-w-0 truncate">{subItem.label}</span>
-                  </button>
-                ))}
-              </div>
+              />
             )}
           </div>
         );

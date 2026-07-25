@@ -880,6 +880,7 @@ export default {
       edit: 'Редагувати',
       goToProject: 'Перейти до {{name}}',
       addToProject: 'Додати до проєкту',
+      searchProjects: 'Пошук проєктів…',
       removeFromProject: 'Видалити з проєкту',
       loading: 'Завантаження...',
       noProjectsAvailable: 'Проєктів немає',
