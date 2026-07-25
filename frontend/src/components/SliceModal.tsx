@@ -488,6 +488,31 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   const embeddedPrinter = platesQuery.data?.embedded_printer ?? null;
   const embeddedProcess = platesQuery.data?.embedded_process ?? null;
 
+  // "Slice as designed" (upstream #2611). When on, the backend honours the
+  // source 3MF's embedded project_settings.config (the designer's own wall
+  // count, infill, …) instead of the picked process/filament profiles. Only
+  // offered when the picked printer matches the design's target model — see
+  // canUseEmbedded below.
+  const [useEmbedded, setUseEmbedded] = useState(false);
+
+  // The toggle is offered only when the source carries embedded settings (a
+  // real project 3MF, not an STL) AND the picked printer matches the design's
+  // target model. The match gate is load-bearing: honouring embedded settings
+  // for a different model would place the model on the wrong bed. Names come
+  // from the same preset namespace, so a normalised (strip "# " prefix,
+  // case-fold) equality is enough.
+  const canUseEmbedded = useMemo<boolean>(() => {
+    if (!embeddedPrinter || !embeddedProcess || !selectedPrinterName) return false;
+    const norm = (s: string) => s.replace(/^#\s*/, '').trim().toLowerCase();
+    return norm(selectedPrinterName) === norm(embeddedPrinter);
+  }, [embeddedPrinter, embeddedProcess, selectedPrinterName]);
+
+  // Drop back to profile slicing whenever the toggle stops being offered (e.g.
+  // the user switches to a printer that doesn't match the design).
+  useEffect(() => {
+    if (!canUseEmbedded) setUseEmbedded(false);
+  }, [canUseEmbedded]);
+
   // Printer pre-pick: defaults to the printer the 3MF was prepared for when
   // that preset is available, else the first listed printer (see
   // SLICE_MODAL_TIER_ORDER in slicePresetPicker). Runs once when presets first
@@ -602,6 +627,10 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
         // Bed plate override → sidecar's ``bedType`` form field →
         // ``--curr-bed-type`` CLI flag.
         bed_type: bedType,
+        // The preset refs above are still sent (the backend validator requires
+        // them) but go unused when this flag is set — the slicer falls back on
+        // the file's embedded project_settings.config instead.
+        ...(useEmbedded && canUseEmbedded ? { use_embedded_settings: true } : {}),
       };
       if (source.kind === 'libraryFile') {
         return api.sliceLibraryFile(source.id, body);
@@ -911,7 +940,10 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                   fixing for STL / pure-3MF inputs). Default Textured PEI
                   matches the factory plate on X1C / P1S / H2D; A1 owners
                   flip to SuperTack once and localStorage persists. */}
-              <BedTypePicker value={bedType} onChange={setBedType} disabled={isEnqueuing} />
+              {/* Bed-type patches curr_bed_type onto the resolved process JSON,
+                  which the embedded-settings path never sends — so it has no
+                  effect there and is disabled rather than implying it does. */}
+              <BedTypePicker value={bedType} onChange={setBedType} disabled={isEnqueuing || useEmbedded} />
               {/* Preset-source control: 3-state owner filter (All / My
                   Presets / Built-in) applied across the cloud / local /
                   standard tiers. */}
@@ -920,13 +952,37 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                 onOwnerFilterChange={setFilterOwner}
                 disabled={isEnqueuing}
               />
+              {/* "Slice as designed" (upstream #2611): honour the file's embedded
+                  settings instead of the picked process/filament. Offered only
+                  when the picked printer matches the design's target. */}
+              {canUseEmbedded && (
+                <label className="flex items-start gap-2 text-sm text-bambu-gray cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={useEmbedded}
+                    onChange={(e) => setUseEmbedded(e.target.checked)}
+                    disabled={isEnqueuing}
+                    className="mt-0.5 cursor-pointer"
+                  />
+                  <span>
+                    {t('slice.useEmbedded')}
+                    <span className="block text-xs text-bambu-gray/70">
+                      {t('slice.useEmbeddedHint')}
+                    </span>
+                  </span>
+                </label>
+              )}
               <PresetDropdown
                 label={t('slice.printer', 'Printer profile')}
                 slot="printer"
                 data={presetsQuery.data}
                 value={printerPreset}
                 onChange={setPrinterPreset}
-                disabled={isEnqueuing}
+                // Locked in embedded mode too: the picked printer is unused on
+                // the embedded-settings path, and changing it away from the
+                // design's target would drop canUseEmbedded and yank the toggle
+                // out from under the user.
+                disabled={isEnqueuing || useEmbedded}
                 ownerFilter={filterOwner}
               />
               <PresetDropdown
@@ -935,7 +991,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                 data={presetsQuery.data}
                 value={processPreset}
                 onChange={setProcessPreset}
-                disabled={isEnqueuing}
+                disabled={isEnqueuing || useEmbedded}
                 ownerFilter={filterOwner}
                 selectedPrinterName={selectedPrinterName}
                 compatIndex={compatIndex}

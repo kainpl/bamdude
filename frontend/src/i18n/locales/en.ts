@@ -3484,6 +3484,8 @@ export default {
     loadingPresets: 'Loading presets…',
     presetsLoadFailed: 'Failed to load presets. Open Settings → Profiles to import them, or sign in to Bambu Cloud.',
     printer: 'Printer profile',
+    useEmbedded: "Use the file's built-in settings",
+    useEmbeddedHint: "Slice exactly as the designer set it up — wall count, infill and filament come from the file instead of the profiles below. Offered only when the selected printer matches the design's target.",
     process: 'Process profile',
     filament: 'Filament profile',
     filamentSlot: 'Filament {{index}} ({{type}})',

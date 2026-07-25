@@ -1840,6 +1840,11 @@ export type BedType =
   | 'Supertack Plate';
 
 export interface SliceRequest {
+  // "Slice as designed" (upstream #2611). 3MF only: slice using the file's
+  // embedded project_settings.config (the designer's own wall count, infill,
+  // etc.) instead of the picked profile triplet. The preset refs are still
+  // required by the backend validator but go unused on this path.
+  use_embedded_settings?: boolean;
   printer_preset_id?: number;
   process_preset_id?: number;
   filament_preset_id?: number;

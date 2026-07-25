@@ -2449,6 +2449,12 @@ async def _run_slicer_with_fallback(
         presets["process"] = _patch_process_support_settings(presets["process"], primary_bytes)
 
     used_embedded_settings = False
+    # "Slice as designed" (upstream #2611): honour the file's embedded
+    # project_settings.config instead of the picked profile triplet. Only
+    # meaningful for a 3MF that actually carries embedded settings; the UI gates
+    # the toggle on the picked printer matching the design's target, so this path
+    # never re-targets across printer models.
+    embedded_mode = bool(request.use_embedded_settings and is_3mf)
     service = SlicerApiService(api_url)
     progress_request_id: str | None = None
     progress_callback = None
@@ -2502,7 +2508,23 @@ async def _run_slicer_with_fallback(
 
     try:
         try:
-            if use_cross_class_slice_all:
+            if embedded_mode:
+                # No --load-settings: feed the CLI the file's own
+                # project_settings.config untouched so the designer's tweaks
+                # (walls, infill, …) drive the slice. primary_bytes is already
+                # sentinel-sanitised above, the same bytes the crash-fallback
+                # uses. The resolved presets go unused here.
+                result = await service.slice_without_profiles(
+                    model_bytes=primary_bytes,
+                    model_filename=model_filename,
+                    plate=request.plate,
+                    export_3mf=request.export_3mf,
+                    bed_type=request.bed_type,
+                    request_id=progress_request_id,
+                    on_progress=progress_callback,
+                )
+                used_embedded_settings = True
+            elif use_cross_class_slice_all:
                 from backend.app.services.slicer_3mf_convert import count_plates_in_3mf, merge_plate_3mfs
                 from backend.app.services.slicer_api import SliceResult
 
@@ -2582,7 +2604,11 @@ async def _run_slicer_with_fallback(
             rejection = _slicer_rejection_message(str(exc))
             if rejection:
                 raise HTTPException(status_code=400, detail=rejection) from exc
-            if not is_3mf:
+            if not is_3mf or embedded_mode:
+                # embedded_mode already sliced with the file's own settings —
+                # there is nothing to fall back TO, so surface the server error
+                # (the outer handler turns it into a 502) instead of re-running
+                # the identical embedded slice.
                 raise
             logger.warning(
                 "Slicer CLI rejected --load-settings for %s (%s); retrying with embedded settings",

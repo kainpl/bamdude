@@ -82,6 +82,21 @@ class SliceRequest(BaseModel):
         description="If true, request a 3MF response with embedded G-code instead of raw G-code.",
     )
     # Bed plate override (sidecar maps to ``--curr-bed-type``). Mirrors the
+    use_embedded_settings: bool = Field(
+        default=False,
+        description=(
+            "3MF only. Slice using the file's embedded "
+            "``Metadata/project_settings.config`` (the designer's own tweaks — wall "
+            "count, infill, etc.) instead of the picked printer/process/filament "
+            "triplet. This is the 'slice as designed' path: no ``--load-settings`` "
+            "override, so a MakerWorld author's settings survive. Ignored for STL / "
+            "plain-model 3MF (no embedded profile to honour). The preset refs are "
+            "still required by the validator but go unused on this path. Only makes "
+            "sense when the picked printer matches the design's target model — the "
+            "UI gates the toggle on that; there is no cross-printer re-targeting "
+            "here (that is exactly what the profile path is for)."
+        ),
+    )
     # five enum values BambuStudio's ``curr_bed_type`` accepts (see
     # libslic3r/PrintConfig.cpp:1069+). Without this override the CLI falls
     # back to per-plate value baked into the source 3MF (when present) and
