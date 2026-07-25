@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -124,6 +124,60 @@ def test_slicer_estimates_unreadable_file_returns_empty(tmp_path):
     assert _slicer_estimates(str(junk)) == {}
 
 
+def test_slicer_estimates_resolves_relative_path_against_base_dir(tmp_path, monkeypatch):
+    """``PrintArchive.file_path`` is stored relative to ``settings.base_dir``, so
+    the raw string must never be handed to the filesystem as-is — it would
+    resolve against the process CWD and the estimate would silently never fire.
+    """
+    from backend.app.services import print_reconciliation as mod
+
+    (tmp_path / "20250101_000000_widget").mkdir()
+    target = tmp_path / "20250101_000000_widget" / "widget.gcode.3mf"
+    target.write_bytes(b"not a zip")  # existence is what we're pinning
+    monkeypatch.setattr(mod.settings, "base_dir", tmp_path)
+
+    seen = {}
+
+    class _Parser:
+        def __init__(self, file_path, plate_number=None):
+            seen["path"] = file_path
+            seen["plate"] = plate_number
+
+        def parse(self):
+            return {"print_time_seconds": 900, "filament_used_grams": 12.5}
+
+    monkeypatch.setattr("backend.app.services.archive.ThreeMFParser", _Parser)
+
+    out = _slicer_estimates("20250101_000000_widget/widget.gcode.3mf")
+
+    assert out == {"print_time_seconds": 900, "filament_used_grams": 12.5}
+    assert seen["path"] == target
+
+
+def test_slicer_estimates_scopes_the_parse_to_the_printed_plate(tmp_path, monkeypatch):
+    """Without a plate number the parser falls back to the first ``<plate>``, so
+    a recovered print of plate 5 would inherit plate 1's weight and time."""
+    from backend.app.services import print_reconciliation as mod
+
+    target = tmp_path / "multi.gcode.3mf"
+    target.write_bytes(b"not a zip")
+    monkeypatch.setattr(mod.settings, "base_dir", tmp_path)
+
+    seen = {}
+
+    class _Parser:
+        def __init__(self, file_path, plate_number=None):
+            seen["plate"] = plate_number
+
+        def parse(self):
+            return {}
+
+    monkeypatch.setattr("backend.app.services.archive.ThreeMFParser", _Parser)
+
+    _slicer_estimates("multi.gcode.3mf", 5)
+    assert seen["plate"] == 5
+
+
 # ---------- _reconcile_complete_archive (DB) ----------
 
 
@@ -135,7 +189,7 @@ async def _make_archive(db, **overrides):
         file_size=0,
         print_name=overrides.get("print_name"),
         status="printing",
-        started_at=datetime.now(timezone.utc),
+        started_at=overrides.get("started_at", datetime.now(timezone.utc)),
         print_time_seconds=overrides.get("print_time_seconds"),
         filament_used_grams=overrides.get("filament_used_grams"),
         subtask_id=overrides.get("subtask_id"),
@@ -202,6 +256,68 @@ async def test_reconcile_complete_no_queue_item_is_fine(db_session):
     archive = await _make_archive(db_session)
     await _reconcile_complete_archive(db_session, archive, status="completed", uncertain=False)
     assert archive.status == "completed"
+
+
+# ---------- completed_at is a reconstruction, not the reconnect moment (#2592) ----------
+
+
+@pytest.mark.asyncio
+async def test_reconcile_does_not_bank_the_disconnect_gap(db_session):
+    """A 3-day outage must not become 3 days of print time. The closure lands on
+    the slicer's predicted natural end, so both the stored duration and the
+    stats total see 2h — the print's real length — not the gap."""
+    started = datetime.now(timezone.utc) - timedelta(days=3)
+    archive = await _make_archive(db_session, started_at=started, print_time_seconds=7200)
+
+    await _reconcile_complete_archive(db_session, archive, status="completed", uncertain=False)
+
+    assert (archive.completed_at - archive.started_at).total_seconds() == 7200
+    await db_session.flush()
+    assert archive.actual_time_seconds == 7200
+
+
+@pytest.mark.asyncio
+async def test_reconcile_without_estimate_contributes_zero(db_session):
+    """No slicer estimate = no evidence of how long it ran. Contributing nothing
+    is the honest answer (upstream stores duration_seconds=0 here)."""
+    started = datetime.now(timezone.utc) - timedelta(days=2)
+    archive = await _make_archive(db_session, started_at=started, print_time_seconds=None)
+
+    await _reconcile_complete_archive(db_session, archive, status="completed", uncertain=False)
+
+    assert archive.completed_at == archive.started_at
+    await db_session.flush()
+    # compute_time_metrics returns None for a non-positive duration.
+    assert archive.actual_time_seconds is None
+
+
+@pytest.mark.asyncio
+async def test_reconcile_never_stamps_a_finish_in_the_future(db_session):
+    """Short downtime, long estimate: the predicted end is still ahead of us, so
+    it clamps to now rather than dating the print into the future."""
+    started = datetime.now(timezone.utc) - timedelta(seconds=60)
+    archive = await _make_archive(db_session, started_at=started, print_time_seconds=28800)
+
+    await _reconcile_complete_archive(db_session, archive, status="completed", uncertain=False)
+
+    elapsed = (archive.completed_at - archive.started_at).total_seconds()
+    assert 55 <= elapsed <= 120  # ~now, not started_at + 8h
+
+
+@pytest.mark.asyncio
+async def test_reconcile_failed_records_why_the_row_was_closed(db_session):
+    archive = await _make_archive(db_session)
+    await _reconcile_complete_archive(db_session, archive, status="failed", uncertain=False)
+    assert archive.failure_reason == "Stale - reconciled after reconnect, end time unknown"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_keeps_an_existing_failure_reason(db_session):
+    # An HMS-classified fault already explains itself — don't overwrite it.
+    archive = await _make_archive(db_session)
+    archive.failure_reason = "Nozzle clog"
+    await _reconcile_complete_archive(db_session, archive, status="failed", uncertain=False)
+    assert archive.failure_reason == "Nozzle clog"
 
 
 # ---------- _reconcile (orchestrator, DB) ----------

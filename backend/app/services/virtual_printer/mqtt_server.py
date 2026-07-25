@@ -45,6 +45,28 @@ _PENDING_REQUEST_MAX_ENTRIES = 256
 # reported as IDLE so a cancelled send can't read as "busy" indefinitely.
 PREPARE_GRACE_SECONDS = 15.0
 
+# Target-printer gcode_states for which the VP mirrors live print progress to
+# the slicer (#1887). BambuStudio and OrcaSlicer gate BOTH the Device-tab
+# progress panel and the Send button on the same predicate —
+# ``MachineObject::is_in_printing()``, i.e. gcode_state in
+# {RUNNING, PAUSE, SLICING, PREPARE} — so reporting the target's real state
+# verbatim would show progress at the cost of blocking Send for as long as the
+# printer prints. That is exactly the #1558 regression. ``FINISH`` is the one
+# state that renders the progress panel (``is_in_printing() ||
+# print_status == "FINISH"`` in ``StatusPanel::update_subtask``) while leaving
+# Send enabled, so the mirror keeps reporting FINISH and only fills in the
+# numbers underneath it.
+_MIRRORED_PRINT_STATES = frozenset({"RUNNING", "PAUSE"})
+
+# How long after the last upload-state transition the VP keeps echoing the
+# slicer's own filename back at it before switching the report over to whatever
+# the target printer is really printing. The slicer releases its in-flight-job
+# lock when it sees gcode_state=FINISH carrying the subtask_name it uploaded
+# (#1280 / #1658); swapping in the printer's filename while that handshake is
+# still in flight wedges the send modal at "Downloading". 5 s covers the 1.5 s
+# ``_schedule_finish_release`` timer plus several 1 Hz pushes.
+_UPLOAD_SETTLE_SECONDS = 5.0
+
 # Model code → product_name for version response (must match what slicer expects)
 MODEL_PRODUCT_NAMES = {
     "BL-P001": "X1 Carbon",
@@ -272,6 +294,11 @@ class SimpleMQTTServer:
         # upload yet is still treated as live — the slicer sends the MQTT print
         # command a moment before it opens the FTP connection.
         self._prepare_set_monotonic = 0.0
+        # Monotonic timestamp of the last upload-state transition, so the live-
+        # progress mirror can tell whether the slicer is still waiting on its
+        # own upload handshake. Starts at -inf: a VP that has never seen an
+        # upload has no handshake to protect and can mirror immediately.
+        self._state_changed_at = float("-inf")
 
         # MQTT bridge for non-proxy modes — set by VirtualPrinterInstance after
         # ``start()``. When the bridge is_active, ``_send_status_report`` serves
@@ -854,6 +881,11 @@ class SimpleMQTTServer:
         the printer model, and the synthetic stub introduces fields the real
         H2D doesn't have (``storage``, the wrong ``chamber_temper`` shape, …)
         which trip the check.
+
+        While the target printer is actually printing and the VP has no upload
+        handshake of its own in flight, the live-progress fields are mirrored
+        through instead of zeroed, under a forced ``gcode_state=FINISH`` — see
+        ``_mirroring_live_progress`` for why that specific state (#1887).
         """
         try:
             self._sequence_id += 1
@@ -868,28 +900,43 @@ class SimpleMQTTServer:
                 print_block["sequence_id"] = str(self._sequence_id)
                 print_block["command"] = "push_status"
                 print_block["msg"] = 0
-                print_block["gcode_state"] = reported_state
-                print_block["gcode_file"] = self._current_file
-                print_block["gcode_file_prepare_percent"] = self._prepare_percent
-                if self._current_file:
-                    print_block["subtask_name"] = self._current_file.replace(".3mf", "")
-                else:
-                    # Don't override real subtask_name with empty if no upload pending.
+                mirroring = self._mirroring_live_progress(cached, reported_state)
+                if mirroring:
+                    # gcode_file / subtask_name / the progress fields stay as the
+                    # printer reported them — the slicer renders what is really
+                    # on the bed. FINISH keeps the Send button enabled.
+                    print_block["gcode_state"] = "FINISH"
+                    print_block["gcode_file_prepare_percent"] = "100"
                     print_block.setdefault("subtask_name", "")
-                # Zero the live-progress activity fields (#1558). Forcing
-                # gcode_state=IDLE above isn't enough: BambuStudio's Send
-                # pre-flight also reads mc_percent / stg_cur / layer_num / … and,
-                # if the real printer is mid-print, the cached-as-base path let
-                # those leak through — the slicer read them as "busy" and refused
-                # the Send even though gcode_state said IDLE. The VP is always
-                # idle from the slicer's perspective, so overlay the whole set.
-                print_block["mc_print_stage"] = ""
-                print_block["mc_percent"] = 0
-                print_block["mc_remaining_time"] = 0
-                print_block["stg"] = []
-                print_block["stg_cur"] = 0
-                print_block["layer_num"] = 0
-                print_block["total_layer_num"] = 0
+                else:
+                    print_block["gcode_state"] = reported_state
+                    print_block["gcode_file"] = self._current_file
+                    print_block["gcode_file_prepare_percent"] = self._prepare_percent
+                    if self._current_file:
+                        print_block["subtask_name"] = self._current_file.replace(".3mf", "")
+                    else:
+                        # Don't override real subtask_name with empty if no upload pending.
+                        print_block.setdefault("subtask_name", "")
+                # Live-progress activity fields (#1558 / #1887). When the VP
+                # reports itself idle these have to read idle too: the cached
+                # push_status carries the printer's real values, and a report
+                # that says gcode_state=IDLE while mc_percent>0 / stg_cur>0 is
+                # internally contradictory — BambuStudio's Send pre-flight takes
+                # it as busy and refuses the Send. When the mirror is on,
+                # gcode_state=FINISH agrees with a non-zero progress set, so they
+                # pass through instead.
+                if not mirroring:
+                    print_block["mc_print_stage"] = ""
+                    print_block["mc_percent"] = 0
+                    print_block["mc_remaining_time"] = 0
+                    print_block["stg"] = []
+                    print_block["stg_cur"] = 0
+                    print_block["layer_num"] = 0
+                    print_block["total_layer_num"] = 0
+                # print_error is never mirrored: StatusPanel raises a modal error
+                # dialog for a non-zero code, and the VP is not the machine that
+                # threw it — BamDude's own printer card reports the fault. Zero
+                # it in both branches.
                 print_block["print_error"] = 0
                 # Storage indicators overlay — the synthetic stub below always
                 # bakes these three fields because BambuStudio's Send pre-flight
@@ -1073,11 +1120,15 @@ class SimpleMQTTServer:
     def set_gcode_state(self, state: str, filename: str = "", prepare_percent: str = "0") -> None:
         """Update the gcode state reported to connected slicers.
 
-        Called by the manager to reflect FTP upload progress/completion.
+        Called by the manager to reflect FTP upload progress/completion. Stamps
+        the settle clock the live-progress mirror reads, so a state change owned
+        by the VP's own upload handshake holds the mirror off for
+        ``_UPLOAD_SETTLE_SECONDS``.
         """
         self._gcode_state = state
         self._current_file = filename
         self._prepare_percent = prepare_percent
+        self._state_changed_at = time.monotonic()
 
     def upload_started(self) -> None:
         """Mark that an FTP upload began (called by the FTP server)."""
@@ -1100,6 +1151,43 @@ class SimpleMQTTServer:
             self._gcode_state = "IDLE"
             self._current_file = ""
             self._prepare_percent = "0"
+            self._state_changed_at = time.monotonic()
+
+    def _mirroring_live_progress(self, cached: dict, reported_state: str) -> bool:
+        """True when the report should carry the target printer's live progress.
+
+        The slicers gate the Device-tab progress panel and the Send button on
+        the same predicate (``MachineObject::is_in_printing()``), so the VP
+        cannot report the printer's real gcode_state without also telling the
+        slicer it is too busy to accept a job — which is the whole point of a
+        non-proxy VP, and was the #1558 regression. Reporting ``FINISH`` instead
+        renders the panel (StatusPanel checks ``is_in_printing() ||
+        print_status == "FINISH"``) and leaves Send enabled, so the mirror is
+        FINISH plus the printer's real numbers.
+
+        Two things suppress it:
+
+        * The VP's own upload state machine owns the report while a job is being
+          handed over (``PREPARE``), and for a short settle window after — the
+          slicer only releases its in-flight-job lock once it sees FINISH
+          carrying the ``subtask_name`` it just uploaded (#1280 / #1658), and
+          swapping in the printer's filename mid-handshake wedges the send modal
+          at "Downloading".
+        * The printer isn't printing, in which case there is no progress to show
+          and the VP's own state is the honest thing to report.
+
+        ``reported_state`` is the EFFECTIVE state from ``_reported_gcode_state``,
+        not the raw ``self._gcode_state``: a ``project_file`` whose upload never
+        arrived leaves the raw field on ``PREPARE`` indefinitely (only a later
+        ``set_gcode_state`` / ``resolve_stale_prepare`` clears it), so keying off
+        the raw value would kill the mirror permanently after one abandoned Send.
+        Upstream has no stale-PREPARE downgrade and therefore no such divergence.
+        """
+        if reported_state == "PREPARE":
+            return False
+        if time.monotonic() - self._state_changed_at < _UPLOAD_SETTLE_SECONDS:
+            return False
+        return str(cached.get("gcode_state") or "").upper() in _MIRRORED_PRINT_STATES
 
     def _reported_gcode_state(self) -> str:
         """The ``gcode_state`` to advertise in status pushes.
@@ -1181,10 +1269,10 @@ class SimpleMQTTServer:
         """Send project_file acknowledgment matching real Bambu printer behavior."""
         # Update state so periodic status pushes reflect preparation. Stamp the
         # time so ``_reported_gcode_state`` keeps advertising PREPARE during the
-        # short window before the slicer opens its FTP upload connection.
-        self._gcode_state = "PREPARE"
-        self._current_file = filename
-        self._prepare_percent = "0"
+        # short window before the slicer opens its FTP upload connection. Routing
+        # through ``set_gcode_state`` also stamps the mirror's settle clock, so
+        # the live-progress mirror holds off until the handshake has settled.
+        self.set_gcode_state("PREPARE", filename=filename, prepare_percent="0")
         self._prepare_set_monotonic = time.monotonic()
 
         try:

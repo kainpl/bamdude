@@ -1052,6 +1052,13 @@ async def get_archive_stats(
         printer_accuracies: dict[str, list[float]] = {}
 
         for archive in archives_with_times:
+            # Skip synthetic closures. Their completed_at is derived FROM the
+            # slicer estimate (reconcile / stale-cleanup), so time_accuracy is
+            # 100% by construction and would drag the fleet average toward a
+            # number nobody measured (#2592).
+            extra = archive.extra_data or {}
+            if extra.get("recovered_by_startup_sweep") or extra.get("recovered_by_cleanup"):
+                continue
             if archive.time_accuracy is not None:
                 accuracies.append(archive.time_accuracy)
 

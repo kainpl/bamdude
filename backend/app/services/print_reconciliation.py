@@ -29,14 +29,16 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.config import settings
 from backend.app.models.archive import PrintArchive
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +140,7 @@ def _classify(live_state: str, *, file_match: bool, subtask_stale: bool = False)
     return "completed"
 
 
-def _slicer_estimates(file_path: str) -> dict:
+def _slicer_estimates(file_path: str, plate_index: int | None = None) -> dict:
     """Best-effort slicer estimates from a 3MF, for a recovered print.
 
     Returns ``{"print_time_seconds": int, "filament_used_grams": float}``
@@ -146,13 +148,33 @@ def _slicer_estimates(file_path: str) -> dict:
     parse error) returns ``{}`` — the MQTT completion event that would
     have carried the real figures is gone, so estimates are a courtesy,
     never a hard requirement.
+
+    ``file_path`` is a ``PrintArchive.file_path``, i.e. relative to
+    ``settings.base_dir`` (see ``archive.py`` where it is written as
+    ``dest_file.relative_to(settings.base_dir)``); it is resolved the same way
+    every other reader does. ``plate_index`` scopes the parse to the plate that
+    was actually printed — without it a multi-plate container falls through to
+    ``root.find(".//plate")`` and reports plate 1's weight and time for a print
+    of plate 5.
     """
-    if not file_path or not os.path.isfile(file_path):
+    if not file_path:
+        return {}
+    resolved = Path(file_path)
+    if not resolved.is_absolute():
+        # The value comes from our own writer, but it is still a DB string —
+        # join it under base_dir through the traversal guard rather than
+        # trusting it. Non-fatal: this whole function is best-effort.
+        try:
+            resolved = safe_join_under(settings.base_dir, file_path, http=False)
+        except PathTraversalError as exc:
+            logger.warning("reconcile: refusing unsafe archive path %r — %s", file_path, exc)
+            return {}
+    if not resolved.is_file():
         return {}
     try:
         from backend.app.services.archive import ThreeMFParser
 
-        meta = ThreeMFParser(Path(file_path)).parse()
+        meta = ThreeMFParser(resolved, plate_number=plate_index).parse()
         out: dict = {}
         if isinstance(meta, dict):
             pts = meta.get("print_time_seconds")
@@ -189,14 +211,24 @@ async def _reconcile_complete_archive(
 
     now = datetime.now(timezone.utc)
     archive.status = status
-    archive.completed_at = now
+    if status == "failed" and not archive.failure_reason:
+        # Not a user action and not an HMS-classified fault — record why the row
+        # was closed, and that its end time is a reconstruction (#2592).
+        archive.failure_reason = "Stale - reconciled after reconnect, end time unknown"
 
     # Best-effort telemetry — only fill what is missing.
-    estimates = _slicer_estimates(archive.file_path or "")
+    estimates = _slicer_estimates(archive.file_path or "", archive.plate_index)
     if archive.print_time_seconds is None and "print_time_seconds" in estimates:
         archive.print_time_seconds = estimates["print_time_seconds"]
     if archive.filament_used_grams is None and "filament_used_grams" in estimates:
         archive.filament_used_grams = estimates["filament_used_grams"]
+
+    # NOT ``now``: the reconnect moment is not the print's end time, and the gap
+    # would be banked as print time by the actual_time_seconds hook and by the
+    # /archives/stats total (#2592). Computed AFTER the estimate fill above, so a
+    # fallback archive that just learned its print_time_seconds gets the better
+    # bound.
+    archive.completed_at = _recovered_completed_at(archive.started_at, archive.print_time_seconds, now)
 
     # Audit flags — reassign the dict so SQLAlchemy flags the JSON column dirty.
     extra = dict(archive.extra_data or {})
@@ -232,6 +264,40 @@ async def _reconcile_complete_archive(
         status,
         " (outcome uncertain)" if uncertain else "",
     )
+
+
+def _recovered_completed_at(
+    started_at: datetime | None,
+    print_time_seconds: int | None,
+    now: datetime,
+) -> datetime:
+    """Honest ``completed_at`` for a reconciled (synthetic) closure.
+
+    The real end time is unknown: the print stopped somewhere inside the
+    disconnect window, and ``now`` is only the reconnect moment. Stamping
+    ``now`` banks the entire gap as print time everywhere a duration is derived
+    from ``completed_at - started_at`` — the ``before_flush`` hook that fills
+    ``PrintArchive.actual_time_seconds`` (``core/database.py``) and the
+    ``GET /archives/stats`` total. Across a farm of stale rows that is hundreds
+    of fictitious hours (upstream #2592).
+
+    Rules, mirroring ``main.py::_close_stale_printing_rows``:
+
+    * slicer estimate known → the printer's own predicted natural end,
+      ``started_at + print_time_seconds``, clamped to ``now`` so a
+      short-downtime reconcile can never stamp a finish in the future;
+    * no estimate → ``started_at``, i.e. zero measured runtime. Upstream stores
+      ``duration_seconds=0`` for the same reason: with no evidence at all,
+      contributing nothing is the honest answer;
+    * no ``started_at`` → ``now``; there is no gap to bank, and both the
+      metrics hook and the stats total already skip such rows.
+    """
+    if started_at is None:
+        return now
+    started = started_at if started_at.tzinfo else started_at.replace(tzinfo=timezone.utc)
+    if print_time_seconds and print_time_seconds > 0:
+        return min(now, started + timedelta(seconds=print_time_seconds))
+    return started
 
 
 def _subtask_stale(archive_subtask_id: str | None, live_subtask_id: str) -> bool:

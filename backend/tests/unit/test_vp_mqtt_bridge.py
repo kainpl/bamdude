@@ -825,17 +825,13 @@ class TestStatusReportCachedAsBase:
         assert payload["print"]["gcode_state"] == "PREPARE"
         assert payload["print"]["gcode_file"] == "foo.3mf"
 
-    @pytest.mark.asyncio
-    async def test_activity_fields_zeroed_when_printer_mid_print(self):
-        """#1558: forcing gcode_state=IDLE isn't enough — Send pre-flight also
-        reads mc_percent / stg_cur / layer_num / …; the cached-as-base path must
-        zero the whole activity set or the slicer reads the real printer's live
-        progress as "busy" and refuses the Send."""
-        server = _make_server()
-        bridge = MagicMock()
-        bridge.get_latest_print_state.return_value = {
+    @staticmethod
+    def _mid_print_cache() -> dict:
+        return {
             "command": "push_status",
             "gcode_state": "RUNNING",  # real printer is mid-print
+            "gcode_file": "on-the-bed.gcode.3mf",
+            "subtask_name": "on-the-bed",
             "mc_print_stage": "2",
             "mc_percent": 47,
             "mc_remaining_time": 1234,
@@ -845,6 +841,47 @@ class TestStatusReportCachedAsBase:
             "total_layer_num": 200,
             "print_error": 5,
         }
+
+    @pytest.mark.asyncio
+    async def test_activity_fields_mirrored_when_printer_mid_print(self):
+        """#1887: with the printer mid-print and no upload handshake of ours in
+        flight, the report carries the printer's real progress under a forced
+        FINISH — the one state that renders the slicer's progress panel without
+        tripping ``is_in_printing()`` and disabling Send."""
+        server = _make_server()
+        bridge = MagicMock()
+        bridge.get_latest_print_state.return_value = self._mid_print_cache()
+        server.set_bridge(bridge)
+        published = self._capture_published(server)
+
+        await server._send_status_report(MagicMock())
+        _serial, payload = published[0]
+        pb = payload["print"]
+        assert pb["gcode_state"] == "FINISH"  # not RUNNING — Send stays enabled
+        assert pb["gcode_file"] == "on-the-bed.gcode.3mf"
+        assert pb["subtask_name"] == "on-the-bed"
+        assert pb["gcode_file_prepare_percent"] == "100"
+        assert pb["mc_print_stage"] == "2"
+        assert pb["mc_percent"] == 47
+        assert pb["mc_remaining_time"] == 1234
+        assert pb["stg"] == [1, 2]
+        assert pb["stg_cur"] == 3
+        assert pb["layer_num"] == 88
+        assert pb["total_layer_num"] == 200
+        # Never mirrored: the VP isn't the machine that threw the fault, and a
+        # non-zero code raises a modal error dialog in StatusPanel.
+        assert pb["print_error"] == 0
+
+    @pytest.mark.asyncio
+    async def test_activity_fields_zeroed_when_printer_idle(self):
+        """#1558: with nothing printing, forcing gcode_state=IDLE isn't enough —
+        Send pre-flight also reads mc_percent / stg_cur / layer_num / …, and a
+        report that says IDLE while they are non-zero is read as "busy"."""
+        server = _make_server()
+        bridge = MagicMock()
+        cache = self._mid_print_cache()
+        cache["gcode_state"] = "IDLE"  # printer between jobs
+        bridge.get_latest_print_state.return_value = cache
         server.set_bridge(bridge)
         published = self._capture_published(server)
 
@@ -860,6 +897,66 @@ class TestStatusReportCachedAsBase:
         assert pb["layer_num"] == 0
         assert pb["total_layer_num"] == 0
         assert pb["print_error"] == 0
+
+    @pytest.mark.asyncio
+    async def test_mirror_suppressed_while_our_upload_handshake_settles(self):
+        """The slicer releases its in-flight-job lock only once it sees FINISH
+        carrying the subtask_name it just uploaded (#1280 / #1658). Swapping in
+        the printer's filename during that window wedges the send modal, so a
+        fresh state transition holds the mirror off."""
+        server = _make_server()
+        bridge = MagicMock()
+        bridge.get_latest_print_state.return_value = self._mid_print_cache()
+        server.set_bridge(bridge)
+        published = self._capture_published(server)
+
+        server.set_gcode_state("FINISH", filename="ours.3mf", prepare_percent="100")
+        await server._send_status_report(MagicMock())
+        _serial, payload = published[0]
+        pb = payload["print"]
+        assert pb["gcode_file"] == "ours.3mf"  # our filename, not the printer's
+        assert pb["subtask_name"] == "ours"
+        assert pb["mc_percent"] == 0  # progress still zeroed
+
+    @pytest.mark.asyncio
+    async def test_mirror_suppressed_during_prepare(self):
+        """While our own job is being handed over, the VP's upload state machine
+        owns the report."""
+        server = _make_server()
+        bridge = MagicMock()
+        bridge.get_latest_print_state.return_value = self._mid_print_cache()
+        server.set_bridge(bridge)
+        published = self._capture_published(server)
+
+        server._gcode_state = "PREPARE"
+        server._current_file = "ours.3mf"
+        server.upload_started()  # mid-FTP, so PREPARE is live rather than stale
+        server._state_changed_at = float("-inf")  # settle window already elapsed
+        await server._send_status_report(MagicMock())
+        _serial, payload = published[0]
+        pb = payload["print"]
+        assert pb["gcode_state"] == "PREPARE"
+        assert pb["mc_percent"] == 0
+
+    @pytest.mark.asyncio
+    async def test_mirror_survives_an_abandoned_send(self):
+        """BamDude divergence: a ``project_file`` whose upload never arrives
+        leaves the raw ``_gcode_state`` on PREPARE forever. The mirror keys off
+        the EFFECTIVE state, so the stale-PREPARE downgrade to IDLE re-enables
+        it instead of killing it permanently."""
+        server = _make_server()
+        bridge = MagicMock()
+        bridge.get_latest_print_state.return_value = self._mid_print_cache()
+        server.set_bridge(bridge)
+        published = self._capture_published(server)
+
+        server._gcode_state = "PREPARE"  # abandoned Send: no upload ever started
+        server._prepare_set_monotonic = 0.0  # grace window long gone
+        server._state_changed_at = float("-inf")
+        await server._send_status_report(MagicMock())
+        _serial, payload = published[0]
+        assert payload["print"]["gcode_state"] == "FINISH"
+        assert payload["print"]["mc_percent"] == 47
 
     @pytest.mark.asyncio
     async def test_storage_indicators_overlaid_for_send_preflight(self):
