@@ -51,6 +51,9 @@ interface CameraWallProps {
   /** Kiosk mode: the token to authenticate tile streams with, since there is no
    *  logged-in browser to hold the usual short-lived stream token. */
   streamToken?: string;
+  /** Hide the settings popover. A passive display has nobody standing at it, and
+   *  its settings come from the URL rather than this browser's localStorage. */
+  hideSettings?: boolean;
 }
 
 const MIN_MAX_LIVE = 1;
@@ -70,6 +73,7 @@ export function CameraWall({
   onChangeStatusMode,
   statusOverride,
   streamToken,
+  hideSettings = false,
 }: CameraWallProps) {
   const { t } = useTranslation();
   const tileRefs = useRef<Map<number, HTMLDivElement | null>>(new Map());
@@ -179,7 +183,7 @@ export function CameraWall({
             total: printers.length,
           })}
         </span>
-        <div className="relative" ref={settingsRef}>
+        <div className={`relative ${hideSettings ? 'hidden' : ''}`} ref={settingsRef}>
           <button
             type="button"
             onClick={() => setShowSettings((v) => !v)}

@@ -35,9 +35,25 @@ const DEFAULT_SNAPSHOT_SEC = 10;
 // interacting with a wall, and every tick is N printers' worth of state.
 const KIOSK_POLL_MS = 5000;
 
+const MIN_MAX_LIVE = 1;
+const MAX_MAX_LIVE = 16;
+const MIN_SNAPSHOT_SEC = 2;
+const MAX_SNAPSHOT_SEC = 60;
+
 function readNumber(key: string, fallback: number): number {
   const saved = parseInt(localStorage.getItem(key) || '', 10);
   return Number.isFinite(saved) && saved > 0 ? saved : fallback;
+}
+
+/** A URL parameter wins over localStorage, and is clamped to the same range the
+ *  settings popover enforces. A kiosk browser is awkward to reach — you can't
+ *  open devtools on a wall-mounted TV to set a localStorage key — so the URL is
+ *  the only practical way to configure one. Out-of-range or unparseable values
+ *  fall back rather than producing a wall nobody can fix from the same URL. */
+function paramNumber(raw: string | null, min: number, max: number, fallback: number): number {
+  const n = parseInt(raw ?? '', 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(Math.max(n, min), max);
 }
 
 export function CamWallPage() {
@@ -45,29 +61,53 @@ export function CamWallPage() {
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token');
   const kiosk = token != null && token !== '';
+  // Same value, read once for the state initialisers below (they run before
+  // `kiosk` is in scope in source order, but not in execution order — kept
+  // separate so the intent is explicit rather than relying on hoisting).
+  const kioskFromUrl = kiosk;
 
-  const [maxLive, setMaxLive] = useState(() => readNumber(MAX_LIVE_KEY, DEFAULT_MAX_LIVE));
+  const [maxLive, setMaxLive] = useState(() =>
+    paramNumber(
+      searchParams.get('maxLive'),
+      MIN_MAX_LIVE,
+      MAX_MAX_LIVE,
+      readNumber(MAX_LIVE_KEY, DEFAULT_MAX_LIVE),
+    ),
+  );
   const [snapshotSec, setSnapshotSec] = useState(() =>
-    readNumber(SNAPSHOT_SEC_KEY, DEFAULT_SNAPSHOT_SEC),
+    paramNumber(
+      searchParams.get('interval'),
+      MIN_SNAPSHOT_SEC,
+      MAX_SNAPSHOT_SEC,
+      readNumber(SNAPSHOT_SEC_KEY, DEFAULT_SNAPSHOT_SEC),
+    ),
   );
   const [statusMode, setStatusMode] = useState<CameraTileStatusMode>(() => {
+    const fromUrl = searchParams.get('status');
+    // 'full' is deliberately not selectable on a token wall: the kiosk feed does
+    // not serve the print filename at all, so 'full' would render gaps — and the
+    // whole point of withholding it is that a screen in a shared room never
+    // names the part on the bed.
+    if (fromUrl === 'off' || fromUrl === 'compact') return fromUrl;
+    if (fromUrl === 'full' && !kioskFromUrl) return 'full';
     const saved = localStorage.getItem(STATUS_MODE_KEY);
-    // A token wall renders the compact overlay: the feed doesn't serve the print
-    // filename, so 'full' would just show gaps. Compact is also the right
-    // default for a screen in a shared room.
-    if (saved === 'off' || saved === 'compact' || saved === 'full') return saved;
+    if (saved === 'off' || saved === 'compact' || (saved === 'full' && !kioskFromUrl)) return saved;
+    // Compact is the right default for a passive display.
     return 'compact';
   });
 
+  // Persist only on the signed-in wall. A kiosk's settings come from its URL, and
+  // writing them back would let opening a kiosk link once silently overwrite the
+  // wall preferences of whoever's browser it was opened in.
   useEffect(() => {
-    localStorage.setItem(MAX_LIVE_KEY, String(maxLive));
-  }, [maxLive]);
+    if (!kiosk) localStorage.setItem(MAX_LIVE_KEY, String(maxLive));
+  }, [kiosk, maxLive]);
   useEffect(() => {
-    localStorage.setItem(SNAPSHOT_SEC_KEY, String(snapshotSec));
-  }, [snapshotSec]);
+    if (!kiosk) localStorage.setItem(SNAPSHOT_SEC_KEY, String(snapshotSec));
+  }, [kiosk, snapshotSec]);
   useEffect(() => {
-    localStorage.setItem(STATUS_MODE_KEY, statusMode);
-  }, [statusMode]);
+    if (!kiosk) localStorage.setItem(STATUS_MODE_KEY, statusMode);
+  }, [kiosk, statusMode]);
 
   // Kiosk path: one token-authenticated call for the whole wall.
   const { data: kioskPrinters, isError: kioskError } = useQuery({
@@ -120,6 +160,9 @@ export function CamWallPage() {
         onChangeStatusMode={setStatusMode}
         statusOverride={statusOverride}
         streamToken={kiosk ? (token ?? undefined) : undefined}
+        // A passive display has nobody standing at it, and its settings come
+        // from the URL rather than this browser's localStorage.
+        hideSettings={kiosk}
         // No tile handler in kiosk mode: the token cannot open the
         // single-camera view, so a clickable-looking tile would just be a lie.
         onTileClick={

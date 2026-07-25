@@ -1042,7 +1042,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                           return next;
                         })
                       }
-                      disabled={isEnqueuing || !isUsed}
+                      disabled={isEnqueuing || !isUsed || useEmbedded}
                       swatchColor={filamentSlots.length > 1 ? slot.color : undefined}
                       ownerFilter={filterOwner}
                       selectedPrinterName={selectedPrinterName}
