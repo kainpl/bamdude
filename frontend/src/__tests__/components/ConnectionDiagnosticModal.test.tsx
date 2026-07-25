@@ -87,6 +87,34 @@ describe('ConnectionDiagnosticModal', () => {
     spy.mockRestore();
   });
 
+  it('renders the reason-specific variant for an external_storage skip (#2524)', async () => {
+    const spy = vi.spyOn(api, 'diagnosePrinter').mockResolvedValue({
+      ...PROBLEM_RESULT,
+      checks: [{ id: 'external_storage', status: 'skip', params: { reason: 'unsupported_model' } }],
+    });
+
+    renderModal({ printerId: 1, printerName: 'Test P1S', onClose: vi.fn() });
+
+    expect(await screen.findByText(/no reachable way to turn the option on/i)).toBeInTheDocument();
+    // The generic skip text must not be what a P1-series user reads.
+    expect(screen.queryByText(/needs a live MQTT connection/i)).not.toBeInTheDocument();
+
+    spy.mockRestore();
+  });
+
+  it('falls back to the plain skip text when the check carries no reason', async () => {
+    const spy = vi.spyOn(api, 'diagnosePrinter').mockResolvedValue({
+      ...PROBLEM_RESULT,
+      checks: [{ id: 'external_storage', status: 'skip', params: {} }],
+    });
+
+    renderModal({ printerId: 1, printerName: 'Test P1S', onClose: vi.fn() });
+
+    expect(await screen.findByText(/needs a live MQTT connection/i)).toBeInTheDocument();
+
+    spy.mockRestore();
+  });
+
   it('re-runs the diagnostic when the user clicks Run again', async () => {
     const spy = vi.spyOn(api, 'diagnosePrinter').mockResolvedValue(PROBLEM_RESULT);
 

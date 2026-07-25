@@ -218,6 +218,46 @@ class TestExistingPrinter:
             result = await run_connection_diagnostic("192.168.1.50", printer=_printer(model="A1 Mini"))
         assert _statuses(result)["external_storage"] == "skip"
 
+    async def test_skips_on_p1s_with_no_reachable_toggle(self):
+        # #2524: the P1-series has an SD slot but no way to turn the option on —
+        # BambuStudio only renders the toggle for models declaring
+        # support_save_remote_print_file_to_storage (P1 never does) and the
+        # printer has no screen. A fail there is permanently unresolvable, so
+        # the check reports skip + a reason the UI explains, and the overall
+        # result must not escalate.
+        with _Env(state=_state(store_to_sdcard=False)):
+            result = await run_connection_diagnostic("192.168.1.50", printer=_printer(model="P1S"))
+        check = next(c for c in result.checks if c.id == "external_storage")
+        assert check.status == "skip"
+        assert check.params == {"reason": "unsupported_model"}
+        assert result.overall == "ok"
+
+    async def test_skips_on_a2l_with_no_reachable_toggle(self):
+        # BamDude divergence from upstream's hardcoded {P1S, P1P} set: reading
+        # the mirrored BS configs also catches A2L, which has an SD slot and
+        # likewise never declares the capability.
+        with _Env(state=_state(store_to_sdcard=False)):
+            result = await run_connection_diagnostic("192.168.1.50", printer=_printer(model="A2L"))
+        check = next(c for c in result.checks if c.id == "external_storage")
+        assert check.status == "skip"
+        assert check.params == {"reason": "unsupported_model"}
+
+    async def test_p1s_reporting_the_option_on_still_passes(self):
+        # The skip only covers the "off with no way to turn it on" case.
+        with _Env(state=_state(store_to_sdcard=True)):
+            result = await run_connection_diagnostic("192.168.1.50", printer=_printer(model="P1S"))
+        assert _statuses(result)["external_storage"] == "pass"
+
+    async def test_live_capability_reactivates_the_fail(self):
+        # Self-healing half of the hybrid: a firmware that starts reporting
+        # support_save_remote_print_file_to_storage makes the toggle reachable
+        # again, so the fail becomes actionable without a code change.
+        state = _state(store_to_sdcard=False)
+        state.print_option_support = {"save_remote_to_storage": True}
+        with _Env(state=state):
+            result = await run_connection_diagnostic("192.168.1.50", printer=_printer(model="P1S"))
+        assert _statuses(result)["external_storage"] == "fail"
+
     async def test_still_fails_on_x1c_when_toggle_off(self):
         # Sanity: the model-aware skip MUST NOT silently let X1C-class
         # printers off the hook. The store_to_sdcard=False path is the

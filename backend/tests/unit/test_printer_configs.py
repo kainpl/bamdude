@@ -7,6 +7,7 @@ import pytest
 
 from backend.app.utils.printer_configs import (
     device_calibration_availability,
+    has_remote_storage_toggle,
     load_printer_config,
     resolve_device_calibrations,
 )
@@ -106,3 +107,43 @@ class TestHybridResolver:
         # Reporting lidar_cali True but ai_monitoring False → lidar stays False.
         r = resolve_device_calibrations("X1C", {"support_lidar_calibration": True, "support_ai_monitoring": False})
         assert r["lidar"] is False
+
+
+class TestRemoteStorageToggle:
+    """Reachability of the "Store sent files on external storage" toggle (#2524).
+
+    BS renders the toggle only for models declaring
+    ``support_save_remote_print_file_to_storage``; the external_storage
+    diagnostic skips instead of failing on the rest.
+    """
+
+    @pytest.mark.parametrize("model", ["X1C", "X2D", "P2S", "H2D", "H2S", "BL-P001", "N6"])
+    def test_declared_models_have_the_toggle(self, model):
+        assert has_remote_storage_toggle(model) is True
+
+    @pytest.mark.parametrize("model", ["P1S", "P1P", "C11", "C12"])
+    def test_p1_series_has_no_toggle(self, model):
+        # Upstream's hardcoded set, resolved from the mirrored configs instead.
+        assert has_remote_storage_toggle(model) is False
+
+    @pytest.mark.parametrize("model", ["A2L", "X1E"])
+    def test_undeclared_models_have_no_toggle(self, model):
+        # BamDude divergence: config-driven, so it also covers models upstream's
+        # {P1S, P1P} list misses.
+        assert has_remote_storage_toggle(model) is False
+
+    def test_unknown_model_defaults_open(self):
+        # Nothing mirrored → keep the check working rather than silently skip.
+        assert has_remote_storage_toggle("TotallyUnknown") is True
+        assert has_remote_storage_toggle(None) is True
+
+    def test_live_capability_wins_over_config(self):
+        # A firmware that starts reporting it reactivates the check; one that
+        # reports it off suppresses the check even on a declaring model.
+        assert has_remote_storage_toggle("P1S", {"save_remote_to_storage": True}) is True
+        assert has_remote_storage_toggle("X1C", {"save_remote_to_storage": False}) is False
+
+    def test_unreported_live_key_falls_back_to_config(self):
+        # A sparse push (other options only) must not be read as "not supported".
+        assert has_remote_storage_toggle("X1C", {"sound": True}) is True
+        assert has_remote_storage_toggle("P1S", {"sound": True}) is False

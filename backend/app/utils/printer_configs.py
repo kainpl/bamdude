@@ -151,6 +151,36 @@ def get_device_support_flags(model: str | None) -> dict:
     return print_block if isinstance(print_block, dict) else {}
 
 
+def has_remote_storage_toggle(model: str | None, live_support: dict | None = None) -> bool:
+    """Whether the printer exposes a reachable control for the "Store sent files
+    on external storage" option.
+
+    BambuStudio renders that toggle only for models declaring
+    ``support_save_remote_print_file_to_storage`` in their config (BS
+    ``SupportSaveRemote``, default false), so on a model that doesn't declare it
+    the option cannot be switched on from the slicer at all — and P1P/P1S have no
+    on-printer screen to reach it from either. ``store_to_sdcard`` (home_flag bit
+    11) is then stuck at False with nothing the user can do about it, which the
+    ``external_storage`` diagnostic must report as ``skip`` rather than a
+    permanently-red, unresolvable ``fail`` (upstream #2524).
+
+    Hybrid, like :func:`resolve_device_calibrations`: the printer's live
+    ``PrinterState.print_option_support`` wins wherever it actually reported the
+    capability, with the mirrored BS config as the base. Unknown models default
+    to True so the check keeps working on anything not mirrored yet.
+
+    Divergence from upstream, which hardcodes a ``{P1S, P1P}`` model set: reading
+    BS's own configs covers those two and additionally **A2L** and **X1E** (which
+    likewise never declare the flag), and it self-heals — a firmware that starts
+    reporting the capability reactivates the check with no code change.
+    """
+    if live_support and "save_remote_to_storage" in live_support:
+        return bool(live_support["save_remote_to_storage"])
+    if load_printer_config(model) is None:
+        return True
+    return bool(get_device_support_flags(model).get("support_save_remote_print_file_to_storage"))
+
+
 def device_calibration_availability(model: str | None) -> dict[str, bool]:
     """Base per-model availability of the seven device calibrations, read from
     the mirrored BambuStudio config.
