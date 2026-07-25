@@ -1388,6 +1388,10 @@ _SCANNABLE_EXTENSIONS = {
     ".gif",
     ".webp",
     ".svg",
+    # Markdown is scannable so an external folder's README survives a rescan.
+    # Without it the scan treats an existing README.md row as "no longer on
+    # disk" and DELETES it, taking the folder's documentation with it (#2520).
+    ".md",
 }
 
 
@@ -1740,9 +1744,17 @@ async def scan_external_folder(
             db.add(db_file)
             added += 1
 
-    # Remove DB entries for files that no longer exist on disk
+    # Remove DB entries for files that no longer exist on disk.
+    #
+    # Gate on actual disk presence, NOT merely absence from found_paths:
+    # found_paths only collects extensions in _SCANNABLE_EXTENSIONS, so a record
+    # for any other file the upload path admitted — a .md README being the
+    # reported case (#2520) — would otherwise be read as "deleted from disk" and
+    # purged on EVERY scan while the file sits there untouched. os.path.exists
+    # keeps those records; genuinely-deleted files are still cleaned up. For
+    # external folders file_path is the absolute on-disk path.
     for path_str, db_file in existing_files.items():
-        if path_str not in found_paths:
+        if path_str not in found_paths and not os.path.exists(path_str):
             # Clean up thumbnail if we generated one
             if db_file.thumbnail_path:
                 try:

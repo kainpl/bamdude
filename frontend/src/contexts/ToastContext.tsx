@@ -482,14 +482,32 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <ToastContext.Provider value={{ showToast, showPersistentToast, dismissToast }}>
       {children}
 
-      {/* Toast Container */}
-      <div className="fixed bottom-4 right-20 z-[60] flex flex-col items-end gap-2">
+      {/* Toast Container.
+          Positioned with safe-area-aware calc() rather than bottom-4/right-20 so an
+          installed PWA on a notched phone clears the home indicator and the landscape
+          notch (#2612). The 5rem right offset is the clearance for the bug-report
+          bubble. */}
+      <div
+        data-testid="toast-viewport"
+        className="fixed z-[60] flex flex-col items-end gap-2"
+        style={{
+          bottom: 'calc(1rem + env(safe-area-inset-bottom))',
+          right: 'calc(5rem + env(safe-area-inset-right))',
+        }}
+      >
         {toasts.map((toast) => (
           <div
             key={toast.id}
             className={`rounded-lg border shadow-lg backdrop-blur-sm animate-slide-in ${bgColors[toast.type]} ${
               toast.dispatchData ? 'w-[420px] p-3' : 'flex items-center gap-3 px-4 py-3'
             }`}
+            // Cap to the viewport so the fixed 420px dispatch toast cannot run off
+            // the left edge of a phone (#2612): 420 + the 80px right offset exceeds
+            // a 390px-wide iPhone. 6rem = the 5rem right offset plus a 1rem left
+            // gutter. On desktop the 420px still wins.
+            style={{
+              maxWidth: 'calc(100vw - 6rem - env(safe-area-inset-left) - env(safe-area-inset-right))',
+            }}
           >
             {toast.dispatchData ? (
               <>
@@ -559,7 +577,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                       return (
                         <div key={job.jobId} className="rounded border border-white/10 bg-black/15 p-2">
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs text-white truncate" title={job.sourceName}>
+                            {/* min-w-0 + flex-1 is what actually lets truncate fire
+                                once the toast is capped to a phone's width (#2612);
+                                the status chip stays put with shrink-0. */}
+                            <span className="text-xs text-white truncate min-w-0 flex-1" title={job.sourceName}>
                               {job.sourceName}
                             </span>
                             <div className="flex items-center gap-2">
@@ -575,7 +596,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                                     : t('backgroundDispatch.cancel')}
                                 </button>
                               )}
-                              <span className="text-[11px] uppercase tracking-wide text-bambu-gray">
+                              <span className="text-[11px] uppercase tracking-wide text-bambu-gray shrink-0">
                                 {t(`backgroundDispatch.status.${job.status}`)}
                               </span>
                             </div>

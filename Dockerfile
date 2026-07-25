@@ -128,4 +128,9 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
 # Use standard asyncio loop (uvloop has permission issues in some Docker environments)
 # Port is configurable via PORT environment variable (default: 8000)
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["sh", "-c", "uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-8000} --loop asyncio"]
+# HOST lets an operator bind loopback-only (HOST=127.0.0.1) when a reverse
+# proxy on the same host fronts the app; the default is unchanged. The native
+# installers already expose this as BIND_ADDRESS.
+# --loop asyncio is NOT optional here — uvloop's TLS layer silently truncates
+# 3MFs uploaded to the virtual printer on a ragged EOF (#1896).
+CMD ["sh", "-c", "uvicorn backend.app.main:app --host ${HOST:-0.0.0.0} --port ${PORT:-8000} --loop asyncio"]

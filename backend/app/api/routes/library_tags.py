@@ -190,7 +190,14 @@ async def update_tag(
     )
 
 
-@router.delete("/{tag_id}", status_code=204)
+# response_model=None is load-bearing under `from __future__ import annotations`:
+# the `-> None` return annotation reaches FastAPI as the string "None", which it
+# resolves to NoneType — a truthy class — and then asserts a 204 may carry no
+# response body. fastapi >= 0.116 special-cases NoneType; on the 0.109-0.115
+# releases our requirements floor still allows, the app fails at IMPORT without
+# this. Applies to every 204 route in a module with the future-annotations
+# import — pinned by test_204_routes_declare_response_model.
+@router.delete("/{tag_id}", status_code=204, response_model=None)
 async def delete_tag(
     tag_id: int,
     db: AsyncSession = Depends(get_db),

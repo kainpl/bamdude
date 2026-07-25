@@ -53,7 +53,7 @@ export function LoginPage() {
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const { t } = useTranslation();
-  const { login, loginWithToken, requiresSetup, loading: authLoading } = useAuth();
+  const { login, loginWithToken, requiresSetup, user, loading: authLoading } = useAuth();
   const { showToast } = useToast();
   const { mode } = useTheme();
 
@@ -83,6 +83,23 @@ export function LoginPage() {
 
   // 2FA step state
   const [step, setStep] = useState<LoginStep>('credentials');
+
+  // #1889: send an already-authenticated visitor away from /login. Without
+  // this, a live session that lands directly on /login — the address bar
+  // autocompleting the origin to its most-visited path is the common way —
+  // gets the credentials form even though the token is valid and every
+  // request succeeds, which reads as "it never stays logged in".
+  //
+  // Gated on the credentials step so the 2FA and OIDC-callback branches, which
+  // navigate themselves after loginWithToken, are not interrupted mid-flow.
+  // Sends to '/' rather than the post-login redirect resolver: a direct visit
+  // by an already-authed user has no pending redirect to honour, and consuming
+  // the stash here would swallow a genuine OIDC one.
+  useEffect(() => {
+    if (!authLoading && user && step === 'credentials') {
+      navigate('/', { replace: true });
+    }
+  }, [authLoading, user, step, navigate]);
   const [preAuthToken, setPreAuthToken] = useState('');
   const [twoFAMethods, setTwoFAMethods] = useState<string[]>([]);
   const [twoFAMethod, setTwoFAMethod] = useState<'totp' | 'email' | 'backup'>('totp');

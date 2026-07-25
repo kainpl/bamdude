@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { act, renderHook } from '@testing-library/react';
+import { act, render, renderHook } from '@testing-library/react';
 import { type ReactNode } from 'react';
 import { ToastProvider, useToast } from '../../contexts/ToastContext';
 
@@ -92,5 +92,41 @@ describe('ToastContext post-unmount safety', () => {
     }).not.toThrow();
 
     vi.useRealTimers();
+  });
+});
+
+describe('ToastContext viewport on small screens (#2612)', () => {
+  it('positions the viewport with safe-area-aware offsets', () => {
+    // An installed PWA on a notched phone must clear the home indicator and the
+    // landscape notch; bottom-4 / right-20 alone do not.
+    const { getByTestId } = render(
+      <ToastProvider>
+        <div />
+      </ToastProvider>,
+    );
+    const viewport = getByTestId('toast-viewport');
+    expect(viewport.style.bottom).toContain('safe-area-inset-bottom');
+    expect(viewport.style.right).toContain('safe-area-inset-right');
+  });
+
+  it('caps every toast to the viewport width', () => {
+    // The dispatch toast is a fixed 420px and the viewport sits 80px from the
+    // right — 500px total, wider than a 390px iPhone, so without a cap it runs
+    // off the left edge and the whole toast is unreadable.
+    function Emitter() {
+      const { showPersistentToast } = useToast();
+      return <button onClick={() => showPersistentToast('dispatch', 'sending prints')}>go</button>;
+    }
+    const { getByText, getByTestId } = render(
+      <ToastProvider>
+        <Emitter />
+      </ToastProvider>,
+    );
+    act(() => {
+      getByText('go').click();
+    });
+    const rendered = getByTestId('toast-viewport').firstElementChild as HTMLElement;
+    expect(rendered).not.toBeNull();
+    expect(rendered.style.maxWidth).toContain('100vw');
   });
 });
