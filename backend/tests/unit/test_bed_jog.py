@@ -1,7 +1,7 @@
 """Unit tests for the bed-jog and home-axes endpoints (#791, §17).
 
 Tests:
-  POST /api/v1/printers/{printer_id}/bed-jog?distance=<mm>&force=<bool>
+  POST /api/v1/printers/{printer_id}/bed-jog?distance=<mm>
   POST /api/v1/printers/{printer_id}/home-axes?axes=<z|xy|all>
 """
 
@@ -50,24 +50,39 @@ class TestBedJogAPI:
             assert response.status_code == 500
 
     @pytest.mark.asyncio
-    async def test_bed_jog_success_without_force(self, async_client: AsyncClient, printer_factory):
-        """When force=false the M211 guard lines must not be emitted."""
+    async def test_bed_jog_emits_the_bambu_studio_sequence(self, async_client: AsyncClient, printer_factory):
+        """A jog is byte-for-byte BS's own (DevAxisCtrl.cpp:49): push the endstop
+        state, ENABLE all three soft endstops, bracket the relative move in
+        push/pop ref-mode, pop the endstop state. Bambu's sliced start G-code
+        leaves the endstops off, so enabling them here is what keeps the move
+        clamped at the travel limit (#2579)."""
         printer = await printer_factory(name="P1")
         mock_client = MagicMock()
         mock_client.send_gcode.return_value = True
         with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
             mock_pm.get_client.return_value = mock_client
-            response = await async_client.post(f"/api/v1/printers/{printer.id}/bed-jog?distance=10&force=false")
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/bed-jog?distance=10")
             assert response.status_code == 200
             sent_gcode = mock_client.send_gcode.call_args[0][0]
-            assert "G91" in sent_gcode
-            assert "G1 Z10.00" in sent_gcode
-            assert "G90" in sent_gcode
-            assert "M211" not in sent_gcode
+            assert sent_gcode.splitlines() == [
+                "M211 S",
+                "M211 X1 Y1 Z1",
+                "M1002 push_ref_mode",
+                "G91",
+                "G1 Z10.00 F600",
+                "M1002 pop_ref_mode",
+                "M211 R",
+            ]
 
     @pytest.mark.asyncio
-    async def test_bed_jog_success_with_force(self, async_client: AsyncClient, printer_factory):
-        """force=true must wrap the move in M211 S0 / M211 S1."""
+    async def test_bed_jog_never_disables_endstops_even_with_a_stray_force(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        """#2579 core regression. ``M211 S0`` must never be emitted: it is not a
+        form that exists in Bambu's dialect (bare ``M211 S`` is *push*), and the
+        UI used to send ``force=true`` on every single jog. A stray ``?force=true``
+        from a stale client is ignored — FastAPI drops the unknown query param —
+        and the move still enables the endstops."""
         printer = await printer_factory(name="P1")
         mock_client = MagicMock()
         mock_client.send_gcode.return_value = True
@@ -76,9 +91,9 @@ class TestBedJogAPI:
             response = await async_client.post(f"/api/v1/printers/{printer.id}/bed-jog?distance=-5&force=true")
             assert response.status_code == 200
             sent_gcode = mock_client.send_gcode.call_args[0][0]
-            lines = sent_gcode.splitlines()
-            assert lines[0] == "M211 S0"
-            assert lines[-1] == "M211 S1"
+            assert "M211 S0" not in sent_gcode, f"must never disable endstops, got: {sent_gcode!r}"
+            assert "M211 S1" not in sent_gcode
+            assert "M211 X1 Y1 Z1" in sent_gcode
             assert "G1 Z-5.00" in sent_gcode
 
     # --- Direction-flip regression on bed-slingers (upstream #1334) ---

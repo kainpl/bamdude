@@ -1,5 +1,7 @@
 """Integration tests for Projects API endpoints."""
 
+from datetime import datetime
+
 import pytest
 from httpx import AsyncClient
 
@@ -740,3 +742,83 @@ class TestProjectExportImport:
         response = await async_client.post("/api/v1/projects/import/file", files=files)
         assert response.status_code == 400
         assert "Invalid JSON" in response.json()["detail"]
+
+
+class TestProjectListCardMetadata:
+    """The shared edit dialog seeds itself from whichever project object it is
+    handed, so tags / due_date / priority must be on the LIST payload too —
+    otherwise editing from the Projects page submits the dialog's defaults over
+    stored values (upstream #2536)."""
+
+    @pytest.fixture
+    async def project_factory(self, db_session):
+        async def _create_project(**kwargs):
+            from backend.app.models.project import Project
+
+            defaults = {"name": "Card meta"}
+            defaults.update(kwargs)
+            project = Project(**defaults)
+            db_session.add(project)
+            await db_session.commit()
+            await db_session.refresh(project)
+            return project
+
+        return _create_project
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_carries_tags_due_date_and_priority(self, async_client: AsyncClient, project_factory):
+        project = await project_factory(
+            name="Card meta", tags="urgent,rack-a", due_date=datetime(2026, 8, 1), priority="high"
+        )
+
+        listed = await async_client.get("/api/v1/projects/")
+        assert listed.status_code == 200
+        item = next(p for p in listed.json() if p["id"] == project.id)
+        assert item["tags"] == "urgent,rack-a"
+        assert item["priority"] == "high"
+        assert item["due_date"] is not None and item["due_date"].startswith("2026-08-01")
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_priority_defaults_to_normal_in_the_list(self, async_client: AsyncClient, project_factory):
+        project = await project_factory(name="No priority")
+        listed = await async_client.get("/api/v1/projects/")
+        item = next(p for p in listed.json() if p["id"] == project.id)
+        assert item["priority"] == "normal"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_explicit_null_clears_tags_and_due_date(self, async_client: AsyncClient, project_factory):
+        project = await project_factory(name="Clearable", tags="keep-me", due_date=datetime(2026, 8, 1))
+
+        cleared = await async_client.patch(
+            f"/api/v1/projects/{project.id}", json={"name": "Clearable", "tags": None, "due_date": None}
+        )
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["tags"] is None
+        assert cleared.json()["due_date"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_omitted_fields_are_left_untouched(self, async_client: AsyncClient, project_factory):
+        """The null-clears semantics must not turn a partial update into a wipe."""
+        project = await project_factory(name="Partial", tags="keep-me", due_date=datetime(2026, 8, 1))
+
+        renamed = await async_client.patch(f"/api/v1/projects/{project.id}", json={"name": "Renamed"})
+        assert renamed.status_code == 200, renamed.text
+        assert renamed.json()["tags"] == "keep-me"
+        assert renamed.json()["due_date"] is not None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_template_list_carries_target_parts_count(self, async_client: AsyncClient, project_factory):
+        """The same dialog edits target_parts_count, and the template list used
+        to omit it."""
+        project = await project_factory(name="Tpl", target_parts_count=42, is_template=True)
+
+        listed = await async_client.get("/api/v1/projects/templates")
+        assert listed.status_code == 200
+        item = next((p for p in listed.json() if p["id"] == project.id), None)
+        assert item is not None, "created template missing from the template list"
+        assert item["target_parts_count"] == 42

@@ -1030,6 +1030,11 @@ export interface ProjectListItem {
   target_parts_count: number | null;  // Target number of parts/objects
   budget: number | null;
   created_at: string;
+  // Card-level metadata the shared edit dialog seeds itself from — must match
+  // the full Project payload or editing from the list submits defaults (#2536).
+  tags: string | null;
+  due_date: string | null;
+  priority: string;
   archive_count: number;  // Number of print jobs (plates)
   total_items: number;  // Sum of quantities (total items printed, including failed)
   completed_count: number;  // Sum of quantities for completed prints only (parts)
@@ -1064,8 +1069,9 @@ export interface ProjectUpdate {
   target_count?: number;
   target_parts_count?: number;
   notes?: string;
-  tags?: string;
-  due_date?: string;
+  // null clears (the backend keys off model_fields_set), like budget/url.
+  tags?: string | null;
+  due_date?: string | null;
   priority?: string;
   budget?: number | null;
   parent_id?: number;
@@ -3145,6 +3151,20 @@ export interface LocalBackupFile {
   created_at: string;
 }
 
+/** Result of probing the configured backup directory with a real write (#2544). */
+export interface LocalBackupPathCheck {
+  writable: boolean;
+  path: string;
+  /** Translation selector: ok | sandboxed | read_only | permission_denied | no_space | not_a_directory | missing | error */
+  code: string;
+  detail: string | null;
+  /** Ready-to-paste fix (systemd drop-in / compose snippet). Rendered verbatim. */
+  remedy: string | null;
+  message: string;
+  /** Writable, but not persistent — currently only 'container_ephemeral'. */
+  warning: string | null;
+}
+
 export interface LocalBackupRunResponse {
   success: boolean;
   message: string;
@@ -4821,11 +4841,10 @@ export const api = {
     }),
 
   // Bed (Z-axis) jog
-  bedJog: (printerId: number, distance: number, force: boolean = false) =>
-    request<{ success: boolean; message: string }>(
-      `/printers/${printerId}/bed-jog?distance=${distance}&force=${force}`,
-      { method: 'POST' },
-    ),
+  bedJog: (printerId: number, distance: number) =>
+    request<{ success: boolean; message: string }>(`/printers/${printerId}/bed-jog?distance=${distance}`, {
+      method: 'POST',
+    }),
   homeAxes: (printerId: number, axes: 'z' | 'xy' | 'all' = 'z') =>
     request<{ success: boolean; message: string }>(
       `/printers/${printerId}/home-axes?axes=${axes}`,
@@ -7593,6 +7612,8 @@ export const api = {
   // Scheduled Local Backup (#884)
   getLocalBackupStatus: () =>
     request<LocalBackupStatus>('/local-backup/status'),
+  checkLocalBackupPath: () =>
+    request<LocalBackupPathCheck>('/local-backup/path-check'),
   triggerLocalBackup: () =>
     request<LocalBackupRunResponse>('/local-backup/run', { method: 'POST' }),
   listLocalBackups: () =>

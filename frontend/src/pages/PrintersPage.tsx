@@ -2124,8 +2124,7 @@ function PrinterCard({
   });
 
   const bedJogMutation = useMutation({
-    mutationFn: ({ distance, force }: { distance: number; force?: boolean }) =>
-      api.bedJog(printer.id, distance, force ?? false),
+    mutationFn: ({ distance }: { distance: number }) => api.bedJog(printer.id, distance),
     onError: (error: Error) =>
       showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
   });
@@ -2136,9 +2135,10 @@ function PrinterCard({
       showToast(t('printers.bedJog.homingStarted'));
       // Suppress the "not homed" re-prompt for this printer in the current
       // session — Auto Home just put the printer in a homed state, so the
-      // next jog click shouldn't re-open the warning modal. Mirrors the flag
-      // set by "Move anyway" so either path closes the modal for the session
-      // (upstream #1052 follow-up).
+      // next jog click shouldn't re-open the warning modal. Since #2579 this
+      // is the ONLY way past the modal: the old "Move anyway" escape hatch is
+      // gone, matching Bambu Studio, which refuses the jog outright while the
+      // axis is not homed (StatusPanel::check_axis_z_at_home).
       try {
         sessionStorage.setItem(`bamdude.bedJog.warned.${printer.id}`, '1');
       } catch {
@@ -3671,7 +3671,7 @@ function PrinterCard({
                           })();
                           setShowBedJogMenu(null);
                           if (warned) {
-                            bedJogMutation.mutate({ distance: signed, force: true });
+                            bedJogMutation.mutate({ distance: signed });
                           } else {
                             setShowNotHomedModal({ distance: signed });
                           }
@@ -3733,6 +3733,18 @@ function PrinterCard({
                                         {step}
                                       </button>
                                     ))}
+                                  </div>
+                                  {/* Residual-risk notice (#2579). We re-enable the
+                                      soft endstops before every jog, but Bambu's
+                                      firmware has been observed running a move past
+                                      the limit anyway, and it reports no axis
+                                      position, so the move can't be clamped here
+                                      either. */}
+                                  <div className="mt-2 flex items-start gap-1 border-t border-bambu-dark-tertiary pt-2">
+                                    <AlertTriangle className="w-3 h-3 text-amber-400 flex-shrink-0 mt-px" />
+                                    <span className="text-[9px] leading-snug text-bambu-gray">
+                                      {t('printers.bedJog.limitWarning')}
+                                    </span>
                                   </div>
                                 </div>
                               </>
@@ -5769,10 +5781,13 @@ function PrinterCard({
         />
       )}
 
-      {/* Bed Jog — not-homed warning (Studio-style). Shown the first time a
-          user tries to move the bed in a browser session; "Move anyway" wraps
-          the jog with M211 S0/S1 to bypass soft endstops and remembers the
-          choice in sessionStorage as bamdude.bedJog.warned.<printer_id>. */}
+      {/* Bed Jog — not-homed gate (Studio-style). Shown the first time a user
+          tries to move the bed in a browser session. Since #2579 the only way
+          past it is Auto Home, which flips bamdude.bedJog.warned.<printer_id>
+          in sessionStorage on success — Bambu Studio refuses the jog outright
+          while the axis is not homed (StatusPanel::check_axis_z_at_home), and
+          the old "Move anyway" escape hatch drove the move with the soft
+          endstops disabled. */}
       {showNotHomedModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
           <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl w-full max-w-sm p-5">
@@ -5796,17 +5811,6 @@ function PrinterCard({
                 className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30 transition-colors"
               >
                 {t('printers.bedJog.homeZ')}
-              </button>
-              <button
-                onClick={() => {
-                  const d = showNotHomedModal.distance;
-                  try { sessionStorage.setItem(`bamdude.bedJog.warned.${printer.id}`, '1'); } catch { /* ignore */ }
-                  bedJogMutation.mutate({ distance: d, force: true });
-                  setShowNotHomedModal(null);
-                }}
-                className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-yellow-100 dark:bg-yellow-500/20 text-yellow-700 dark:text-yellow-400 hover:bg-yellow-500/30 transition-colors"
-              >
-                {t('printers.bedJog.moveAnyway')}
               </button>
               <button
                 onClick={() => setShowNotHomedModal(null)}

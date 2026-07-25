@@ -544,9 +544,9 @@ export default {
       down: 'Move plate down',
       disabledWhilePrinting: 'Disabled while printing',
       notHomedTitle: 'Printer is not homed',
-      notHomedMessage: 'The printer has not been homed since the last print. Run auto-home first for safe positioning (parks the toolhead, then homes X, Y, and Z), or move anyway - soft endstops will be bypassed.',
+      notHomedMessage: 'The printer has not been homed since the last print, so it does not know where the bed is. Run auto-home first for safe positioning — it parks the toolhead, then homes X, Y and Z. The bed can be moved once homing finishes.',
       homeZ: 'Auto Home',
-      moveAnyway: 'Move anyway',
+      limitWarning: 'Travel limits may not stop this move — keep an eye on the printer.',
       homingStarted: 'Auto-homing printer…'
     },
     // Permissions
@@ -5491,6 +5491,21 @@ export default {
       delete: 'Delete this backup',
       deleteConfirmTitle: 'Delete Backup',
       deleteConfirmMessage: 'Delete "{{filename}}"? This cannot be undone.'
+    },
+    // Diagnosis of an unwritable backup directory (#2544). `code` from the API
+    // selects the message; `remedy` is rendered verbatim as a snippet.
+    pathCheck: {
+      title: 'BamDude cannot write backups to {{path}}',
+      howToFix: 'How to fix',
+      sandboxed: 'The systemd service runs with ProtectSystem=strict, which makes every path outside the install, data and log directories read-only for BamDude — even one your own shell can write to. Grant the service access to this directory and restart it.',
+      read_only: 'The filesystem holding this directory is mounted read-only.',
+      permission_denied: 'BamDude is not allowed to write here. Check the owner and permissions on this directory.',
+      no_space: 'The filesystem holding this directory is full.',
+      not_a_directory: 'This path exists but is not a directory.',
+      missing: 'This directory does not exist and could not be created.',
+      error: 'The write test failed. See the message below for the exact error.',
+      ephemeralTitle: 'Backups here will be lost',
+      container_ephemeral: '{{path}} is writable but is not mounted into the container, so the backups land in the temporary layer of the container and disappear the next time it is recreated. Bind-mount the directory instead.'
     }
   },
 

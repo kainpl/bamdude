@@ -14,6 +14,18 @@ from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
+# Marker for "this NOT NULL column has a server-side default, substitute the
+# current timestamp". The import path spells the same idea as the string
+# ``"__now__"``; a sentinel object avoids colliding with a real stored value.
+_NOW_SENTINEL = object()
+
+
+def _is_datetime_column(col) -> bool:
+    """Whether the column stores a date/time, so a ``func.now()`` server-default
+    can be substituted with a Python ``datetime``."""
+    type_name = str(col.type).upper()
+    return "TIMESTAMP" in type_name or "DATETIME" in type_name or type_name == "DATE"
+
 
 async def dump_to_sqlite(engine, metadata, output_path: Path) -> None:
     """Export current database (any backend) to a portable SQLite file.
@@ -38,29 +50,45 @@ async def dump_to_sqlite(engine, metadata, output_path: Path) -> None:
 
 
 async def _export_pg_to_sqlite(engine, metadata, output_path: Path) -> None:
-    """Export PostgreSQL data to a portable SQLite file."""
+    """Export PostgreSQL data to a portable SQLite file.
+
+    The schema is emitted by ``Base.metadata.create_all()`` against a real
+    SQLite engine, so the portable file gets **exactly the DDL a native SQLite
+    install has**: NOT NULL, DEFAULT (``func.now()`` → ``CURRENT_TIMESTAMP``),
+    foreign keys, unique constraints, CHECKs, indexes and ``LargeBinary`` →
+    ``BLOB``. This replaced a hand-rolled ``CREATE TABLE`` loop that emitted
+    only column name + coarse type + primary key (upstream #2526).
+
+    Why that mattered: restoring one of these backups onto a SQLite install
+    page-copies the schema straight onto the live database, and the
+    post-restore ``init_db()`` cannot repair it — ``create_all`` is
+    ``CREATE TABLE IF NOT EXISTS``. So every ``server_default`` column (we have
+    121 of them, 91 being the ``created_at``/``updated_at`` ``func.now()``
+    pattern) lost its DEFAULT: SQLAlchemy omits server-default columns from the
+    INSERT, the database had no DEFAULT to supply, NULL was written, and the
+    next read failed Pydantic validation with a 500 on whole list endpoints.
+
+    Known gap, unchanged here: the export walks ``metadata.sorted_tables``, so
+    the raw-SQL ``_migrations`` table and the SQLite-only ``archive_fts`` FTS5
+    virtual table + triggers are still absent from a PG-origin portable file.
+    """
     import json
 
-    dst = sqlite3.connect(str(output_path))
+    from sqlalchemy import create_engine as create_sync_engine
 
-    # Create tables in SQLite from ORM metadata
-    for table in metadata.sorted_tables:
-        cols = []
-        pk_cols = [col.name for col in table.columns if col.primary_key]
-        for col in table.columns:
-            col_type = "TEXT"
-            type_str = str(col.type).upper()
-            if "INT" in type_str:
-                col_type = "INTEGER"
-            elif "FLOAT" in type_str or "REAL" in type_str or "NUMERIC" in type_str:
-                col_type = "REAL"
-            elif "BOOL" in type_str:
-                col_type = "BOOLEAN"
-            pk = " PRIMARY KEY" if col.primary_key and len(pk_cols) == 1 else ""
-            cols.append(f"{col.name} {col_type}{pk}")
-        if len(pk_cols) > 1:
-            cols.append(f"PRIMARY KEY ({', '.join(pk_cols)})")
-        dst.execute(f"CREATE TABLE IF NOT EXISTS {table.name} ({', '.join(cols)})")  # noqa: S608
+    # Full-fidelity DDL, identical to what a native SQLite install gets.
+    schema_engine = create_sync_engine(f"sqlite:///{output_path}")
+    try:
+        metadata.create_all(schema_engine)
+    finally:
+        schema_engine.dispose()
+
+    dst = sqlite3.connect(str(output_path))
+    # Our FK graph has cycles (auto_queue_items / library_files / library_folders
+    # / print_archives / print_queue), so `sorted_tables` insert order is not
+    # safe under enforcement. sqlite3 defaults this to OFF; be explicit now that
+    # the portable file actually carries foreign keys.
+    dst.execute("PRAGMA foreign_keys = OFF")
 
     # Export data
     async with engine.connect() as conn:
@@ -74,10 +102,46 @@ async def _export_pg_to_sqlite(engine, metadata, output_path: Path) -> None:
             col_list = ", ".join(columns)
             insert_sql = f"INSERT INTO {table.name} ({col_list}) VALUES ({placeholders})"  # noqa: S608
 
-            def _serialize_row(row):
-                return tuple(json.dumps(v) if isinstance(v, (list, dict)) else v for v in row)
+            # Now that NOT NULL is enforced in the portable file, a source row
+            # holding NULL in a model-NOT-NULL column would abort the whole
+            # backup. That happens where a migration added a column nullable
+            # while the model declares it NOT NULL. Fill from the column's own
+            # default, mirroring what `import_sqlite_to_postgres` already does
+            # on the way in.
+            not_null_defaults: dict[str, object] = {}
+            for col in table.columns:
+                if col.name not in columns or col.nullable:
+                    continue
+                if col.default is not None:
+                    default = col.default.arg
+                    not_null_defaults[col.name] = default(None) if callable(default) else default
+                elif col.server_default is not None and _is_datetime_column(col):
+                    # Only datetime server-defaults are substitutable — they are
+                    # all `func.now()`. A boolean/integer server_default is an
+                    # SQL expression we must NOT guess at: filling a timestamp
+                    # into an integer column would be worse than the NULL, so
+                    # leave it and let the IntegrityError below name the table.
+                    not_null_defaults[col.name] = _NOW_SENTINEL
 
-            dst.executemany(insert_sql, [_serialize_row(row) for row in rows])
+            now = datetime.now()  # noqa: DTZ005
+
+            def _serialize_row(row, cols=columns, nn=not_null_defaults, _n=now):
+                values = []
+                for name, v in zip(cols, row, strict=True):
+                    if v is None and name in nn:
+                        v = _n if nn[name] is _NOW_SENTINEL else nn[name]
+                    values.append(json.dumps(v) if isinstance(v, (list, dict)) else v)
+                return tuple(values)
+
+            try:
+                dst.executemany(insert_sql, [_serialize_row(row) for row in rows])
+            except sqlite3.IntegrityError:
+                logger.error(
+                    "Portable export: table %s violates the model schema; backup aborted",
+                    table.name,
+                )
+                dst.close()
+                raise
 
     dst.commit()
     dst.close()

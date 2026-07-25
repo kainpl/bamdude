@@ -152,6 +152,14 @@ class ProjectListResponse(BaseModel):
     target_parts_count: int | None = None
     budget: float | None = None
     created_at: datetime
+    # Card-level metadata the shared edit dialog seeds itself from. The dialog
+    # is handed whichever project object the caller has — a list item on the
+    # Projects page, a full project on the detail page — so anything it edits
+    # has to be on BOTH payloads or editing from the list silently submits the
+    # dialog's defaults over stored values (upstream #2536).
+    tags: str | None = None
+    due_date: datetime | None = None
+    priority: str = "normal"
     # Quick stats
     archive_count: int = 0  # Number of print jobs
     total_items: int = 0  # Sum of quantities (total items printed, including failed)

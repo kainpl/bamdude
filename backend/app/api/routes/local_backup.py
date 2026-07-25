@@ -1,5 +1,6 @@
 """API routes for scheduled local backups (upstream Bambuddy #884)."""
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Path
@@ -37,6 +38,24 @@ async def get_status(
         # the same zone the backend will use. #1602 follow-up.
         "timezone": str(_local_zone()),
     }
+
+
+@router.get("/path-check")
+async def check_path(
+    _: User | None = RequirePermission(Permission.SETTINGS_BACKUP),
+):
+    """Check that the configured output directory can actually be written to.
+
+    Writes and removes a probe file. A path the service cannot write to — a NAS
+    share outside the systemd unit's ReadWritePaths, say — otherwise only shows
+    up as a failed backup hours later (#2544).
+
+    Off the event loop: the probe does real I/O and the whole point is that the
+    path may be a network mount, where a ``mkdir`` on a stale handle blocks
+    uninterruptibly. Blocking here would stall MQTT, websockets and dispatch.
+    """
+    settings = await local_backup_service._load_settings()
+    return await asyncio.to_thread(local_backup_service.check_path, settings["path"])
 
 
 @router.post("/run")

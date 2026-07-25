@@ -31,6 +31,7 @@ import type {
   Printer,
   LocalBackupStatus,
   LocalBackupFile,
+  LocalBackupPathCheck,
 } from '../api/client';
 import { Card, CardContent, CardHeader } from './Card';
 import { Button } from './Button';
@@ -127,6 +128,16 @@ export function GitBackupSettings() {
     queryKey: ['local-backup-files'],
     queryFn: () => api.listLocalBackups(),
     refetchInterval: 30000,
+  });
+  // Probe the output directory with a real write when the card opens and after
+  // the path is saved. An unwritable path (a NAS share outside the systemd
+  // unit's ReadWritePaths, say) otherwise only surfaces as a failed backup
+  // hours later, reported as a bare errno (#2544). Only worth asking for when
+  // scheduled backups are actually on — the probe does real filesystem I/O.
+  const { data: localBackupPathCheck, refetch: refetchLocalPathCheck } = useQuery<LocalBackupPathCheck>({
+    queryKey: ['local-backup-path-check'],
+    queryFn: () => api.checkLocalBackupPath(),
+    enabled: localBackupStatus?.enabled === true,
   });
   useEffect(() => {
     if (localBackupStatus?.path !== undefined) {
@@ -1136,6 +1147,7 @@ export function GitBackupSettings() {
                           await api.updateSettings({ local_backup_path: localBackupPath });
                           refetchLocalStatus();
                           refetchLocalBackups();
+                          refetchLocalPathCheck();
                         } catch (err) {
                           showToast(err instanceof Error ? err.message : 'Failed', 'error');
                         }
@@ -1144,6 +1156,64 @@ export function GitBackupSettings() {
                     />
                     <p className="text-xs text-bambu-gray/70 mt-1">{t('backup.scheduledLocalBackup.pathHint')}</p>
                   </label>
+
+                  {/* Path diagnosis (#2544). Outside the <label> above on purpose:
+                      <div>/<pre> aren't valid label content, and clicking the
+                      remedy snippet to copy it would otherwise focus the input. */}
+                  {localBackupPathCheck && !localBackupPathCheck.writable && (
+                    <div className="sm:col-span-2 rounded-lg border border-red-500/30 bg-red-500/10 p-3">
+                      <div className="flex items-start gap-2">
+                        <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium text-red-300">
+                            {t('backup.pathCheck.title', { path: localBackupPathCheck.path })}
+                          </div>
+                          <p className="text-xs text-bambu-gray mt-1">
+                            {t(`backup.pathCheck.${localBackupPathCheck.code}`, {
+                              path: localBackupPathCheck.path,
+                              defaultValue: localBackupPathCheck.message,
+                            })}
+                          </p>
+                          {localBackupPathCheck.remedy && (
+                            <>
+                              <div className="text-[11px] uppercase tracking-wider text-bambu-gray/70 mt-2">
+                                {t('backup.pathCheck.howToFix')}
+                              </div>
+                              <pre className="mt-1 overflow-x-auto rounded bg-bambu-dark p-2 text-[11px] text-bambu-gray whitespace-pre-wrap">
+                                {localBackupPathCheck.remedy}
+                              </pre>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {localBackupPathCheck?.writable && localBackupPathCheck.warning === 'container_ephemeral' && (
+                    <div className="sm:col-span-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+                      <div className="flex items-start gap-2">
+                        <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium text-amber-300">
+                            {t('backup.pathCheck.ephemeralTitle')}
+                          </div>
+                          <p className="text-xs text-bambu-gray mt-1">
+                            {t('backup.pathCheck.container_ephemeral', { path: localBackupPathCheck.path })}
+                          </p>
+                          {localBackupPathCheck.remedy && (
+                            <>
+                              <div className="text-[11px] uppercase tracking-wider text-bambu-gray/70 mt-2">
+                                {t('backup.pathCheck.howToFix')}
+                              </div>
+                              <pre className="mt-1 overflow-x-auto rounded bg-bambu-dark p-2 text-[11px] text-bambu-gray whitespace-pre-wrap">
+                                {localBackupPathCheck.remedy}
+                              </pre>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Status row */}
@@ -1158,6 +1228,12 @@ export function GitBackupSettings() {
                         </span>
                       )}
                     </div>
+                    {/* The reason, not just the word "(failed)". Covers every
+                        failure, including the ones the path probe can't
+                        predict — mid-run ENOSPC, a DB lock (#2544). */}
+                    {localBackupStatus?.last_status === 'failed' && localBackupStatus.last_message && (
+                      <p className="text-xs text-status-error/80 mt-1 break-words">{localBackupStatus.last_message}</p>
+                    )}
                   </div>
                   <div>
                     <div className="text-bambu-gray text-xs">{t('backup.scheduledLocalBackup.nextRun')}</div>

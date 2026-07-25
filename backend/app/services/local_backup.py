@@ -16,8 +16,28 @@ from sqlalchemy import select
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import async_session
 from backend.app.models.settings import Settings
+from backend.app.services.backup_path import classify_backup_dir_error, probe_backup_dir
 
 logger = logging.getLogger(__name__)
+
+
+def _error_is_about(exc: OSError, backup_dir: Path) -> bool:
+    """Whether ``exc`` concerns the backup directory rather than something else.
+
+    ``create_backup_zip`` also reads the MFA encryption key and writes into a
+    temp dir; an OSError from those is a different problem and must not be
+    reported as "your backup path is unwritable". An OSError with no filename
+    (rare, but ``mkdir`` on some platforms) is attributed to the directory.
+    """
+    filename = getattr(exc, "filename", None)
+    if not filename:
+        return True
+    try:
+        return Path(filename).resolve() == backup_dir.resolve() or Path(filename).resolve().is_relative_to(
+            backup_dir.resolve()
+        )
+    except (OSError, ValueError):
+        return False
 
 
 def _local_zone() -> tzinfo:
@@ -195,6 +215,16 @@ class LocalBackupService:
             return Path(path_setting.strip())
         return _default_backup_dir()
 
+    def check_path(self, path_setting: str) -> dict:
+        """Probe the configured output directory with a real write.
+
+        Called when the path is saved and when the backup card is opened, so a
+        directory the service cannot write to is caught there and then instead
+        of at 03:00 for a week (#2544). Blocking — callers on the event loop
+        must wrap it in ``asyncio.to_thread``.
+        """
+        return probe_backup_dir(self._resolve_backup_dir(path_setting))
+
     async def run_backup(self, settings: dict | None = None) -> dict:
         """Run a backup now. Returns {success, message, filename}."""
         if self._running:
@@ -206,11 +236,28 @@ class LocalBackupService:
                 settings = await self._load_settings()
 
             backup_dir = self._resolve_backup_dir(settings["path"])
-            backup_dir.mkdir(parents=True, exist_ok=True)
 
-            from backend.app.api.routes.settings import create_backup_zip
+            try:
+                backup_dir.mkdir(parents=True, exist_ok=True)
 
-            zip_path, filename = await create_backup_zip(output_path=backup_dir)
+                from backend.app.api.routes.settings import create_backup_zip
+
+                zip_path, filename = await create_backup_zip(output_path=backup_dir)
+            except OSError as e:
+                # A raw "[Errno 30] Read-only file system" sends people off to
+                # check folder permissions, which is exactly where the answer is
+                # not — it's our own ProtectSystem=strict unit (#2544). Only
+                # errors about the backup directory itself get the diagnosis;
+                # anything else (e.g. the MFA-key read inside create_backup_zip)
+                # falls through to the generic handler below.
+                if not _error_is_about(e, backup_dir):
+                    raise
+                diagnosis = classify_backup_dir_error(e, backup_dir)
+                self._last_backup_at = datetime.now(timezone.utc).isoformat()
+                self._last_status = "failed"
+                self._last_message = diagnosis["message"]
+                logger.error("Local backup failed: %s (%s)", diagnosis["message"], diagnosis["detail"])
+                return {"success": False, "message": diagnosis["message"], "diagnosis": diagnosis}
 
             retention = max(1, settings["retention"])
             self._prune_backups(backup_dir, retention)

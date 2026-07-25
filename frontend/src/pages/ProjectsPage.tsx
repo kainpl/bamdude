@@ -108,9 +108,9 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasPlanData, planPlates, planParts]);
   const [status, setStatus] = useState(project?.status || 'active');
-  const [tags, setTags] = useState((project as ProjectListItem & { tags?: string })?.tags || '');
-  const [dueDate, setDueDate] = useState((project as ProjectListItem & { due_date?: string })?.due_date?.split('T')[0] || '');
-  const [priority, setPriority] = useState((project as ProjectListItem & { priority?: string })?.priority || 'normal');
+  const [tags, setTags] = useState(project?.tags || '');
+  const [dueDate, setDueDate] = useState(project?.due_date?.split('T')[0] || '');
+  const [priority, setPriority] = useState(project?.priority || 'normal');
   const [budget, setBudget] = useState(project?.budget?.toString() || '');
   const [url, setUrl] = useState(project?.url || '');
   const [urlError, setUrlError] = useState<string | null>(null);
@@ -164,8 +164,11 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
       color,
       target_count: targetCount ? parseInt(targetCount, 10) : undefined,
       target_parts_count: targetPartsCount ? parseInt(targetPartsCount, 10) : undefined,
-      tags: tags.trim() || undefined,
-      due_date: dueDate || undefined,
+      // Explicit null clears on edit (the backend keys off model_fields_set);
+      // undefined on create so the column keeps its default. Sending undefined
+      // on edit made an emptied field silently revert (#2536).
+      tags: project ? (tags.trim() || null) : (tags.trim() || undefined),
+      due_date: project ? (dueDate || null) : (dueDate || undefined),
       priority,
       budget: budget.trim() ? parseFloat(budget) : null,
       // Pydantic accepts null to clear the URL; "" would fail the http(s) check.

@@ -320,3 +320,53 @@ class TestGetStatus:
         assert status["last_backup_at"] is None
         assert status["last_status"] is None
         assert status["next_run"] is None
+
+
+class TestRunBackupDiagnosis:
+    """A failed run must report WHY, not "[Errno 30] Read-only file system" (#2544)."""
+
+    @pytest.mark.asyncio
+    async def test_unwritable_dir_returns_the_diagnosis(self, tmp_path, monkeypatch):
+        import errno
+        from pathlib import Path
+
+        from backend.app.services.local_backup import LocalBackupService
+
+        service = LocalBackupService()
+        backup_dir = tmp_path / "nas"
+
+        def _boom(*_a, **_kw):
+            raise OSError(errno.EROFS, "Read-only file system", str(backup_dir))
+
+        monkeypatch.setattr(Path, "mkdir", _boom)
+        monkeypatch.setattr("backend.app.services.backup_path.systemd_unit_name", lambda: "bamdude.service")
+
+        result = await service.run_backup({"path": str(backup_dir), "retention": 5})
+
+        assert result["success"] is False
+        assert result["diagnosis"]["code"] == "sandboxed"
+        assert "ProtectSystem=strict" in result["message"]
+        assert service._last_status == "failed"
+        assert service._last_message == result["message"]
+
+    @pytest.mark.asyncio
+    async def test_an_error_about_something_else_is_not_blamed_on_the_path(self, tmp_path, monkeypatch):
+        """create_backup_zip also touches the MFA key and a temp dir; an OSError
+        from those must not be reported as "your backup path is unwritable"."""
+        import errno
+
+        from backend.app.services.local_backup import LocalBackupService
+
+        service = LocalBackupService()
+        backup_dir = tmp_path / "backups"
+
+        async def _boom(*_a, **_kw):
+            raise OSError(errno.EACCES, "Permission denied", str(tmp_path / "elsewhere" / ".mfa_encryption_key"))
+
+        monkeypatch.setattr("backend.app.api.routes.settings.create_backup_zip", _boom)
+
+        result = await service.run_backup({"path": str(backup_dir), "retention": 5})
+
+        assert result["success"] is False
+        assert "diagnosis" not in result
+        assert result["message"].startswith("Backup failed:")

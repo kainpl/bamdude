@@ -260,6 +260,9 @@ async def list_projects(
                 target_parts_count=project.target_parts_count,
                 budget=project.budget,
                 created_at=project.created_at,
+                tags=project.tags,
+                due_date=project.due_date,
+                priority=project.priority,
                 archive_count=archive_count,
                 total_items=total_items,
                 completed_count=completed_count,
@@ -367,8 +370,12 @@ async def list_templates(
                 color=project.color,
                 status=project.status,
                 target_count=project.target_count,
+                target_parts_count=project.target_parts_count,
                 budget=project.budget,
                 created_at=project.created_at,
+                tags=project.tags,
+                due_date=project.due_date,
+                priority=project.priority,
                 archive_count=archive_count,
                 queue_count=0,
                 progress_percent=None,
@@ -581,9 +588,11 @@ async def update_project(
         project.target_parts_count = data.target_parts_count
     if data.notes is not None:
         project.notes = data.notes
-    if data.tags is not None:
+    if "tags" in data.model_fields_set:
+        # Explicit null clears, same as budget/url below — an emptied tags field
+        # used to go out as undefined and silently revert (upstream #2536).
         project.tags = data.tags
-    if data.due_date is not None:
+    if "due_date" in data.model_fields_set:
         project.due_date = data.due_date
     if data.priority is not None:
         if data.priority not in ["low", "normal", "high", "urgent"]:

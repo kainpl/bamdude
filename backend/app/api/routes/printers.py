@@ -3089,16 +3089,30 @@ async def bed_jog(
             "translates this into the right G-code Z sign per printer model."
         ),
     ),
-    force: bool = Query(False, description="If true, bypass soft endstops via M211 (for use when Z is not homed)"),
     _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
     """Adjust the nozzle-bed gap by a relative distance.
 
-    Emits a short G-code sequence via MQTT. When ``force`` is true the soft
-    endstops are disabled for the duration of the move, matching the
-    "ignore and move anyway" option Bambu Studio offers when the printer
-    is not homed.
+    Emits a short G-code sequence via MQTT, mirroring Bambu Studio's own jog
+    byte-for-byte (``DevAxis::Ctrl_Axis``, BS ``DeviceCore/DevAxisCtrl.cpp:49``,
+    published over the same ``gcode_line`` transport we use).
+
+    Soft-endstop policy (upstream #2579, adapted). The printer's software travel
+    limits are the only thing between a jog button and a bed crash. Bambu's own
+    sliced start G-code leaves them OFF — the A1 machine template ends with
+    ``M211 X0 Y0 Z0`` and never restores it, and the H2D one re-enables only
+    ``M211 Z1`` — so "endstops disabled" is the routine state a printer sits in
+    after a print. That is why BS pushes the endstop state and then *explicitly
+    enables all three axes* before every jog, and pops afterwards. We do the
+    same. The previous ``force``-gated ``M211 S0`` / ``M211 S1`` wrapper is gone:
+    ``M211 S<bool>`` is not a form that appears anywhere in Bambu's firmware
+    dialect (there, bare ``M211 S`` means *push* and ``M211 R`` means *pop*), so
+    it never disabled anything on purpose and most likely just leaked onto the
+    endstop stack — while the UI sent ``force`` on every jog, leaving the move
+    unprotected. ``M1002 push_ref_mode`` / ``pop_ref_mode`` bracket the move for
+    the same reason BS sends them: the jog must not disturb the reference frame
+    a running job depends on.
 
     Direction handling: on bed-on-Z printers (X1 / P1 / H2 family) the bed
     is the Z-axis, and Bambu's home convention puts Z=0 at the top with
@@ -3125,12 +3139,18 @@ async def bed_jog(
     # Model-aware direction flip — see docstring for the physics.
     z_distance = -distance if is_bed_slinger(printer.model) else distance
 
-    lines = []
-    if force:
-        lines.append("M211 S0")
-    lines += ["G91", f"G1 Z{z_distance:.2f} F600", "G90"]
-    if force:
-        lines.append("M211 S1")
+    # Byte-for-byte BS's jog sequence (DevAxisCtrl.cpp:49): push the endstop
+    # state, turn all three soft endstops ON, bracket the relative move in
+    # push/pop ref-mode, then pop the endstop state back. Never emit M211 S0.
+    lines = [
+        "M211 S",
+        "M211 X1 Y1 Z1",
+        "M1002 push_ref_mode",
+        "G91",
+        f"G1 Z{z_distance:.2f} F600",
+        "M1002 pop_ref_mode",
+        "M211 R",
+    ]
 
     if not client.send_gcode("\n".join(lines)):
         raise HTTPException(500, "Failed to send bed-jog command")
