@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useQueries } from '@tanstack/react-query';
+import { useQueries, useQuery } from '@tanstack/react-query';
 import { api } from '../api/client';
 import type { PrinterStatus, Printer } from '../api/client';
 import {
@@ -10,6 +10,7 @@ import {
 } from './useFilamentMapping';
 import {
   normalizeColorForCompare,
+  sortByRemainAscending,
   colorsAreSimilar,
   matchLoadedExtruderTray,
 } from '../utils/amsHelpers';
@@ -90,7 +91,8 @@ function computeMatchDetails(
   filamentReqs: FilamentRequirement[] | undefined,
   loadedFilaments: LoadedFilament[],
   manualMappings: Record<number, number>,
-  trayNow: number | null | undefined
+  trayNow: number | null | undefined,
+  preferLowest = false
 ): { exactMatches: number; typeOnlyMatches: number; missingTypes: number; totalSlots: number; status: PrinterMatchStatus } {
   if (!filamentReqs || filamentReqs.length === 0) {
     return { exactMatches: 0, typeOnlyMatches: 0, missingTypes: 0, totalSlots: 0, status: 'full' };
@@ -135,6 +137,14 @@ function computeMatchDetails(
       if (nozzleFiltered.length > 0) {
         candidates = nozzleFiltered;
       }
+    }
+
+    // Emptiest spool first, so each tier's `.find()` below picks the lowest
+    // remaining among equally-good matches (prefer_lowest_filament). Sorting
+    // the pool rather than each tier keeps match precedence intact — this can
+    // only break ties, never promote a worse tier.
+    if (preferLowest) {
+      candidates = sortByRemainAscending(candidates);
     }
 
     const extruderTray = isSingleFilament
@@ -195,7 +205,8 @@ function computeMatchDetails(
 function computeMappingWithOverrides(
   filamentReqs: { filaments: FilamentRequirement[] } | undefined,
   printerStatus: PrinterStatus | undefined,
-  manualMappings: Record<number, number>
+  manualMappings: Record<number, number>,
+  preferLowest = false
 ): number[] | undefined {
   if (!filamentReqs?.filaments || filamentReqs.filaments.length === 0) return undefined;
 
@@ -223,6 +234,14 @@ function computeMappingWithOverrides(
       if (nozzleFiltered.length > 0) {
         candidates = nozzleFiltered;
       }
+    }
+
+    // Emptiest spool first, so each tier's `.find()` below picks the lowest
+    // remaining among equally-good matches (prefer_lowest_filament). Sorting
+    // the pool rather than each tier keeps match precedence intact — this can
+    // only break ties, never promote a worse tier.
+    if (preferLowest) {
+      candidates = sortByRemainAscending(candidates);
     }
 
     const extruderTray = isSingleFilament
@@ -289,6 +308,15 @@ export function useMultiPrinterFilamentMapping(
   perPrinterConfigs: Record<number, PerPrinterConfig>,
   setPerPrinterConfigs: React.Dispatch<React.SetStateAction<Record<number, PerPrinterConfig>>>
 ): UseMultiPrinterFilamentMappingResult {
+  // "Prefer lowest remaining filament" also governs what the Print dialog PINS,
+  // not just AutoQueue: the dispatcher refuses to re-derive a mapping that is
+  // already resolved (so it never clobbers a manual override), which means a
+  // mapping pinned here without the setting applied silently ignores it for the
+  // whole Print -> pick printer -> Add to queue path. Reads the same cached
+  // ['settings'] query the modal already issues, so this costs no extra fetch.
+  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const preferLowest = settings?.prefer_lowest_filament ?? false;
+
   // Fetch printer status for all selected printers in parallel
   const statusQueries = useQueries({
     queries: selectedPrinterIds.map((printerId) => ({
@@ -321,14 +349,20 @@ export function useMultiPrinterFilamentMapping(
         : defaultMappings;
 
       // Compute final mapping with overrides
-      const finalMapping = computeMappingWithOverrides(filamentReqs, printerStatus, effectiveMappings);
+      const finalMapping = computeMappingWithOverrides(
+        filamentReqs,
+        printerStatus,
+        effectiveMappings,
+        preferLowest,
+      );
 
       // Compute match details
       const matchDetails = computeMatchDetails(
         filamentReqs?.filaments,
         loadedFilaments,
         effectiveMappings,
-        printerStatus?.tray_now
+        printerStatus?.tray_now,
+        preferLowest
       );
 
       return {
@@ -347,7 +381,7 @@ export function useMultiPrinterFilamentMapping(
         config,
       };
     });
-  }, [selectedPrinterIds, statusQueries, printers, filamentReqs, perPrinterConfigs, defaultMappings]);
+  }, [selectedPrinterIds, statusQueries, printers, filamentReqs, perPrinterConfigs, defaultMappings, preferLowest]);
 
   const isLoading = statusQueries.some((q) => q.isLoading);
 

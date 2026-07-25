@@ -1412,6 +1412,7 @@ export interface AppSettings {
   ams_humidity_thresholds: string;  // JSON blob of per-filament humidity thresholds (#1605)
   // Auto-queue routing
   queue_shortest_first: boolean;  // SJF + been_jumped guard for the auto-queue scheduler
+  prefer_lowest_filament: boolean;  // Drain the emptiest compatible spool first — honoured by AutoQueue AND by the Print dialog's auto-match
   // Preheat & heat-soak before queued prints (#1468)
   preheat_enabled: boolean;  // Master toggle / default for new queue items (false = dispatch immediately)
   preheat_filament_targets: string;  // JSON map of normalized filament type -> chamber target °C ('' = bundled defaults)

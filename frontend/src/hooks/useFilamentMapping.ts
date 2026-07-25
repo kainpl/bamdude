@@ -1,6 +1,8 @@
 import { useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { getColorName } from '../utils/colors';
 import {
+  sortByRemainAscending,
   normalizeColor,
   normalizeColorForCompare,
   colorsAreSimilar,
@@ -8,6 +10,7 @@ import {
   getGlobalTrayId,
   matchLoadedExtruderTray,
 } from '../utils/amsHelpers';
+import { api } from '../api/client';
 import type { PrinterStatus } from '../api/client';
 
 /**
@@ -53,6 +56,7 @@ export function buildLoadedFilaments(printerStatus: PrinterStatus | undefined): 
           trayInfoIdx: tray.tray_info_idx || '',
           traySubBrands: tray.tray_sub_brands || '',
           extruderId: amsExtruderMap?.[String(amsUnit.id)],
+          remain: tray.remain ?? -1,
         });
       }
     });
@@ -77,6 +81,7 @@ export function buildLoadedFilaments(printerStatus: PrinterStatus | undefined): 
         trayInfoIdx: extTray.tray_info_idx || '',
         traySubBrands: extTray.tray_sub_brands || '',
         extruderId: hasDualNozzle ? (255 - trayId) : undefined,
+        remain: extTray.remain ?? -1,
       });
     }
   }
@@ -102,7 +107,8 @@ export function buildLoadedFilaments(printerStatus: PrinterStatus | undefined): 
  */
 export function computeAmsMapping(
   filamentReqs: { filaments: FilamentRequirement[] } | undefined,
-  printerStatus: PrinterStatus | undefined
+  printerStatus: PrinterStatus | undefined,
+  preferLowest = false
 ): number[] | undefined {
   const loadedFilaments = buildLoadedFilaments(printerStatus);
   if (loadedFilaments.length === 0) return undefined;
@@ -114,7 +120,14 @@ export function computeAmsMapping(
   // No manual overrides on this path — it maps a printer the user is not looking
   // at (per-printer fan-out), so there is no panel in which to override a slot.
   return buildAmsMapping(
-    buildFilamentComparison(filamentReqs, loadedFilaments, {}, ftsActive, printerStatus?.tray_now)
+    buildFilamentComparison(
+      filamentReqs,
+      loadedFilaments,
+      {},
+      ftsActive,
+      printerStatus?.tray_now,
+      preferLowest,
+    )
   );
 }
 
@@ -137,6 +150,12 @@ export interface LoadedFilament {
   traySubBrands?: string;
   /** Extruder ID for dual-nozzle printers (0=right, 1=left) */
   extruderId?: number;
+  /**
+   * Remaining filament, 0-100. ``-1`` when the printer cannot measure it
+   * (no RFID / calibration off). Only consumed by the "prefer lowest
+   * remaining filament" auto-match tiebreaker.
+   */
+  remain?: number;
 }
 
 /**
@@ -228,6 +247,7 @@ export function buildFilamentComparison(
   manualMappings: Record<number, number>,
   ftsActive = false,
   trayNow?: number,
+  preferLowest = false,
 ): FilamentComparison[] {
   if (!filamentReqs?.filaments || filamentReqs.filaments.length === 0) return [];
 
@@ -287,6 +307,15 @@ export function buildFilamentComparison(
     // Skip when an FTS is installed: it can route any slot to either extruder.
     if (req.nozzle_id != null && !ftsActive) {
       available = available.filter((f) => f.extruderId === req.nozzle_id);
+    }
+
+    // "Prefer lowest remaining filament": drain the emptiest compatible spool
+    // first. Sorting the candidate pool rather than each match tier keeps the
+    // priority order above intact — this only ever breaks ties WITHIN a tier
+    // and can never promote a worse match. Same key the backend uses in
+    // auto_queue_ams.py, so a mapping pinned here and one computed there agree.
+    if (preferLowest) {
+      available = sortByRemainAscending(available);
     }
 
     const extruderTray = isSingleFilament
@@ -415,6 +444,13 @@ export function useFilamentMapping(
   manualMappings: Record<number, number>
 ): UseFilamentMappingResult {
   const loadedFilaments = useLoadedFilaments(printerStatus);
+  // The dispatcher will not re-derive a mapping the dialog already pinned
+  // (`_ensure_ams_mapping` returns early on a resolved one so a manual override
+  // survives), so "prefer lowest remaining filament" has to be honoured HERE or
+  // it is honoured nowhere on this path. Reads the ['settings'] query the modal
+  // already has cached.
+  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const preferLowest = settings?.prefer_lowest_filament ?? false;
 
   // FTS routes any AMS slot to any extruder, so per-nozzle slot restriction
   // doesn't apply when it's installed (upstream #1162).
@@ -422,8 +458,8 @@ export function useFilamentMapping(
   const trayNow = printerStatus?.tray_now;
 
   const filamentComparison = useMemo(
-    () => buildFilamentComparison(filamentReqs, loadedFilaments, manualMappings, ftsActive, trayNow),
-    [filamentReqs, loadedFilaments, manualMappings, ftsActive, trayNow]
+    () => buildFilamentComparison(filamentReqs, loadedFilaments, manualMappings, ftsActive, trayNow, preferLowest),
+    [filamentReqs, loadedFilaments, manualMappings, ftsActive, trayNow, preferLowest]
   );
 
   // Build AMS mapping from matched filaments

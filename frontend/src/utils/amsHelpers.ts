@@ -274,16 +274,50 @@ export function isPlaceholderDate(scheduledTime: string | null | undefined): boo
 }
 
 /**
+ * Sort key for the "prefer lowest remaining filament" setting.
+ *
+ * Ascending by remaining percentage, with unknown (``-1`` / absent — no RFID,
+ * calibration off) pushed past the 0-100 range so it is only chosen when
+ * nothing measurable qualifies. Byte-for-byte the backend's rule in
+ * ``auto_queue_ams.py``: ``f.get("remain", -1) if f.get("remain", -1) >= 0 else 101``.
+ * The two must agree — the backend applies it when it computes a mapping for
+ * AutoQueue, the frontend when the Print dialog pins one.
+ */
+export function remainSortKey(f: { remain?: number }): number {
+  const r = f.remain ?? -1;
+  return r >= 0 ? r : 101;
+}
+
+/**
+ * Sort candidates so the emptiest spool wins, WITHOUT disturbing match
+ * precedence: callers scan the sorted list once per tier (exact colour →
+ * similar → type-only), so this only ever breaks ties inside a tier and can
+ * never promote a worse-matching spool over a better one.
+ */
+export function sortByRemainAscending<T extends { remain?: number }>(items: T[]): T[] {
+  return [...items].sort((a, b) => remainSortKey(a) - remainSortKey(b));
+}
+
+/**
  * Auto-match a filament requirement to a loaded filament, respecting nozzle constraints.
  * Used by both single-printer (FilamentMapping) and multi-printer (InlineMappingEditor) paths.
+ *
+ * ``preferLowest`` mirrors the ``prefer_lowest_filament`` setting. It matters
+ * here because the dispatcher will NOT re-derive a mapping the Print dialog
+ * already pinned — ``_ensure_ams_mapping`` returns early on a resolved mapping
+ * so a manual override is never clobbered — so if this function ignores the
+ * setting, the setting is simply ignored on the whole Print → pick printer →
+ * Add to queue path.
  */
 export function autoMatchFilament(
   req: { type?: string; color?: string; nozzle_id?: number | null },
-  loadedFilaments: { globalTrayId: number; type?: string; color?: string; extruderId?: number }[],
+  loadedFilaments: { globalTrayId: number; type?: string; color?: string; extruderId?: number; remain?: number }[],
   usedTrayIds: Set<number>,
   preferredTrayId?: number | null,
+  preferLowest = false,
 ): typeof loadedFilaments[number] | undefined {
-  const nozzleFilaments = filterFilamentsByNozzle(loadedFilaments, req.nozzle_id);
+  const byNozzle = filterFilamentsByNozzle(loadedFilaments, req.nozzle_id);
+  const nozzleFilaments = preferLowest ? sortByRemainAscending(byNozzle) : byNozzle;
 
   // One-colour print: prefer the spool already loaded in the extruder
   // (tray_now) over an AMS swap. Type still gates. See matchLoadedExtruderTray.

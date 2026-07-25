@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useQueryClient, useQueries } from '@tanstack/react-query';
+import { useQueryClient, useQueries, useQuery } from '@tanstack/react-query';
 import {
   Printer as PrinterIcon,
   Loader2,
@@ -81,6 +81,12 @@ function InlineMappingEditor({
     }
   };
 
+  // Same reasoning as the mapping hooks: the dispatcher will not re-derive a
+  // mapping this dialog pinned, so "prefer lowest remaining filament" has to be
+  // applied at pin time or not at all.
+  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const preferLowest = settings?.prefer_lowest_filament ?? false;
+
   // Compute current slot assignments
   const slotAssignments = filamentReqs.map((req) => {
     const slotId = req.slot_id || 0;
@@ -101,6 +107,7 @@ function InlineMappingEditor({
         printerResult.loadedFilaments,
         usedTrayIds,
         preferredTrayId,
+        preferLowest,
       ) as LoadedFilament | undefined;
     }
 
