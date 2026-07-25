@@ -1378,7 +1378,7 @@ def _redact_raw_push_status(raw: dict) -> dict:
         info_list = net.get("info")
         if isinstance(info_list, list):
             net["info"] = [
-                ({**entry, "ip": "0.0.0.0"} if isinstance(entry, dict) and "ip" in entry else entry)
+                ({**entry, "ip": "0.0.0.0"} if isinstance(entry, dict) and "ip" in entry else entry)  # nosec B104
                 for entry in info_list
             ]
 

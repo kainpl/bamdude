@@ -132,3 +132,12 @@ ruff>=0.2.0
 
 pillow>=12.2.0  # CVE-2026-40192 (JPEG decoding heap overflow)
 aiogram>=3.20
+
+# IANA tz database for Windows. The stdlib ``zoneinfo`` module reads the
+# system tz database on Linux/macOS, but Windows has none — and the embedded
+# Python our Windows installer ships doesn't carry one either, so even
+# ``ZoneInfo("UTC")`` raises ``ZoneInfoNotFoundError``. ``local_backup._local_zone``
+# catches that and falls back to stdlib UTC, so nothing 500s — but a Windows user
+# who sets TZ to a real zone silently gets their scheduled backup at the wrong
+# wall-clock hour. ``tzdata`` is the official PyPI package that fills the gap.
+tzdata>=2024.1; sys_platform == "win32"

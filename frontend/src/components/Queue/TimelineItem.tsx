@@ -39,7 +39,14 @@ export function TimelineItem({
   const { item, active, estimated, scheduledPin, startMs, endMs, durationSec } = slot;
 
   const title = item.archive_name || item.library_file_name || `#${item.id}`;
-  const filamentColor = item.filament_color || null;
+  // A multi-filament job stores its colours comma-joined ("#FF0000,#00FF00").
+  // Feeding that straight to `backgroundColor` is not a valid CSS colour, so
+  // the stripe silently disappeared on exactly the jobs it is most useful for.
+  // Split it and stack a segment per colour, as the archive cards do.
+  const filamentColors = (item.filament_color || '')
+    .split(',')
+    .map(c => c.trim())
+    .filter(Boolean);
 
   const bg = active
     ? 'bg-bambu-green/25 border-bambu-green'
@@ -77,12 +84,13 @@ export function TimelineItem({
       className={`absolute top-1 bottom-1 rounded border ${bg} text-left overflow-hidden transition-colors`}
       style={{ left, width: clampedWidth }}
     >
-      {/* Filament color stripe */}
-      {filamentColor && (
-        <div
-          className="absolute left-0 top-0 bottom-0 w-1.5"
-          style={{ backgroundColor: filamentColor }}
-        />
+      {/* Filament color stripe — one segment per colour on a multi-filament job */}
+      {filamentColors.length > 0 && (
+        <div className="absolute left-0 top-0 bottom-0 w-1.5 flex flex-col overflow-hidden">
+          {filamentColors.map((color, i) => (
+            <div key={`${color}-${i}`} className="flex-1" style={{ backgroundColor: color }} />
+          ))}
+        </div>
       )}
 
       {showLabel && (

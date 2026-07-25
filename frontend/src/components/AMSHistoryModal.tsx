@@ -161,8 +161,9 @@ export function AMSHistoryModal({
 
   // Theme-aware styles via CSS variables so the dialog follows the active
   // theme variant (warm / cool / oled / slate / forest) — not just mode.
-  // Recharts <CartesianGrid> still uses the isDark fallback below because
-  // SVG stroke="var(...)" isn't always resolved.
+  // Recharts <CartesianGrid> and the axis strokes still use the isDark
+  // fallback below because SVG stroke="var(...)" isn't always resolved. The
+  // <Tooltip> is NOT one of those — it is an HTML div and takes the vars.
   const modalBg = 'var(--bg-secondary)';
   const cardBg = 'var(--bg-primary)';
   const borderColor = 'var(--bg-tertiary)';
@@ -344,10 +345,14 @@ export function AMSHistoryModal({
                   />
                   <Tooltip
                     contentStyle={{
-                      backgroundColor: isDark ? '#2d2d2d' : '#ffffff',
-                      border: `1px solid ${isDark ? '#3d3d3d' : '#e5e7eb'}`,
+                      // Recharts renders the tooltip as an HTML <div>, not SVG,
+                      // so the var() caveat above does not apply here — these
+                      // resolve against :root and follow the user's background
+                      // variant like the rest of the modal.
+                      backgroundColor: modalBg,
+                      border: `1px solid ${borderColor}`,
                       borderRadius: '8px',
-                      color: isDark ? '#fff' : '#000',
+                      color: textPrimary,
                     }}
                     labelFormatter={(ts) => new Date(ts).toLocaleString(undefined, applyTimeFormat({
                       year: 'numeric',
