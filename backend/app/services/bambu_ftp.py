@@ -1072,54 +1072,96 @@ async def upload_file_async(
     loop = asyncio.get_event_loop()
     is_a1 = printer_model in BambuFTPClient.A1_MODELS if printer_model else False
 
-    def _upload(force_prot_c: bool = False) -> bool:
+    # Per-attempt completion state, mirroring ``download_file_async`` (#972 / #1014).
+    # ``asyncio.wait_for`` cannot cancel a ``run_in_executor`` thread, so on timeout
+    # the worker keeps STOR-ing. Each attempt gets its own dict + event so a zombie
+    # from an earlier attempt can't flip the flag for a later one.
+    def _upload(force_prot_c: bool, completion: dict, done: threading.Event) -> bool:
         mode_str = "prot_c" if force_prot_c else "prot_p"
         logger.info(
             f"FTP connecting to {ip_address} for upload (model={printer_model}, "
             f"mode={mode_str}, socket_timeout={socket_timeout}s)..."
         )
-        client = BambuFTPClient(
-            ip_address, access_code, timeout=socket_timeout, printer_model=printer_model, force_prot_c=force_prot_c
-        )
-        if client.connect():
-            logger.info("FTP connected to %s", ip_address)
-            try:
-                result = client.upload_file(local_path, remote_path, progress_callback)
-                if result:
-                    # Cache the working mode
-                    BambuFTPClient.cache_mode(ip_address, mode_str)
-                return result
-            finally:
-                client.disconnect()
-        logger.warning("FTP connection failed to %s", ip_address)
-        return False
+        try:
+            client = BambuFTPClient(
+                ip_address, access_code, timeout=socket_timeout, printer_model=printer_model, force_prot_c=force_prot_c
+            )
+            if client.connect():
+                logger.info("FTP connected to %s", ip_address)
+                try:
+                    result = client.upload_file(local_path, remote_path, progress_callback)
+                    if result:
+                        # Cache the working mode
+                        BambuFTPClient.cache_mode(ip_address, mode_str)
+                        completion["success"] = True
+                    return result
+                finally:
+                    client.disconnect()
+            logger.warning("FTP connection failed to %s", ip_address)
+            return False
+        finally:
+            done.set()
 
-    try:
-        # Check if we have a cached mode for this printer
-        cached_mode = BambuFTPClient._mode_cache.get(ip_address)
+    async def _run(force_prot_c: bool) -> bool:
+        """One upload attempt, with the zombie-thread wait on timeout (#2529).
 
-        if cached_mode:
-            # Use cached mode
-            force_prot_c = cached_mode == "prot_c"
-            return await asyncio.wait_for(loop.run_in_executor(None, lambda: _upload(force_prot_c)), timeout=timeout)
+        Returning False the instant ``wait_for`` expires is what let a slow upload
+        be retried *on top of itself*: the worker thread is still STOR-ing, and
+        ``_ftp_serialized`` holds its per-IP lock only for one connect→op→close —
+        it deliberately releases between ``with_ftp_retry`` attempts — so attempt 2
+        opens a second session against an FTPS server that accepts about one. The
+        printer answers the extra connect in plaintext and the implicit-TLS client
+        reads it as a malformed record (``WRONG_VERSION_NUMBER``), so both attempts
+        fail and a dispatch that was merely slow looks broken.
 
-        # No cached mode - try prot_p first
-        result = await asyncio.wait_for(loop.run_in_executor(None, lambda: _upload(False)), timeout=timeout)
+        Slow WiFi commonly overshoots ``ftp_timeout`` by 10-30 s without being
+        stuck, so wait for the worker to genuinely finish — capped at 30 s so a
+        truly stuck connection can't stall the attempt indefinitely, with a 0.5 s
+        floor so artificially small test timeouts still give zombies a realistic
+        window. Exactly the shape ``download_file_async`` already uses.
+        """
+        completion = {"success": False}
+        done = threading.Event()
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, _upload, force_prot_c, completion, done), timeout=timeout
+            )
+        except TimeoutError:
+            grace = max(min(timeout, 30.0), 0.5)
+            await loop.run_in_executor(None, done.wait, grace)
+            if completion["success"]:
+                logger.info(
+                    "FTP upload wait_for timed out after %ss for %s, but thread completed within %ss grace — salvaging",
+                    timeout,
+                    remote_path,
+                    grace,
+                )
+                return True
+            logger.warning(
+                "FTP upload timed out after %ss (plus %ss grace) for %s",
+                timeout,
+                grace,
+                remote_path,
+            )
+            return False
 
-        if result:
-            return True
+    # Check if we have a cached mode for this printer
+    cached_mode = BambuFTPClient._mode_cache.get(ip_address)
 
-        # Upload failed - for A1 models, try prot_c fallback
-        if is_a1:
-            logger.info("FTP upload failed with prot_p for A1 model, trying prot_c fallback...")
-            result = await asyncio.wait_for(loop.run_in_executor(None, lambda: _upload(True)), timeout=timeout)
-            return result
+    if cached_mode:
+        # Use cached mode
+        return await _run(cached_mode == "prot_c")
 
-        return False
+    # No cached mode - try prot_p first
+    if await _run(False):
+        return True
 
-    except TimeoutError:
-        logger.warning("FTP upload timed out after %ss for %s", timeout, remote_path)
-        return False
+    # Upload failed - for A1 models, try prot_c fallback
+    if is_a1:
+        logger.info("FTP upload failed with prot_p for A1 model, trying prot_c fallback...")
+        return await _run(True)
+
+    return False
 
 
 @_ftp_serialized

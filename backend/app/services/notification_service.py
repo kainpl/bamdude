@@ -326,7 +326,13 @@ class NotificationService:
         """
         user_key = config.get("user_key", "").strip()
         app_token = config.get("app_token", "").strip()
-        priority = config.get("priority", 0)
+        # The provider config round-trips as an untyped JSON blob and the modal
+        # writes every field as a string even for type="number", so priority
+        # really does arrive as "2" in production — coerce before comparing.
+        try:
+            priority = int(config.get("priority", 0))
+        except (TypeError, ValueError):
+            priority = 0
 
         if not user_key or not app_token:
             return False, "User key and app token are required"
@@ -339,6 +345,22 @@ class NotificationService:
             "message": message,
             "priority": priority,
         }
+
+        # Emergency priority (2) keeps re-alerting until acknowledged, so Pushover
+        # *requires* retry (how often, >= 30s) and expire (when to give up,
+        # <= 10800s). Without them the API rejects the message outright. Only sent
+        # at priority 2 — Pushover ignores them at every other priority.
+        if priority == 2:
+            try:
+                retry = int(config.get("retry", 60))
+            except (TypeError, ValueError):
+                retry = 60
+            try:
+                expire = int(config.get("expire", 3600))
+            except (TypeError, ValueError):
+                expire = 3600
+            data["retry"] = max(30, min(retry, 10800))
+            data["expire"] = max(30, min(expire, 10800))
 
         client = await self._get_client()
 

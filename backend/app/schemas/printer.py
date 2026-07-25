@@ -402,6 +402,10 @@ class PrinterStatus(BaseModel):
     # AMS "Print While Drying" — drying mid-print. Verified per Bambu wiki release notes;
     # see _DRY_WHILE_PRINTING_MIN_FIRMWARE in printer_manager.py for the matrix.
     supports_drying_while_printing: bool = False
+    # The AMS can dry, but only from the printer's own screen (P1 series, #2533).
+    # supports_drying is False on these; the UI keeps the control visible but
+    # disabled and says why, rather than dropping it without explanation.
+    drying_screen_only: bool = False
     # Linked archive for the active print (resolved via subtask_id). Frontend
     # uses this to fetch plate metadata and show the plate name when the source
     # 3MF is multi-plate (upstream #881 follow-up).

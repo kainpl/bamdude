@@ -85,6 +85,17 @@ _PROFILES: dict[str, FTPProfile] = {
     "X2D": FTPProfile(
         cap_tls_v1_2=True,
     ),
+    # H2C firmware 01.02.00.00 (#2582) — same H2 generation and firmware line
+    # as the P2S, and with no entry here it ran on negotiated TLS 1.3. The
+    # symptom is the P2S's, not the X2D's: intermittent rather than a
+    # deterministic handshake failure, which points at the session-reuse
+    # variant. When the sliced 3MF fails to come off the printer the print
+    # drops into the no-3MF fallback archive, so the card lands without
+    # filament / layers / thumbnail. Note there is no second chance on this
+    # model — the prot_p → prot_c fallback in ``bambu_ftp.py`` is A1-only.
+    "H2C": FTPProfile(
+        cap_tls_v1_2=True,
+    ),
 }
 
 # SSDP internal codes that should resolve to a display-name profile.
@@ -92,6 +103,8 @@ _PROFILES: dict[str, FTPProfile] = {
 _MODEL_ALIASES: dict[str, str] = {
     "N7": "P2S",  # P2S internal SSDP code
     "N6": "X2D",  # X2D internal SSDP code
+    "O1C": "H2C",  # H2C internal SSDP code
+    "O1C2": "H2C",  # H2C dual-nozzle variant SSDP code
 }
 
 

@@ -957,6 +957,12 @@ class BambuMQTTClient:
         self._raw_message_handlers: list[Callable[[str, bytes], None]] = []
         self._disconnection_event: threading.Event | None = None
         self._previous_ams_hash: str | None = None  # Track AMS changes
+        # Track external-spool identity changes separately: the AMS hash above is
+        # built from AMS units only, so an external-spool-only filament swap would
+        # never re-trigger inventory reconciliation (#2575). Covers both wire
+        # shapes — ``_process_message`` folds the H2-series ``vir_slot`` into
+        # ``raw_data["vt_tray"]`` before the detector runs.
+        self._previous_vt_tray_hash: str | None = None
 
         # Cache AMS firmware/SN from get_version in case it arrives before AMS status
         # Key: ams_id (int). Value: {'sw_ver': str, 'sn': str}
@@ -1701,6 +1707,21 @@ class BambuMQTTClient:
                         vt_tray = [vt_tray]
                     self.state.raw_data["vt_tray"] = vt_tray
 
+            # The AMS change-hash in _handle_ams_data sees AMS units only, and
+            # _handle_ams_data already ran above — so a change to the external
+            # spool alone (swapping generic TPU for generic ABS on the printer)
+            # never re-triggers on_ams_change, leaving a stale inventory
+            # assignment on the ams_id=255 slot (#2575). Detect external-spool
+            # identity changes here and fire the same callback. Placed after BOTH
+            # the vir_slot and vt_tray stores above so the H2-series shape (and
+            # its 255->254 single-slot id remap) is already normalised into
+            # raw_data["vt_tray"]. Wrapped like the two _handle_ams_data call
+            # sites so a callback fault can't break the MQTT message loop.
+            try:
+                self._maybe_trigger_external_spool_change()
+            except Exception as e:
+                logger.error("[%s] Error detecting external-spool change: %s", self.serial_number, e)
+
             # Parse ams_status directly from print data (NOT from print.ams)
             # ams_status is a combined value: lower 8 bits = sub status, bits 8-15 = main status
             # Main status: 0=idle, 1=filament_change, 2=rfid_identifying, 3=assist, 4=calibration
@@ -2342,6 +2363,53 @@ class BambuMQTTClient:
                         A2L_LITE_NORMALIZED_AMS_ID,
                     )
                 self._has_a2l_am_unit = True
+
+    def _maybe_trigger_external_spool_change(self):
+        """Fire ``on_ams_change`` when the external spool's identity changes.
+
+        The AMS change-hash in ``_handle_ams_data`` is built only from AMS units,
+        so an external-spool-only filament swap would otherwise never re-run the
+        inventory reconciliation that unlinks a stale ``ams_id=255`` assignment
+        (the branch in ``main.on_ams_change``). The reconciliation reads
+        ``vt_tray`` from live status itself, so we only need to re-fire the
+        callback with the current merged AMS data (#2575).
+
+        Reads ``raw_data["vt_tray"]``, which by this point holds either the real
+        ``vt_tray`` or the H2-series ``vir_slot`` list (``_process_message`` folds
+        the latter into the same key, single-slot ``id`` 255->254 remap applied).
+
+        BamDude divergence — the first observation SEEDS the hash without firing.
+        Upstream fires on the None -> first-value transition, but on our tree the
+        connect-time pushall carries both ``print.ams`` and ``vt_tray`` in ONE
+        message, and ``_previous_ams_hash`` also starts at None: upstream's shape
+        therefore dispatches ``on_ams_change`` twice, concurrently, on every
+        printer on every (re)connect. That handler holds a DB session across
+        Spoolman HTTP I/O, so a guaranteed double-run is a real cost. The AMS path
+        already covers connect-time reconciliation; this detector only has to
+        catch *subsequent* swaps, which is exactly what the bug is about.
+        """
+        import hashlib
+
+        vt_tray = self.state.raw_data.get("vt_tray")
+        if not isinstance(vt_tray, list):
+            return
+        # Identity fields only — deliberately exclude `remain` so a print's
+        # steadily-dropping fill percentage doesn't fire on every MQTT push.
+        fp_parts = [
+            f"{vt.get('id')}:{vt.get('tray_type')}:{vt.get('tray_color')}:"
+            f"{vt.get('tag_uid')}:{vt.get('tray_uuid')}:{vt.get('tray_info_idx')}"
+            for vt in vt_tray
+            if isinstance(vt, dict)
+        ]
+        vt_hash = hashlib.md5(":".join(fp_parts).encode(), usedforsecurity=False).hexdigest()
+        if vt_hash == self._previous_vt_tray_hash:
+            return
+        seeding = self._previous_vt_tray_hash is None
+        self._previous_vt_tray_hash = vt_hash
+        if seeding or not self.on_ams_change:
+            return
+        logger.debug("[%s] External spool identity changed, triggering sync callback", self.serial_number)
+        self.on_ams_change(self.state.raw_data.get("ams") or [])
 
     def _handle_ams_data(self, ams_data):
         """Handle AMS data changes for Spoolman integration.

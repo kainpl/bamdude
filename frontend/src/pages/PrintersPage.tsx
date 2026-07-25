@@ -129,6 +129,15 @@ import { computePopoverPosition } from '../utils/popoverPosition';
 // earlier); under-estimating leaves the popover clipped off the bottom (#1447).
 const DRYING_POPOVER_WIDTH = 240;
 const DRYING_POPOVER_ESTIMATED_HEIGHT = 320;
+// How long to wait after a drying command is acked before declaring that the AMS
+// never actually started (#2533). Generous: a unit runs its own pre-checks first.
+const DRY_START_CONFIRM_MS = 30_000;
+// AMSUnit.dry_status values that prove a cycle really began: 1=Checking, 2=Drying.
+// Deliberately NOT 3=Cooling / 4=Stopping — those are leftovers from a previous
+// cycle and would false-clear a watch armed right after one ended — and not
+// 5=Error, which is the failure the watch exists to report, not a success.
+const DRY_STATUS_STARTED = new Set([1, 2]);
+const DRY_STATUS_ERROR = 5;
 // Bambu models with a chamber exhaust fan (big_fan2). Open-frame models
 // (P1P, A1, A1 Mini, A2L) have no chamber fan, so its badge is hidden for
 // them. Keyed by mapModelCode() display name — our printer.model is a raw
@@ -1465,6 +1474,17 @@ function PrinterCard({
   const [dryingDuration, setDryingDuration] = useState(4);
   const [dryingRotateTray, setDryingRotateTray] = useState(false);
   const [dryingPopoverPos, setDryingPopoverPos] = useState<{ top: number; left: number } | null>(null);
+  // Post-ack drying watch (#2533). The firmware's ack only proves the command was
+  // TAKEN — a P1 answers success and discards it, and even on capable hardware a
+  // blocker the `dry_sf_reason` guard didn't catch can swallow it. So after a
+  // successful ack we watch the unit and, if it never actually starts, say so.
+  //
+  // Keyed by AMS id rather than a single slot: a farm printer carries up to four
+  // units, and starting a second cycle inside the window must not discard the
+  // first unit's verdict — silently losing a verdict is the exact failure this
+  // watch exists to remove.
+  const [dryStartWatch, setDryStartWatch] = useState<Record<number, true>>({});
+  const dryStartTimersRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [isDropUploading, setIsDropUploading] = useState(false);
   const dragCounterRef = useRef(0);
@@ -1899,8 +1919,12 @@ function PrinterCard({
   const startDryingMutation = useMutation({
     mutationFn: ({ amsId, temp, duration, filament, rotateTray }: { amsId: number; temp: number; duration: number; filament: string; rotateTray: boolean }) =>
       api.startDrying(printer.id, amsId, temp, duration, filament, rotateTray),
-    onSuccess: () => {
+    onSuccess: (_data, { amsId }) => {
       setDryingPopoverAmsId(null);
+      // "Command sent", not "drying started" — the ack proves only that the
+      // printer took it. The watch below reports whether it actually began.
+      showToast(t('printers.drying.toastCommandSent'), 'success');
+      setDryStartWatch(prev => ({ ...prev, [amsId]: true }));
       queryClient.invalidateQueries({ queryKey: ['printerStatus', printer.id] });
     },
     onError: (error: Error) => showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
@@ -1908,11 +1932,80 @@ function PrinterCard({
 
   const stopDryingMutation = useMutation({
     mutationFn: (amsId: number) => api.stopDrying(printer.id, amsId),
-    onSuccess: () => {
+    onSuccess: (_data, amsId) => {
+      showToast(t('printers.drying.toastStopped'), 'success');
+      // A stop cancels any pending start verdict for that unit.
+      setDryStartWatch(prev => {
+        if (!(amsId in prev)) return prev;
+        const next = { ...prev };
+        delete next[amsId];
+        return next;
+      });
       queryClient.invalidateQueries({ queryKey: ['printerStatus', printer.id] });
     },
     onError: (error: Error) => showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
   });
+
+  // Resolve a pending drying watch off the live AMS state: silently when the unit
+  // really started, with a warning when it reports Error (#2533).
+  useEffect(() => {
+    const watched = Object.keys(dryStartWatch);
+    if (watched.length === 0) return;
+    const started: number[] = [];
+    const failed: number[] = [];
+    for (const key of watched) {
+      const amsId = Number(key);
+      const unit = amsData?.find(u => u.id === amsId);
+      if (!unit) continue;
+      if (unit.dry_time > 0 || DRY_STATUS_STARTED.has(unit.dry_status)) {
+        started.push(amsId);
+      } else if (unit.dry_status === DRY_STATUS_ERROR) {
+        failed.push(amsId);
+      }
+    }
+    if (started.length === 0 && failed.length === 0) return;
+    failed.forEach(() => showToast(t('printers.drying.toastNotStarted'), 'warning'));
+    setDryStartWatch(prev => {
+      const next = { ...prev };
+      for (const amsId of [...started, ...failed]) delete next[amsId];
+      return next;
+    });
+  }, [amsData, dryStartWatch, showToast, t]);
+
+  // Arm one timeout per watched unit; a watch that survives it is the verdict.
+  useEffect(() => {
+    const timers = dryStartTimersRef.current;
+    for (const key of Object.keys(dryStartWatch)) {
+      const amsId = Number(key);
+      if (timers[amsId]) continue;
+      timers[amsId] = setTimeout(() => {
+        delete timers[amsId];
+        showToast(t('printers.drying.toastNotStarted'), 'warning');
+        setDryStartWatch(prev => {
+          if (!(amsId in prev)) return prev;
+          const next = { ...prev };
+          delete next[amsId];
+          return next;
+        });
+      }, DRY_START_CONFIRM_MS);
+    }
+    // Drop timers for units that already resolved.
+    for (const key of Object.keys(timers)) {
+      const amsId = Number(key);
+      if (!(amsId in dryStartWatch)) {
+        clearTimeout(timers[amsId]);
+        delete timers[amsId];
+      }
+    }
+  }, [dryStartWatch, showToast, t]);
+
+  // Card unmount (printer removed / archived / view switched) must not leak a timer.
+  useEffect(() => {
+    const timers = dryStartTimersRef.current;
+    return () => {
+      for (const id of Object.values(timers)) clearTimeout(id);
+    };
+  }, []);
 
   // Smart plug control mutations
   const powerControlMutation = useMutation({
@@ -3813,10 +3906,12 @@ function PrinterCard({
                                       compact
                                     />
                                   )}
-                                  {/* Drying button - only for AMS 2 Pro (n3f) and AMS-HT (n3s) */}
-                                  {status.supports_drying && (ams.module_type === 'n3f' || ams.module_type === 'n3s') && hasPermission('printers:control') && (
+                                  {/* Drying button - only for AMS 2 Pro (n3f) and AMS-HT (n3s).
+                                      Screen-only models (P1 series) keep the control but can't be
+                                      commanded: it stays disabled and says why (#2533). */}
+                                  {(status.supports_drying || !!status.drying_screen_only) && (ams.module_type === 'n3f' || ams.module_type === 'n3s') && hasPermission('printers:control') && (
                                     <button
-                                      disabled={!!(ams.dry_sf_reason?.length && ams.dry_time === 0)}
+                                      disabled={!!status.drying_screen_only || !!(ams.dry_sf_reason?.length && ams.dry_time === 0)}
                                       onClick={(e) => {
                                         if (ams.dry_time > 0) {
                                           stopDryingMutation.mutate(ams.id);
@@ -3840,11 +3935,11 @@ function PrinterCard({
                                       className={`flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] transition-colors ${
                                         ams.dry_time > 0
                                           ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400'
-                                          : ams.dry_sf_reason?.length
+                                          : status.drying_screen_only || ams.dry_sf_reason?.length
                                             ? 'bg-bambu-dark-tertiary/30 text-bambu-gray/50 cursor-not-allowed'
                                             : 'bg-bambu-dark-tertiary/50 text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary'
                                       }`}
-                                      title={ams.dry_time > 0 ? t('printers.drying.stop') : ams.dry_sf_reason?.length ? t('printers.drying.powerRequired') : t('printers.drying.start')}
+                                      title={status.drying_screen_only ? t('printers.drying.screenOnly') : ams.dry_time > 0 ? t('printers.drying.stop') : ams.dry_sf_reason?.length ? t('printers.drying.powerRequired') : t('printers.drying.start')}
                                     >
                                       <Flame className="w-3 h-3" />
                                     </button>
@@ -3869,14 +3964,18 @@ function PrinterCard({
                                       : `${ams.dry_time}m`
                                   })}
                                 </span>
-                                <button
-                                  onClick={() => stopDryingMutation.mutate(ams.id)}
-                                  disabled={stopDryingMutation.isPending}
-                                  className="ml-auto text-amber-700 dark:text-amber-400 hover:text-amber-900 dark:hover:text-amber-300 transition-colors disabled:opacity-50"
-                                  title={t('printers.drying.stop')}
-                                >
-                                  <X className="w-3 h-3" />
-                                </button>
+                                {/* A cycle on a screen-only model was started at the printer
+                                    and can only be stopped there (#2533). */}
+                                {!status.drying_screen_only && (
+                                  <button
+                                    onClick={() => stopDryingMutation.mutate(ams.id)}
+                                    disabled={stopDryingMutation.isPending}
+                                    className="ml-auto text-amber-700 dark:text-amber-400 hover:text-amber-900 dark:hover:text-amber-300 transition-colors disabled:opacity-50"
+                                    title={t('printers.drying.stop')}
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                )}
                               </div>
                             )}
                             {/* Slots grid: 4 columns - always render 4 slots */}
@@ -4387,10 +4486,12 @@ function PrinterCard({
                               {isDualNozzle && (isLeftNozzle || isRightNozzle) && (
                                 <NozzleBadge side={isLeftNozzle ? 'L' : 'R'} />
                               )}
-                              {/* Drying button for HT AMS */}
-                              {status.supports_drying && (ams.module_type === 'n3f' || ams.module_type === 'n3s') && hasPermission('printers:control') && (
+                              {/* Drying button for HT AMS. Screen-only models (P1 series)
+                                  keep the control but can't be commanded (#2533). */}
+                              {(status.supports_drying || !!status.drying_screen_only) && (ams.module_type === 'n3f' || ams.module_type === 'n3s') && hasPermission('printers:control') && (
                                 <div className="relative ml-auto">
                                   <button
+                                    disabled={!!status.drying_screen_only}
                                     onClick={(e) => {
                                       if (ams.dry_time > 0) {
                                         stopDryingMutation.mutate(ams.id);
@@ -4414,9 +4515,11 @@ function PrinterCard({
                                     className={`flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] transition-colors ${
                                       ams.dry_time > 0
                                         ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400'
-                                        : 'bg-bambu-dark-tertiary/50 text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary'
+                                        : status.drying_screen_only
+                                          ? 'bg-bambu-dark-tertiary/30 text-bambu-gray/50 cursor-not-allowed'
+                                          : 'bg-bambu-dark-tertiary/50 text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary'
                                     }`}
-                                    title={ams.dry_time > 0 ? t('printers.drying.stop') : t('printers.drying.start')}
+                                    title={status.drying_screen_only ? t('printers.drying.screenOnly') : ams.dry_time > 0 ? t('printers.drying.stop') : t('printers.drying.start')}
                                   >
                                     <Flame className="w-3 h-3" />
                                   </button>
@@ -4437,14 +4540,16 @@ function PrinterCard({
                                     ? `${Math.floor(ams.dry_time / 60)}h ${ams.dry_time % 60}m`
                                     : `${ams.dry_time}m`}
                                 </span>
-                                <button
-                                  onClick={() => stopDryingMutation.mutate(ams.id)}
-                                  disabled={stopDryingMutation.isPending}
-                                  className="ml-auto text-amber-700 dark:text-amber-400 hover:text-amber-900 dark:hover:text-amber-300 transition-colors disabled:opacity-50 shrink-0"
-                                  title={t('printers.drying.stop')}
-                                >
-                                  <X className="w-3 h-3" />
-                                </button>
+                                {!status.drying_screen_only && (
+                                  <button
+                                    onClick={() => stopDryingMutation.mutate(ams.id)}
+                                    disabled={stopDryingMutation.isPending}
+                                    className="ml-auto text-amber-700 dark:text-amber-400 hover:text-amber-900 dark:hover:text-amber-300 transition-colors disabled:opacity-50 shrink-0"
+                                    title={t('printers.drying.stop')}
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                )}
                               </div>
                             )}
                             {/* Row 2: Slot (left) + Stats (right stacked) */}
@@ -6005,6 +6110,7 @@ function PrinterCard({
                     }
                   }}
                   disabled={startDryingMutation.isPending}
+                  data-testid="drying-start-confirm"
                   className="w-full py-1.5 bg-amber-500 hover:bg-amber-400 text-white text-xs font-medium rounded-lg transition-colors disabled:opacity-50"
                 >
                   {startDryingMutation.isPending ? t('printers.drying.startingDrying') : t('printers.drying.start')}

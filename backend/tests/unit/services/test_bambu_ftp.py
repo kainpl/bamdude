@@ -795,6 +795,100 @@ class TestAsyncWrappers:
         assert result is True
 
     @pytest.mark.asyncio
+    async def test_upload_file_async_timeout_salvages_completed_zombie(self, tmp_path, monkeypatch):
+        """A slow upload must not be retried on top of itself (#2529).
+
+        ``asyncio.wait_for`` cannot cancel a ``run_in_executor`` thread, so the
+        STOR keeps going after we stop waiting. Returning False immediately let
+        ``with_ftp_retry`` start attempt 2 while attempt 1's thread was still
+        uploading — and ``_ftp_serialized`` deliberately releases its per-IP lock
+        between attempts, so the second session hit an FTPS server that accepts
+        about one, got answered in plaintext and failed with
+        WRONG_VERSION_NUMBER. Both attempts then failed on an upload that was
+        merely slow.
+
+        Same salvage shape the download path has had since #972 / #1014.
+        """
+        from backend.app.services import bambu_ftp
+
+        bambu_ftp.BambuFTPClient._mode_cache.pop("127.0.0.1", None)
+
+        local = tmp_path / "slow.3mf"
+        local.write_bytes(b"slow but complete")
+
+        class FakeClient:
+            """Connects instantly; upload_file sleeps past wait_for's timeout,
+            then reports success."""
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def connect(self):
+                return True
+
+            def upload_file(self, local_path, remote_path, progress_callback=None):
+                time.sleep(0.4)  # longer than wait_for timeout=0.1
+                return True
+
+            def disconnect(self):
+                pass
+
+        monkeypatch.setattr(bambu_ftp, "BambuFTPClient", FakeClient)
+        monkeypatch.setattr(FakeClient, "_mode_cache", {}, raising=False)
+        monkeypatch.setattr(FakeClient, "A1_MODELS", {"A1"}, raising=False)
+        monkeypatch.setattr(FakeClient, "cache_mode", staticmethod(lambda ip, mode: None), raising=False)
+
+        result = await upload_file_async(
+            "127.0.0.1",
+            "12345678",
+            local,
+            "/cache/slow.3mf",
+            timeout=0.1,
+            printer_model="X1C",
+        )
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_upload_file_async_timeout_no_salvage_when_incomplete(self, tmp_path, monkeypatch):
+        """A genuinely stuck upload still reports failure — the grace window
+        salvages a *completed* thread, it doesn't paper over a dead one."""
+        from backend.app.services import bambu_ftp
+
+        bambu_ftp.BambuFTPClient._mode_cache.pop("127.0.0.1", None)
+
+        local = tmp_path / "stuck.3mf"
+        local.write_bytes(b"never lands")
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def connect(self):
+                return True
+
+            def upload_file(self, local_path, remote_path, progress_callback=None):
+                time.sleep(0.3)
+                return False  # never signals success
+
+            def disconnect(self):
+                pass
+
+        monkeypatch.setattr(bambu_ftp, "BambuFTPClient", FakeClient)
+        monkeypatch.setattr(FakeClient, "_mode_cache", {}, raising=False)
+        monkeypatch.setattr(FakeClient, "A1_MODELS", {"A1"}, raising=False)
+        monkeypatch.setattr(FakeClient, "cache_mode", staticmethod(lambda ip, mode: None), raising=False)
+
+        result = await upload_file_async(
+            "127.0.0.1",
+            "12345678",
+            local,
+            "/cache/stuck.3mf",
+            timeout=0.1,
+            printer_model="X1C",
+        )
+        assert result is False
+
+    @pytest.mark.asyncio
     async def test_download_file_async_success(self, patch_ftp_port, tmp_path):
         """download_file_async succeeds."""
         server = patch_ftp_port

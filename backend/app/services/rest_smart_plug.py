@@ -198,7 +198,8 @@ class RESTSmartPlugService:
 
         Returns dict with energy data or None if not available.
         """
-        if not plug.rest_power_path and not plug.rest_energy_path:
+        total_path = getattr(plug, "rest_energy_total_path", None)
+        if not plug.rest_power_path and not plug.rest_energy_path and not total_path:
             return None
 
         headers = self._parse_headers(plug.rest_headers)
@@ -206,11 +207,14 @@ class RESTSmartPlugService:
 
         power_url = plug.rest_power_url or plug.rest_status_url if plug.rest_power_path else None
         energy_url = plug.rest_energy_url or plug.rest_status_url if plug.rest_energy_path else None
+        # The lifetime counter shares the "energy" URL — one endpoint typically
+        # reports both a daily and a cumulative figure under different keys.
+        total_url = plug.rest_energy_url or plug.rest_status_url if total_path else None
 
         # Fetch data - deduplicate when both resolve to the same URL
         fetched: dict[str, Any] = {}
 
-        for url in {power_url, energy_url} - {None}:
+        for url in {power_url, energy_url, total_url} - {None}:
             fetched[url] = await self._fetch_json(url, headers)
 
         # Extract power value
@@ -228,6 +232,20 @@ class RESTSmartPlugService:
             if raw is not None:
                 try:
                     energy["today"] = float(raw) * (plug.rest_energy_multiplier or 1.0)
+                except (ValueError, TypeError):
+                    pass
+
+        # Extract the LIFETIME (cumulative) counter. Without it a REST plug feeds
+        # no ``smart_plug_energy_snapshots`` rows at all — the snapshot loop skips
+        # any plug whose ``total`` is None — so every date-range energy figure was
+        # blank for it, and per-print energy never recorded either, because both
+        # the start capture and the completion delta bail on a missing total
+        # (#2539).
+        if total_path and total_url and fetched.get(total_url) is not None:
+            raw = self._extract_json_path(fetched[total_url], total_path)
+            if raw is not None:
+                try:
+                    energy["total"] = float(raw) * (getattr(plug, "rest_energy_total_multiplier", 1.0) or 1.0)
                 except (ValueError, TypeError):
                     pass
 

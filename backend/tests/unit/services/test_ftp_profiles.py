@@ -61,6 +61,24 @@ def test_x2d_lookup_is_case_insensitive():
     assert get_ftp_profile("x2d").cap_tls_v1_2 is True
 
 
+def test_h2c_caps_tls_v1_2():
+    """H2C firmware 01.02.00.00 — same H2 generation / firmware line as the P2S
+    — intermittently fails the FTPS 3MF download, dropping the print into the
+    no-3MF fallback archive so the card lands empty (#2582). Capped by analogy
+    with the P2S."""
+    assert get_ftp_profile("H2C").cap_tls_v1_2 is True
+
+
+def test_h2c_internal_ssdp_codes_resolve_to_h2c():
+    """Defence in depth: the Discovery-add path in the UI already maps O1C /
+    O1C2 to "H2C" before the POST (``mapModelCode``), but a manually-added or
+    API-created printer persists ``Printer.model`` verbatim, so both raw SSDP
+    spellings must resolve to the capped profile too."""
+    assert get_ftp_profile("O1C").cap_tls_v1_2 is True
+    assert get_ftp_profile("O1C2").cap_tls_v1_2 is True
+    assert get_ftp_profile("o1c2").cap_tls_v1_2 is True
+
+
 def test_lookup_is_case_insensitive():
     """Printer.model may carry mixed case; the lookup normalises."""
     assert get_ftp_profile("p2s").cap_tls_v1_2 is True

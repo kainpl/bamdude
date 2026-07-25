@@ -240,8 +240,9 @@ _DRYING_MIN_FIRMWARE: dict[str, str] = {
     "H2S": "01.02.00.00",
     "X1": "01.09.00.00",
     "X1C": "01.09.00.00",
-    "P1P": "01.08.00.00",
-    "P1S": "01.08.00.00",
+    # P1P/P1S deliberately absent (upstream #2533): the 01.08 floor was when P1
+    # firmware gained AMS 2 Pro *support*, not remote drying, and it was never
+    # verified against a live P1. See _DRYING_SCREEN_ONLY_MODELS below.
     "P2S": "01.02.00.00",
     "N7": "01.02.00.00",  # P2S internal model code
     "H2C": "01.02.00.00",  # AMS drying enabled at this floor (#1624)
@@ -251,12 +252,41 @@ _DRYING_MIN_FIRMWARE: dict[str, str] = {
 # Models that definitely don't support AMS drying (no AMS 2 Pro / AMS-HT compatibility)
 _DRYING_UNSUPPORTED_MODELS = frozenset({"A1", "A1MINI", "A1-MINI", "A1 MINI", "O1S", "N1", "N2S"})
 
+# Models whose AMS *can* dry, but ONLY from the printer's own touchscreen (upstream
+# #2533). Bambu's P1 manual is explicit: "P1S connected AMS drying functions may only
+# be controlled from the P1S screen." The firmware still answers
+# ``ams_filament_drying`` with result: success and then discards it, so nothing we
+# publish can start (or stop) a cycle on any P1 firmware — which is why P1P/P1S are
+# no longer firmware-gated in _DRYING_MIN_FIRMWARE.
+#
+# Distinct from _DRYING_UNSUPPORTED_MODELS: an A1 has no drying-capable AMS at all,
+# a P1S has one it just can't be told to use. The UI needs to tell those apart, so
+# it keeps the control visible-but-disabled here rather than dropping it.
+#
+# Internal SSDP codes sit alongside the display names because ``Printer.model`` holds
+# whatever the printer or user gave us — same reason _DRYING_MIN_FIRMWARE carries "N7"
+# and _DRY_WHILE_PRINTING_MIN_FIRMWARE carries "O1E"/"N6"/"BL-P001". C11=P1P, C12=P1S
+# (see utils/printer_models.PRINTER_MODEL_ID_MAP). Without them a P1S row stored as
+# "C12" falls through to the allow-by-default branch below with no gate at all.
+_DRYING_SCREEN_ONLY_MODELS = frozenset({"P1P", "P1S", "C11", "C12"})
+
+
+def drying_screen_only(model: str | None) -> bool:
+    """True when the model's AMS dries only via the printer's own screen (#2533).
+
+    Implies ``supports_drying() is False``. Published separately so the UI can say
+    *where* to dry instead of silently hiding the control.
+    """
+    if not model:
+        return False
+    return model.strip().upper() in _DRYING_SCREEN_ONLY_MODELS
+
 
 def supports_drying(model: str | None, firmware: str | None) -> bool:
     """Check if a printer model supports AMS drying commands.
 
     Known models with confirmed min firmware get version-gated.
-    Known unsupported models are blocked.
+    Known unsupported models are blocked, as are screen-only models (#2533).
     All other models (H2D Pro, X1E, future models) are allowed -
     the command fails gracefully with result: "fail" if unsupported.
     """
@@ -264,6 +294,8 @@ def supports_drying(model: str | None, firmware: str | None) -> bool:
         return False
     model_upper = model.strip().upper()
     if model_upper in _DRYING_UNSUPPORTED_MODELS:
+        return False
+    if model_upper in _DRYING_SCREEN_ONLY_MODELS:
         return False
     if model_upper in _DRYING_MIN_FIRMWARE:
         return bool(firmware and firmware >= _DRYING_MIN_FIRMWARE[model_upper])
@@ -1640,6 +1672,8 @@ def printer_state_to_dict(
         # AMS drying support
         "supports_drying": supports_drying(model, state.firmware_version),
         "supports_drying_while_printing": supports_drying_while_printing(model, state.firmware_version),
+        # AMS can dry but only from the printer's own screen (P1 series, #2533).
+        "drying_screen_only": drying_screen_only(model),
         # 1-indexed plate number from the active print. Resolution order
         # (see resolve_plate_id docstring for the rationale): BamDude-dispatched
         # plate (when the subtask matches) → ``plate_N.gcode`` regex on

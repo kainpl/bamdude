@@ -1755,9 +1755,21 @@ class PrintScheduler:
         return list(result.scalars().all())
 
     async def _get_smart_plug(self, db: AsyncSession, printer_id: int) -> SmartPlug | None:
-        """Get the first smart plug associated with a printer (backwards compat)."""
+        """Get the smart plug that powers a printer (backwards compat).
+
+        Prefers the plug flagged ``controls_printer_power`` — powering on an
+        accessory plug (filter / light / dryer) would never bring the printer up,
+        and the queue would sit waiting for a connection that can't happen
+        (#2629). Falls back to the first plug so a farm that hasn't distinguished
+        its plugs yet keeps the previous behaviour.
+        """
         plugs = await self._get_smart_plugs(db, printer_id)
-        return plugs[0] if plugs else None
+        if not plugs:
+            return None
+        for plug in plugs:
+            if plug.controls_printer_power:
+                return plug
+        return plugs[0]
 
     async def _power_on_and_wait(self, plug: SmartPlug, printer_id: int, db: AsyncSession) -> bool:
         """Turn on smart plug and wait for printer to connect.

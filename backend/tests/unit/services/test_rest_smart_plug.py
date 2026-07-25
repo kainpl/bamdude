@@ -34,6 +34,11 @@ def mock_plug():
     plug.rest_energy_url = None
     plug.rest_energy_path = "energy.today"
     plug.rest_energy_multiplier = 1.0
+    # Pin these explicitly: the fixture is a MagicMock, so an unset attribute
+    # would auto-create a truthy child mock and be treated as a configured
+    # lifetime path — silently changing what the other tests exercise.
+    plug.rest_energy_total_path = None
+    plug.rest_energy_total_multiplier = 1.0
     return plug
 
 
@@ -281,6 +286,98 @@ class TestGetEnergy:
         assert mock_send.call_count == 1
         assert result["power"] == 42.5
         assert result["today"] == 1.23
+
+
+class TestGetEnergyLifetimeCounter:
+    """The lifetime (cumulative) counter, #2539.
+
+    Before this, whatever a REST endpoint returned was filed under ``today`` and
+    ``total`` was never set — so the plug produced no energy snapshots at all
+    (the snapshot loop skips a plug with no ``total``) and per-print energy never
+    recorded either, because both the start capture and the completion delta bail
+    on a missing total.
+    """
+
+    @pytest.mark.asyncio
+    async def test_lifetime_counter_is_reported_as_total(self, service, mock_plug):
+        mock_plug.rest_energy_total_path = "energy.total"
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"power": 42.5, "energy": {"today": 1.23, "total": 987.65}}
+
+        with patch.object(service, "_send_request", new_callable=AsyncMock, return_value=mock_response):
+            result = await service.get_energy(mock_plug)
+
+        assert result["today"] == 1.23
+        assert result["total"] == 987.65
+
+    @pytest.mark.asyncio
+    async def test_lifetime_only_needs_no_today_path(self, service, mock_plug):
+        """A plug that reports only a cumulative counter is fully usable."""
+        mock_plug.rest_power_path = None
+        mock_plug.rest_energy_path = None
+        mock_plug.rest_energy_total_path = "total_kwh"
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"total_kwh": 512.0}
+
+        with patch.object(service, "_send_request", new_callable=AsyncMock, return_value=mock_response):
+            result = await service.get_energy(mock_plug)
+
+        assert result == {"total": 512.0}
+
+    @pytest.mark.asyncio
+    async def test_lifetime_multiplier_converts_units(self, service, mock_plug):
+        """Wh -> kWh, the common case for a counter reported in watt-hours."""
+        mock_plug.rest_energy_total_path = "energy.total_wh"
+        mock_plug.rest_energy_total_multiplier = 0.001
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"energy": {"total_wh": 30947.07}}
+
+        with patch.object(service, "_send_request", new_callable=AsyncMock, return_value=mock_response):
+            result = await service.get_energy(mock_plug)
+
+        assert result["total"] == pytest.approx(30.94707)
+
+    @pytest.mark.asyncio
+    async def test_lifetime_shares_the_energy_url(self, service, mock_plug):
+        """One endpoint typically reports both figures, so the two paths share a
+        URL and must not cost two requests."""
+        mock_plug.rest_energy_url = "http://192.168.1.50:8087/energy"
+        mock_plug.rest_power_url = None
+        mock_plug.rest_power_path = None
+        mock_plug.rest_energy_total_path = "total"
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"energy": {"today": 2.0}, "total": 900.0}
+
+        with patch.object(service, "_send_request", new_callable=AsyncMock, return_value=mock_response) as mock_send:
+            result = await service.get_energy(mock_plug)
+
+        assert mock_send.call_count == 1
+        assert result == {"today": 2.0, "total": 900.0}
+
+    @pytest.mark.asyncio
+    async def test_unset_lifetime_path_leaves_total_absent(self, service, mock_plug):
+        """The pre-#2539 shape stays intact for a plug that has no counter — and
+        the snapshot loop must keep skipping it rather than banking a daily value
+        as if it were cumulative."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"power": 1.0, "energy": {"today": 5.0}}
+
+        with patch.object(service, "_send_request", new_callable=AsyncMock, return_value=mock_response):
+            result = await service.get_energy(mock_plug)
+
+        assert "total" not in result
+
+    @pytest.mark.asyncio
+    async def test_non_numeric_lifetime_is_skipped_not_fatal(self, service, mock_plug):
+        mock_plug.rest_energy_total_path = "energy.total"
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"energy": {"today": 1.0, "total": "n/a"}}
+
+        with patch.object(service, "_send_request", new_callable=AsyncMock, return_value=mock_response):
+            result = await service.get_energy(mock_plug)
+
+        assert result == {"today": 1.0}
 
 
 class TestTestConnection:

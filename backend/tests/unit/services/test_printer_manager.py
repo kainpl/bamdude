@@ -10,6 +10,7 @@ import pytest
 
 from backend.app.services.printer_manager import (
     PrinterManager,
+    drying_screen_only,
     get_derived_status_name,
     has_stg_cur_idle_bug,
     init_printer_connections,
@@ -1267,7 +1268,6 @@ class TestSupportsDrying:
     def test_known_supported_with_firmware(self):
         """Verify known models with sufficient firmware return True."""
         assert supports_drying("X1C", "01.09.00.00") is True
-        assert supports_drying("P1S", "01.08.00.00") is True
         assert supports_drying("H2D", "01.02.30.00") is True
         assert supports_drying("H2S", "01.02.00.00") is True
         assert supports_drying("P2S", "01.02.00.00") is True
@@ -1280,7 +1280,6 @@ class TestSupportsDrying:
     def test_known_supported_old_firmware(self):
         """Verify known models with old firmware return False."""
         assert supports_drying("X1C", "01.08.00.00") is False
-        assert supports_drying("P1S", "01.07.00.00") is False
         assert supports_drying("H2S", "01.01.00.00") is False
         assert supports_drying("P2S", "01.01.99.99") is False
         assert supports_drying("H2C", "01.01.99.99") is False
@@ -1320,6 +1319,40 @@ class TestSupportsDrying:
         assert supports_drying("p2s", "01.02.00.00") is True
         assert supports_drying("h2c", "01.02.00.00") is True  # H2C now firmware-gated (#1624)
         assert supports_drying("a1", "99.99.99.99") is False  # A1 stays unsupported
+
+
+class TestDryingScreenOnly:
+    """P1-series AMS drying is screen-only (upstream #2533).
+
+    Bambu's P1 manual: "P1S connected AMS drying functions may only be controlled
+    from the P1S screen." The firmware acks ``ams_filament_drying`` with
+    result: success and then does nothing — so no command we send can ever start a
+    cycle, whatever the firmware version.
+    """
+
+    @pytest.mark.parametrize("model", ["P1S", "P1P", "p1s", " p1p ", "C11", "C12", "c12"])
+    def test_screen_only_models_reject_remote_drying(self, model):
+        assert drying_screen_only(model) is True
+        # Not firmware-gated: even the newest firmware won't take the command.
+        assert supports_drying(model, "99.99.99.99") is False
+
+    @pytest.mark.parametrize("model", ["X1C", "P2S", "H2D", "A1", None])
+    def test_other_models_are_not_screen_only(self, model):
+        assert drying_screen_only(model) is False
+
+    def test_screen_only_is_not_the_same_as_unsupported(self):
+        # The A1 has no drying-capable AMS at all; the P1S does, it just can't be
+        # driven remotely. The UI needs to tell those two apart.
+        assert drying_screen_only("A1") is False
+        assert supports_drying("A1", "99.99.99.99") is False
+
+    def test_screen_only_is_not_the_same_as_no_mid_print_drying(self):
+        # Two independent axes: "can it be commanded to dry at all" (this gate) vs
+        # "can it dry WHILE printing". A P1 fails both; an X1C fails only the
+        # second one below its firmware floor.
+        assert supports_drying_while_printing("P1S", "99.99.99.99") is False
+        assert drying_screen_only("X1C") is False
+        assert supports_drying("X1C", "01.09.00.00") is True
 
 
 class TestSupportsDryingWhilePrinting:

@@ -1197,8 +1197,18 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
 
     # Include tray_now and vt_tray hash so external spool changes trigger broadcasts
     vt_tray_key = hash(str(state.raw_data.get("vt_tray", []))) if state.raw_data else 0
-    # Include AMS dry_time and tray state values so drying/slot changes trigger broadcasts
-    ams_dry_key = tuple(a.get("dry_time", 0) for a in (state.raw_data.get("ams") or [])) if state.raw_data else ()
+    # Include AMS dry_time and tray state values so drying/slot changes trigger broadcasts.
+    # dry_status is in the key too (#2533): a cycle that enters Checking (1) or fails
+    # with Error (5) without dry_time ever leaving 0 is invisible on dry_time alone, so
+    # the frontend's post-ack drying watch would never see the signal it resolves on and
+    # would report "never started" for a unit that did start. Upstream keys on dry_time
+    # only and therefore inherits that false positive. dry_sub_status is deliberately
+    # left out — it churns mid-cycle and nothing renders it.
+    ams_dry_key = (
+        tuple((a.get("dry_time", 0), a.get("dry_status", 0)) for a in (state.raw_data.get("ams") or []))
+        if state.raw_data
+        else ()
+    )
     # Include tray states so load/unload transitions (state 11→10) trigger broadcasts (#784)
     ams_tray_key = (
         tuple(
@@ -1501,6 +1511,9 @@ async def on_ams_change(printer_id: int, ams_data: list):
                 .options(selectinload(SA.spool).selectinload(_Spool.k_profiles))
             )
             stale = []
+            # (ams_id, tray_id) of every row we end up deleting — snapshotted so the
+            # WS fan-out below can run after the session is released.
+            unlinked_slots: list[tuple[int, int]] = []
             for assignment in result.scalars().all():
                 # External spool assignments (ams_id=255) live in vt_tray, not AMS data
                 if assignment.ams_id == 255:
@@ -1659,12 +1672,35 @@ async def on_ams_change(printer_id: int, ams_data: list):
                             spool.material if spool else "?",
                         )
                         stale.append(assignment)  # Spool changed
+            # Snapshot the slots before the delete — ORM attribute access after the
+            # commit would refresh against a deleted row.
+            unlinked_slots = [(a.ams_id, a.tray_id) for a in stale]
             for a in stale:
                 await db.delete(a)
             if stale:
                 logger.info("Auto-unlinked %d stale spool assignments for printer %d", len(stale), printer_id)
             # Commit any changes (stale deletions and/or fingerprint updates)
             await db.commit()
+        # Tell open browsers the assignment is gone (#2575). Only the manual REST
+        # assign/unassign endpoints broadcast this event, and the frontend's
+        # spool-assignments cache is invalidated by nothing else — so without it
+        # every open tab keeps rendering the unlinked spool on the slot until an
+        # unrelated refetch, which reads exactly like "the fix didn't work" even
+        # though the DB is already correct.
+        #
+        # Deliberately OUTSIDE the `async with async_session()` block: the WS
+        # fan-out is network I/O to every connected browser and must not hold a
+        # pooled DB connection (#2572 discipline). Still inside the `try`, so a
+        # failed commit above skips the broadcast entirely.
+        for ams_id, tray_id in unlinked_slots:
+            await ws_manager.broadcast(
+                {
+                    "type": "spool_assignment_changed",
+                    "printer_id": printer_id,
+                    "ams_id": ams_id,
+                    "tray_id": tray_id,
+                }
+            )
     except Exception as e:
         logger.warning("Spool assignment cleanup failed: %s", e, exc_info=True)
 

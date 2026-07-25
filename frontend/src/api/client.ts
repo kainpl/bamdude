@@ -622,6 +622,9 @@ export interface PrinterStatus {
   supports_drying: boolean;
   // AMS "Print While Drying" — drying that runs concurrently with an active print
   supports_drying_while_printing: boolean;
+  // The AMS can dry, but only from the printer's own screen (P1 series, #2533).
+  // Optional: WS payloads from an older backend simply omit it.
+  drying_screen_only?: boolean;
 }
 
 export interface PrinterCreate {
@@ -2257,7 +2260,12 @@ export interface SmartPlug {
   rest_energy_url: string | null;
   rest_energy_path: string | null;
   rest_energy_multiplier: number;
+  /** JSON path to the LIFETIME energy counter (kWh) — feeds energy snapshots + per-print energy. */
+  rest_energy_total_path: string | null;
+  rest_energy_total_multiplier: number;
   printer_id: number | null;
+  /** False for accessory plugs (filter / light / dryer) sharing a printer. */
+  controls_printer_power: boolean;
   enabled: boolean;
   auto_on: boolean;
   auto_off: boolean;
@@ -2331,7 +2339,10 @@ export interface SmartPlugCreate {
   rest_energy_url?: string | null;
   rest_energy_path?: string | null;
   rest_energy_multiplier?: number;
+  rest_energy_total_path?: string | null;
+  rest_energy_total_multiplier?: number;
   printer_id?: number | null;
+  controls_printer_power?: boolean;
   enabled?: boolean;
   auto_on?: boolean;
   auto_off?: boolean;
@@ -2397,7 +2408,10 @@ export interface SmartPlugUpdate {
   rest_energy_url?: string | null;
   rest_energy_path?: string | null;
   rest_energy_multiplier?: number;
+  rest_energy_total_path?: string | null;
+  rest_energy_total_multiplier?: number;
   printer_id?: number | null;
+  controls_printer_power?: boolean;
   enabled?: boolean;
   auto_on?: boolean;
   auto_off?: boolean;
@@ -3180,6 +3194,10 @@ export interface PushoverConfig {
   user_key: string;
   app_token: string;
   priority?: number;
+  /** Emergency priority (2) only: re-alert interval in seconds (30-10800). */
+  retry?: number;
+  /** Emergency priority (2) only: alert expiry in seconds (30-10800). */
+  expire?: number;
 }
 
 export interface TelegramConfig {

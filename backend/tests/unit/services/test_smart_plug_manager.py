@@ -926,6 +926,28 @@ class TestActivePrintGuard:
             mock_service.turn_off.assert_awaited_once()
             mock_pm.mark_printer_offline.assert_called_once_with(1)
 
+    @pytest.mark.asyncio
+    async def test_delayed_off_of_an_accessory_leaves_printer_state_alone(self, manager):
+        """#2629: an accessory plug on the printer — a filter, a light, a dryer —
+        must not mark the printer offline. Doing so blanks its state to "unknown",
+        which stalls BOTH queue tiers (the scheduler and the AutoQueue distributor
+        each dispatch only on IDLE/FINISH/FAILED)."""
+        mock_service = AsyncMock()
+        mock_service.turn_off = AsyncMock(return_value=True)
+        with (
+            patch("backend.app.services.smart_plug_manager.printer_manager") as mock_pm,
+            patch.object(manager, "get_service_for_plug", new_callable=AsyncMock, return_value=mock_service),
+            patch.object(manager, "_mark_auto_off_executed", new_callable=AsyncMock),
+        ):
+            mock_pm.is_print_active.return_value = False
+
+            await manager._delayed_off(
+                1, "tasmota", "1.2.3.4", None, None, None, printer_id=1, delay_seconds=0, controls_printer_power=False
+            )
+
+            mock_service.turn_off.assert_awaited_once()  # the plug still switches off
+            mock_pm.mark_printer_offline.assert_not_called()  # but the printer is untouched
+
     # ---- _temp_based_off (temperature mode) ------------------------------
 
     @pytest.mark.asyncio

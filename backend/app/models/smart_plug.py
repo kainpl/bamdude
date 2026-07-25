@@ -72,8 +72,21 @@ class SmartPlug(Base):
         Float, default=1.0
     )  # Unit conversion (e.g., 0.001 for Wh→kWh)
 
+    rest_energy_total_path: Mapped[str | None] = mapped_column(
+        String(200), nullable=True
+    )  # JSON path for the LIFETIME energy counter (kWh) — feeds snapshots + per-print energy
+    rest_energy_total_multiplier: Mapped[float] = mapped_column(
+        Float, default=1.0, server_default="1.0"
+    )  # Unit conversion for the lifetime counter (e.g. 0.001 for Wh→kWh)
+
     # Link to printer (multiple plugs/scripts can be linked to one printer)
     printer_id: Mapped[int | None] = mapped_column(ForeignKey("printers.id", ondelete="SET NULL"), nullable=True)
+    # Whether this plug is the printer's MAINS feed (m110 / upstream #2629).
+    # False for accessory plugs on the same printer — a filter, a light, a dryer —
+    # so switching one off no longer marks the printer offline and blanks its state
+    # to "unknown", which would stall both queue tiers. Defaults True: every plug
+    # that existed before this column was treated as the power source.
+    controls_printer_power: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
 
     # Automation settings
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
