@@ -3698,16 +3698,26 @@ async def on_print_start(printer_id: int, data: dict):
                         extract_printable_objects_from_3mf,
                         extract_skip_support_from_3mf,
                     )
+                    from backend.app.services.printer_manager import resolve_plate_id
 
                     with open(temp_path, "rb") as f:
                         threemf_data = f.read()
-                    # Extract with positions for UI overlay
+                    # Resolved before the extract so the plate can scope it.
+                    client = printer_manager.get_client(printer_id)
+                    # Extract with positions for UI overlay, scoped to the plate that
+                    # is actually printing (#2522). identify_ids in a multi-plate 3MF
+                    # are per-plate, so plate 1's list over plate 3's job offers the
+                    # wrong objects — and skipping by a stale id cancels whatever
+                    # really holds that id on the running plate. resolve_plate_id is
+                    # the same resolver the cover/thumbnail path uses, so the object
+                    # list cannot disagree with the picture it is drawn over.
                     printable_objects, bbox_all = extract_printable_objects_from_3mf(
-                        threemf_data, include_positions=True
+                        threemf_data,
+                        plate_number=resolve_plate_id(client.state) if client else None,
+                        include_positions=True,
                     )
                     if printable_objects:
                         # Store objects in printer state
-                        client = printer_manager.get_client(printer_id)
                         if client:
                             client.state.printable_objects = printable_objects
                             client.state.printable_objects_bbox_all = bbox_all

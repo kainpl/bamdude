@@ -139,7 +139,11 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
                   <div className="absolute top-2 right-2 p-1 bg-black/60 rounded opacity-0 group-hover:opacity-100 transition-opacity">
                     <Maximize2 className="w-3.5 h-3.5 text-white" />
                   </div>
-                  {/* Object ID markers overlay - positioned based on object data */}
+                  {/* Object ID markers overlay — positioned from the pick-PNG
+                      centroids the backend decodes, so a marker sits where the
+                      printer's own screen shows that object. The overlay stays
+                      pointer-events-none so clicking the plate still enlarges
+                      it; each marker opts back in and skips its own object. */}
                   {objectsData.objects.length > 0 && (
                     <div className="absolute inset-0 pointer-events-none">
                       {objectsData.objects.map((obj, idx) => {
@@ -185,23 +189,47 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
                           y = 15 + (row * (70 / rows)) + (35 / rows);
                         }
 
+                        const canSkip =
+                          !obj.skipped &&
+                          hasPermission('printers:control') &&
+                          !skipObjectsMutation.isPending;
+
                         return (
-                          <div
+                          <button
                             key={obj.id}
-                            className={`absolute flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold shadow-lg ${
+                            type="button"
+                            disabled={!canSkip}
+                            onClick={(e) => {
+                              // Don't let the click bubble to the plate wrapper,
+                              // which opens the enlarged view.
+                              e.stopPropagation();
+                              setPendingSkip({ id: obj.id, name: obj.name });
+                            }}
+                            className={`absolute flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold shadow-lg transition-transform ${
                               obj.skipped
                                 ? 'bg-red-500 text-white line-through'
                                 : 'bg-bambu-green text-black'
+                            } ${
+                              canSkip
+                                ? 'pointer-events-auto cursor-pointer hover:scale-125 focus:outline-none focus:ring-2 focus:ring-white/80'
+                                : 'cursor-default'
                             }`}
                             style={{
                               left: `${x}%`,
                               top: `${y}%`,
                               transform: 'translate(-50%, -50%)'
                             }}
-                            title={obj.name}
+                            title={
+                              obj.skipped
+                                ? `${obj.name} — ${t('printers.willBeSkipped')}`
+                                : canSkip
+                                  ? `${obj.name} — ${t('printers.skipObjects.skip')}`
+                                  : obj.name
+                            }
+                            aria-label={obj.name}
                           >
                             {obj.id}
-                          </div>
+                          </button>
                         );
                       })}
                     </div>

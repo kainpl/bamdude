@@ -719,12 +719,35 @@ def extract_printable_objects_from_3mf(
             content = zf.read("Metadata/slice_info.config").decode()
             root = ET.fromstring(content)
 
-            # Find the correct plate
+            # Find the correct plate.
+            #
+            # Bambu identifies a plate with a CHILD ``<metadata key="index">``,
+            # not a ``plate_idx`` attribute — which is what this selector used to
+            # look for. That attribute does not exist in a real
+            # ``slice_info.config``, so the lookup always missed and fell through
+            # to the first plate: ``plate_number`` was silently inert, and a
+            # multi-plate job served plate 1's ``identify_id``s no matter which
+            # plate was actually running. Skipping by one of those ids cancels
+            # whatever object happens to carry it on the printing plate.
+            #
+            # This is the same walk ``ThreeMFParser`` already uses for filament
+            # and time scoping a few hundred lines up; the two now agree.
+            plate = None
             if plate_number:
-                plate = root.find(f".//plate[@plate_idx='{plate_number}']")
-                if plate is None:
-                    plate = root.find(".//plate")
-            else:
+                for candidate in root.findall(".//plate"):
+                    for meta in candidate.findall("metadata"):
+                        if meta.get("key") == "index":
+                            try:
+                                if int(meta.get("value", "")) == plate_number:
+                                    plate = candidate
+                                    break
+                            except ValueError:
+                                continue
+                    if plate is not None:
+                        break
+            if plate is None:
+                # Unknown/absent plate number → first plate, as before. A single-
+                # plate sliced file has exactly one, so this is the normal path.
                 plate = root.find(".//plate")
 
             if plate is None:
@@ -1226,7 +1249,12 @@ def load_objects_from_archive_into_state(archive: PrintArchive, printer_id: int)
             return False
         with open(file_path, "rb") as f:
             threemf_data = f.read()
-        result = extract_printable_objects_from_3mf(threemf_data, include_positions=True)
+        # The archive knows which plate it printed, so scope to it (#2522) — a
+        # multi-plate 3MF numbers identify_ids per plate, and an unscoped list
+        # would offer plate 1's objects for a plate-3 job.
+        result = extract_printable_objects_from_3mf(
+            threemf_data, plate_number=archive.plate_index, include_positions=True
+        )
         # Function returns either dict or (dict, bbox_all) depending on flag —
         # we always pass include_positions=True so unpack accordingly.
         printable_objects, bbox_all = (

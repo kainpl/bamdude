@@ -3442,7 +3442,15 @@ async def get_printable_objects(
                 if downloaded and temp_path.exists():
                     with open(temp_path, "rb") as f:
                         data = f.read()
-                    objects, bbox_all = extract_printable_objects_from_3mf(data, include_positions=True)
+                    # Scoped to the printing plate (#2522) — see the archive-backed
+                    # branch above, which already passes ar.plate_index. Without it
+                    # this fallback hands back plate 1's ids for whatever plate is
+                    # actually running.
+                    objects, bbox_all = extract_printable_objects_from_3mf(
+                        data,
+                        plate_number=resolve_plate_id(client.state),
+                        include_positions=True,
+                    )
                     if objects:
                         client.state.printable_objects = objects
                         client.state.printable_objects_bbox_all = bbox_all
