@@ -1559,22 +1559,21 @@ export default {
       emailAuth: 'Email Authentication',
       ldap: 'LDAP',
       security: 'Security',
-      queueDispatch: 'Queue & Dispatch',
-      queuePipelines: 'Pipelines'
+      queueDispatch: 'Queue & Dispatch'
     },
     pipelines: {
-      title: 'Slicer Pipelines',
-      subtitle: 'Reusable preset bundles (printer + process + filaments + bed type). Save one from the Slice dialog and apply it with a single click on the next file.',
-      loading: 'Loading pipelines…',
-      loadError: 'Could not load pipelines.',
-      confirmDelete: 'Delete this pipeline? This cannot be undone.',
-      staleWarning: 'One or more referenced presets no longer exist. Re-save this pipeline from the Slice dialog to fix.',
+      title: 'Slice settings',
+      subtitle: 'Save the printer / process / filament / bed picks from the Slice dialog under a name, then apply them to the next file in one go.',
+      loading: 'Loading saved settingsâ¦',
+      loadError: 'Could not load saved settings.',
+      confirmDelete: 'Delete these saved settings? This cannot be undone.',
+      staleWarning: 'One or more referenced presets no longer exist. Re-save from the Slice dialog to fix.',
       empty: {
-        title: 'No pipelines yet.',
-        howto: 'Open the Slice dialog for any file, pick your printer / process / filaments / bed type, then click "Save as pipeline". Your saved pipelines will appear here.'
+        title: 'Nothing saved yet.',
+        howto: 'Open the Slice dialog for any file, pick your printer / process / filaments / bed type, then click "Save these settings". They will appear here.'
       },
       field: {
-        name: 'Pipeline name',
+        name: 'Name',
         description: 'Description'
       },
       action: {
@@ -1595,15 +1594,15 @@ export default {
         profiles: 'Profiles',
         filaments: 'Filaments'
       },
-      searchPlaceholder: 'Search pipelines…',
+      searchPlaceholder: 'Search saved settingsâ¦',
       filter: {
         count: '{{shown}} / {{total}}',
-        noMatches: 'No pipelines match the current filters.'
+        noMatches: 'Nothing matches the current filters.'
       },
       toast: {
-        saved: 'Pipeline saved',
+        saved: 'Settings saved',
         saveFailed: 'Save failed',
-        deleted: 'Pipeline deleted',
+        deleted: 'Settings deleted',
         deleteFailed: 'Delete failed'
       }
     },
@@ -3368,17 +3367,17 @@ export default {
     title: 'Slice model',
     action: 'Slice',
     pipelines: {
-      label: 'Pipeline',
-      applyPrompt: 'Apply pipeline…',
-      empty: 'No saved pipelines',
-      saveButton: 'Save as pipeline',
-      saveTitle: 'Save the current four-slot selection as a reusable pipeline',
-      namePlaceholder: 'Pipeline name',
-      nameAria: 'New pipeline name',
-      staleWarning: 'Some presets saved in this pipeline no longer exist. These stayed on their current selection: {{slots}}',
+      label: 'Saved settings',
+      applyPrompt: 'Apply saved settingsâ¦',
+      empty: 'Nothing saved yet',
+      saveButton: 'Save these settings',
+      saveTitle: 'Save the current printer / process / filament / bed selection for reuse',
+      namePlaceholder: 'Name',
+      nameAria: 'Name for these slice settings',
+      staleWarning: 'Some presets in the saved settings no longer exist. These stayed on their current selection: {{slots}}',
       toast: {
         applied: 'Applied "{{name}}"',
-        saved: 'Pipeline saved',
+        saved: 'Settings saved',
         saveFailed: 'Save failed'
       }
     },

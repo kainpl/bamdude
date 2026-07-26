@@ -13,10 +13,15 @@ import { resolvePresetName } from './preset-picker/presetPickerUtils';
 import { Card, CardContent, CardHeader } from './Card';
 import { useToast } from '../contexts/ToastContext';
 
-// Saved slice preset bundles — CRUD only. A bundle is created from the Slice
-// dialog ("Save as pipeline"); this panel renames / re-describes / deletes
-// them and shows what each one actually points at, including refs whose
-// preset has since disappeared from the slicer catalogue.
+// Saved slice settings — CRUD only. A set is created from the Slice dialog
+// ("Save these settings"); this panel renames / re-describes / deletes them and
+// shows what each one actually points at, including refs whose preset has since
+// disappeared from the slicer catalogue.
+//
+// Named "pipelines" throughout the code, table and API because that is what
+// upstream called the feature it came from; the UI deliberately does not, since
+// nothing about it is a pipeline any more. Renaming the internals would cost a
+// data migration for no behavioural gain — see models/slicer_pipeline.py.
 
 const SOURCE_LABEL: Record<PresetSource, string> = {
   orca_cloud: 'Orca Cloud',

@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Archive, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles, Workflow } from 'lucide-react';
+import { Loader2, Archive, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, macrosApi } from '../api/client';
@@ -53,7 +53,7 @@ import { PrintOptionsPreferencesPanel } from '../components/settings/PrintOption
 import { ArchivedPrintersPanel } from '../components/settings/ArchivedPrintersPanel';
 import { PreheatFilamentTargetsEditor } from '../components/PreheatFilamentTargetsEditor';
 
-const validTabs = ['general', 'printing', 'filament', 'pipelines', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
+const validTabs = ['general', 'printing', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
 type UsersSubTab = 'users' | 'email' | 'ldap' | 'twofa' | 'oidc' | 'security';
 
@@ -119,7 +119,6 @@ const TAB_I18N_KEY: Record<TabType, string> = {
   general: 'general',
   printing: 'printing',
   filament: 'filament',
-  pipelines: 'queuePipelines',
   notifications: 'notifications',
   plugs: 'smartPlugs',
   network: 'network',
@@ -1472,20 +1471,6 @@ export function SettingsPage() {
           <Cylinder className="w-4 h-4" />
           {t('settings.tabs.filament')}
         </button>
-        {/* Slicer Pipelines (#1425). BamDude's dispatch settings are split
-            across the Printing / Filament tabs, so pipelines get a dedicated
-            top-level tab housing the manager + the copies cap. */}
-        <button
-          onClick={() => handleTabChange('pipelines')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'pipelines'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <Workflow className="w-4 h-4" />
-          {t('settings.tabs.queuePipelines')}
-        </button>
         <button
           onClick={() => handleTabChange('notifications')}
           className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
@@ -1597,15 +1582,6 @@ export function SettingsPage() {
           <span className={`w-2 h-2 rounded-full ${cloudAuthStatus?.is_authenticated && gitBackupStatus?.configured && gitBackupStatus?.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
         </button>
       </div>
-      {/* ══════ PIPELINES TAB (#1425) ══════ */}
-      {/* Single column — the tab holds one card. The dispatch/fanout half of
-          upstream's pipelines (and its copies cap) was dropped because
-          AutoQueue already routes copies across a printer class. */}
-      {activeTab === 'pipelines' && (
-        <div className="space-y-4">
-          <SlicerPipelinesPanel />
-        </div>
-      )}
       {/* ══════ GENERAL TAB ══════ */}
       {activeTab === 'general' && (
       <div className="flex flex-col lg:flex-row gap-4">
@@ -2983,6 +2959,14 @@ export function SettingsPage() {
               </CardContent>
             </Card>
           )}
+
+          {/* Saved slice settings — the named printer/process/filament/bed
+              bundles you save from the Slice dialog. Sits where the old Slicer
+              Bundles card was: this is pre-slice profile state the operator
+              manages outside the slice flow, and it is far too small a thing
+              to justify a settings tab of its own. Hidden without the sidecar,
+              since there is nothing to slice with. */}
+          {(localSettings.use_slicer_api ?? false) && <SlicerPipelinesPanel />}
 
           {/* Cost Tracking */}
           <Card>
