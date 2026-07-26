@@ -35,7 +35,6 @@ import { LDAPSettings } from '../components/LDAPSettings';
 import { TwoFactorSettings } from '../components/TwoFactorSettings';
 import { OIDCProviderSettings } from '../components/OIDCProviderSettings';
 import { SecurityStatusCard } from '../components/SecurityStatusCard';
-import { SlicerBundlesPanel } from '../components/SlicerBundlesPanel';
 import { SlicerPipelinesPanel } from '../components/SlicerPipelinesPanel';
 import { FailureDetectionSettings } from '../components/FailureDetectionSettings';
 import { APIBrowser } from '../components/APIBrowser';
@@ -3028,13 +3027,6 @@ export function SettingsPage() {
               </CardContent>
             </Card>
           )}
-
-          {/* Slicer Preset Bundles — print-time pick that pairs with the
-              Saved Print Profiles above (both are pre-print profile state
-              the operator manages outside the slice-modal flow). Hidden
-              when use_slicer_api is off so Docker setups without the
-              sidecar don't see an empty card. */}
-          {(localSettings.use_slicer_api ?? false) && <SlicerBundlesPanel />}
 
           {/* Cost Tracking */}
           <Card>

@@ -2304,12 +2304,6 @@ export default {
     bambuStudioApiUrl: 'BambuStudio API URL',
     bambuStudioApiUrlDescription: 'Empty falls back to the BAMBU_STUDIO_API_URL env default.',
     bothSlicersHint: 'When both URLs are set and reachable, the Slice modal lets you pick which slicer to use per file.',
-    slicerBundlesRemoved: {
-      title: 'Slicer Bundles (removed)',
-      description: 'Printer Preset Bundle (.bbscfg) import was removed. BambuStudio\'s bundle export only includes user-customised presets, so the import never delivered standard processes / filaments and slicing fell back to embedded settings.',
-      alternatives: 'Use Single Preset Import for individual customs, or sync via Bambu Cloud / Orca Cloud. Stock presets come from the slicer sidecar automatically.',
-      lookupOrder: 'Slice-time preset lookup order: 1) Imported (local), 2) Orca Cloud, 3) Bambu Cloud, 4) Standard (sidecar fallback).',
-    },
     sidebarOrderDescription: 'Drag items in the sidebar to reorder. Reset to default order here.',
     setDefault: 'Set Default',
     sidebarOrderSetDefaultHint: 'Set default applies the current menu order to users who haven\'t customized theirs.',

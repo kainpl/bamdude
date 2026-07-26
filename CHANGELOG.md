@@ -8,6 +8,10 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Removed
+
+- **The leftover "Slicer Bundles" card is gone from Settings.** Printer Preset Bundle (`.bbscfg`) import was removed a while back, but a static card explaining the removal stayed behind at the bottom of Settings → Printing, shown to anyone running the slicer sidecar. It has served its purpose and now just takes up space, so the card, its component and its translations are removed. Nothing about slicing changes: custom presets still come in through Single Preset Import or Bambu/Orca Cloud sync, and stock presets still come from the sidecar.
+
 ## [0.4.7b5] - 2026-07-26
 
 Beta pre-release continuing toward the 0.4.7 stable. Image: `ghcr.io/kainpl/bamdude:0.4.7b5` / `kainpl/bamdude:0.4.7b5` (beta channel — `:latest` still tracks 0.4.6).
