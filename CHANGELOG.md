@@ -8,6 +8,17 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.7b5] - 2026-07-26
+
+Beta pre-release continuing toward the 0.4.7 stable. Image: `ghcr.io/kainpl/bamdude:0.4.7b5` / `kainpl/bamdude:0.4.7b5` (beta channel — `:latest` still tracks 0.4.6).
+
+The largest beta in this line, and it closes the upstream Bambuddy audit through **v1.2.5**. Two of the fixes are worth reading before you upgrade, because both could produce a wrong outcome that looked like success:
+
+- **Moving the build plate used to run with the printer's travel limits switched off** — every manual jog did, not just the one the warning dialog asked about. BamDude now sends exactly what Bambu Studio sends, which explicitly re-enables the soft endstops before each move.
+- **Skip Objects showed the wrong plate's parts on a multi-plate file.** The names looked plausible, so the mistake was invisible: you would ask to skip one part and the printer would drop whichever part carried that number on the plate actually running.
+
+Beyond those, **Printer Settings grows substantially** — three-position (Off / Auto / On) bed levelling, flow and nozzle-offset calibration on capable firmware; a Calibration dialog that offers exactly the device calibrations your model supports, with live per-stage progress; new **Add-ons** and **Safety** tabs; and toggles that now wait for the printer to confirm instead of pretending. The **Filament tab gains mass actions** (tick rows, then edit / print labels / reset usage / archive / restore / delete — in Spoolman mode too, where bulk editing was previously impossible). **AMS behaviour gets more honest**: a drying start now tells you whether it actually started, P1 printers stop offering screen-only drying, a filament-runout pause names the slot the printer is really waiting for, and assigning a spool to a slot is confirmed against the printer rather than fire-and-forget. **Backups** taken on PostgreSQL now carry the full database schema, and an unwritable backup folder is explained instead of reported as a bare `[Errno 30]`.
+
 ### Added
 
 - **Bed leveling, flow calibration and nozzle-offset calibration are now three-position (Off / Auto / On) on printers whose firmware supports it.** On the X2D and the H2 family (H2D, H2D Pro, H2C, H2S) — plus the P2S and A2L for bed leveling + flow calibration — the Print, Queue and Edit dialogs now offer an **Auto** position alongside Off and On, letting the printer itself decide whether each calibration step is needed for a given job instead of forcing it on or off every time. Printers without firmware support for the auto mode keep the familiar two-position Off / On toggle, and your choice is still remembered per printer model like the other print options (editable under Settings → Print → Saved Print Options Profiles). Everything already saved or queued keeps behaving exactly as before — Off/On are unchanged, and only the new Auto option reaches a printer that advertises it.

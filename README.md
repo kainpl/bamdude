@@ -182,6 +182,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - Automatic filament consumption tracking
 - Per-spool cost tracking
 - Bulk spool addition
+- **Mass actions on the Filament tab** — tick rows (or the whole page, or everything matching the filter) and Edit / Print labels / Reset usage / Archive / Restore / Delete in one go; works in both built-in and Spoolman modes
 - Spool catalog, color catalog, low-stock alerts
 - **Managed storage-locations catalog** — pick shelves/drawers/dryboxes from a managed list instead of free-text
 - **Colour-aware reorder forecasting** — per-colour runway with material/brand filters and lead-time overrides
