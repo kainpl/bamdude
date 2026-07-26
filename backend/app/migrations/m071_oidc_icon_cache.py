@@ -45,11 +45,17 @@ async def upgrade(conn):
     # cannot ALTER TABLE ADD CONSTRAINT, so stale-SQLite-installs rely on
     # the application layer (route + DELETE /icon path) for invariant.
     if is_postgres():
-        await conn.execute(
-            text(
-                "ALTER TABLE oidc_providers "
-                "ADD CONSTRAINT IF NOT EXISTS ck_oidc_icon_triplet_co_null "
-                "CHECK ((icon_data IS NULL) = (icon_content_type IS NULL) "
-                "AND (icon_content_type IS NULL) = (icon_etag IS NULL))"
+        # PostgreSQL has no ``ADD CONSTRAINT IF NOT EXISTS`` — that spelling is a
+        # syntax error, not a no-op, so it aborted the whole chain on every fresh
+        # PG install. Check the catalogue instead; a fresh install already has the
+        # constraint from ``metadata.create_all`` and skips.
+        exists = await conn.execute(text("SELECT 1 FROM pg_constraint WHERE conname = 'ck_oidc_icon_triplet_co_null'"))
+        if exists.scalar() is None:
+            await conn.execute(
+                text(
+                    "ALTER TABLE oidc_providers "
+                    "ADD CONSTRAINT ck_oidc_icon_triplet_co_null "
+                    "CHECK ((icon_data IS NULL) = (icon_content_type IS NULL) "
+                    "AND (icon_content_type IS NULL) = (icon_etag IS NULL))"
+                )
             )
-        )

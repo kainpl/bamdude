@@ -1,5 +1,7 @@
 """Migration helpers - idempotent DDL operations for SQLite and PostgreSQL."""
 
+import re
+
 from sqlalchemy import text
 
 from backend.app.core.db_dialect import is_postgres
@@ -36,15 +38,40 @@ async def column_exists(conn, table: str, column: str) -> bool:
         return any(row[1] == column for row in result.fetchall())
 
 
+_BOOL_DEFAULT_RE = re.compile(r"(\bBOOLEAN\b.*?\bDEFAULT\s+)([01])\b", re.IGNORECASE | re.DOTALL)
+
+
+def _to_postgres_column_def(column_def: str) -> str:
+    """Translate a SQLite-flavoured column definition into PostgreSQL syntax.
+
+    Migrations are written SQLite-first and are frozen once released, so the
+    dialect gap has to be closed here rather than in the 100+ call sites.
+
+    Two translations:
+
+    * ``BOOLEAN ... DEFAULT 0|1`` → ``DEFAULT false|true``. SQLite stores
+      booleans as integers and accepts the integer default; PostgreSQL rejects
+      it with ``column "x" is of type boolean but default expression is of type
+      integer`` and aborts the whole migration chain. This previously read
+      ``.replace("BOOLEAN", "BOOLEAN")`` — a no-op that silently translated
+      nothing, which is why every fresh PostgreSQL install died here.
+    * ``INTEGER PRIMARY KEY`` → ``SERIAL PRIMARY KEY`` (SQLite's implicit
+      rowid alias has no PostgreSQL equivalent).
+
+    Only the default literal is rewritten; the column name, any CHECK and the
+    rest of the definition are left exactly as written.
+    """
+    out = _BOOL_DEFAULT_RE.sub(lambda m: m.group(1) + ("true" if m.group(2) == "1" else "false"), column_def)
+    return out.replace("INTEGER PRIMARY KEY", "SERIAL PRIMARY KEY")
+
+
 async def add_column(conn, table: str, column_def: str) -> bool:
     """Add a column if it doesn't exist. Returns True if added."""
     col_name = column_def.strip().split()[0]
     if await column_exists(conn, table, col_name):
         return False
     if is_postgres():
-        # Convert SQLite-style defaults to PostgreSQL syntax
-        pg_def = column_def.replace("BOOLEAN", "BOOLEAN").replace("INTEGER PRIMARY KEY", "SERIAL PRIMARY KEY")
-        await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {pg_def}"))
+        await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {_to_postgres_column_def(column_def)}"))
     else:
         await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column_def}"))
     return True

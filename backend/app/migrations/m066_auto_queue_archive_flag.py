@@ -12,7 +12,7 @@ Also repairs two pre-existing data issues. SQLite runs with
 ``foreign_keys=OFF`` so the ``ON DELETE`` clauses on these FKs never
 fired, and the deletion code historically relied on them:
 
-  * Backfill ``from_auto_queue=1`` for archives produced by an
+  * Backfill ``from_auto_queue=TRUE`` for archives produced by an
     auto-queue print, found via a surviving ``print_queue`` row whose
     ``source_auto_item_id`` is set. Restricted to non-``pending`` rows:
     ``print_queue.archive_id`` points at the *produced* archive only
@@ -62,7 +62,7 @@ async def upgrade(conn) -> None:
     if await table_exists(conn, "print_queue"):
         await conn.execute(
             text(
-                "UPDATE print_archives SET from_auto_queue = 1 "
+                "UPDATE print_archives SET from_auto_queue = TRUE "
                 "WHERE id IN ("
                 "  SELECT archive_id FROM print_queue "
                 "  WHERE source_auto_item_id IS NOT NULL "

@@ -53,7 +53,7 @@ def _offline_filament_id(slicer_filament: str | None) -> str | None:
 
 async def seed(session_factory):
     """Offline backfill: link existing spools to existing calibrations by
-    resolved filament_id, mark links ``auto_linked=1``, and auto-activate the
+    resolved filament_id, mark links ``auto_linked=TRUE``, and auto-activate the
     chosen calibration when its combo has none active.
 
     Local spools only via this path (Spoolman cache rows carry their resolved
@@ -127,7 +127,7 @@ async def seed(session_factory):
                     text(
                         "INSERT INTO spool_k_profile "
                         "(spool_id, printer_id, extruder, filament_calibration_id, auto_linked) "
-                        "VALUES (:sid, :pid, :ext, :cid, 1)"
+                        "VALUES (:sid, :pid, :ext, :cid, TRUE)"
                     ),
                     {"sid": sid, "pid": printer_id, "ext": ext, "cid": cal_id},
                 )
@@ -139,14 +139,14 @@ async def seed(session_factory):
                             text(
                                 "SELECT 1 FROM filament_calibration WHERE printer_id = :pid AND "
                                 "filament_id = :fid AND nozzle_diameter = :ndia AND "
-                                "nozzle_volume_type = :nvol AND extruder_id = :ext AND is_active = 1"
+                                "nozzle_volume_type = :nvol AND extruder_id = :ext AND is_active = TRUE"
                             ),
                             {"pid": printer_id, "fid": fid, "ndia": ndia, "nvol": nvol, "ext": ext},
                         )
                     ).first()
                     if not has_active:
                         await conn.execute(
-                            text("UPDATE filament_calibration SET is_active = 1 WHERE id = :id"),
+                            text("UPDATE filament_calibration SET is_active = TRUE WHERE id = :id"),
                             {"id": cal_id},
                         )
 

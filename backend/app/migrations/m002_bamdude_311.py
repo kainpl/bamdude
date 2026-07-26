@@ -384,7 +384,7 @@ async def upgrade(conn):
             await conn.execute(text(f"DROP TABLE {dead_table}"))  # noqa: S608
 
     # ── Force auto_archive on all printers ──
-    await conn.execute(text("UPDATE printers SET auto_archive = 1 WHERE auto_archive = 0"))
+    await conn.execute(text("UPDATE printers SET auto_archive = TRUE WHERE auto_archive = FALSE"))
 
     # ── Migrate github_backup → git_backup (copy data + drop old) ──
     # create_all() already created git_backup_config/logs from models,
@@ -453,13 +453,13 @@ async def upgrade(conn):
         for _name, _code in _name_to_code.items():
             await conn.execute(
                 text(
-                    "UPDATE maintenance_types SET type_code = :code WHERE name = :name AND type_code IS NULL AND is_system = 1"
+                    "UPDATE maintenance_types SET type_code = :code WHERE name = :name AND type_code IS NULL AND is_system = TRUE"
                 ),
                 {"code": _code, "name": _name},
             )
         await conn.execute(
             text(
-                "UPDATE maintenance_types SET type_code = 'custom_' || CAST(id AS VARCHAR) WHERE type_code IS NULL AND is_system = 0"
+                "UPDATE maintenance_types SET type_code = 'custom_' || CAST(id AS VARCHAR) WHERE type_code IS NULL AND is_system = FALSE"
             )
         )
         await conn.execute(

@@ -43,8 +43,15 @@ class OIDCProvider(Base):
         # in m031; SQLite installs rely on the application-level guard
         # (`_enforce_auto_link_safety`) since adding a CHECK constraint to an
         # existing SQLite table requires a full table rewrite.
+        # Written as boolean predicates, NOT ``= 0`` / ``= 1``. SQLite stores
+        # booleans as integers and accepts the comparison; PostgreSQL rejects it
+        # outright with ``operator does not exist: boolean = integer``, which
+        # aborts ``metadata.create_all`` and therefore every fresh PostgreSQL
+        # install AND every SQLite→PG migration (that path calls create_all too).
+        # Shipped broken from 0.4.2 until this was caught by an end-to-end run
+        # against a real PG. Keep both sides of any CHECK dialect-neutral.
         CheckConstraint(
-            "auto_link_existing_accounts = 0 OR email_claim != 'email' OR require_email_verified = 1",
+            "NOT auto_link_existing_accounts OR email_claim != 'email' OR require_email_verified",
             name="ck_auto_link_requires_verified_email_claim",
         ),
         # All-or-nothing icon-cache record (#1333). The application keeps the

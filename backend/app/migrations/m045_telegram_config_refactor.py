@@ -68,7 +68,12 @@ _ON_FIELDS = (
 async def upgrade(conn):
     # Use 1 (TRUE) / 0 (FALSE) as plain INTEGER literals — both SQLite and
     # PostgreSQL accept this and we avoid bool-vs-int dialect quirks.
-    set_clause = ", ".join(f"{f}=1" for f in _ON_FIELDS)
+    # TRUE/FALSE, not 1/0: these are BOOLEAN columns and PostgreSQL refuses the
+    # integer literal ("column is of type boolean but expression is of type
+    # integer"). SQLite accepts either.
+    set_clause = ", ".join(f"{f}=TRUE" for f in _ON_FIELDS)
     await conn.execute(
-        text(f"UPDATE notification_providers SET {set_clause}, quiet_hours_enabled=0 WHERE provider_type='telegram'")
+        text(
+            f"UPDATE notification_providers SET {set_clause}, quiet_hours_enabled=FALSE WHERE provider_type='telegram'"
+        )
     )

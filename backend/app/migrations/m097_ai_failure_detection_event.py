@@ -40,12 +40,12 @@ async def upgrade(conn):
     # the Postgres case where the column lands without a usable server default.
     await add_column(conn, "notification_providers", "on_ai_failure_detection BOOLEAN DEFAULT 0")
     await conn.execute(
-        text("UPDATE notification_providers SET on_ai_failure_detection=0 WHERE on_ai_failure_detection IS NULL")
+        text("UPDATE notification_providers SET on_ai_failure_detection=FALSE WHERE on_ai_failure_detection IS NULL")
     )
     # Telegram normalisation (mirror of m045/m052): force the flag TRUE for all
     # telegram rows so the per-chat notify_events list stays the sole authority.
     await conn.execute(
-        text("UPDATE notification_providers SET on_ai_failure_detection=1 WHERE provider_type='telegram'")
+        text("UPDATE notification_providers SET on_ai_failure_detection=TRUE WHERE provider_type='telegram'")
     )
 
 

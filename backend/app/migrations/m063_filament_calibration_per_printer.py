@@ -161,7 +161,7 @@ async def upgrade(conn) -> None:
                 "CREATE UNIQUE INDEX IF NOT EXISTS ux_filament_cali_active "
                 "ON filament_calibration "
                 "(printer_id, filament_id, nozzle_diameter, nozzle_volume_type, extruder_id) "
-                "WHERE is_active = 1"
+                "WHERE is_active = TRUE"
             )
         )
     await conn.execute(

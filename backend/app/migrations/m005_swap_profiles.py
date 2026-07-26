@@ -199,7 +199,7 @@ async def seed(session_factory):
         result = await db.execute(
             text(
                 "SELECT id, printer_models FROM macros "
-                "WHERE swap_mode_only = 1 "
+                "WHERE swap_mode_only = TRUE "
                 "AND event IN ('swap_mode_start', 'swap_mode_change_table') "
                 "AND swap_profile IS NULL"
             )
@@ -222,7 +222,7 @@ async def seed(session_factory):
 
         # 2. Preserve current behaviour for printers that already have swap on.
         result = await db.execute(
-            text("SELECT id, model FROM printers WHERE swap_mode_enabled = 1 AND swap_profile IS NULL")
+            text("SELECT id, model FROM printers WHERE swap_mode_enabled = TRUE AND swap_profile IS NULL")
         )
         migrated = 0
         for printer_id, model in result.all():
@@ -260,8 +260,8 @@ async def seed(session_factory):
                     "INSERT INTO macros "
                     "(name, description, printer_models, swap_mode_only, swap_profile, "
                     "event, gcode, is_custom, enabled) "
-                    "VALUES (:name, :description, :printer_models, 1, :swap_profile, "
-                    ":event, :gcode, 0, 1)"
+                    "VALUES (:name, :description, :printer_models, TRUE, :swap_profile, "
+                    ":event, :gcode, FALSE, TRUE)"
                 ),
                 {
                     "name": spec["name"],

@@ -170,15 +170,21 @@ async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path) -> int:
     tables_to_import = src_tables & pg_tables
     sorted_tables = [t.name for t in metadata.sorted_tables if t.name in tables_to_import]
 
-    # Phase 1: Drop and recreate tables WITHOUT foreign keys
-    saved_fks = {}
-    for table in metadata.sorted_tables:
-        fks = list(table.foreign_key_constraints)
-        if fks:
-            saved_fks[table.name] = fks
-            for fk in fks:
-                table.constraints.remove(fk)
-
+    # Phase 1: Drop and recreate the schema, then strip foreign keys IN THE
+    # DATABASE before loading data.
+    #
+    # This used to remove the constraint objects from ``metadata`` and rely on
+    # ``create_all`` emitting FK-free DDL. That silently fails for the cyclic
+    # group (auto_queue_items ↔ library_files ↔ library_folders ↔ print_archives
+    # ↔ print_queue): SQLAlchemy cannot inline a cycle, so it emits those FKs as
+    # separate ALTER TABLE statements built from the column-level ``ForeignKey``
+    # objects, which the metadata surgery never touched. Measured on a real
+    # PostgreSQL: 99 constraints before, 20 still standing after the strip — and
+    # the first insert into library_files then died on a folder_id violation,
+    # aborting the whole migration.
+    #
+    # Dropping them from the catalogue instead is immune to how SQLAlchemy
+    # chooses to emit DDL, and lets the rows land in any order.
     async with engine.begin() as conn:
         # On PostgreSQL, plain metadata.drop_all only enumerates ORM-defined tables
         # and emits non-CASCADE DROP TABLE. Orphan tables left over from removed
@@ -212,11 +218,33 @@ async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path) -> int:
             await conn.run_sync(metadata.drop_all)
         await conn.run_sync(metadata.create_all)
 
-    # Restore FK definitions in metadata
-    for table_name, fks in saved_fks.items():
-        table_obj = metadata.tables[table_name]
-        for fk in fks:
-            table_obj.constraints.add(fk)
+        # Now strip the foreign keys from the catalogue itself, remembering each
+        # definition verbatim so Phase 3 can put it back exactly as PostgreSQL
+        # rendered it. ``pg_get_constraintdef`` gives us the full
+        # ``FOREIGN KEY (...) REFERENCES ... ON DELETE ...`` clause.
+        saved_db_fks = []
+        if is_postgres():
+            rows = (
+                await conn.execute(
+                    text(
+                        "SELECT c.conrelid::regclass::text AS child, c.conname, "
+                        "       pg_get_constraintdef(c.oid) AS cdef, "
+                        "       c.confrelid::regclass::text AS parent, "
+                        "       (SELECT array_agg(a.attname ORDER BY u.ord) "
+                        "          FROM unnest(c.conkey) WITH ORDINALITY u(attnum, ord) "
+                        "          JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = u.attnum) AS ccols, "
+                        "       (SELECT array_agg(a.attname ORDER BY u.ord) "
+                        "          FROM unnest(c.confkey) WITH ORDINALITY u(attnum, ord) "
+                        "          JOIN pg_attribute a ON a.attrelid = c.confrelid AND a.attnum = u.attnum) AS pcols "
+                        "FROM pg_constraint c "
+                        "WHERE c.contype = 'f' AND c.connamespace = 'public'::regnamespace"
+                    )
+                )
+            ).all()
+            saved_db_fks = [(r[0], r[1], r[2], r[3], list(r[4]), list(r[5])) for r in rows]
+            for tbl, conname, *_ in saved_db_fks:
+                await conn.execute(text(f'ALTER TABLE {tbl} DROP CONSTRAINT "{conname}"'))
+            logger.info("Dropped %d foreign keys for the duration of the import", len(saved_db_fks))
 
     # Phase 2: Import data
     imported = 0
@@ -301,16 +329,60 @@ async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path) -> int:
 
     src.close()
 
-    # Phase 3: Restore FK constraints
-    from sqlalchemy.schema import AddConstraint
-
-    for table in metadata.sorted_tables:
-        for fk in table.foreign_key_constraints:
-            try:
-                async with engine.begin() as fk_conn:
-                    await fk_conn.execute(AddConstraint(fk))
-            except Exception as e:
-                logger.warning("Could not add FK %s.%s: %s", table.name, fk.name, e)
+    # Phase 3: Put the foreign keys back, exactly as they were.
+    #
+    # A failure here is NOT cosmetic: it means the imported rows contain
+    # references the constraint forbids. SQLite does not enforce foreign keys
+    # unless ``PRAGMA foreign_keys=ON`` is set per connection, so a legacy
+    # database can genuinely carry orphans that PostgreSQL will refuse. Log each
+    # one by name and raise — a database silently missing constraints is a worse
+    # outcome than a migration that stops and says why.
+    if is_postgres():
+        failed, purged = [], []
+        for tbl, conname, cdef, parent, ccols, pcols in saved_db_fks:
+            for attempt in (1, 2):
+                try:
+                    async with engine.begin() as fk_conn:
+                        await fk_conn.execute(text(f'ALTER TABLE {tbl} ADD CONSTRAINT "{conname}" {cdef}'))
+                    break
+                except Exception as e:  # noqa: BLE001
+                    if attempt == 2:
+                        failed.append(f"{tbl}.{conname}: {e}")
+                        logger.error("Could not restore FK %s on %s: %s", conname, tbl, e)
+                        break
+                    # First failure means the source carries rows pointing at a
+                    # parent that no longer exists. SQLite does not enforce
+                    # foreign keys unless PRAGMA foreign_keys=ON, so a long-lived
+                    # database accumulates these silently — a plan item for a
+                    # deleted project, say, which no screen can reach anyway.
+                    # Delete exactly those rows (NULL references are legal and
+                    # left alone), say how many and from where, then retry once.
+                    # Refusing to migrate over unreachable junk would be worse;
+                    # dropping it without a word would be worse still.
+                    on = " AND ".join(f"p.{pc} = c.{cc}" for cc, pc in zip(ccols, pcols, strict=True))
+                    notnull = " AND ".join(f"c.{cc} IS NOT NULL" for cc in ccols)
+                    async with engine.begin() as fk_conn:
+                        res = await fk_conn.execute(
+                            text(
+                                f"DELETE FROM {tbl} c WHERE {notnull} "  # noqa: S608
+                                f"AND NOT EXISTS (SELECT 1 FROM {parent} p WHERE {on})"
+                            )
+                        )
+                        if res.rowcount:
+                            purged.append(f"{tbl}: {res.rowcount} row(s) referencing missing {parent}")
+                            logger.warning(
+                                "Purged %d orphaned row(s) from %s (dangling %s reference)",
+                                res.rowcount,
+                                tbl,
+                                parent,
+                            )
+        if failed:
+            raise RuntimeError(
+                f"{len(failed)} foreign key(s) could not be restored after import: {'; '.join(failed[:5])}"
+            )
+        logger.info("Restored %d foreign keys", len(saved_db_fks))
+        if purged:
+            logger.warning("Import dropped orphaned rows the source database was carrying: %s", "; ".join(purged))
 
     logger.info("Cross-database import complete: %d tables imported", imported)
     return imported

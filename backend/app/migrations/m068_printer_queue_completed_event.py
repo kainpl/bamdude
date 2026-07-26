@@ -48,13 +48,15 @@ async def upgrade(conn):
     # Backfill rows where the column landed NULL (e.g. Postgres without a
     # server-side default) so every existing provider ends up TRUE.
     await conn.execute(
-        text("UPDATE notification_providers SET on_printer_queue_completed=1 WHERE on_printer_queue_completed IS NULL")
+        text(
+            "UPDATE notification_providers SET on_printer_queue_completed=TRUE WHERE on_printer_queue_completed IS NULL"
+        )
     )
 
     # Telegram normalisation (mirror of m045/m052): force the flag TRUE for
     # telegram rows — the per-chat ``notify_events`` list is the authority.
     await conn.execute(
-        text("UPDATE notification_providers SET on_printer_queue_completed=1 WHERE provider_type='telegram'")
+        text("UPDATE notification_providers SET on_printer_queue_completed=TRUE WHERE provider_type='telegram'")
     )
 
 

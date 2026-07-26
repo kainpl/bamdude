@@ -14,6 +14,8 @@ empty table.
 
 from sqlalchemy import text
 
+from backend.app.migrations.helpers import table_exists
+
 version = 16
 name = "project_print_plan"
 
@@ -37,7 +39,14 @@ _CREATE_INDEX = (
 
 
 async def upgrade(conn):
-    await conn.execute(text(_CREATE_TABLE))
+    # ``_CREATE_TABLE`` is SQLite-only DDL (AUTOINCREMENT, DATETIME). PostgreSQL
+    # fails to *parse* it, and IF NOT EXISTS does not help — the statement is
+    # parsed before the existence check. On PostgreSQL the table already exists
+    # from ``metadata.create_all``, which runs ahead of the migration chain, so
+    # skipping is correct rather than translating. On SQLite this is the same
+    # no-op IF NOT EXISTS already gave us.
+    if not await table_exists(conn, "project_print_plan_items"):
+        await conn.execute(text(_CREATE_TABLE))
     await conn.execute(text(_CREATE_INDEX))
 
 

@@ -62,14 +62,16 @@ async def upgrade(conn):
     # SQLite + Postgres behaviour identical: every existing provider row ends
     # up with the new flag = TRUE so operators don't have to re-edit each
     # provider after upgrade just to receive pause notifications.
-    await conn.execute(text("UPDATE notification_providers SET on_print_paused=1 WHERE on_print_paused IS NULL"))
-    await conn.execute(text("UPDATE notification_providers SET on_print_resumed=1 WHERE on_print_resumed IS NULL"))
+    await conn.execute(text("UPDATE notification_providers SET on_print_paused=TRUE WHERE on_print_paused IS NULL"))
+    await conn.execute(text("UPDATE notification_providers SET on_print_resumed=TRUE WHERE on_print_resumed IS NULL"))
 
     # Telegram normalisation (mirror of m045): force the new flags TRUE for
     # all telegram rows so the provider-level gate stays transparent and the
     # per-chat ``notify_events`` list is the only authority.
     await conn.execute(
-        text("UPDATE notification_providers SET on_print_paused=1, on_print_resumed=1 WHERE provider_type='telegram'")
+        text(
+            "UPDATE notification_providers SET on_print_paused=TRUE, on_print_resumed=TRUE WHERE provider_type='telegram'"
+        )
     )
 
 
