@@ -338,6 +338,16 @@ class SpoolmanInventoryCreate(BaseModel):
         return self
 
 
+class SpoolBulkIds(BaseModel):
+    """Target spools for a bulk action carrying no other payload.
+
+    ``min_length=1`` so an empty selection is a 422 rather than a silent 200
+    the UI would report as "0 archived, success".
+    """
+
+    spool_ids: list[int] = Field(min_length=1)
+
+
 class SpoolmanInventoryUpdate(BaseModel):
     material: str | None = Field(None, min_length=1, max_length=64)
     subtype: str | None = Field(None, max_length=64)
@@ -426,6 +436,13 @@ class SpoolSlotAssignmentRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+
+class SpoolmanBulkUpdate(BaseModel):
+    """Same partial field set applied to many Spoolman spools."""
+
+    spool_ids: list[int] = Field(min_length=1)
+    fields: SpoolmanInventoryUpdate
 
 
 @router.get("/spools")
@@ -925,6 +942,99 @@ async def restore_spool(
         raise HTTPException(status_code=502, detail="Spoolman returned malformed spool data") from exc
     await ws_manager.broadcast({"type": "inventory_changed"})
     return mapped
+
+
+# ---------------------------------------------------------------------------
+# Bulk actions.
+#
+# Each one fans out over the SINGLE-spool route function above rather than
+# reimplementing its logic against the Spoolman client. That is deliberate:
+# the per-spool update carries the filament re-linking, extra-dict and
+# shared-filament rules, and a parallel implementation here would drift from
+# them silently. The bulk route is a loop plus error collection, nothing more.
+#
+# Per-spool failures are collected instead of aborting: Spoolman is a remote
+# service, so a single 404 (someone deleted that spool) or a transient
+# ConnectError must not discard the work already done for the other rows and
+# skip the refresh broadcast. Every arm therefore catches broad Exception, not
+# just HTTPException.
+# ---------------------------------------------------------------------------
+
+
+async def _bulk_fanout(spool_ids: list[int], action) -> dict:
+    """Run ``action(spool_id)`` for each id, collecting per-row failures.
+
+    Returns ``{"succeeded": n, "errors": [{"id", "status", "detail"}]}`` so the
+    UI can tell all-succeeded from partial from all-failed and keep the
+    selection when nothing landed.
+    """
+    succeeded = 0
+    errors: list[dict] = []
+    for spool_id in spool_ids:
+        try:
+            await action(spool_id)
+            succeeded += 1
+        except HTTPException as exc:
+            errors.append({"id": spool_id, "status": exc.status_code, "detail": str(exc.detail)})
+        except Exception as exc:  # noqa: BLE001 — a remote blip must not void the batch
+            logger.warning("Bulk action failed for Spoolman spool %s: %s", spool_id, exc)
+            errors.append({"id": spool_id, "status": 500, "detail": str(exc)})
+    return {"succeeded": succeeded, "errors": errors}
+
+
+@router.patch("/spools/bulk-update")
+async def bulk_update_spools(
+    *,
+    data: SpoolmanBulkUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
+) -> dict:
+    """Apply the same partial field set to many Spoolman spools."""
+    result = await _bulk_fanout(
+        data.spool_ids,
+        lambda sid: update_spool(spool_id=sid, data=data.fields, db=db, _=user),
+    )
+    await ws_manager.broadcast({"type": "inventory_changed"})
+    return {"updated": result["succeeded"], "errors": result["errors"]}
+
+
+@router.post("/spools/bulk-delete")
+async def bulk_delete_spools(
+    *,
+    data: SpoolBulkIds,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
+) -> dict:
+    """Permanently delete every listed spool from Spoolman."""
+    result = await _bulk_fanout(data.spool_ids, lambda sid: delete_spool(spool_id=sid, db=db, _=user))
+    await ws_manager.broadcast({"type": "inventory_changed"})
+    return {"deleted": result["succeeded"], "errors": result["errors"]}
+
+
+@router.post("/spools/bulk-archive")
+async def bulk_archive_spools(
+    *,
+    data: SpoolBulkIds,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
+) -> dict:
+    """Archive every listed spool in Spoolman (soft-delete)."""
+    result = await _bulk_fanout(data.spool_ids, lambda sid: archive_spool(spool_id=sid, db=db, _=user))
+    await ws_manager.broadcast({"type": "inventory_changed"})
+    return {"archived": result["succeeded"], "errors": result["errors"]}
+
+
+@router.post("/spools/bulk-restore")
+async def bulk_restore_spools(
+    *,
+    data: SpoolBulkIds,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
+) -> dict:
+    """Un-archive every listed spool in Spoolman."""
+    result = await _bulk_fanout(data.spool_ids, lambda sid: restore_spool(spool_id=sid, db=db, _=user))
+    await ws_manager.broadcast({"type": "inventory_changed"})
+    return {"restored": result["succeeded"], "errors": result["errors"]}
 
 
 @router.post("/spools/{spool_id}/reset-consumed-counter")

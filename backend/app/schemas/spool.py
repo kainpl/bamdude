@@ -105,6 +105,17 @@ class SpoolUpdate(BaseModel):
     purchase_location: str | None = Field(default=None, max_length=255)
 
 
+class SpoolBulkIds(BaseModel):
+    """Target spools for a bulk action that carries no other payload.
+
+    ``min_length=1`` on purpose: an empty list would otherwise be a silent
+    no-op that still returns 200, and the UI would report "0 archived" as a
+    success rather than surfacing that nothing was selected.
+    """
+
+    spool_ids: list[int] = Field(min_length=1)
+
+
 class SpoolBulkUpdate(BaseModel):
     """Apply a partial field set to many spools at once.
 

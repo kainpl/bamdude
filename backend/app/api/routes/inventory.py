@@ -30,6 +30,7 @@ from backend.app.schemas.spool import (
     SpoolAssignmentCreate,
     SpoolAssignmentResponse,
     SpoolBulkCreate,
+    SpoolBulkIds,
     SpoolBulkUpdate,
     SpoolCreate,
     SpoolKProfileBase,
@@ -1520,6 +1521,95 @@ async def bulk_update_spools(
     ids = [s.id for s in spools]
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id.in_(ids)))
     return list(result.scalars().all())
+
+
+@router.post("/spools/bulk-delete")
+async def bulk_delete_spools(
+    data: SpoolBulkIds,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
+):
+    """Hard-delete every listed spool.
+
+    Ids that no longer exist are reported in ``not_found`` rather than failing
+    the batch — another tab may have deleted one between the click and the
+    request, and aborting would leave the rest of the user's selection
+    untouched with no indication of how far it got. Declared before
+    ``/spools/{spool_id}`` so the literal path isn't captured by the int
+    matcher.
+    """
+    result = await db.execute(select(Spool).where(Spool.id.in_(data.spool_ids)))
+    spools = list(result.scalars().all())
+    found_ids = {s.id for s in spools}
+    not_found = [i for i in data.spool_ids if i not in found_ids]
+
+    for spool in spools:
+        await db.delete(spool)
+    await db.commit()
+
+    # One broadcast for the whole batch, not one per row: the table refreshes
+    # on a single re-fetch instead of N.
+    await ws_manager.broadcast({"type": "inventory_changed"})
+    return {"deleted": len(spools), "not_found": not_found}
+
+
+@router.post("/spools/bulk-archive")
+async def bulk_archive_spools(
+    data: SpoolBulkIds,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
+):
+    """Soft-archive every listed spool (sets ``archived_at``).
+
+    Already-archived spools are left alone and counted separately so the UI can
+    tell "nothing to do" apart from "that row is gone".
+    """
+    from datetime import datetime, timezone
+
+    result = await db.execute(select(Spool).where(Spool.id.in_(data.spool_ids)))
+    spools = list(result.scalars().all())
+    found_ids = {s.id for s in spools}
+    not_found = [i for i in data.spool_ids if i not in found_ids]
+
+    now = datetime.now(timezone.utc)
+    archived: list[int] = []
+    already: list[int] = []
+    for spool in spools:
+        if spool.archived_at is not None:
+            already.append(spool.id)
+            continue
+        spool.archived_at = now
+        archived.append(spool.id)
+    await db.commit()
+
+    await ws_manager.broadcast({"type": "inventory_changed"})
+    return {"archived": len(archived), "already_archived": len(already), "not_found": not_found}
+
+
+@router.post("/spools/bulk-restore")
+async def bulk_restore_spools(
+    data: SpoolBulkIds,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
+):
+    """Un-archive every listed spool — the symmetric inverse of bulk-archive."""
+    result = await db.execute(select(Spool).where(Spool.id.in_(data.spool_ids)))
+    spools = list(result.scalars().all())
+    found_ids = {s.id for s in spools}
+    not_found = [i for i in data.spool_ids if i not in found_ids]
+
+    restored: list[int] = []
+    already: list[int] = []
+    for spool in spools:
+        if spool.archived_at is None:
+            already.append(spool.id)
+            continue
+        spool.archived_at = None
+        restored.append(spool.id)
+    await db.commit()
+
+    await ws_manager.broadcast({"type": "inventory_changed"})
+    return {"restored": len(restored), "already_active": len(already), "not_found": not_found}
 
 
 @router.patch("/spools/{spool_id}", response_model=SpoolResponse)
