@@ -3949,6 +3949,9 @@ export default {
     searchFiles: 'Search files...',
     searchSubfoldersHint: 'Including subfolders',
     readme: {
+      label: 'README',
+      show: 'Show the folder description',
+      hide: 'Hide the folder description',
       title: 'Description',
       truncated: 'Truncated',
     },

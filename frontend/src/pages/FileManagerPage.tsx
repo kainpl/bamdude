@@ -2595,9 +2595,6 @@ export function FileManagerPage() {
               </div>
             </div>
           )}
-          {/* Markdown description panel (#1268) — auto-hides if the folder
-              has no README/description.md so non-users pay no UI cost. */}
-          {selectedFolder && <FolderReadmePanel folderId={selectedFolder.id} />}
           {/* External folder info bar */}
           {selectedFolder?.is_external && (
             <div className="flex items-center gap-3 mb-4 p-3 bg-purple-50 dark:bg-purple-500/10 border border-purple-300 dark:border-purple-500/30 rounded-lg">
@@ -3288,6 +3285,14 @@ export function FileManagerPage() {
             </div>
           )}
         </div>
+
+        {/* README rail (#2520) — a collapsible right-hand column of the same
+            row as the folder tree and the file list, so the markdown sits
+            BESIDE the files instead of above them; as a full-width block it
+            pushed the model cards below the fold. Stacks on top on narrow
+            screens via `order-first`. Auto-hides when the folder has no
+            markdown, so folders without one pay no UI cost (#1268). */}
+        {selectedFolder && <FolderReadmePanel folderId={selectedFolder.id} />}
       </div>
 
       {/* Modals */}

@@ -3963,6 +3963,9 @@ export default {
     searchFiles: 'Пошук файлів...',
     searchSubfoldersHint: 'Включно з підтеками',
     readme: {
+      label: 'README',
+      show: 'Показати опис теки',
+      hide: 'Сховати опис теки',
       title: 'Опис',
       truncated: 'Скорочено',
     },
