@@ -20,6 +20,131 @@ export const SkipObjectsIcon = ({ className }: { className?: string }) => (
   </svg>
 );
 
+type PlateObject = {
+  id: number;
+  name: string;
+  x: number | null;
+  y: number | null;
+  norm?: boolean;
+  skipped: boolean;
+};
+
+/** Where a marker sits on the plate image, as percentages of the image box.
+ *
+ * Four sources in descending order of trust; the first that has usable data
+ * wins. Kept as a plain function so the inline preview and the enlarged
+ * lightbox cannot drift apart — they used to carry two verbatim copies of this.
+ */
+function markerPosition(
+  obj: PlateObject,
+  idx: number,
+  total: number,
+  bboxAll: number[] | null | undefined,
+): { x: number; y: number } {
+  // 1. Normalised pick-PNG centroid — matches what the printer's own screen shows.
+  if (obj.norm && obj.x != null && obj.y != null) {
+    return {
+      x: Math.max(2, Math.min(98, obj.x * 100)),
+      y: Math.max(2, Math.min(98, obj.y * 100)),
+    };
+  }
+  // 2. Millimetre coords mapped through the bbox the top view was rendered from.
+  if (obj.x != null && obj.y != null && bboxAll) {
+    const [xMin, yMin, xMax, yMax] = bboxAll;
+    const padding = 8; // the top_N.png render leaves roughly this much margin
+    const contentArea = 100 - padding * 2;
+    return {
+      x: Math.max(5, Math.min(95, padding + ((obj.x - xMin) / (xMax - xMin)) * contentArea)),
+      // Image Y grows downward, 3D Y grows toward the back of the plate.
+      y: Math.max(5, Math.min(95, padding + ((yMax - obj.y) / (yMax - yMin)) * contentArea)),
+    };
+  }
+  // 3. No bbox — assume a full 256mm plate.
+  if (obj.x != null && obj.y != null) {
+    const buildPlate = 256;
+    return {
+      x: Math.max(5, Math.min(95, (obj.x / buildPlate) * 100)),
+      y: Math.max(5, Math.min(95, 100 - (obj.y / buildPlate) * 100)),
+    };
+  }
+  // 4. No coordinates at all — lay them out in a grid so every object is still
+  //    reachable. Positions are meaningless here; the list is the real UI.
+  const cols = Math.ceil(Math.sqrt(total));
+  const rows = Math.ceil(total / cols);
+  return {
+    x: 15 + (idx % cols) * (70 / cols) + 35 / cols,
+    y: 15 + Math.floor(idx / cols) * (70 / rows) + 35 / rows,
+  };
+}
+
+/** Clickable object-ID markers laid over a plate image.
+ *
+ * Size is deliberately independent of the plate: markers are a fixed ``w-6 h-6``
+ * placed by percentage, so a bigger plate spreads them further apart instead of
+ * making them bulkier. Never scale them with the image — the readability win is
+ * the gap between them.
+ *
+ * The overlay is ``pointer-events-none`` so a click on bare plate still reaches
+ * whatever the parent does with it (enlarge, in the inline preview); each marker
+ * opts back in and stops propagation so skipping never doubles as that action.
+ */
+function PlateMarkers({
+  objects,
+  bboxAll,
+  canSkip,
+  onSkip,
+  t,
+}: {
+  objects: PlateObject[];
+  bboxAll?: number[] | null;
+  canSkip: (obj: PlateObject) => boolean;
+  onSkip: (target: { id: number; name: string }) => void;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}) {
+  if (objects.length === 0) return null;
+
+  return (
+    <div className="absolute inset-0 pointer-events-none">
+      {objects.map((obj, idx) => {
+        const { x, y } = markerPosition(obj, idx, objects.length, bboxAll);
+        const skippable = canSkip(obj);
+
+        return (
+          <button
+            key={obj.id}
+            type="button"
+            disabled={!skippable}
+            onClick={(e) => {
+              // Keep the click off the parent: in the inline preview that would
+              // open the lightbox, in the lightbox it would close it.
+              e.stopPropagation();
+              onSkip({ id: obj.id, name: obj.name });
+            }}
+            className={`absolute flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold shadow-lg transition-transform ${
+              obj.skipped ? 'bg-red-500 text-white line-through' : 'bg-bambu-green text-black'
+            } ${
+              skippable
+                ? 'pointer-events-auto cursor-pointer hover:scale-125 focus:outline-none focus:ring-2 focus:ring-white/80'
+                : 'cursor-default'
+            }`}
+            style={{ left: `${x}%`, top: `${y}%`, transform: 'translate(-50%, -50%)' }}
+            title={
+              obj.skipped
+                ? `${obj.name} — ${t('printers.willBeSkipped')}`
+                : skippable
+                  ? `${obj.name} — ${t('printers.skipObjects.skip')}`
+                  : obj.name
+            }
+            aria-label={obj.name}
+          >
+            {obj.id}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 interface SkipObjectsModalProps {
   printerId: number;
   isOpen: boolean;
@@ -56,6 +181,12 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
     },
     onError: (error: Error) => showToast(error.message || t('printers.toast.failedToSkipObjects'), 'error'),
   });
+
+  // Skipping the wrong object ruins the print, so a marker is only live when
+  // the object isn't already skipped, the user may control printers, and no
+  // skip is mid-flight. Shared by both plate views.
+  const canSkipObject = (obj: PlateObject) =>
+    !obj.skipped && hasPermission('printers:control') && !skipObjectsMutation.isPending;
 
   if (!isOpen) return null;
 
@@ -146,101 +277,15 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
                   <div className="absolute top-2 right-2 p-1 bg-black/60 rounded opacity-0 group-hover:opacity-100 transition-opacity">
                     <Maximize2 className="w-3.5 h-3.5 text-white" />
                   </div>
-                  {/* Object ID markers overlay — positioned from the pick-PNG
-                      centroids the backend decodes, so a marker sits where the
-                      printer's own screen shows that object. The overlay stays
-                      pointer-events-none so clicking the plate still enlarges
-                      it; each marker opts back in and skips its own object. */}
-                  {objectsData.objects.length > 0 && (
-                    <div className="absolute inset-0 pointer-events-none">
-                      {objectsData.objects.map((obj, idx) => {
-                        let x: number, y: number;
-
-                        // Normalized pick-PNG centroid (matches the printer screen) — place directly.
-                        if (obj.norm && obj.x != null && obj.y != null) {
-                          x = Math.max(2, Math.min(98, obj.x * 100));
-                          y = Math.max(2, Math.min(98, obj.y * 100));
-                        } else if (obj.x != null && obj.y != null && objectsData.bbox_all) {
-                          // bbox_all defines the visible area in the top_N.png image
-                          // Format: [x_min, y_min, x_max, y_max] in mm
-                          const [xMin, yMin, xMax, yMax] = objectsData.bbox_all;
-                          const bboxWidth = xMax - xMin;
-                          const bboxHeight = yMax - yMin;
-
-                          // The image shows bbox_all area with some padding (~5-10%)
-                          const padding = 8;
-                          const contentArea = 100 - (padding * 2);
-
-                          // Map object position to image percentage
-                          x = padding + ((obj.x - xMin) / bboxWidth) * contentArea;
-                          // Y axis: image Y increases downward, but 3D Y increases toward back
-                          y = padding + ((yMax - obj.y) / bboxHeight) * contentArea;
-
-                          // Clamp to valid range
-                          x = Math.max(5, Math.min(95, x));
-                          y = Math.max(5, Math.min(95, y));
-                        } else if (obj.x != null && obj.y != null) {
-                          // Fallback: use full build plate (256mm)
-                          const buildPlate = 256;
-                          x = (obj.x / buildPlate) * 100;
-                          y = 100 - (obj.y / buildPlate) * 100;
-                          x = Math.max(5, Math.min(95, x));
-                          y = Math.max(5, Math.min(95, y));
-                        } else {
-                          // Fallback: arrange in a grid pattern over the build plate area
-                          const cols = Math.ceil(Math.sqrt(objectsData.objects.length));
-                          const row = Math.floor(idx / cols);
-                          const col = idx % cols;
-                          const rows = Math.ceil(objectsData.objects.length / cols);
-                          x = 15 + (col * (70 / cols)) + (35 / cols);
-                          y = 15 + (row * (70 / rows)) + (35 / rows);
-                        }
-
-                        const canSkip =
-                          !obj.skipped &&
-                          hasPermission('printers:control') &&
-                          !skipObjectsMutation.isPending;
-
-                        return (
-                          <button
-                            key={obj.id}
-                            type="button"
-                            disabled={!canSkip}
-                            onClick={(e) => {
-                              // Don't let the click bubble to the plate wrapper,
-                              // which opens the enlarged view.
-                              e.stopPropagation();
-                              setPendingSkip({ id: obj.id, name: obj.name });
-                            }}
-                            className={`absolute flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold shadow-lg transition-transform ${
-                              obj.skipped
-                                ? 'bg-red-500 text-white line-through'
-                                : 'bg-bambu-green text-black'
-                            } ${
-                              canSkip
-                                ? 'pointer-events-auto cursor-pointer hover:scale-125 focus:outline-none focus:ring-2 focus:ring-white/80'
-                                : 'cursor-default'
-                            }`}
-                            style={{
-                              left: `${x}%`,
-                              top: `${y}%`,
-                              transform: 'translate(-50%, -50%)'
-                            }}
-                            title={
-                              obj.skipped
-                                ? `${obj.name} — ${t('printers.willBeSkipped')}`
-                                : canSkip
-                                  ? `${obj.name} — ${t('printers.skipObjects.skip')}`
-                                  : obj.name
-                            }
-                            aria-label={obj.name}
-                          >
-                            {obj.id}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
+                  {/* Object ID markers — see PlateMarkers for why they are a
+                      fixed size and how a click reaches the confirm dialog. */}
+                  <PlateMarkers
+                    objects={objectsData.objects}
+                    bboxAll={objectsData.bbox_all}
+                    canSkip={canSkipObject}
+                    onSkip={setPendingSkip}
+                    t={t}
+                  />
                   {/* Object count overlay */}
                   <div className="absolute bottom-2 right-2 px-2 py-1 bg-white/90 dark:bg-black/80 rounded text-[10px] text-gray-700 dark:text-white shadow-sm">
                     {t('printers.skipObjects.activeCount', { count: objectsData.objects.filter(o => !o.skipped).length })}
@@ -317,6 +362,10 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
         message={t('printers.skipObjects.confirmMessage', { name: pendingSkip.name })}
         confirmText={t('printers.skipObjects.skip')}
         isLoading={skipObjectsMutation.isPending}
+        // The lightbox sits at z-60, above ConfirmModal's default z-50 — a
+        // confirm raised from a marker there would render *behind* it and be
+        // unreachable. Lift it over the lightbox while that view is open.
+        overlayZIndex={enlarged ? 'z-[70]' : undefined}
         onConfirm={() => skipObjectsMutation.mutate([pendingSkip.id])}
         onCancel={() => setPendingSkip(null)}
       />
@@ -348,61 +397,14 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
               <Box className="w-16 h-16 text-gray-500" />
             </div>
           )}
-          {/* Object ID markers overlay */}
-          {objectsData.objects.length > 0 && (
-            <div className="absolute inset-0 pointer-events-none">
-              {objectsData.objects.map((obj, idx) => {
-                let x: number, y: number;
-
-                if (obj.norm && obj.x != null && obj.y != null) {
-                  x = Math.max(2, Math.min(98, obj.x * 100));
-                  y = Math.max(2, Math.min(98, obj.y * 100));
-                } else if (obj.x != null && obj.y != null && objectsData.bbox_all) {
-                  const [xMin, yMin, xMax, yMax] = objectsData.bbox_all;
-                  const bboxWidth = xMax - xMin;
-                  const bboxHeight = yMax - yMin;
-                  const padding = 8;
-                  const contentArea = 100 - (padding * 2);
-                  x = padding + ((obj.x - xMin) / bboxWidth) * contentArea;
-                  y = padding + ((yMax - obj.y) / bboxHeight) * contentArea;
-                  x = Math.max(5, Math.min(95, x));
-                  y = Math.max(5, Math.min(95, y));
-                } else if (obj.x != null && obj.y != null) {
-                  const buildPlate = 256;
-                  x = (obj.x / buildPlate) * 100;
-                  y = 100 - (obj.y / buildPlate) * 100;
-                  x = Math.max(5, Math.min(95, x));
-                  y = Math.max(5, Math.min(95, y));
-                } else {
-                  const cols = Math.ceil(Math.sqrt(objectsData.objects.length));
-                  const row = Math.floor(idx / cols);
-                  const col = idx % cols;
-                  const rows = Math.ceil(objectsData.objects.length / cols);
-                  x = 15 + (col * (70 / cols)) + (35 / cols);
-                  y = 15 + (row * (70 / rows)) + (35 / rows);
-                }
-
-                return (
-                  <div
-                    key={obj.id}
-                    className={`absolute flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold shadow-lg ${
-                      obj.skipped
-                        ? 'bg-red-500 text-white line-through'
-                        : 'bg-bambu-green text-black'
-                    }`}
-                    style={{
-                      left: `${x}%`,
-                      top: `${y}%`,
-                      transform: 'translate(-50%, -50%)'
-                    }}
-                    title={obj.name}
-                  >
-                    {obj.id}
-                  </div>
-                );
-              })}
-            </div>
-          )}
+          {/* Same interactive markers as the inline preview — see PlateMarkers. */}
+          <PlateMarkers
+            objects={objectsData.objects}
+            bboxAll={objectsData.bbox_all}
+            canSkip={canSkipObject}
+            onSkip={setPendingSkip}
+            t={t}
+          />
           {/* Active count badge */}
           <div className="absolute bottom-2 right-2 px-2 py-1 bg-white/90 dark:bg-black/80 rounded text-[10px] text-gray-700 dark:text-white shadow-sm">
             {t('printers.skipObjects.activeCount', { count: objectsData.objects.filter(o => !o.skipped).length })}
