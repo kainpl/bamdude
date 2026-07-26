@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Calendar, LayoutGrid, Loader2, Workflow } from 'lucide-react';
+import { Calendar, LayoutGrid, Loader2 } from 'lucide-react';
 import { api } from '../api/client';
 import type { PrinterQueue, PrintQueueItem } from '../api/client';
 import { QueueCard } from '../components/QueueCard';
@@ -12,7 +12,6 @@ import { QueueTimelineView } from '../components/Queue/QueueTimelineView';
 import { AutoQueuePanel } from '../components/Queue/AutoQueuePanel';
 import { QueueToolbar } from '../components/Queue/QueueToolbar';
 import { PrintModal } from '../components/PrintModal';
-import { PipelineRunsView } from './PipelineRunsPage';
 
 type ViewMode = 'expanded' | 'all' | 'timeline';
 type SortOption = 'name' | 'status' | 'model' | 'location';
@@ -23,18 +22,6 @@ export function QueuePage() {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
-
-  // Top-level tab: the print queue (default) vs. the Slicer Pipelines runs
-  // dashboard (#1425). Deep-linked via ?tab=pipelines so the legacy
-  // /pipelines/runs redirect lands on the right tab.
-  const activeTab: 'queue' | 'pipelines' =
-    searchParams.get('tab') === 'pipelines' ? 'pipelines' : 'queue';
-  const handleTabChange = (tab: 'queue' | 'pipelines') => {
-    const next = new URLSearchParams(searchParams);
-    if (tab === 'pipelines') next.set('tab', 'pipelines');
-    else next.delete('tab');
-    setSearchParams(next, { replace: true });
-  };
 
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     const fromUrl = searchParams.get('view');
@@ -238,38 +225,7 @@ export function QueuePage() {
           {t('queue.title')}
         </h1>
 
-        {/* Top-level tabs: Print Queue vs. Slicer Pipelines runs (#1425). The
-            Pipelines dashboard lives here instead of its own sidebar entry so
-            the Print Queue page is the single place an operator looks for
-            "what's running / what ran". */}
-        <div className="flex gap-1 border-b border-bambu-dark-tertiary">
-          <button
-            type="button"
-            onClick={() => handleTabChange('queue')}
-            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-              activeTab === 'queue'
-                ? 'text-bambu-green border-bambu-green'
-                : 'text-bambu-gray hover:text-white border-transparent'
-            }`}
-          >
-            <Calendar className="w-4 h-4" />
-            {t('nav.queue')}
-          </button>
-          <button
-            type="button"
-            onClick={() => handleTabChange('pipelines')}
-            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-              activeTab === 'pipelines'
-                ? 'text-bambu-green border-bambu-green'
-                : 'text-bambu-gray hover:text-white border-transparent'
-            }`}
-          >
-            <Workflow className="w-4 h-4" />
-            {t('queue.tabs.pipelines')}
-          </button>
-        </div>
-
-        {activeTab === 'queue' && !isLoading && queues && queues.length > 0 && (
+        {!isLoading && queues && queues.length > 0 && (
           <QueueToolbar
             search={search}
             onSearchChange={setSearch}
@@ -290,13 +246,6 @@ export function QueuePage() {
         )}
       </div>
 
-      {/* Slicer Pipelines runs dashboard (#1425 PR C). Embedded; renders even
-          when the regular queue is empty. The stats bar + toolbar above are
-          hidden on this tab (they describe the print queue, not pipelines). */}
-      {activeTab === 'pipelines' && <PipelineRunsView />}
-
-      {activeTab === 'queue' && (
-        <>
       {/* Stats bar */}
       {!isLoading && queues && queues.length > 0 && (
         <QueueStatsBar queues={queues} pendingItems={allPendingItems} />
@@ -430,8 +379,6 @@ export function QueuePage() {
             </>
           )}
         </div>
-      )}
-        </>
       )}
 
       {editingItem && (

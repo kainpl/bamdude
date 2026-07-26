@@ -172,22 +172,6 @@ class ConnectionManager:
             }
         )
 
-    async def send_pipeline_run_updated(self, run: dict):
-        """Notify the run's owner that a Slicer Pipeline run changed state (#1425).
-
-        ``run`` is a full ``PipelineRunResponse.model_dump(mode="json")``. The
-        frontend keys off ``run.pipeline_id`` to refresh both the dashboard and
-        the per-pipeline "Last run" chip. Routed to the run's ``created_by`` so only
-        the owner's dashboard refreshes (falls back to a global broadcast when the
-        owner is unknown — an API-key-created run)."""
-        await self.broadcast_to_user(
-            run.get("created_by"),
-            {
-                "type": "pipeline_run_updated",
-                "run": run,
-            },
-        )
-
     async def send_missing_spool_assignment(
         self,
         printer_id: int,

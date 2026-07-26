@@ -1,13 +1,19 @@
-"""Slicer Pipeline — a saved, reusable bundle of the four SliceModal slot picks
-(printer / process / filament(s) / bed) plus a dispatch target and fanout strategy.
+"""Saved slice preset bundle — a named, reusable set of the four SliceModal slot picks
+(printer / process / filament(s) / bed), loaded in one click instead of re-picking them.
 
-Ported from upstream Bambuddy #1425 (Slicer Pipelines). Column names mirror upstream
-for frontend/schema parity; the enqueue side adapts to BamDude's two-tier queue
-(see ``pipeline_run.py`` + ``routes/pipeline_runs.py``). A "Pipeline Run" slices the
-source once with these presets and enqueues N copies onto the target.
+Originally ported from upstream Bambuddy #1425 as "Slicer Pipelines", which also carried
+a dispatch target, a fanout strategy and a run/copies engine. That half was **removed**:
+BamDude already routes copies across a printer class through its own two-tier queue
+(see ``models/auto_queue.py`` — upstream has no auto-queue at all, which is why their
+pipelines had to do the fanout themselves). What survives is the part AutoQueue
+structurally cannot provide, because AutoQueue's input is an already-sliced artifact:
+the slice recipe itself, saved and repeatable.
 
-Soft-deleted (``is_deleted``) rather than hard-deleted so run history can still resolve
-a pipeline's metadata after the operator "deletes" it.
+Table and column names stay ``slicer_pipeline*`` — renaming would cost a data migration
+for zero behavioural gain, and the upstream lineage is worth keeping legible.
+
+Soft-deleted (``is_deleted``) rather than hard-deleted so a bundle referenced from
+somewhere still resolves its metadata after the operator "deletes" it.
 """
 
 from datetime import datetime
@@ -34,16 +40,6 @@ class SlicerPipeline(Base):
     process_preset_id: Mapped[str] = mapped_column(String(200), nullable=False)
     filament_presets_json: Mapped[str] = mapped_column(Text, nullable=False)  # JSON list[{"source","id"}]
     bed_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
-
-    # Dispatch target — either a specific printer or a whole printer-model class.
-    target_kind: Mapped[str] = mapped_column(String(20), nullable=False, default="printer_class")
-    target_printer_id: Mapped[int | None] = mapped_column(ForeignKey("printers.id", ondelete="SET NULL"), nullable=True)
-    target_model_class: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    # Fanout strategy for a class target: max_parallel / fill_one_first / round_robin.
-    # NOTE (BamDude adaptation): for a class target we enqueue AutoQueueItems and let the
-    # AutoQueue distributor balance — max_parallel maps to that native behaviour. The
-    # strategy is honoured on the pinned-printer paths (fill_one_first / round_robin).
-    fanout_strategy: Mapped[str] = mapped_column(String(20), nullable=False, default="max_parallel")
 
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")

@@ -1183,7 +1183,6 @@ _APIKEY_DENIED_PERMISSIONS: frozenset[Permission] = frozenset(
         # Slicer Pipelines writes/runs are admin-only for API keys (no scope column),
         # mirroring upstream's deny; PIPELINES_READ rides can_read_status above.
         Permission.PIPELINES_WRITE,
-        Permission.PIPELINES_RUN,
         Permission.KPROFILES_CREATE,
         Permission.KPROFILES_UPDATE,
         Permission.KPROFILES_DELETE,

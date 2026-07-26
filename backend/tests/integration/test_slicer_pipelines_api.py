@@ -48,10 +48,10 @@ class TestSlicerPipelinesAPI:
             _preset_ref("standard", "PLA Basic"),
         ]
         assert created["bed_type"] == "Textured PEI Plate"
-        # Defaults persisted but not user-set.
-        assert created["target_kind"] == "printer_class"
-        assert created["target_printer_id"] is None
-        assert created["fanout_strategy"] == "max_parallel"
+        # The dispatch target / fanout fields went away with the run engine
+        # (m112) -- a saved bundle is presets only. Guard against them coming
+        # back through a schema edit.
+        assert not {"target_kind", "target_printer_id", "target_model_class", "fanout_strategy"} & created.keys()
 
         list_resp = await async_client.get("/api/v1/slicer-pipelines/")
         assert list_resp.status_code == 200

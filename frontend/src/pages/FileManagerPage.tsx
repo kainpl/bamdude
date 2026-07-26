@@ -63,7 +63,6 @@ import { ConfirmModal } from '../components/ConfirmModal';
 import { LibraryPlateGalleryModal } from '../components/LibraryPlateGallery';
 import { PrintModal } from '../components/PrintModal';
 import { SliceModal } from '../components/SliceModal';
-import { RunWithPipelineModal } from '../components/RunWithPipelineModal';
 import { ModelViewerModal } from '../components/ModelViewerModal';
 import { FileUploadModal } from '../components/FileUploadModal';
 import { FolderReadmePanel } from '../components/FolderReadmePanel';
@@ -906,7 +905,6 @@ interface FileCardProps {
   onAddToQueue?: (id: number) => void;
   onPrint?: (file: LibraryFileListItem) => void;
   onSlice?: (file: LibraryFileListItem) => void;
-  onRunPipeline?: (file: LibraryFileListItem) => void;
   useSlicerApi?: boolean;
   onPreview3d?: (file: LibraryFileListItem) => void;
   onRename?: (file: LibraryFileListItem) => void;
@@ -929,7 +927,7 @@ interface FileCardProps {
   t: TFunction;
 }
 
-function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onSlice, onRunPipeline, useSlicerApi, onPreview3d, onDownload, onRename, onGenerateThumbnail, onDelete }: {
+function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onSlice, useSlicerApi, onPreview3d, onDownload, onRename, onGenerateThumbnail, onDelete }: {
   file: LibraryFileListItem;
   t: TFunction;
   hasPermission: (permission: Permission) => boolean;
@@ -937,7 +935,6 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   onPrint: (f: LibraryFileListItem) => void;
   onSchedule: (f: LibraryFileListItem) => void;
   onSlice?: (f: LibraryFileListItem) => void;
-  onRunPipeline?: (f: LibraryFileListItem) => void;
   useSlicerApi?: boolean;
   onPreview3d: (f: LibraryFileListItem) => void;
   onDownload: (id: number) => void;
@@ -1027,18 +1024,6 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
                 {t('slice.action', { defaultValue: 'Slice' })}
               </button>
             )}
-            {/* Run with pipeline (#1425 PR B) — gated on pipelines:run. */}
-            {onRunPipeline && useSlicerApi && isSliceable(file) && (
-              <button
-                className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${hasPermission('pipelines:run') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
-                onClick={() => { if (hasPermission('pipelines:run')) { onRunPipeline(file); setOpen(false); } }}
-                disabled={!hasPermission('pipelines:run')}
-                title={!hasPermission('pipelines:run') ? t('library.runWithPipeline.noPermission') : t('library.runWithPipeline.actionLabel')}
-              >
-                <Play className="w-3.5 h-3.5" />
-                {t('library.runWithPipeline.actionLabel')}
-              </button>
-            )}
             {(file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl' || file.file_type === 'obj') && (
               <button
                 className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${hasPermission('library:read') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
@@ -1103,7 +1088,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onRunPipeline, useSlicerApi, onPreview3d, onRename, onLink, onGenerateThumbnail, onPlateGallery, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, useSlicerApi, onPreview3d, onRename, onLink, onGenerateThumbnail, onPlateGallery, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   const [showActions, setShowActions] = useState(false);
   // Portal-rendered dropdown — the card root has `overflow-hidden` for the
   // thumbnail crop, which clips an absolute-positioned menu against the card
@@ -1365,20 +1350,6 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
                   {t('slice.action', { defaultValue: 'Slice' })}
                 </button>
               )}
-              {/* Run with pipeline (#1425 PR B) — gated on pipelines:run. */}
-              {onRunPipeline && useSlicerApi && isSliceable(file) && (
-                <button
-                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                    hasPermission('pipelines:run') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
-                  }`}
-                  onClick={() => { if (hasPermission('pipelines:run')) { onRunPipeline(file); setShowActions(false); } }}
-                  disabled={!hasPermission('pipelines:run')}
-                  title={!hasPermission('pipelines:run') ? t('library.runWithPipeline.noPermission') : t('library.runWithPipeline.actionLabel')}
-                >
-                  <Play className="w-3.5 h-3.5" />
-                  {t('library.runWithPipeline.actionLabel')}
-                </button>
-              )}
               {onPreview3d && (file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl' || file.file_type === 'obj') && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
@@ -1513,8 +1484,6 @@ export function FileManagerPage() {
   const [printMultiFile, setPrintMultiFile] = useState<LibraryFileListItem | null>(null);
   const [scheduleFile, setScheduleFile] = useState<LibraryFileListItem | null>(null);
   const [sliceFile, setSliceFile] = useState<LibraryFileListItem | null>(null);
-  // Run-with-pipeline (#1425 PR B) — opens RunWithPipelineModal for this file.
-  const [runPipelineFile, setRunPipelineFile] = useState<LibraryFileListItem | null>(null);
   const [renameItem, setRenameItem] = useState<{ type: 'file' | 'folder'; id: number; name: string } | null>(null);
   const [thumbnailVersions, setThumbnailVersions] = useState<Record<number, number>>({});
   const [viewerFile, setViewerFile] = useState<LibraryFileListItem | null>(null);
@@ -3012,7 +2981,6 @@ export function FileManagerPage() {
                     }}
                     onPrint={setPrintFile}
                     onSlice={setSliceFile}
-                    onRunPipeline={setRunPipelineFile}
                     useSlicerApi={settings?.use_slicer_api ?? false}
                     onPreview3d={setViewerFile}
                     onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
@@ -3270,7 +3238,6 @@ export function FileManagerPage() {
                         onPrint={setPrintFile}
                         onSchedule={setScheduleFile}
                         onSlice={setSliceFile}
-                        onRunPipeline={setRunPipelineFile}
                         useSlicerApi={settings?.use_slicer_api ?? false}
                         onPreview3d={setViewerFile}
                             onDownload={handleDownload}
@@ -3425,15 +3392,6 @@ export function FileManagerPage() {
         <SliceModal
           source={{ kind: 'libraryFile', id: sliceFile.id, filename: sliceFile.filename }}
           onClose={() => setSliceFile(null)}
-        />
-      )}
-
-      {/* Run-with-Pipeline modal (#1425 PR B) — slices the file with a saved
-          pipeline and fans copies out onto its target(s). */}
-      {runPipelineFile && (
-        <RunWithPipelineModal
-          source={{ kind: 'libraryFile', id: runPipelineFile.id, filename: runPipelineFile.filename }}
-          onClose={() => setRunPipelineFile(null)}
         />
       )}
 

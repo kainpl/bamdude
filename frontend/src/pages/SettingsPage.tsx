@@ -1194,7 +1194,6 @@ export function SettingsPage() {
       (settings.use_slicer_api ?? false) !== (localSettings.use_slicer_api ?? false) ||
       (settings.orcaslicer_api_url ?? '') !== (localSettings.orcaslicer_api_url ?? '') ||
       (settings.bambu_studio_api_url ?? '') !== (localSettings.bambu_studio_api_url ?? '') ||
-      (settings.pipeline_max_copies ?? 50) !== (localSettings.pipeline_max_copies ?? 50) ||
       settings.prometheus_enabled !== localSettings.prometheus_enabled ||
       settings.prometheus_token !== localSettings.prometheus_token ||
       (settings.session_max_hours ?? 720) !== (localSettings.session_max_hours ?? 720) ||
@@ -1287,7 +1286,6 @@ export function SettingsPage() {
         use_slicer_api: localSettings.use_slicer_api,
         orcaslicer_api_url: localSettings.orcaslicer_api_url,
         bambu_studio_api_url: localSettings.bambu_studio_api_url,
-        pipeline_max_copies: localSettings.pipeline_max_copies,
         prometheus_enabled: localSettings.prometheus_enabled,
         prometheus_token: localSettings.prometheus_token,
         session_max_hours: localSettings.session_max_hours,
@@ -1600,54 +1598,12 @@ export function SettingsPage() {
         </button>
       </div>
       {/* ══════ PIPELINES TAB (#1425) ══════ */}
+      {/* Single column — the tab holds one card. The dispatch/fanout half of
+          upstream's pipelines (and its copies cap) was dropped because
+          AutoQueue already routes copies across a printer class. */}
       {activeTab === 'pipelines' && (
-        <div className="flex flex-col lg:flex-row gap-4">
-          <div className="space-y-4 lg:w-1/2">
-            <SlicerPipelinesPanel />
-          </div>
-          <div className="space-y-4 lg:w-1/2">
-            {/* Slicer Pipeline limits (#1425 PR C). Cap on the copies input in
-                the Run-with-pipeline modal to prevent fat-fingered queue floods.
-                Hard ceiling at 1000 enforced server-side. */}
-            {localSettings && (
-              <Card id="card-pipeline-limits">
-                <CardHeader>
-                  <h3 className="text-base font-semibold text-white flex items-center gap-2">
-                    <Workflow className="w-4 h-4 text-bambu-green" />
-                    {t('settings.pipelineLimits.title', 'Slicer Pipeline limits')}
-                  </h3>
-                </CardHeader>
-                <CardContent className="space-y-2">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex-1">
-                      <p className="text-sm text-white">
-                        {t('settings.pipelineLimits.maxCopiesLabel', 'Max copies per run')}
-                      </p>
-                      <p className="text-xs text-bambu-gray mt-0.5">
-                        {t(
-                          'settings.pipelineLimits.maxCopiesDesc',
-                          'Upper bound on the copies operators can request when running a pipeline. Server-side hard cap is 1000.',
-                        )}
-                      </p>
-                    </div>
-                    <input
-                      type="number"
-                      min={1}
-                      max={1000}
-                      value={localSettings.pipeline_max_copies ?? 50}
-                      onChange={(e) => {
-                        const n = parseInt(e.target.value, 10);
-                        if (Number.isNaN(n)) return;
-                        updateSetting('pipeline_max_copies', Math.max(1, Math.min(1000, n)));
-                      }}
-                      aria-label={t('settings.pipelineLimits.maxCopiesLabel', 'Max copies per run')}
-                      className="w-24 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm"
-                    />
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-          </div>
+        <div className="space-y-4">
+          <SlicerPipelinesPanel />
         </div>
       )}
       {/* ══════ GENERAL TAB ══════ */}

@@ -989,8 +989,8 @@ class TestSliceOwnershipPermissions(TestOwnershipPermissionsSetup):
     operator could slice another user's model by raw id even though a direct GET
     on that id returned 404 — the sliced output was then attributed to and
     downloadable by the requester. ``GET /slice-jobs/{id}`` had no owner scoping
-    at all. ``POST /slicer-pipelines/{id}/run`` (and check-eligibility) resolved
-    the source by raw id with the same gap.
+    at all. (The pipeline run/eligibility routes had the same gap; those routes
+    were later removed with the pipeline fanout engine.)
 
     The slice route enforces the gate before touching the source bytes, so the
     owner/READ_ALL "control" cases reach the later on-disk check (a distinct 404
@@ -1029,7 +1029,7 @@ class TestSliceOwnershipPermissions(TestOwnershipPermissionsSetup):
         slice handler). BamDude's default Operators group carries READ_ALL —
         trusted farm staff who may legitimately read every archive/library row —
         so the realistic IDOR-exposed identity is a custom READ_OWN group, the
-        same shape the pipeline-runner test uses. Returns token + user id."""
+        realistic shape for this exposure. Returns token + user id."""
         admin_headers = {"Authorization": f"Bearer {auth_setup['admin_token']}"}
         group_resp = await async_client.post(
             "/api/v1/groups/",
@@ -1191,71 +1191,3 @@ class TestSliceOwnershipPermissions(TestOwnershipPermissionsSetup):
             headers={"Authorization": f"Bearer {readown_slicer['token']}"},
         )
         assert mine.status_code == 200
-
-    # --- pipeline source resolution ----------------------------------------
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_pipeline_run_cannot_reference_others_library_file(
-        self, async_client, auth_setup, library_file_factory, db_session
-    ):
-        """A pipeline runner with READ_OWN cannot resolve another user's source.
-
-        The built-in Operators group has no pipeline permissions, so this uses a
-        custom group carrying PIPELINES_RUN + READ_OWN — the realistic shape of
-        the exposure. check-eligibility resolves the source before any
-        eligibility work, so the ownership gate is what returns 404.
-        """
-        from backend.app.models.slicer_pipeline import SlicerPipeline
-
-        admin_headers = {"Authorization": f"Bearer {auth_setup['admin_token']}"}
-        group_resp = await async_client.post(
-            "/api/v1/groups/",
-            headers=admin_headers,
-            json={
-                "name": "pipeline_runners",
-                "permissions": [
-                    "pipelines:read",
-                    "pipelines:run",
-                    "library:read_own",
-                    "archives:read_own",
-                ],
-            },
-        )
-        assert group_resp.status_code == 201, group_resp.text
-        group_id = group_resp.json()["id"]
-
-        await async_client.post(
-            "/api/v1/users/",
-            headers=admin_headers,
-            json={"username": "runner1", "password": "Runnerpass1!", "group_ids": [group_id]},
-        )
-        runner_login = await async_client.post(
-            "/api/v1/auth/login",
-            json={"username": "runner1", "password": "Runnerpass1!"},
-        )
-        runner_token = runner_login.json()["access_token"]
-
-        pipeline = SlicerPipeline(
-            name="Cross-user pipeline",
-            printer_preset_source="local",
-            printer_preset_id="1",
-            process_preset_source="local",
-            process_preset_id="2",
-            filament_presets_json="[]",
-            target_kind="printer_class",
-            target_model_class="Bambu Lab X1 Carbon",
-        )
-        db_session.add(pipeline)
-        await db_session.commit()
-        await db_session.refresh(pipeline)
-
-        # Source owned by operator2, not the runner.
-        file = await library_file_factory(created_by_id=auth_setup["operator2_user"]["id"])
-        resp = await async_client.post(
-            f"/api/v1/slicer-pipelines/{pipeline.id}/check-eligibility",
-            headers={"Authorization": f"Bearer {runner_token}"},
-            json={"source_library_file_id": file.id},
-        )
-        assert resp.status_code == 404
-        assert resp.json()["detail"] == "File not found"

@@ -87,7 +87,7 @@ async def test_broadcast_to_user_targets_only_the_owner():
     await mgr.connect(a, user_id=1)
     await mgr.connect(b, user_id=2)
 
-    await mgr.broadcast_to_user(1, {"type": "pipeline_run_updated"})
+    await mgr.broadcast_to_user(1, {"type": "spool_assignment_verified"})
     assert len(a.sent) == 1 and len(b.sent) == 0  # only user 1's connection
 
     await mgr.broadcast_to_user(None, {"type": "global"})  # None → global fallback

@@ -1,4 +1,4 @@
-import { Cloud, CloudOff, Cog, Loader2, RefreshCw, X } from 'lucide-react';
+import { AlertTriangle, Cloud, CloudOff, Cog, Loader2, RefreshCw, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -9,8 +9,10 @@ import {
   type SliceJobProgress,
   type SliceRequest,
   type SlicerCloudStatus,
+  type SlicerPipeline,
   type UnifiedPreset,
 } from '../api/client';
+import { useAuth } from '../contexts/AuthContext';
 import { useSliceJobTracker } from '../contexts/SliceJobTrackerContext';
 import { useToast } from '../contexts/ToastContext';
 import { SlicePlateSelector } from './SlicePlateSelector';
@@ -21,6 +23,7 @@ import {
 } from './preset-picker/PresetTripletPicker';
 import {
   matchesOwnerFilter,
+  resolvePresetName,
   type OwnerFilter,
   type Slot,
 } from './preset-picker/presetPickerUtils';
@@ -47,6 +50,18 @@ interface SliceModalProps {
   source: SliceSource;
   onClose: () => void;
 }
+
+// The five values BambuStudio's ``curr_bed_type`` enum accepts — same list
+// ``BedTypePicker`` renders. Kept here as the validation whitelist for the
+// localStorage read and for the bed type carried by a saved bundle, so a
+// stale/foreign string can never reach the slicer CLI.
+const ALLOWED_BED_TYPES: BedType[] = [
+  'Cool Plate',
+  'Engineering Plate',
+  'High Temp Plate',
+  'Textured PEI Plate',
+  'Supertack Plate',
+];
 
 // Per-slot preset selection helpers (pickDefault / findPreset / findPresetByName
 // / pickProcessDefault / pickFilamentForSlot) live in
@@ -229,14 +244,9 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     if (typeof localStorage === 'undefined') return 'Textured PEI Plate';
     try {
       const stored = localStorage.getItem('bamdude:slice-modal:bed-type');
-      const allowed: BedType[] = [
-        'Cool Plate',
-        'Engineering Plate',
-        'High Temp Plate',
-        'Textured PEI Plate',
-        'Supertack Plate',
-      ];
-      return (allowed as string[]).includes(stored ?? '') ? (stored as BedType) : 'Textured PEI Plate';
+      return (ALLOWED_BED_TYPES as string[]).includes(stored ?? '')
+        ? (stored as BedType)
+        : 'Textured PEI Plate';
     } catch {
       return 'Textured PEI Plate';
     }
@@ -669,17 +679,28 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     (!isMultiPlate || sliceAllPlates || selectedPlate != null);
   const isEnqueuing = enqueueMutation.isPending;
 
-  // Slicer Pipelines (#1425) — apply a saved preset bundle to all four slots
-  // with one pick, or save the current selection as a new pipeline. Managed in
-  // Settings → Pipelines.
+  // Saved preset bundles (#1425) — load a saved printer / process / filament /
+  // bed selection into this dialog with one pick, or save the current one for
+  // next time. Managed in Settings → Pipelines. Read + write are separately
+  // permissioned, so a viewer can load bundles without being able to add any.
   const { showToast } = useToast();
+  const { hasPermission } = useAuth();
+  const canReadPipelines = hasPermission('pipelines:read');
+  const canWritePipelines = hasPermission('pipelines:write');
   const pipelinesQuery = useQuery({
     queryKey: ['slicer-pipelines'],
     queryFn: () => api.listSlicerPipelines(),
     staleTime: 60_000,
+    enabled: canReadPipelines,
   });
   const [savePipelineOpen, setSavePipelineOpen] = useState(false);
   const [pipelineDraftName, setPipelineDraftName] = useState('');
+  // Slot labels from the last loaded bundle whose saved PresetRef is no longer
+  // in the catalogue (preset deleted in Bambu Studio / Orca since the bundle
+  // was saved). Those slots keep their current pick rather than being set to a
+  // ref the dropdown can't render — and the banner below names them, because
+  // a silently half-applied bundle would slice with the wrong profile.
+  const [unresolvedBundleSlots, setUnresolvedBundleSlots] = useState<string[] | null>(null);
   const createPipelineMutation = useMutation({
     mutationFn: (body: {
       name: string;
@@ -698,6 +719,66 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       showToast(err.message || t('slice.pipelines.toast.saveFailed', 'Save failed'), 'error');
     },
   });
+
+  // Load a saved bundle into the dialog's four selections. Every saved
+  // PresetRef is resolved against the loaded catalogue first: a ref whose
+  // preset has since been deleted is left out (the slot keeps its current
+  // auto-pick) and its label is collected for the banner. The filament list is
+  // walked per slot so a bundle with fewer entries than this source's slot
+  // count leaves the tail untouched.
+  const applyPipeline = (picked: SlicerPipeline) => {
+    const data = presetsQuery.data;
+    if (!data) return;
+    const unresolved: string[] = [];
+    const resolved = (ref: PresetRef, slot: Slot) => resolvePresetName(data, ref, slot) !== null;
+
+    if (resolved(picked.printer_preset, 'printer')) {
+      setPrinterPreset(picked.printer_preset);
+    } else {
+      unresolved.push(t('slice.printer', 'Printer profile'));
+    }
+    if (resolved(picked.process_preset, 'process')) {
+      setProcessPreset(picked.process_preset);
+    } else {
+      unresolved.push(t('slice.process', 'Process profile'));
+    }
+    if (picked.bed_type && (ALLOWED_BED_TYPES as string[]).includes(picked.bed_type)) {
+      setBedType(picked.bed_type as BedType);
+    }
+    // Computed from current state rather than inside a setState updater —
+    // the updater can run twice (StrictMode) and runs after this function
+    // returns, so collecting ``unresolved`` in there would double-count and
+    // read empty below.
+    const nextFilaments =
+      filamentPresets.length > 0
+        ? [...filamentPresets]
+        : picked.filament_presets.map(() => null as PresetRef | null);
+    for (let i = 0; i < nextFilaments.length && i < picked.filament_presets.length; i++) {
+      const ref = picked.filament_presets[i];
+      if (resolved(ref, 'filament')) {
+        nextFilaments[i] = ref;
+      } else {
+        unresolved.push(
+          nextFilaments.length > 1
+            ? t('slice.filamentSlot', {
+                index: i + 1,
+                type: filamentSlots[i]?.type ?? '',
+                defaultValue: `Filament ${i + 1} (${filamentSlots[i]?.type ?? ''})`,
+              })
+            : t('slice.filament', 'Filament profile'),
+        );
+      }
+    }
+    setFilamentPresets(nextFilaments);
+
+    setUnresolvedBundleSlots(unresolved.length > 0 ? unresolved : null);
+    if (unresolved.length === 0) {
+      showToast(
+        t('slice.pipelines.toast.applied', 'Applied "{{name}}"', { name: picked.name }),
+        'success',
+      );
+    }
+  };
 
   // Single-screen layout: preset picker
   // picker. While the plates query is in-flight we still render the shell
@@ -818,122 +899,138 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                 onChange={setPickedSlicer}
                 disabled={isEnqueuing}
               />
-              {/* Slicer Pipelines (#1425): apply a saved preset bundle to all
-                  four slots, or save the current selection as a pipeline.
-                  Pipelines are managed in Settings → Pipelines. */}
-              <div className="flex flex-wrap items-center gap-2 px-2 py-1.5 rounded-md bg-bambu-dark/40 border border-bambu-dark-tertiary">
-                <span className="text-xs font-medium text-bambu-gray flex items-center gap-1">
-                  <Cog className="w-3.5 h-3.5" /> {t('slice.pipelines.label', 'Pipeline')}
-                </span>
-                <select
-                  value=""
-                  disabled={isEnqueuing || (pipelinesQuery.data?.pipelines.length ?? 0) === 0}
-                  onChange={(e) => {
-                    const id = parseInt(e.target.value, 10);
-                    if (Number.isNaN(id)) return;
-                    const picked = pipelinesQuery.data?.pipelines.find((p) => p.id === id);
-                    if (!picked) return;
-                    // Apply slot state. The filament list is right-padded from
-                    // current state so a pipeline with fewer entries than the
-                    // current source's slot count keeps the existing tail.
-                    setPrinterPreset(picked.printer_preset);
-                    setProcessPreset(picked.process_preset);
-                    if (picked.bed_type) setBedType(picked.bed_type as BedType);
-                    setFilamentPresets((current) => {
-                      const next = current.length > 0 ? [...current] : picked.filament_presets.map(() => null as PresetRef | null);
-                      for (let i = 0; i < next.length; i++) {
-                        if (i < picked.filament_presets.length) {
-                          next[i] = picked.filament_presets[i];
+              {/* Saved preset bundles (#1425). Same label + full-width select
+                  shape as the preset dropdowns below, so loading a bundle
+                  reads as one more picker rather than a separate widget. The
+                  select is an action list (value is always ""), which is why
+                  re-picking the same bundle re-applies it. Bundles are
+                  managed in Settings → Pipelines. */}
+              {canReadPipelines && (
+                <div>
+                  <div className="flex items-end justify-between gap-2 mb-1">
+                    <label htmlFor="slice-pipeline-picker" className="text-xs text-bambu-gray">
+                      {t('slice.pipelines.label', 'Pipeline')}
+                    </label>
+                    {canWritePipelines && !savePipelineOpen && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPipelineDraftName('');
+                          setSavePipelineOpen(true);
+                        }}
+                        disabled={
+                          isEnqueuing ||
+                          useEmbedded ||
+                          !printerPreset ||
+                          !processPreset ||
+                          filamentPresets.length === 0 ||
+                          filamentPresets.some((f) => f === null)
                         }
-                      }
-                      return next;
-                    });
-                    showToast(t('slice.pipelines.toast.applied', 'Applied "{{name}}"', { name: picked.name }), 'success');
-                    // Reset the dropdown so the user can re-apply the same
-                    // pipeline if needed (selects don't fire onChange when
-                    // value reselects the same option).
-                    e.target.value = '';
-                  }}
-                  className="text-xs px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white disabled:opacity-50 disabled:cursor-not-allowed flex-1 min-w-[10ch]"
-                  aria-label={t('slice.pipelines.applyAria', 'Apply pipeline')}
-                >
-                  <option value="">
-                    {(pipelinesQuery.data?.pipelines.length ?? 0) === 0
-                      ? t('slice.pipelines.empty', 'No saved pipelines')
-                      : t('slice.pipelines.applyPrompt', 'Apply pipeline…')}
-                  </option>
-                  {pipelinesQuery.data?.pipelines.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-                {!savePipelineOpen ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPipelineDraftName('');
-                      setSavePipelineOpen(true);
-                    }}
-                    disabled={
-                      isEnqueuing ||
-                      !printerPreset ||
-                      !processPreset ||
-                      filamentPresets.length === 0 ||
-                      filamentPresets.some((f) => f === null)
-                    }
-                    className="text-xs px-2 py-1 bg-bambu-green/20 hover:bg-bambu-green/30 text-bambu-green border border-bambu-green/40 rounded disabled:opacity-50 disabled:cursor-not-allowed"
-                    title={t('slice.pipelines.saveTitle', 'Save the current four-slot selection as a reusable pipeline')}
-                  >
-                    {t('slice.pipelines.saveButton', 'Save as pipeline')}
-                  </button>
-                ) : (
-                  <div className="flex items-center gap-1 flex-1 min-w-[16ch]">
-                    <input
-                      autoFocus
-                      value={pipelineDraftName}
-                      onChange={(e) => setPipelineDraftName(e.target.value)}
-                      placeholder={t('slice.pipelines.namePlaceholder', 'Pipeline name')}
-                      aria-label={t('slice.pipelines.nameAria', 'New pipeline name')}
-                      className="flex-1 text-xs px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const trimmed = pipelineDraftName.trim();
-                        if (!trimmed || !printerPreset || !processPreset) return;
-                        const nonNull = filamentPresets.filter((f): f is PresetRef => f !== null);
-                        if (nonNull.length === 0) return;
-                        createPipelineMutation.mutate({
-                          name: trimmed,
-                          printer_preset: printerPreset,
-                          process_preset: processPreset,
-                          filament_presets: nonNull,
-                          bed_type: bedType,
-                        });
-                      }}
-                      disabled={createPipelineMutation.isPending || !pipelineDraftName.trim()}
-                      className="text-xs px-2 py-1 bg-bambu-green hover:bg-bambu-green/80 text-white rounded disabled:opacity-50"
-                    >
-                      {createPipelineMutation.isPending ? (
-                        <Loader2 className="w-3 h-3 animate-spin" />
-                      ) : (
-                        t('common.save', 'Save')
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSavePipelineOpen(false);
-                        setPipelineDraftName('');
-                      }}
-                      className="text-xs px-2 py-1 text-bambu-gray hover:text-white"
-                    >
-                      {t('common.cancel', 'Cancel')}
-                    </button>
+                        className="text-xs text-bambu-green hover:text-bambu-green/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        title={t(
+                          'slice.pipelines.saveTitle',
+                          'Save the current four-slot selection as a reusable pipeline',
+                        )}
+                      >
+                        {t('slice.pipelines.saveButton', 'Save as pipeline')}
+                      </button>
+                    )}
                   </div>
-                )}
-              </div>
+                  <select
+                    id="slice-pipeline-picker"
+                    value=""
+                    disabled={
+                      isEnqueuing || useEmbedded || (pipelinesQuery.data?.pipelines.length ?? 0) === 0
+                    }
+                    onChange={(e) => {
+                      const id = parseInt(e.target.value, 10);
+                      // Reset immediately so re-picking the same bundle fires
+                      // onChange again (a select doesn't when the DOM value
+                      // already equals the option).
+                      e.target.value = '';
+                      if (Number.isNaN(id)) return;
+                      const picked = pipelinesQuery.data?.pipelines.find((p) => p.id === id);
+                      if (picked) applyPipeline(picked);
+                    }}
+                    className="w-full px-3 py-2 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-white text-sm focus:outline-none focus:border-bambu-gray disabled:opacity-50"
+                  >
+                    <option value="">
+                      {(pipelinesQuery.data?.pipelines.length ?? 0) === 0
+                        ? t('slice.pipelines.empty', 'No saved pipelines')
+                        : t('slice.pipelines.applyPrompt', 'Apply pipeline…')}
+                    </option>
+                    {pipelinesQuery.data?.pipelines.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                  {savePipelineOpen && (
+                    <div className="flex items-center gap-2 mt-2">
+                      <input
+                        autoFocus
+                        value={pipelineDraftName}
+                        onChange={(e) => setPipelineDraftName(e.target.value)}
+                        placeholder={t('slice.pipelines.namePlaceholder', 'Pipeline name')}
+                        aria-label={t('slice.pipelines.nameAria', 'New pipeline name')}
+                        className="flex-1 min-w-0 px-3 py-2 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-white text-sm focus:outline-none focus:border-bambu-gray"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const trimmed = pipelineDraftName.trim();
+                          if (!trimmed || !printerPreset || !processPreset) return;
+                          const nonNull = filamentPresets.filter((f): f is PresetRef => f !== null);
+                          if (nonNull.length === 0) return;
+                          createPipelineMutation.mutate({
+                            name: trimmed,
+                            printer_preset: printerPreset,
+                            process_preset: processPreset,
+                            filament_presets: nonNull,
+                            bed_type: bedType,
+                          });
+                        }}
+                        disabled={createPipelineMutation.isPending || !pipelineDraftName.trim()}
+                        className="flex-shrink-0 px-3 py-1.5 text-sm rounded-md bg-bambu-green hover:bg-bambu-green/90 text-bambu-dark font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                      >
+                        {createPipelineMutation.isPending && (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        )}
+                        {t('common.save', 'Save')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSavePipelineOpen(false);
+                          setPipelineDraftName('');
+                        }}
+                        className="flex-shrink-0 px-3 py-1.5 text-sm rounded-md border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray transition-colors"
+                      >
+                        {t('common.cancel', 'Cancel')}
+                      </button>
+                    </div>
+                  )}
+                  {/* A saved ref whose preset is gone is never applied
+                      silently — same amber banner shape the cloud-status
+                      warnings use, naming the slots left on their current
+                      pick so the user can re-choose or re-save the bundle. */}
+                  {unresolvedBundleSlots && unresolvedBundleSlots.length > 0 && (
+                    <div
+                      className="flex items-start gap-2 text-xs rounded-md border p-2 mt-2 border-amber-300 dark:border-amber-700/40 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200"
+                      role="status"
+                    >
+                      <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                      <span>
+                        {t(
+                          'slice.pipelines.staleWarning',
+                          'Some presets saved in this pipeline no longer exist. These stayed on their current selection: {{slots}}',
+                          { slots: unresolvedBundleSlots.join(', ') },
+                        )}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
               {/* Bed plate picker — five values from BambuStudio's
                   ``curr_bed_type`` enum. Always sent on slice (the slicer
                   CLI's silent fallback to "Cool Plate" is the bug we're
@@ -972,12 +1069,18 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                   </span>
                 </label>
               )}
+              {/* Any manual re-pick retires the "bundle had missing presets"
+                  banner — it describes the state right after a load, and the
+                  user is now driving the slots by hand. */}
               <PresetDropdown
                 label={t('slice.printer', 'Printer profile')}
                 slot="printer"
                 data={presetsQuery.data}
                 value={printerPreset}
-                onChange={setPrinterPreset}
+                onChange={(ref) => {
+                  setUnresolvedBundleSlots(null);
+                  setPrinterPreset(ref);
+                }}
                 // Locked in embedded mode too: the picked printer is unused on
                 // the embedded-settings path, and changing it away from the
                 // design's target would drop canUseEmbedded and yank the toggle
@@ -990,7 +1093,10 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                 slot="process"
                 data={presetsQuery.data}
                 value={processPreset}
-                onChange={setProcessPreset}
+                onChange={(ref) => {
+                  setUnresolvedBundleSlots(null);
+                  setProcessPreset(ref);
+                }}
                 disabled={isEnqueuing || useEmbedded}
                 ownerFilter={filterOwner}
                 selectedPrinterName={selectedPrinterName}
@@ -1033,15 +1139,16 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                       slot="filament"
                       data={presetsQuery.data}
                       value={filamentPresets[idx] ?? null}
-                      onChange={(ref) =>
+                      onChange={(ref) => {
+                        setUnresolvedBundleSlots(null);
                         setFilamentPresets((current) => {
                           const next = current.length === filamentSlots.length
                             ? [...current]
                             : filamentSlots.map((_, i) => current[i] ?? null);
                           next[idx] = ref;
                           return next;
-                        })
-                      }
+                        });
+                      }}
                       disabled={isEnqueuing || !isUsed || useEmbedded}
                       swatchColor={filamentSlots.length > 1 ? slot.color : undefined}
                       ownerFilter={filterOwner}

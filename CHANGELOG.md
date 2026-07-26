@@ -8,6 +8,11 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Slicer Pipelines are now just saved slice setups, and you load one straight from the Slice dialog.** A pipeline still bundles the four picks you normally make by hand — printer preset, process preset, a filament preset per slot, and the bed type — but it no longer carries a target printer, a copy count or a fanout strategy, and there is no separate "Run pipeline" flow. Pick a saved setup in the Slice dialog and it fills all four selections in one go; slice as usual, then queue it the way you queue anything else. If a saved preset has since been deleted, the affected slots keep their automatic pick and are named in a warning instead of quietly slicing with something you didn't choose.
+  The removed half duplicated the auto-queue, which already prints a set quantity across every printer of a model, matches filament and colour, tracks the batch and cancels it as one — so the same job now has one way to be done instead of two. The Pipelines tab on the Print Queue page, the per-copy run dashboard, "Run with pipeline" in the File Manager and Archives, the `pipelines:run` permission and the copies-per-run limit are all gone with it. Saved setups themselves are kept; run history is not.
+
 ### Removed
 
 - **The leftover "Slicer Bundles" card is gone from Settings.** Printer Preset Bundle (`.bbscfg`) import was removed a while back, but a static card explaining the removal stayed behind at the bottom of Settings → Printing, shown to anyone running the slicer sidecar. It has served its purpose and now just takes up space, so the card, its component and its translations are removed. Nothing about slicing changes: custom presets still come in through Single Preset Import or Bambu/Orca Cloud sync, and stock presets still come from the sidecar.

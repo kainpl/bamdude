@@ -3,7 +3,7 @@
 A pipeline bundles printer / process / filament(s) / bed-type picks plus a
 dispatch target (specific printer or printer-model class) and a fanout strategy,
 so the SliceModal can apply them in one click and the run engine
-(``pipeline_runs.py``) can slice + enqueue N copies against the target.
+loaded into the Slice dialog in one click.
 """
 
 import json
@@ -38,7 +38,7 @@ def _to_response(row: SlicerPipeline) -> SlicerPipelineResponse:
         raw = json.loads(row.filament_presets_json) if row.filament_presets_json else []
     except (json.JSONDecodeError, TypeError):
         # Row was hand-edited or corrupted — return an empty list rather than
-        # 500ing on a list endpoint. Edit/run paths will surface the problem.
+        # 500ing on a list endpoint. Edit paths will surface the problem.
         logger.warning("slicer_pipeline %d has invalid filament_presets_json", row.id)
         raw = []
     filament_presets = [PresetRef(**f) for f in raw if isinstance(f, dict)]
@@ -51,10 +51,6 @@ def _to_response(row: SlicerPipeline) -> SlicerPipelineResponse:
         process_preset=PresetRef(source=row.process_preset_source, id=row.process_preset_id),
         filament_presets=filament_presets,
         bed_type=row.bed_type,
-        target_kind=row.target_kind,  # type: ignore[arg-type]
-        target_printer_id=row.target_printer_id,
-        target_model_class=row.target_model_class,
-        fanout_strategy=row.fanout_strategy,  # type: ignore[arg-type]
         created_by=row.created_by,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -149,21 +145,6 @@ async def update_pipeline(
         row.filament_presets_json = json.dumps([f.model_dump() for f in data.filament_presets])
     if data.bed_type is not None:
         row.bed_type = data.bed_type
-
-    if data.target_kind is not None:
-        row.target_kind = data.target_kind
-    if data.target_printer_id is not None:
-        # ``target_printer_id=0`` from the frontend means "clear the target"
-        # (the <option value=""> case). Anything positive references a printer.
-        if data.target_printer_id == 0:
-            row.target_printer_id = None
-        else:
-            row.target_printer_id = data.target_printer_id
-    # Class targeting + fanout strategy. Empty string clears the class.
-    if data.target_model_class is not None:
-        row.target_model_class = data.target_model_class or None
-    if data.fanout_strategy is not None:
-        row.fanout_strategy = data.fanout_strategy
 
     await db.commit()
     await db.refresh(row)
