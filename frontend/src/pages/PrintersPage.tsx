@@ -3678,9 +3678,10 @@ function PrinterCard({
 
                       {/* Bed Jog (Z-axis) — compact badge, popover holds the actual controls.
                           When the printer isn't yet homed since finish, show a Studio-style
-                          warning modal offering Home Z, Move Anyway, or Cancel. "Move anyway"
-                          gets remembered per-printer in sessionStorage so the warning only
-                          appears once per browser session. */}
+                          warning modal offering Home Z or Cancel. Since #2579 there is no
+                          "Move anyway" escape hatch — Studio refuses the jog outright while
+                          the axis is unhomed. A successful Home Z is what clears the prompt
+                          for the rest of the browser session (see homeAxesMutation). */}
                       {(() => {
                         const canControl = hasPermission('printers:control');
                         const disabled = isPrinting || !canControl;
