@@ -157,8 +157,16 @@ async def delete_pipeline(
     _: User | None = RequirePermission(Permission.PIPELINES_WRITE),
     db: AsyncSession = Depends(get_db),
 ):
-    """Soft-delete a pipeline (sets is_deleted=True so run history can still
-    resolve pipeline metadata)."""
+    """Soft-delete a saved bundle (sets ``is_deleted=True``).
+
+    The soft delete originally existed so run history could still resolve a
+    bundle's metadata after the operator "deleted" it. That history went away
+    with the run engine (m112) and nothing references ``SlicerPipeline`` any
+    more, so the flag now only hides the row — deleted bundles accumulate with
+    no reader. Kept rather than switched to a hard delete because a bundle is
+    cheap to store and an accidental delete is otherwise unrecoverable; revisit
+    if the table ever grows enough to matter.
+    """
     result = await db.execute(
         select(SlicerPipeline).where(
             SlicerPipeline.id == pipeline_id,
