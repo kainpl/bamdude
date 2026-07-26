@@ -4568,7 +4568,32 @@ export default {
     colorNamePlaceholder: 'Jade White, Fire Red...',
     color: 'Color',
     hexColor: 'Hex Color',
+    bulk: {
+      selectRow: 'Select this spool',
+      selectGroup: 'Select every spool in this group',
+      selectAllVisible: 'Select every spool on this page',
+      selectedCount_one: '{{count}} selected',
+      selectedCount_other: '{{count}} selected',
+      selectAllFiltered: 'Select all {{count}} matching the filter',
+      clear: 'Clear selection',
+      done: '{{action}}: {{count}} spools',
+      partial: '{{action}}: {{ok}} done, {{failed}} failed',
+      failed: '{{action}} failed for all {{count}} spools',
+      failedGeneric: 'Bulk action failed',
+      action: {
+        archive: 'Archive',
+        restore: 'Restore',
+        delete: 'Delete'
+      },
+      confirm: {
+        archive: 'Archive {{count}} spools? They stay in the archive and can be restored.',
+        restore: 'Restore {{count}} spools back to the active inventory?',
+        delete: 'Permanently delete {{count}} spools? This cannot be undone.'
+      }
+    },
     bulkEdit: {
+      willChange_one: '{{count}} spool will change',
+      willChange_other: '{{count}} spools will change',
       title: 'Bulk edit spools',
       selectedCount: '({{count}} selected)',
       hint: 'Tick a field to change it for all selected spools. Unticked fields — and consumed weight — stay as they are.',

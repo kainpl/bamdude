@@ -4574,7 +4574,36 @@ export default {
     colorNamePlaceholder: 'Нефритовий білий, Вогняний червоний...',
     color: 'Колір',
     hexColor: 'Hex колір',
+    bulk: {
+      selectRow: 'Вибрати цю котушку',
+      selectGroup: 'Вибрати всі котушки цієї групи',
+      selectAllVisible: 'Вибрати всі котушки на цій сторінці',
+      selectedCount_one: 'Вибрано {{count}}',
+      selectedCount_few: 'Вибрано {{count}}',
+      selectedCount_many: 'Вибрано {{count}}',
+      selectedCount_other: 'Вибрано {{count}}',
+      selectAllFiltered: 'Вибрати всі {{count}} за фільтром',
+      clear: 'Зняти вибір',
+      done: '{{action}}: {{count}} котушок',
+      partial: '{{action}}: {{ok}} виконано, {{failed}} не вдалося',
+      failed: '{{action}} не вдалося для жодної з {{count}} котушок',
+      failedGeneric: 'Масову дію не виконано',
+      action: {
+        archive: 'Архівувати',
+        restore: 'Відновити',
+        delete: 'Видалити'
+      },
+      confirm: {
+        archive: 'Архівувати {{count}} котушок? Вони залишаться в архіві, їх можна відновити.',
+        restore: 'Повернути {{count}} котушок до активного інвентарю?',
+        delete: 'Остаточно видалити {{count}} котушок? Цю дію не можна скасувати.'
+      }
+    },
     bulkEdit: {
+      willChange_one: 'Зміниться {{count}} котушка',
+      willChange_few: 'Зміняться {{count}} котушки',
+      willChange_many: 'Зміниться {{count}} котушок',
+      willChange_other: 'Зміниться {{count}} котушок',
       title: 'Масове редагування котушок',
       selectedCount: '(обрано: {{count}})',
       hint: 'Познач поле, щоб змінити його для всіх обраних котушок. Не позначені поля та використана вага лишаються без змін.',

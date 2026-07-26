@@ -115,7 +115,10 @@ export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries,
   const { t } = useTranslation();
   const { showToast } = useToast();
 
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set(spools.map((s) => s.id)));
+  // Every spool handed in is edited — the caller decided the set. Kept as a
+  // derived value rather than state so re-opening with a different selection
+  // can't leave a stale one behind.
+  const selectedIds = useMemo(() => new Set(spools.map((s) => s.id)), [spools]);
   const [enabled, setEnabled] = useState<Record<string, boolean>>({});
   const [values, setValues] = useState<Record<string, string>>({});
 
@@ -214,15 +217,6 @@ export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries,
     out.color_name = names.size === 1 ? ([...names][0] as string) : null;
     return out;
   }, [selected]);
-
-  const toggleSpool = (id: number) =>
-    setSelectedIds((p) => {
-      const next = new Set(p);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  const allSelected = selected.length === spools.length && spools.length > 0;
 
   const toggle = (key: string) =>
     setEnabled((p) => {
@@ -385,23 +379,25 @@ export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries,
         </div>
 
         <div className="flex flex-1 min-h-0">
-          {/* Selection pane */}
+          {/* What is about to change — READ-ONLY (#1795).
+              This pane used to be the selection mechanism: it received the
+              whole filtered inventory, pre-ticked everything, and let you
+              narrow it here. Selection now lives on the page itself
+              (checkboxes + toolbar), so a second set of checkboxes in here
+              would be a competing source of truth for the same question.
+              The list stays, without them: it is the only thing between the
+              user and a mass edit of the wrong spools. */}
           <div className="w-56 flex-shrink-0 border-r border-bambu-dark-tertiary flex flex-col">
-            <button
-              onClick={() => setSelectedIds(allSelected ? new Set() : new Set(spools.map((s) => s.id)))}
-              className="text-left px-3 py-2 text-xs text-bambu-green hover:bg-bambu-dark/50 border-b border-bambu-dark-tertiary flex-shrink-0"
-            >
-              {allSelected ? t('inventory.labels.deselectVisible') : t('inventory.labels.selectVisible', { count: spools.length })}
-            </button>
+            <div className="px-3 py-2 text-xs text-bambu-gray border-b border-bambu-dark-tertiary flex-shrink-0">
+              {t('inventory.bulkEdit.willChange', { count: spools.length })}
+            </div>
             <div className="overflow-y-auto flex-1">
               {spools.map((s) => (
-                <label key={s.id} className="flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer hover:bg-bambu-dark/40">
-                  <input type="checkbox" checked={selectedIds.has(s.id)} onChange={() => toggleSpool(s.id)}
-                    className="w-3.5 h-3.5 accent-bambu-green flex-shrink-0" />
+                <div key={s.id} className="flex items-center gap-2 px-3 py-1.5 text-xs">
                   <span className="w-3 h-3 rounded-full flex-shrink-0 border border-bambu-dark-tertiary"
                     style={{ background: s.rgba ? `#${s.rgba.slice(0, 6)}` : '#666' }} />
                   <span className="truncate text-bambu-gray">{spoolLabel(s)}</span>
-                </label>
+                </div>
               ))}
             </div>
           </div>

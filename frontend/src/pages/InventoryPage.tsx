@@ -652,6 +652,43 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const [showBulkEdit, setShowBulkEdit] = useState(false);
 
   // Filter state
+  // --- Bulk selection (#1795) -------------------------------------------
+  //
+  // Row checkboxes drive every bulk action. The previous behaviour — "edit
+  // whatever the filter currently shows" — is preserved as an explicit
+  // toolbar action ("select all matching the filter"), so nothing is lost,
+  // but Delete and Archive can no longer fire against a set the user never
+  // looked at.
+  //
+  // The selection is cleared whenever the visible set changes underneath it
+  // (filter, search, tab, grouping), because a count in the toolbar that no
+  // longer matches what is on screen is worse than no selection at all.
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
+  const [bulkPending, setBulkPending] = useState(false);
+  // Destructive bulk actions go through a confirmation — deleting a selection
+  // is not undoable and the count can be large.
+  const [confirmBulk, setConfirmBulk] = useState<'archive' | 'restore' | 'delete' | null>(null);
+
+  const toggleSelected = (id: number) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const setManySelected = (ids: number[], selected: boolean) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        if (selected) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+
+  const clearSelection = () => setSelectedIds(new Set());
+
   const [archiveFilter, setArchiveFilter] = useState<ArchiveFilter>('active');
   const [usageFilter, setUsageFilter] = useState<UsageFilter>('all');
   const [materialFilter, setMaterialFilter] = useState('');
@@ -929,6 +966,59 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     onError: () => {
       showToast(t('inventory.resetConsumedCounterFailed'), 'error');
     },
+  });
+
+  // Bulk archive / restore / delete over the current selection (#1795).
+  //
+  // Both inventory modes are wired: Spoolman had none of these endpoints at
+  // all, so mass actions there used to be impossible. The two backends report
+  // differently — built-in returns counts plus `not_found`, Spoolman returns
+  // counts plus a per-row `errors` list, because it is a remote service where
+  // individual rows can fail — so the toast branches on all-succeeded /
+  // partial / all-failed rather than always claiming success.
+  const runBulk = async (
+    kind: 'archive' | 'restore' | 'delete',
+    ids: number[],
+  ): Promise<{ ok: number; failed: number }> => {
+    if (spoolmanMode) {
+      const res =
+        kind === 'archive'
+          ? await api.bulkArchiveSpoolmanInventorySpools(ids)
+          : kind === 'restore'
+            ? await api.bulkRestoreSpoolmanInventorySpools(ids)
+            : await api.bulkDeleteSpoolmanInventorySpools(ids);
+      const ok = res.archived ?? res.restored ?? res.deleted ?? 0;
+      return { ok, failed: res.errors?.length ?? 0 };
+    }
+    const res =
+      kind === 'archive'
+        ? await api.bulkArchiveSpools(ids)
+        : kind === 'restore'
+          ? await api.bulkRestoreSpools(ids)
+          : await api.bulkDeleteSpools(ids);
+    const ok = res.archived ?? res.restored ?? res.deleted ?? 0;
+    return { ok, failed: res.not_found?.length ?? 0 };
+  };
+
+  const bulkActionMutation = useMutation({
+    mutationFn: ({ kind, ids }: { kind: 'archive' | 'restore' | 'delete'; ids: number[] }) =>
+      runBulk(kind, ids),
+    onMutate: () => setBulkPending(true),
+    onSettled: () => setBulkPending(false),
+    onSuccess: ({ ok, failed }, { kind }) => {
+      queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+      const label = t(`inventory.bulk.action.${kind}`);
+      if (ok > 0 && failed === 0) {
+        showToast(t('inventory.bulk.done', { action: label, count: ok }), 'success');
+        clearSelection();
+      } else if (ok > 0) {
+        // Partial: say so, and KEEP the selection so the user can retry the rest.
+        showToast(t('inventory.bulk.partial', { action: label, ok, failed }), 'warning');
+      } else {
+        showToast(t('inventory.bulk.failed', { action: label, count: failed }), 'error');
+      }
+    },
+    onError: (error: Error) => showToast(error.message || t('inventory.bulk.failedGeneric'), 'error'),
   });
 
   // ``resetableSpoolIds`` is the target of the "Reset all usage" bulk
@@ -1330,6 +1420,28 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const pagedItems = showAll
     ? displayItems
     : displayItems.slice(safePageIndex * effectivePageSize, (safePageIndex + 1) * effectivePageSize);
+  // Ids on screen right now — what the header checkbox ticks. Groups are
+  // flattened, because a collapsed group still represents its members.
+  const visibleSpoolIds = useMemo(
+    () =>
+      pagedItems.flatMap((item) =>
+        item.type === 'group' ? item.spools.map((sp) => sp.id) : [item.spool.id],
+      ),
+    [pagedItems],
+  );
+
+  // Drop the selection whenever the visible set changes underneath it. A
+  // toolbar reading "12 selected" over a list that no longer contains those
+  // rows is how a Delete lands on the wrong spools.
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, search, groupSimilar, spoolmanMode]);
+
+  const selectedSpools = useMemo(
+    () => filteredSpools.filter((sp) => selectedIds.has(sp.id)),
+    [filteredSpools, selectedIds],
+  );
+
   const toggleGroupSimilar = () => {
     const next = !groupSimilar;
     setGroupSimilar(next);
@@ -2017,11 +2129,116 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       ) : (
         /* Table view */
         pagedItems.length > 0 ? (
+          <>
+          {/* Bulk-action toolbar (#1795). Appears only once something is
+              selected, so it costs nothing until it is wanted. Sticky, because
+              a selection made at the bottom of a long list must stay actionable
+              without scrolling back up. */}
+          {selectedIds.size > 0 && (
+            <div className="sticky top-0 z-20 mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-bambu-green/30 bg-bambu-dark-secondary/95 backdrop-blur-sm px-3 py-2">
+              <span className="text-sm font-medium text-white">
+                {t('inventory.bulk.selectedCount', { count: selectedIds.size })}
+              </span>
+              {/* Preserves the pre-#1795 behaviour — "act on everything the
+                  filter shows" — as an explicit, visible action rather than an
+                  implicit default. */}
+              {selectedIds.size < filteredSpools.length && (
+                <button
+                  type="button"
+                  onClick={() => setManySelected(filteredSpools.map((sp) => sp.id), true)}
+                  className="px-2 py-1 text-xs rounded bg-bambu-dark text-bambu-gray hover:text-white transition-colors"
+                >
+                  {t('inventory.bulk.selectAllFiltered', { count: filteredSpools.length })}
+                </button>
+              )}
+              <div className="flex-1" />
+              <button
+                type="button"
+                disabled={bulkPending}
+                onClick={() => setShowBulkEdit(true)}
+                className="px-3 py-1.5 text-xs font-medium rounded bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30 transition-colors disabled:opacity-50"
+              >
+                {t('common.edit')}
+              </button>
+              <button
+                type="button"
+                disabled={bulkPending}
+                onClick={() => setLabelPickerSpoolIds([...selectedIds])}
+                className="px-3 py-1.5 text-xs font-medium rounded bg-bambu-dark text-bambu-gray hover:text-white transition-colors disabled:opacity-50"
+              >
+                {t('inventory.labels.printOne')}
+              </button>
+              <button
+                type="button"
+                disabled={bulkPending}
+                onClick={() => bulkResetConsumedCounterMutation.mutate([...selectedIds])}
+                className="px-3 py-1.5 text-xs font-medium rounded bg-bambu-dark text-bambu-gray hover:text-white transition-colors disabled:opacity-50"
+              >
+                {t('inventory.resetConsumedCounter')}
+              </button>
+              {/* Archive vs Restore follows the tab you are on, mirroring the
+                  per-row action — on the Archived tab the only sensible bulk
+                  move is putting them back. */}
+              {archiveFilter === 'archived' ? (
+                <button
+                  type="button"
+                  disabled={bulkPending}
+                  onClick={() => setConfirmBulk('restore')}
+                  className="px-3 py-1.5 text-xs font-medium rounded bg-bambu-dark text-bambu-gray hover:text-white transition-colors disabled:opacity-50"
+                >
+                  {t('inventory.restore')}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={bulkPending}
+                  onClick={() => setConfirmBulk('archive')}
+                  className="px-3 py-1.5 text-xs font-medium rounded bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 transition-colors disabled:opacity-50"
+                >
+                  {t('inventory.archive')}
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={bulkPending}
+                onClick={() => setConfirmBulk('delete')}
+                className="px-3 py-1.5 text-xs font-medium rounded bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors disabled:opacity-50"
+              >
+                {t('common.delete')}
+              </button>
+              <button
+                type="button"
+                onClick={clearSelection}
+                className="px-2 py-1 text-xs rounded text-bambu-gray hover:text-white transition-colors"
+              >
+                {t('inventory.bulk.clear')}
+              </button>
+            </div>
+          )}
           <div className="bg-bambu-dark-secondary rounded-lg overflow-hidden border border-bambu-dark-tertiary">
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-bambu-dark-tertiary bg-bambu-dark-tertiary/30">
+                    {/* Select-all-visible. Note this ticks the rows ON SCREEN;
+                        "select every row matching the filter" is a separate,
+                        explicit toolbar action so a paged-away row is never
+                        deleted by a checkbox the user could not see. */}
+                    <th className="py-3 pl-4 pr-0 w-8">
+                      <input
+                        type="checkbox"
+                        checked={visibleSpoolIds.length > 0 && visibleSpoolIds.every((id) => selectedIds.has(id))}
+                        ref={(el) => {
+                          if (el) {
+                            const picked = visibleSpoolIds.filter((id) => selectedIds.has(id)).length;
+                            el.indeterminate = picked > 0 && picked < visibleSpoolIds.length;
+                          }
+                        }}
+                        onChange={(e) => setManySelected(visibleSpoolIds, e.target.checked)}
+                        aria-label={t('inventory.bulk.selectAllVisible')}
+                        className="w-4 h-4 accent-bambu-green cursor-pointer"
+                      />
+                    </th>
                     {renderColumns.map((colId) => {
                       const sortable = !!columnSortValues[colId];
                       const isActive = sortState?.column === colId;
@@ -2063,6 +2280,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                         <SpoolTableGroup
                           key={`group-${key}`}
                           spools={groupSpools}
+                          selectedIds={selectedIds}
+                          onToggleSelected={toggleSelected}
+                          onToggleGroupSelected={setManySelected}
                           headerSpool={headerSpool}
                           remaining={remaining}
                           pct={pct}
@@ -2093,6 +2313,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                         spool={spool}
                         remaining={remaining}
                         pct={pct}
+                        isSelected={selectedIds.has(spool.id)}
+                        onToggleSelected={() => toggleSelected(spool.id)}
                         onEdit={() => setFormModal({ spool, mode: 'edit' })}
                         onCopy={() => setFormModal({ spool, mode: 'copy' })}
                         onRestore={() => restoreMutation.mutate(spool.id)}
@@ -2180,6 +2402,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               </div>
             </div>
           </div>
+          </>
         ) : (
           <EmptyFilterState
             hasFilters={hasActiveFilters}
@@ -2215,6 +2438,22 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       )}
 
       {/* Confirm Modal (delete / archive / reset-consumed-counter / reset-all-consumed-counters) */}
+      {/* Bulk confirmation (#1795). Deleting a selection is not undoable and
+          the count can be large, so it never fires straight off the toolbar. */}
+      {confirmBulk && (
+        <ConfirmModal
+          title={t(`inventory.bulk.action.${confirmBulk}`)}
+          message={t(`inventory.bulk.confirm.${confirmBulk}`, { count: selectedIds.size })}
+          confirmText={t(`inventory.bulk.action.${confirmBulk}`)}
+          variant={confirmBulk === 'delete' ? 'danger' : 'warning'}
+          onConfirm={() => {
+            bulkActionMutation.mutate({ kind: confirmBulk, ids: [...selectedIds] });
+            setConfirmBulk(null);
+          }}
+          onCancel={() => setConfirmBulk(null)}
+        />
+      )}
+
       {confirmAction && (
         <ConfirmModal
           title={
@@ -2274,7 +2513,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       {showBulkEdit && (
         <BulkEditSpoolsModal
           isOpen
-          spools={filteredSpools}
+          spools={selectedSpools}
           allSpools={spools || []}
           catalogEntries={catalogEntries || []}
           spoolDisplayTemplate={spoolDisplayTemplate}
@@ -2498,9 +2737,12 @@ function SpoolCard({
 function SpoolTableRow({
   spool, remaining, pct, onEdit, onCopy, onRestore, onArchive, onDelete, onPrintLabel, onResetConsumedCounter,
   visibleColumns, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight,
-  spoolDisplayTemplate,
+  spoolDisplayTemplate, isSelected, onToggleSelected,
 }: {
   spool: InventorySpool;
+  /** Bulk selection (#1795). Omitted in contexts with no selection column. */
+  isSelected?: boolean;
+  onToggleSelected?: () => void;
   remaining: number;
   pct: number;
   onEdit: () => void;
@@ -2526,6 +2768,19 @@ function SpoolTableRow({
       }`}
       onClick={onEdit}
     >
+      {/* Selection checkbox (#1795). stopPropagation because the whole row
+          opens the editor on click — ticking a box must not do that too. */}
+      {onToggleSelected && (
+        <td className="py-3 pl-4 pr-0 w-8" onClick={(e) => e.stopPropagation()}>
+          <input
+            type="checkbox"
+            checked={!!isSelected}
+            onChange={() => onToggleSelected()}
+            aria-label={t('inventory.bulk.selectRow')}
+            className="w-4 h-4 accent-bambu-green cursor-pointer"
+          />
+        </td>
+      )}
       {visibleColumns.map((colId) => (
         <td key={colId} className="py-3 px-4">
           {columnCells[colId]?.({ spool, remaining, pct, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight, spoolDisplayTemplate })}
@@ -2578,9 +2833,13 @@ function SpoolTableGroup({
   spools, headerSpool, remaining, pct, isExpanded, onToggle,
   onEdit, onCopy, onArchive, onDelete, onPrintLabel, onResetConsumedCounter,
   visibleColumns, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight,
-  spoolDisplayTemplate,
+  spoolDisplayTemplate, selectedIds, onToggleSelected, onToggleGroupSelected,
 }: {
   spools: InventorySpool[];
+  /** Bulk selection (#1795). The group header ticks every member at once. */
+  selectedIds?: Set<number>;
+  onToggleSelected?: (id: number) => void;
+  onToggleGroupSelected?: (ids: number[], selected: boolean) => void;
   // Aggregate of all members (summed quantities, shared identity) — rendered
   // in the collapsed header row so it shows group totals (#1368).
   headerSpool: InventorySpool;
@@ -2610,6 +2869,25 @@ function SpoolTableGroup({
         className="border-b border-bambu-dark-tertiary/50 hover:bg-bambu-dark-tertiary/30 transition-colors cursor-pointer bg-bambu-green/5"
         onClick={onToggle}
       >
+        {/* Group checkbox — ticks or clears every member in one go. Indeterminate
+            when only some are selected, so a partial group is visible at a glance. */}
+        {onToggleGroupSelected && (
+          <td className="py-3 pl-4 pr-0 w-8" onClick={(e) => e.stopPropagation()}>
+            <input
+              type="checkbox"
+              checked={spools.every((sp) => selectedIds?.has(sp.id))}
+              ref={(el) => {
+                if (el) {
+                  const picked = spools.filter((sp) => selectedIds?.has(sp.id)).length;
+                  el.indeterminate = picked > 0 && picked < spools.length;
+                }
+              }}
+              onChange={(e) => onToggleGroupSelected(spools.map((sp) => sp.id), e.target.checked)}
+              aria-label={t('inventory.bulk.selectGroup')}
+              className="w-4 h-4 accent-bambu-green cursor-pointer"
+            />
+          </td>
+        )}
         {visibleColumns.map((colId, idx) => (
           <td key={colId} className="py-3 px-4">
             {idx === 0 ? (
@@ -2642,6 +2920,8 @@ function SpoolTableGroup({
             spool={spool}
             remaining={r}
             pct={p}
+            isSelected={selectedIds?.has(spool.id)}
+            onToggleSelected={onToggleSelected ? () => onToggleSelected(spool.id) : undefined}
             onEdit={() => onEdit(spool)}
             onCopy={onCopy ? () => onCopy(spool) : undefined}
             onRestore={() => {}}

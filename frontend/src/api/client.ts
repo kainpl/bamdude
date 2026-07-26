@@ -1061,6 +1061,31 @@ export interface ProjectCreate {
   url?: string | null;
 }
 
+
+/** Built-in inventory bulk delete/archive/restore result (#1795). */
+export interface BulkActionResult {
+  deleted?: number;
+  archived?: number;
+  already_archived?: number;
+  restored?: number;
+  already_active?: number;
+  /** Ids that no longer exist — reported, never fatal to the batch. */
+  not_found: number[];
+}
+
+/**
+ * Spoolman bulk result. Spoolman is remote, so rows fail individually: a
+ * populated `errors` with `updated/deleted/... === 0` is all-failed, and a mix
+ * is partial. The UI branches on that instead of reporting a green "0 done".
+ */
+export interface SpoolmanBulkResult {
+  updated?: number;
+  deleted?: number;
+  archived?: number;
+  restored?: number;
+  errors: { id: number; status: number; detail: string }[];
+}
+
 export interface ProjectUpdate {
   name?: string;
   description?: string;
@@ -6569,6 +6594,21 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ spool_ids: spoolIds, fields }),
     }),
+  bulkDeleteSpools: (spoolIds: number[]) =>
+    request<BulkActionResult>('/inventory/spools/bulk-delete', {
+      method: 'POST',
+      body: JSON.stringify({ spool_ids: spoolIds }),
+    }),
+  bulkArchiveSpools: (spoolIds: number[]) =>
+    request<BulkActionResult>('/inventory/spools/bulk-archive', {
+      method: 'POST',
+      body: JSON.stringify({ spool_ids: spoolIds }),
+    }),
+  bulkRestoreSpools: (spoolIds: number[]) =>
+    request<BulkActionResult>('/inventory/spools/bulk-restore', {
+      method: 'POST',
+      body: JSON.stringify({ spool_ids: spoolIds }),
+    }),
   updateSpool: (id: number, data: Partial<Omit<InventorySpool, 'id' | 'archived_at' | 'created_at' | 'updated_at' | 'k_profiles'>>) =>
     request<InventorySpool>(`/inventory/spools/${id}`, {
       method: 'PATCH',
@@ -6643,6 +6683,29 @@ export const api = {
     request<InventorySpool>(`/spoolman/inventory/spools/${id}/restore`, { method: 'POST' }),
   resetSpoolmanInventorySpoolConsumedCounter: (id: number) =>
     request<InventorySpool>(`/spoolman/inventory/spools/${id}/reset-consumed-counter`, { method: 'POST' }),
+  bulkUpdateSpoolmanInventorySpools: (
+    spoolIds: number[],
+    fields: Partial<Omit<InventorySpool, 'id' | 'archived_at' | 'created_at' | 'updated_at' | 'k_profiles'>>,
+  ) =>
+    request<SpoolmanBulkResult>('/spoolman/inventory/spools/bulk-update', {
+      method: 'PATCH',
+      body: JSON.stringify({ spool_ids: spoolIds, fields }),
+    }),
+  bulkDeleteSpoolmanInventorySpools: (spoolIds: number[]) =>
+    request<SpoolmanBulkResult>('/spoolman/inventory/spools/bulk-delete', {
+      method: 'POST',
+      body: JSON.stringify({ spool_ids: spoolIds }),
+    }),
+  bulkArchiveSpoolmanInventorySpools: (spoolIds: number[]) =>
+    request<SpoolmanBulkResult>('/spoolman/inventory/spools/bulk-archive', {
+      method: 'POST',
+      body: JSON.stringify({ spool_ids: spoolIds }),
+    }),
+  bulkRestoreSpoolmanInventorySpools: (spoolIds: number[]) =>
+    request<SpoolmanBulkResult>('/spoolman/inventory/spools/bulk-restore', {
+      method: 'POST',
+      body: JSON.stringify({ spool_ids: spoolIds }),
+    }),
   bulkResetSpoolmanInventorySpoolConsumedCounter: (spoolIds: number[]) =>
     request<{ reset: number }>(`/spoolman/inventory/spools/reset-consumed-counter-bulk`, {
       method: 'POST',
