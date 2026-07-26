@@ -87,9 +87,27 @@ jobs:
           path: installers/windows/build/output/*.exe
           if-no-files-found: error
 
+      # Beta tags are vX.Y.ZbN, stable is vX.Y.Z. The attach step below CREATES
+      # the GitHub release when it doesn't exist yet, and without an explicit
+      # prerelease flag it creates a full one — which then displaces the current
+      # stable as the repo's "Latest" release. Decide the flag from the tag.
+      - name: Classify tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: tagkind
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+b[0-9]+$ ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Attach installer to release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: installers/windows/build/output/*.exe
           fail_on_unmatched_files: true
+          # Only meaningful when this step creates the release; editing an
+          # existing one keeps whatever flag it already has.
+          prerelease: ${{ steps.tagkind.outputs.prerelease }}
