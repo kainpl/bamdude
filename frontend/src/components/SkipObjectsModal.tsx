@@ -77,7 +77,7 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
       <div className="absolute inset-0 bg-black/50 z-0" />
       {/* Modal */}
       <div
-        className="relative z-10 bg-white dark:bg-bambu-dark border border-gray-200 dark:border-bambu-dark-tertiary rounded-xl shadow-2xl w-[560px] max-h-[85vh] flex flex-col overflow-hidden"
+        className="relative z-10 bg-white dark:bg-bambu-dark border border-gray-200 dark:border-bambu-dark-tertiary rounded-xl shadow-2xl w-[736px] max-w-[calc(100vw-2rem)] max-h-[85vh] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -121,8 +121,15 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
 
             {/* Content: Image + List side by side */}
             <div className="flex flex-1 overflow-hidden">
-              {/* Left: Preview Image with object markers */}
-              <div className="w-52 flex-shrink-0 p-4 border-r border-gray-200 dark:border-bambu-dark-tertiary bg-gray-50 dark:bg-bambu-dark-secondary overflow-y-auto">
+              {/* Left: Preview Image with object markers.
+                  Column is w-96 so the square plate renders at 352px (384 minus
+                  the p-4 gutters) — double the old 176px. The markers are
+                  deliberately NOT scaled with it: they're fixed w-6 h-6 and
+                  placed by percentage, so doubling the plate doubles the gap
+                  between them while each stays the same size. That's the whole
+                  point — on a busy plate the IDs used to sit on top of each
+                  other. Keep them fixed-size if this ever gets resized again. */}
+              <div className="w-96 flex-shrink-0 p-4 border-r border-gray-200 dark:border-bambu-dark-tertiary bg-gray-50 dark:bg-bambu-dark-secondary overflow-y-auto">
                 <div className="relative cursor-pointer group" onClick={() => setEnlarged(true)}>
                   {status?.cover_url ? (
                     <img
