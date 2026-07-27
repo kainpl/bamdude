@@ -1,3 +1,14 @@
 # Force CRLF line endings for Windows batch files so cmd.exe can parse them
 # regardless of the user's core.autocrlf setting.
 *.bat text eol=crlf
+
+# Force LF for shell scripts. With core.autocrlf=true (the Windows default)
+# a checkout rewrites them to CRLF, which turns the shebang into
+# `#!/bin/sh` — Linux then looks for an interpreter whose name ends in a
+# carriage return and reports "no such file or directory". The repository
+# already stores LF; this makes the working copy match on every platform.
+#
+# Concretely: without it, `docker build` on Windows produces an image whose
+# entrypoint cannot exec, and install.sh copied from such a checkout fails
+# the same way. CI never saw it because Linux runners do not convert.
+*.sh text eol=lf

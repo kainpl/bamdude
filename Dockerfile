@@ -15,7 +15,7 @@ RUN npm run build
 
 # Production image — Debian Trixie picks up ffmpeg 5→7 and OpenSSL 3.0→3.3.
 # Frontend-builder above stays on Bookworm until Node.js publishes Trixie variants.
-FROM python:3.13-slim-trixie
+FROM python:3.12-slim-trixie
 
 WORKDIR /app
 
@@ -53,8 +53,8 @@ RUN curl -fsSL https://pkgs.tailscale.com/stable/debian/trixie.noarmor.gpg \
 RUN setcap cap_net_bind_service=+ep "$(readlink -f /usr/local/bin/python3)"
 
 # Install Python dependencies with cache mount.
-# pip is upgraded to >=26.1 first to close CVE-2026-6357 — the python:3.13-slim
-# base image ships pip 26.0.1, which runs its self-update check after installing
+# pip is upgraded to >=26.1 first to close CVE-2026-6357 — the python:3.12-slim
+# base image ships pip 25.0.1, which runs its self-update check after installing
 # wheels, so a hostile wheel could hijack stdlib imports during install. Upgrade
 # happens immediately before the requirements.txt install so the requirements
 # install runs under the patched pip and the dist-info in the final image is the

@@ -8,6 +8,14 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A Docker image built on Windows now actually starts.** Shell scripts were being checked out with Windows line endings, which turned the entrypoint's first line into an interpreter name ending in a carriage return — the container built without complaint and then died instantly with "no such file or directory", pointing at a file that was plainly there. Anyone building the image on a Windows machine hit this; official images were unaffected because they are built on Linux, which is why it went unnoticed. Shell scripts are now pinned to Unix line endings regardless of platform, so the same is true of `install.sh` copied from a Windows checkout.
+
+### Changed
+
+- **The Docker image now runs Python 3.12, and that is the version the tests run on too.** Until now the image shipped 3.13 while CI tested on 3.11, so the test suite never once ran on the runtime that reached users — and 3.11 to 3.13 is not a cosmetic gap, an entire standard-library module disappeared between them. Everything is now on 3.12: the image, CI, and development. 3.12 is also what Ubuntu 24.04 LTS provides, so a bare-metal install on the most common self-hosting base gets the same runtime we test. Nothing changes for you: the minimum supported version stays 3.10, and the installer still accepts whatever your distribution provides.
+
 ### Added
 
 - **CI now installs BamDude on a real PostgreSQL on every push, and migrates a SQLite database across.** Until now nothing exercised PostgreSQL automatically — the existing tests substituted a fake database and checked the text of the SQL, which cannot notice a statement a real server refuses. That is how a fresh PostgreSQL install stayed broken from 0.4.2 onward without anyone seeing it. A new job spins up PostgreSQL 18 and runs both paths for real: it checks every table is created, the migration chain completes without gaps, the default groups are seeded, and — after a migration — that the rows arrived and no primary-key counter was left behind, which would break the very next save. It runs on every push rather than only when migration files change, because the fault that prompted it lived in an unrelated model.

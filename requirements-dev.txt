@@ -22,3 +22,9 @@ bandit[sarif]>=1.7.0
 pip-audit>=2.7.0
 # Transitive of pip-audit -> CacheControl. 1.2.1 patches GHSA-6v7p-g79w-8964.
 msgpack>=1.2.1
+
+# Git hook runner. .pre-commit-config.yaml is committed and the hook is
+# installed in every working copy, so without this a freshly built venv cannot
+# commit at all — `git commit` dies with "No module named pre_commit". It was
+# only ever present because older venvs had it installed by hand.
+pre-commit>=4.0.0
