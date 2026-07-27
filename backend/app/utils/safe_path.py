@@ -94,15 +94,10 @@ def assert_under(parent: Path, candidate: Path, *, http: bool = True) -> Path:
 
 
 def _is_relative_to(child: Path, parent: Path) -> bool:
-    # ``Path.is_relative_to`` exists in Python 3.9+; BamDude targets 3.10+.
-    try:
-        return child.is_relative_to(parent)
-    except AttributeError:  # pragma: no cover - defensive
-        try:
-            child.relative_to(parent)
-            return True
-        except ValueError:
-            return False
+    # Thin wrapper kept for call-site readability. It used to carry a
+    # ``relative_to`` fallback for interpreters without ``Path.is_relative_to``
+    # (pre-3.9); the floor is 3.12 now, so that branch was unreachable.
+    return child.is_relative_to(parent)
 
 
 def _fail(reason: str, http: bool) -> None:

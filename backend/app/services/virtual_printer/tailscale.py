@@ -116,7 +116,7 @@ class TailscaleService:
         )
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             process.kill()
             await process.wait()
             raise
@@ -141,7 +141,7 @@ class TailscaleService:
 
         try:
             returncode, stdout, stderr = await self._run_tailscale("status", "--json", timeout=5.0)
-        except (OSError, asyncio.TimeoutError) as e:
+        except (TimeoutError, OSError) as e:
             # ``_run_tailscale`` re-raises ``asyncio.TimeoutError`` when the CLI
             # hangs past the 5 s bound (a wedged daemon socket does this); without
             # catching it here the timeout escaped to the /tailscale-status route

@@ -80,7 +80,7 @@ Installs BamDude with Python virtual environment and optional systemd/launchd se
 ### Windows installer (`.exe`, Windows 10/11)
 
 BamDude ships a self-contained native Windows installer built with Inno Setup —
-it bundles an embedded Python 3.13 distribution, the pre-built frontend, NSSM,
+it bundles an embedded Python 3.12 distribution, the pre-built frontend, NSSM,
 and a static ffmpeg, so **nothing** needs to be installed on the target machine.
 
 Download `bamdude-windows-setup.exe` from the
@@ -269,7 +269,7 @@ sudo lsof -i :8000  # Linux/macOS
 ## Requirements
 
 ### Native Installation
-- Python 3.10+ (automatically installed if missing)
+- Python 3.12+ (automatically installed if missing)
 - Node.js 18+ (automatically installed if missing)
 - Git (automatically installed if missing)
 - ~500MB disk space

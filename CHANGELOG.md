@@ -14,7 +14,11 @@ All notable changes to BamDude will be documented in this file.
 
 ### Changed
 
-- **The Docker image now runs Python 3.12, and that is the version the tests run on too.** Until now the image shipped 3.13 while CI tested on 3.11, so the test suite never once ran on the runtime that reached users — and 3.11 to 3.13 is not a cosmetic gap, an entire standard-library module disappeared between them. Everything is now on 3.12: the image, CI, and development. 3.12 is also what Ubuntu 24.04 LTS provides, so a bare-metal install on the most common self-hosting base gets the same runtime we test. Nothing changes for you: the minimum supported version stays 3.10, and the installer still accepts whatever your distribution provides.
+- **Python 3.12 is now required for a native install, and it is the single version everything runs on.** Until now the Docker image shipped 3.13, the Windows installer bundled 3.13, and the tests ran on 3.11 — so the suite never once ran on the runtime that reached users, and that is not a cosmetic gap: an entire standard-library module disappeared between those versions. Everything is now on 3.12 — the image, the Windows installer, CI, and the declared minimum — and 3.12 is what Ubuntu 24.04 LTS gives you, so the most common self-hosting base runs exactly what we test.
+
+  **This affects you only if you install natively on a distribution older than Ubuntu 24.04** — Ubuntu 22.04 ships Python 3.10 and will now be refused by the installer with a clear message rather than installing and failing later. Docker and the Windows installer are unaffected: both bring their own Python. If you are on an older distribution and would rather not upgrade it, the Docker image is the path of least resistance.
+
+- **The tests covering file transfer to the printer run again, and one dependency left the image.** Sending a 3MF to a printer goes over FTP, and the 81 tests around it lean on a stand-in server. That stand-in was built on a library that in turn needed a standard-library module Python removed in 3.12 — so on any current Python, 66 of those 81 tests quietly skipped instead of failing, and a skipped test looks exactly like a passing one on a green run. The stand-in has been rewritten using nothing but the standard library, so all 81 run everywhere. The library it replaced was listed as something BamDude needs at runtime even though only the tests ever used it, so it was being installed into the Docker image and the Windows installer for no reason; it is gone from both.
 
 ### Added
 

@@ -152,7 +152,7 @@ class ArchiveCleanupService:
             return
         try:
             await asyncio.wait_for(task, timeout=5.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             task.cancel()
             try:
                 await task
@@ -284,7 +284,7 @@ class ArchiveCleanupService:
                         break
                     try:
                         await asyncio.wait_for(self._stop.wait(), timeout=min(remaining, 60.0))
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         continue
                     else:
                         return  # stop was set
@@ -314,7 +314,7 @@ class ArchiveCleanupService:
                 # Avoid a tight error spin: sleep 60 s before next attempt.
                 try:
                     await asyncio.wait_for(self._stop.wait(), timeout=60.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
                 else:
                     return

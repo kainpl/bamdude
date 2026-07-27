@@ -793,7 +793,7 @@ async def extract_video_last_frame(video_path: Path, output_path: Path) -> bool:
             logger.warning("ffmpeg produced no output for %s", video_path)
             return False
         return True
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("ffmpeg timed out extracting last frame from %s", video_path)
         if process is not None:
             try:

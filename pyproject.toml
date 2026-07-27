@@ -2,10 +2,16 @@
 name = "bamdude"
 version = "0.4.7b5"
 description = "Self-hosted print archive, management and automation system for Bambu Lab 3D printers"
-requires-python = ">=3.10"
+# 3.12 is the floor because it is what the distributions we target ship by
+# default: Ubuntu 24.04 LTS gives 3.12, Debian 13 (trixie) gives 3.13. Pinning
+# the floor to the oldest interpreter a user can realistically be handed keeps
+# one runtime across the venv, CI, the Docker image and a bare-metal install —
+# see docs on the one-runtime invariant. Raise it only when the oldest
+# supported distribution moves.
+requires-python = ">=3.12"
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py312"
 line-length = 120
 exclude = [
     ".git",
@@ -38,7 +44,19 @@ ignore = [
     "SIM108", # ternary operator (readability preference)
     "SIM102", # nested if (readability preference)
     "SIM105", # contextlib.suppress (readability preference)
-    "UP017",  # datetime.UTC alias (Python 3.11+ only, we support 3.10)
+    # datetime.UTC alias. Available on every interpreter we now support — kept
+    # ignored as a style choice, since rewriting 400+ `timezone.utc` call sites
+    # would be pure churn. Drop the ignore if we ever touch them anyway.
+    "UP017",
+    # The three below became reachable when target-version moved to py312.
+    # `class Foo(str, Enum)` -> `StrEnum`. NOT equivalent: the mixin form
+    # formats as "Foo.X" while StrEnum formats as "x", so taking this rewrites
+    # every log line and payload that interpolates one of these members. A
+    # deliberate migration, not a lint autofix.
+    "UP042",
+    # PEP 695 `def f[T](...)` generics. Cosmetic; the codebase is consistent on
+    # explicit TypeVars and mixing the two styles would read worse.
+    "UP047",
 ]
 
 # Allow autofix for all enabled rules
@@ -54,8 +72,6 @@ unfixable = []
 "backend/app/main.py" = ["E402"]
 # MQTT client has some unused variables for debugging
 "backend/app/services/bambu_mqtt.py" = ["F841"]
-# compat module intentionally uses version checks for Python 3.10 support
-"backend/app/core/compat.py" = ["UP036"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["backend"]

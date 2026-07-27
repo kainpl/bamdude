@@ -19,7 +19,7 @@ class TestGetStatusErrorHandling:
         svc = TailscaleService()
         with (
             patch("shutil.which", return_value="/usr/bin/tailscale"),
-            patch.object(svc, "_run_tailscale", AsyncMock(side_effect=asyncio.TimeoutError())),
+            patch.object(svc, "_run_tailscale", AsyncMock(side_effect=TimeoutError())),
         ):
             status = await svc.get_status()
         assert status.available is False

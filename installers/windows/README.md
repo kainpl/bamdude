@@ -1,7 +1,7 @@
 # BamDude Windows Installer
 
 Builds a self-contained Windows installer (`.exe`) for BamDude: embedded
-Python 3.13 distribution + pre-built frontend + NSSM-supervised Windows
+Python 3.12 distribution + pre-built frontend + NSSM-supervised Windows
 service. No Python or Node installation required on the target machine.
 
 ## Architecture
@@ -11,7 +11,7 @@ service. No Python or Node installation required on the target machine.
 - **Logs target:** `C:\ProgramData\BamDude\logs\`
 - **Service:** registered via NSSM, runs as `LocalSystem`, autostart on boot
 - **Service command:** `python.exe -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --loop asyncio`
-- **Bundled binaries:** Python 3.13 embeddable, NSSM, ffmpeg static build
+- **Bundled binaries:** Python 3.12 embeddable, NSSM, ffmpeg static build
 
 Browser is the UI. Start Menu shortcut opens `http://localhost:8000`.
 

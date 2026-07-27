@@ -1,10 +1,9 @@
 """Pydantic schemas for notification templates."""
 
 from datetime import datetime
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
-
-from backend.app.core.compat import StrEnum
 
 
 class EventType(StrEnum):

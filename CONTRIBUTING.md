@@ -32,7 +32,7 @@ Thank you for your interest in contributing! This document provides guidelines f
 
 ### Prerequisites
 
-- Python 3.10+ (3.11/3.12 recommended)
+- Python 3.12+ (3.12 is what CI, the Docker image and Ubuntu 24.04 LTS all use)
 - Node.js 20+
 - npm
 
@@ -81,7 +81,7 @@ Use conventional commits: `feat:`, `fix:`, `chore:`, `refactor:`, `docs:`, `test
 [Ruff](https://github.com/astral-sh/ruff) for linting and formatting (config in `pyproject.toml`):
 - Line length: 120 chars
 - Double quotes, space indentation
-- Target Python 3.10
+- Target Python 3.12
 
 ```bash
 ruff check backend/          # lint

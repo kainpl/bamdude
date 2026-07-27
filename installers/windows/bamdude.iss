@@ -1,7 +1,7 @@
 ; BamDude Windows Installer — Inno Setup script
 ;
 ; Builds a self-contained installer that lays down:
-;   - embedded Python 3.13 + pre-installed venv
+;   - embedded Python 3.12 + pre-installed venv
 ;   - backend source + pre-built frontend bundle
 ;   - NSSM + ffmpeg under bin/
 ;   - a Windows service running as LocalSystem

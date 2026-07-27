@@ -41,9 +41,13 @@ BUILD_DIR = INSTALLER_DIR / "build"
 STAGING = BUILD_DIR / "staging"
 DOWNLOADS = BUILD_DIR / "downloads"
 
-# Python 3.13 — matches Dockerfile (python:3.13-slim-trixie). Bump when
-# the Dockerfile bumps; the Windows installer should track production.
-PYTHON_VERSION = "3.13.1"
+# Matches the Dockerfile (python:3.12-slim-trixie) and `requires-python`, so a
+# Windows install runs the same interpreter CI tests. Bump when those bump.
+#
+# 3.12.10 specifically: it is the last 3.12 with a Windows embeddable build.
+# Once a branch goes security-only, python.org publishes source tarballs but no
+# binaries, so a later 3.12.x here would 404 at download time.
+PYTHON_VERSION = "3.12.10"
 PYTHON_EMBED_URL = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/python-{PYTHON_VERSION}-embed-amd64.zip"
 
 # NSSM 2.24 is the long-time stable build (no new release since 2014).
@@ -63,7 +67,7 @@ GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 
 # C++ runtime DLLs the embeddable distribution does NOT ship. The python.org
 # embeddable zip includes vcruntime140.dll but not vcruntime140_1.dll or
-# msvcp140.dll. python313.dll is pure C and only needs vcruntime140.dll, so
+# msvcp140.dll. python312.dll is pure C and only needs vcruntime140.dll, so
 # python.exe starts fine — but greenlet's _greenlet.pyd is C++ and needs
 # vcruntime140_1.dll (table-based exception handling). On a fresh Windows box
 # that never had the VC++ 2015-2022 redistributable installed, loading greenlet
@@ -136,9 +140,9 @@ def stage_embedded_python() -> Path:
     # Install setuptools + wheel. The embedded distribution ships without
     # them, and get-pip.py installs only pip — but pip needs
     # ``setuptools.build_meta`` (PEP 517 backend) to build any source-only
-    # package. BamDude's requirements.txt hits this with pyftpdlib 2.2.0
-    # which is sdist-only on PyPI; other source-only packages would fail
-    # the same way without this step.
+    # package. requirements.txt hit this with pyftpdlib 2.2.0 (sdist-only on
+    # PyPI) until that dependency was dropped; any future source-only package
+    # would fail the same way without this step, so it stays.
     log("installing setuptools + wheel for PEP 517 builds")
     subprocess.run(
         [
@@ -399,7 +403,7 @@ def main() -> int:
         log("  1. GitHub Actions: trigger '.github/workflows/windows-")
         log("     installer.yml' (Actions tab -> Windows Installer ->")
         log("     Run workflow). Downloads the .exe as a workflow artifact.")
-        log("  2. Windows VM / box: clone, install Python 3.13 + Node 22 +")
+        log("  2. Windows VM / box: clone, install Python 3.12 + Node 22 +")
         log("     Inno Setup 6, run this script.")
         log("")
         log("Unsupported escape hatch (cross-build under Wine): rerun with")

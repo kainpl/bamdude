@@ -233,7 +233,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 ## Quick Start
 
 ### Requirements
-- Python 3.10+ (3.11/3.12 recommended)
+- Python 3.12+ (only for a native install — the Docker image bundles its own)
 - Bambu Lab printer with **Developer Mode** enabled
 - Same local network as printer
 

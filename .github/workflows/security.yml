@@ -26,7 +26,10 @@ on:
     # Allow manual trigger
 
 env:
-  PYTHON_VERSION: '3.11'
+  # Must match ci.yml, the Dockerfile and `requires-python`. A dependency audit
+  # run on a different interpreter resolves a different set of versions than the
+  # one we ship, so it would be auditing something nobody installs.
+  PYTHON_VERSION: '3.12'
   NODE_VERSION: '22'
 
 # Default permissions for all jobs

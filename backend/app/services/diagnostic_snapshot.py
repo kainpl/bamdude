@@ -65,7 +65,7 @@ async def _run_connection_for(printer) -> dict:
             timeout=_PER_DIAGNOSTIC_TIMEOUT_SECONDS,
         )
         return {**base, "result": _serialize(result)}
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return {**base, "error": "timed_out"}
     except Exception as e:
         # Log with traceback so the bundle generation isn't silent about
@@ -86,7 +86,7 @@ async def _run_vp_for(vp) -> dict:
             timeout=_PER_DIAGNOSTIC_TIMEOUT_SECONDS,
         )
         return {**base, "result": _serialize(result)}
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return {**base, "error": "timed_out"}
     except Exception as e:
         logger.warning("VP diagnostic failed for VP %s: %s", vp.id, e, exc_info=True)
@@ -103,7 +103,7 @@ async def _run_log_health() -> Any:
             timeout=_PER_DIAGNOSTIC_TIMEOUT_SECONDS,
         )
         return _serialize(result)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return {"error": "timed_out"}
     except Exception as e:
         logger.warning("Log-health scan failed: %s", e, exc_info=True)

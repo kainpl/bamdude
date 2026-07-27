@@ -236,15 +236,16 @@ detect_python() {
         return 1
     fi
 
-    # Check version >= 3.10
+    # Check version >= 3.12 (matches requires-python in pyproject.toml — keep
+    # the two in step, or the installer accepts an interpreter pip then refuses)
     local version
     version=$($PYTHON_CMD -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
     local major minor
     major=$(echo "$version" | cut -d'.' -f1)
     minor=$(echo "$version" | cut -d'.' -f2)
 
-    if [[ "$major" -lt 3 ]] || { [[ "$major" -eq 3 ]] && [[ "$minor" -lt 10 ]]; }; then
-        log_warn "Python $version found, but 3.10 or newer is required"
+    if [[ "$major" -lt 3 ]] || { [[ "$major" -eq 3 ]] && [[ "$minor" -lt 12 ]]; }; then
+        log_warn "Python $version found, but 3.12 or newer is required"
         return 1
     fi
 
@@ -948,7 +949,7 @@ main() {
 
     # Check/install Python
     if ! detect_python; then
-        log_info "Python 3.10+ not found, will install..."
+        log_info "Python 3.12+ not found, will install..."
     fi
 
     # Gather configuration

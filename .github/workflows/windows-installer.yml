@@ -33,10 +33,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Only runs build.py; the installer's own interpreter is the embeddable
+      # zip that script downloads (PYTHON_VERSION in installers/windows/build.py).
+      # Kept on the same 3.12 as everything else so the two never drift apart.
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: '3.12'
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
