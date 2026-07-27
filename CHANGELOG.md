@@ -10,6 +10,8 @@ All notable changes to BamDude will be documented in this file.
 
 ### Added
 
+- **The Archives list shows filament weight, cost, layers and object count.** They were on the cards but not in the list, so switching to the list to compare prints meant giving up exactly the numbers you were comparing. All four join the printer model and filament already under the print name — that is the one column that can grow without widening the table — and the line wraps instead of overflowing on a narrow window. Weight and cost carry no icon, since `g` and the currency symbol say what they are; layers and objects are bare numbers and keep theirs, with the spelled-out label on hover.
+
 - **Archives now show what a print was estimated to take next to what it really took.** The list view gains a Print time column between Printer and Date: the slicer's estimate on the top line, the actual duration below it, and beside that the same over/under percentage the cards already carried. The card view, which only ever showed one figure, now shows both as `estimate / actual`. Either side can be missing — a file that was never sliced has no estimate, a running or failed print has no actual — and the missing one reads as a dash rather than silently borrowing the other's number, which is what the card used to do.
 
 ### Changed

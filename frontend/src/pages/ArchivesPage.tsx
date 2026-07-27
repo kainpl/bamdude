@@ -1637,6 +1637,7 @@ function ArchiveListRow({
   const { data: rowSettings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
   const timeFormat: TimeFormat = (rowSettings as Record<string, string> | undefined)?.time_format as TimeFormat || 'system';
   const dateFormat: DateFormat = (rowSettings as Record<string, string> | undefined)?.date_format as DateFormat || 'system';
+  const rowCurrency = getCurrencySymbol((rowSettings as Record<string, string> | undefined)?.currency || 'USD');
   const useSlicerApi: boolean = !!(rowSettings as Record<string, unknown> | undefined)?.use_slicer_api;
   const [showEdit, setShowEdit] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -2213,34 +2214,86 @@ function ArchiveListRow({
               </Link>
             )}
           </div>
-          {(archive.filament_type || archive.sliced_for_model) && (
-            <div className="flex items-center gap-1.5 mt-0.5">
-              {archive.sliced_for_model && (
-                <span className="text-xs text-bambu-gray flex items-center gap-1" title={t('archives.card.slicedFor', { model: archive.sliced_for_model })}>
+          {/* Facts about the file itself, dot-separated under its name. This is
+              the only `minmax(0,1fr)` column, so it is the one place that can
+              absorb more text without widening the table — every other column
+              is `auto` and pushes the row out.
+
+              Built as a list and joined rather than as a chain of conditional
+              `·` spans: with six optional items the separators are where that
+              pattern goes wrong, and a stray leading dot is the usual symptom.
+              Weight and cost carry no icon because `g` and the currency symbol
+              already identify them; layers and objects are bare numbers, so
+              they keep theirs and put the spelled-out label in the tooltip. */}
+          {(() => {
+            const facts: React.ReactNode[] = [];
+            if (archive.sliced_for_model) {
+              facts.push(
+                <span key="model" className="flex items-center gap-1" title={t('archives.card.slicedFor', { model: archive.sliced_for_model })}>
                   <Printer className="w-2.5 h-2.5" />
                   {archive.sliced_for_model}
-                </span>
-              )}
-              {archive.sliced_for_model && archive.filament_type && (
-                <span className="text-bambu-gray/50">·</span>
-              )}
-              {archive.filament_type && (
-                <span className="text-xs text-bambu-gray">{archive.filament_type}</span>
-              )}
-              {archive.filament_color && (
-                <div className="flex items-center gap-0.5 flex-wrap">
-                  {archive.filament_color.split(',').map((color, i) => (
-                    <div
-                      key={i}
-                      className="w-2.5 h-2.5 rounded-full border border-black/20"
-                      style={{ backgroundColor: color }}
-                      title={color}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+                </span>,
+              );
+            }
+            if (archive.filament_type || archive.filament_color) {
+              facts.push(
+                <span key="filament" className="flex items-center gap-1">
+                  {archive.filament_type}
+                  {archive.filament_color && (
+                    <span className="flex items-center gap-0.5">
+                      {archive.filament_color.split(',').map((color, i) => (
+                        <span
+                          key={i}
+                          className="w-2.5 h-2.5 rounded-full border border-black/20"
+                          style={{ backgroundColor: color }}
+                          title={color}
+                        />
+                      ))}
+                    </span>
+                  )}
+                </span>,
+              );
+            }
+            if (archive.filament_used_grams) {
+              facts.push(<span key="grams">{archive.filament_used_grams.toFixed(1)}g</span>);
+            }
+            if (archive.cost != null) {
+              facts.push(<span key="cost">{rowCurrency}{archive.cost.toFixed(2)}</span>);
+            }
+            if (archive.total_layers) {
+              const label = archive.total_layers === 1
+                ? t('archives.card.layer', { count: archive.total_layers })
+                : t('archives.card.layers', { count: archive.total_layers });
+              facts.push(
+                <span key="layers" className="flex items-center gap-1" title={label}>
+                  <Layers className="w-2.5 h-2.5" />
+                  {archive.total_layers}
+                </span>,
+              );
+            }
+            if (archive.object_count != null && archive.object_count > 0) {
+              const label = archive.object_count === 1
+                ? t('archives.card.object', { count: archive.object_count })
+                : t('archives.card.objects', { count: archive.object_count });
+              facts.push(
+                <span key="objects" className="flex items-center gap-1" title={label}>
+                  <Box className="w-2.5 h-2.5" />
+                  {archive.object_count}
+                </span>,
+              );
+            }
+            if (!facts.length) return null;
+            return (
+              <div className="flex items-center flex-wrap gap-x-1.5 gap-y-0.5 mt-0.5 text-xs text-bambu-gray">
+                {facts.map((fact, i) => (
+                  <span key={i} className="flex items-center gap-1.5">
+                    {i > 0 && <span className="text-bambu-gray/50">·</span>}
+                    {fact}
+                  </span>
+                ))}
+              </div>
+            );
+          })()}
         </div>
         <div className="text-sm text-bambu-gray whitespace-nowrap flex items-center gap-1.5">
           <span>{printerName}</span>
