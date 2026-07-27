@@ -32,7 +32,14 @@ paho-mqtt>=2.0.0
 aioftp>=0.22.0
 
 # Virtual Printer (emulates Bambu printer for slicer uploads)
-pyftpdlib>=2.0.0
+#
+# There is deliberately no FTP server library here. The VP's implicit-FTPS
+# server is hand-rolled on asyncio (services/virtual_printer/ftp_server.py).
+# pyftpdlib sat under this heading for a long time, but nothing outside the FTP
+# *test* mock ever imported it — so a test-only dependency was being installed
+# into the Docker image and the Windows installer. That mock is stdlib-only as
+# of 2026-07-27 and the dependency is gone; don't re-add one without checking
+# that first-party code actually imports it.
 cryptography>=48.0.1  # GHSA-537c-gmf6-5ccf (supersedes the CVE-2026-34073 floor)
 
 # 3MF Processing (standard zipfile is sufficient for Bambu 3MF files)
