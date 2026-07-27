@@ -5,6 +5,14 @@ INSTALL_DIR="${INSTALL_DIR:-/opt/bamdude}"
 SERVICE_NAME="${SERVICE_NAME:-bamdude}"
 BRANCH="${BRANCH:-}"
 VENV_PIP="${VENV_PIP:-$INSTALL_DIR/venv/bin/pip}"
+VENV_PYTHON="${VENV_PYTHON:-$INSTALL_DIR/venv/bin/python}"
+
+# Lowest Python the application itself can run on. Keep in step with
+# `requires-python` in pyproject.toml and the gate in install/install.sh — the
+# same floor, enforced from a third place because the updater is the only one
+# that runs against an installation that already exists.
+REQUIRED_PYTHON_MAJOR=3
+REQUIRED_PYTHON_MINOR=12
 FRONTEND_DIR="${FRONTEND_DIR:-$INSTALL_DIR/frontend}"
 BACKUP_DIR="${BACKUP_DIR:-$INSTALL_DIR/backups}"
 BAMDUDE_API_URL="${BAMDUDE_API_URL:-http://127.0.0.1:8000/api/v1}"
@@ -32,6 +40,66 @@ die() {
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
+}
+
+check_python_version() {
+  # Must run before create_backup, the service stop and `git reset --hard`.
+  # The failure this prevents is not one the rollback path can undo: code that
+  # cannot be imported leaves the service down, and by the time that is
+  # discovered the old tree has already been replaced. 0.5.0 raised the floor
+  # to 3.12 (the app imports enum.StrEnum, which is 3.11+), and a venv built on
+  # an older interpreter does not move just because the system gained a newer
+  # one — so the venv's own python is what gets checked.
+  local py
+  if [ -x "$VENV_PYTHON" ]; then
+    py="$VENV_PYTHON"
+  elif command -v python3 >/dev/null 2>&1; then
+    py="$(command -v python3)"
+    warn "No venv interpreter at $VENV_PYTHON — checking $py instead."
+  else
+    warn "No Python interpreter found to verify against; continuing."
+    return 0
+  fi
+
+  local version major minor
+  version="$("$py" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
+  if [ -z "$version" ]; then
+    warn "Could not determine the Python version of $py; continuing."
+    return 0
+  fi
+  major="${version%%.*}"
+  minor="${version#*.}"
+
+  if [ "$major" -lt "$REQUIRED_PYTHON_MAJOR" ] ||
+    { [ "$major" -eq "$REQUIRED_PYTHON_MAJOR" ] && [ "$minor" -lt "$REQUIRED_PYTHON_MINOR" ]; }; then
+    cat >&2 <<EOF
+[bamdude-update] ERROR: this installation runs Python $version, but BamDude
+now requires ${REQUIRED_PYTHON_MAJOR}.${REQUIRED_PYTHON_MINOR} or newer.
+
+Nothing has been changed. Your installation is untouched and still running.
+
+Distributions older than Ubuntu 24.04 ship Python 3.10 or 3.11. Three ways
+forward, easiest last:
+
+  1. Upgrade the distribution, then rebuild the virtualenv on the new
+     interpreter (the venv keeps the version it was created with):
+
+       sudo systemctl stop ${SERVICE_NAME}
+       sudo rm -rf ${INSTALL_DIR}/venv
+       sudo python3 -m venv ${INSTALL_DIR}/venv
+       sudo ${INSTALL_DIR}/venv/bin/pip install -r ${INSTALL_DIR}/requirements.txt
+       sudo systemctl start ${SERVICE_NAME}
+
+  2. Install a newer Python alongside the system one and rebuild the venv with
+     it, pointing python3 at the new binary in step 1.
+
+  3. Switch to the Docker image, which carries its own interpreter and is not
+     affected by what the host has installed.
+EOF
+    exit 1
+  fi
+
+  log "Python $version detected (>= ${REQUIRED_PYTHON_MAJOR}.${REQUIRED_PYTHON_MINOR})"
 }
 
 cleanup_old_backups() {
@@ -164,6 +232,8 @@ load_state="$(systemctl show "$SERVICE_NAME" --property=LoadState --value 2>/dev
 if [ -z "$load_state" ] || [ "$load_state" = "not-found" ]; then
   die "Service not found: ${SERVICE_NAME}.service"
 fi
+
+check_python_version
 
 old_commit="$(git rev-parse --short HEAD || true)"
 
