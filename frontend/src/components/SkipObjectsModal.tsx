@@ -41,7 +41,7 @@ import { ConfirmModal } from './ConfirmModal';
  *                   (48px ID badge + 24px padding = 72px = 4.5rem), or content
  *                   clips; 5rem leaves a little air.
  */
-const DIALOG_FRAME = 'h-[80%] max-w-[calc(100vw-2rem)] max-h-[calc(100vh-2rem)]';
+const DIALOG_FRAME = 'h-[60%] max-w-[calc(100vw-2rem)] max-h-[calc(100vh-2rem)]';
 const PLATE_IMAGE_PX = 352;
 const PLATE_GUTTER_PX = 32; // the column's p-4, both sides
 const LIGHTBOX_SCALE = 1.5;

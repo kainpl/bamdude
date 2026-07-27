@@ -8,6 +8,10 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **The Skip Objects dialog is shorter — 60% of the window's height rather than 80%.** 0.5.0 introduced the taller dialog and its release notes say 80%; in use that turned out to be more window than the content needs. Objects per column follow the height, so a shorter dialog simply means the list wraps into its next column sooner.
+
 ## [0.5.0] - 2026-07-27
 
 Stable 0.5.0 release — consolidates the cumulative `0.4.7b1`–`0.4.7b5` beta cycle (see those sections below for the full per-beta detail) plus the post-b5 work listed here. Image: `ghcr.io/kainpl/bamdude:0.5.0` / `kainpl/bamdude:0.5.0` (`:latest` tracks this).
