@@ -81,6 +81,32 @@ def mfa_encryption_isolation(monkeypatch, tmp_path):
     enc_mod._key_source = None
 
 
+@pytest.fixture(autouse=True)
+def data_dir_isolation(monkeypatch, tmp_path):
+    """Point the settings singleton's data paths at a per-test tmp directory.
+
+    ``mfa_encryption_isolation`` above sets the ``DATA_DIR`` *env var*, which is
+    enough for code that reads the environment — but ``settings`` is built once
+    at import time, so anything reading ``settings.base_dir`` still resolves to
+    the developer's live ``data/`` folder. That gap is not theoretical: a test
+    driving ``main.on_print_start`` with a bare ``MagicMock`` printer sailed
+    through the ``external_camera_enabled and external_camera_url`` gate (every
+    MagicMock attribute is truthy), reached ``layer_timelapse.start_session``,
+    and mkdir'd a real ``data/timelapse_frames/1/<timestamp>`` on every full
+    suite run — 105 of them had piled up before anyone noticed, because the
+    directories are empty and nothing sweeps that tree.
+
+    Redirecting the attributes closes the whole class of bug rather than that
+    one test. ``database_url`` is deliberately left alone: tests run on
+    in-memory SQLite and rewriting it here would point them at a file.
+    """
+    from backend.app.core.config import settings as app_settings
+
+    monkeypatch.setattr(app_settings, "data_dir", tmp_path, raising=False)
+    monkeypatch.setattr(app_settings, "base_dir", tmp_path, raising=False)
+    monkeypatch.setattr(app_settings, "archive_dir", tmp_path / "archive", raising=False)
+
+
 @pytest.fixture(scope="session")
 def event_loop():
     """Create an instance of the default event loop for each test session."""

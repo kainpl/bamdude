@@ -6618,6 +6618,17 @@ async def lifespan(app: FastAPI):
 
     await init_db()
 
+    # Drop timelapse frame directories no session will reclaim. Sessions are
+    # tracked in memory, so a restart mid-print orphans one permanently and
+    # nothing else ever walks that tree. Filesystem-only and best-effort — a
+    # failure here must never keep the app from starting.
+    try:
+        from backend.app.services.layer_timelapse import sweep_orphaned_frames
+
+        await asyncio.to_thread(sweep_orphaned_frames)
+    except Exception as _tl_sweep_exc:
+        logging.getLogger(__name__).debug("Timelapse frame sweep skipped: %s", _tl_sweep_exc)
+
     # Apply DB-backed log retention to the live rotating handler. The
     # handler was created at module-import time with a hardcoded 7-day
     # bootstrap; now that the DB is up, override with whatever the

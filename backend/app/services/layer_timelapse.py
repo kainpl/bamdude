@@ -6,6 +6,7 @@ Captures a frame on each layer change and stitches them into a video on print co
 import asyncio
 import logging
 import shutil
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -285,3 +286,54 @@ def cancel_session(printer_id: int):
 def get_active_sessions() -> dict[int, TimelapseSession]:
     """Get all active timelapse sessions."""
     return _active_sessions.copy()
+
+
+def sweep_orphaned_frames(max_age_hours: float = 6.0) -> int:
+    """Delete frame directories no session will ever come back for.
+
+    ``_active_sessions`` lives in memory only, so a restart or a crash during a
+    print drops the handle to a directory that is already on disk — and nothing
+    else ever walks ``timelapse_frames/``. Every other exit (complete, fail,
+    cancel, a new session displacing an old one) does clean up; a restart is the
+    one hole, and it leaks a directory per interrupted print, forever.
+
+    Called at startup, where ``_active_sessions`` is empty by definition, so
+    everything on disk is orphaned as far as this process is concerned. The age
+    floor exists for the case it is *not* the only process: a second instance
+    sharing DATA_DIR may have a live session, and its directory's mtime moves
+    with every captured frame, so a recently-touched one is left alone.
+
+    Returns:
+        Number of directories removed.
+    """
+    root = settings.base_dir / "timelapse_frames"
+    if not root.is_dir():
+        return 0
+
+    cutoff = time.time() - max_age_hours * 3600
+    removed = 0
+    for printer_dir in root.iterdir():
+        if not printer_dir.is_dir():
+            continue
+        for session_dir in printer_dir.iterdir():
+            if not session_dir.is_dir():
+                continue
+            try:
+                if session_dir.stat().st_mtime > cutoff:
+                    continue
+                shutil.rmtree(session_dir)
+                removed += 1
+            except OSError as exc:
+                logger.debug("Could not sweep %s: %s", session_dir, exc)
+        # Drop the per-printer directory once its last session is gone, so a
+        # printer that never films again stops leaving an empty shell behind.
+        try:
+            next(printer_dir.iterdir())
+        except StopIteration:
+            printer_dir.rmdir()
+        except OSError:
+            pass
+
+    if removed:
+        logger.info("Swept %s orphaned timelapse frame director%s", removed, "y" if removed == 1 else "ies")
+    return removed

@@ -10,6 +10,8 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **Interrupted prints no longer leave empty timelapse folders behind forever.** When an external camera films a print layer by layer, the frames go to a scratch folder that is deleted once the video is stitched — or once the print fails or is cancelled. The one case nobody handled was a restart: the record of which folder belongs to which print is kept in memory, so a restart or crash mid-print orphaned that folder permanently, and nothing ever looked at the directory again. BamDude now sweeps abandoned frame folders at startup, leaving alone any that were written to recently, so a second instance sharing the same data folder can't have its live recording deleted.
+
 - **A Docker image built on Windows now actually starts.** Shell scripts were being checked out with Windows line endings, which turned the entrypoint's first line into an interpreter name ending in a carriage return — the container built without complaint and then died instantly with "no such file or directory", pointing at a file that was plainly there. Anyone building the image on a Windows machine hit this; official images were unaffected because they are built on Linux, which is why it went unnoticed. Shell scripts are now pinned to Unix line endings regardless of platform, so the same is true of `install.sh` copied from a Windows checkout.
 
 ### Changed

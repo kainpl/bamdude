@@ -38,6 +38,11 @@ class TestCalibrationPrintFiltering:
             mock_printer = MagicMock()
             mock_printer.auto_archive = True
             mock_printer.id = 1
+            # MagicMock conjures every attribute on demand and they are all
+            # truthy, so on_print_start's `external_camera_enabled and
+            # external_camera_url` gate passes and start_session mkdir's a real
+            # timelapse_frames/ directory under the developer's live DATA_DIR.
+            mock_printer.external_camera_enabled = False
 
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
@@ -95,6 +100,11 @@ class TestCalibrationPrintFiltering:
                 mock_printer = MagicMock()
                 mock_printer.auto_archive = True
                 mock_printer.id = 1
+                # MagicMock conjures every attribute on demand and they are all
+                # truthy, so on_print_start's `external_camera_enabled and
+                # external_camera_url` gate passes and start_session mkdir's a real
+                # timelapse_frames/ directory under the developer's live DATA_DIR.
+                mock_printer.external_camera_enabled = False
 
                 mock_session = AsyncMock()
                 mock_session.__aenter__ = AsyncMock(return_value=mock_session)
@@ -132,6 +142,11 @@ class TestCalibrationPrintFiltering:
             mock_printer = MagicMock()
             mock_printer.auto_archive = True
             mock_printer.id = 1
+            # MagicMock conjures every attribute on demand and they are all
+            # truthy, so on_print_start's `external_camera_enabled and
+            # external_camera_url` gate passes and start_session mkdir's a real
+            # timelapse_frames/ directory under the developer's live DATA_DIR.
+            mock_printer.external_camera_enabled = False
 
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
