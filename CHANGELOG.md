@@ -8,6 +8,10 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **CI now installs BamDude on a real PostgreSQL on every push, and migrates a SQLite database across.** Until now nothing exercised PostgreSQL automatically — the existing tests substituted a fake database and checked the text of the SQL, which cannot notice a statement a real server refuses. That is how a fresh PostgreSQL install stayed broken from 0.4.2 onward without anyone seeing it. A new job spins up PostgreSQL 18 and runs both paths for real: it checks every table is created, the migration chain completes without gaps, the default groups are seeded, and — after a migration — that the rows arrived and no primary-key counter was left behind, which would break the very next save. It runs on every push rather than only when migration files change, because the fault that prompted it lived in an unrelated model.
+
 ### Fixed
 
 - **PostgreSQL works again — a fresh install on it has been impossible since 0.4.2.** Pointing a new BamDude at an empty PostgreSQL database died during startup and never came up; the same fault blocked migrating an existing SQLite database across, because that path builds the schema the same way. The cause was SQLite-only SQL scattered through the schema and the migration chain — boolean columns compared and defaulted with `0`/`1`, `AUTOINCREMENT`, and an `ADD CONSTRAINT IF NOT EXISTS` that PostgreSQL simply has no syntax for. Found by running both scenarios end-to-end against a real PostgreSQL 18 server rather than a mock: a fresh install now creates all 75 tables, applies the full migration chain and seeds the default groups.
