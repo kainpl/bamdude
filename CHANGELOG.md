@@ -8,6 +8,10 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Archives now show what a print was estimated to take next to what it really took.** The list view gains a Print time column between Printer and Date: the slicer's estimate on the top line, the actual duration below it, and beside that the same over/under percentage the cards already carried. The card view, which only ever showed one figure, now shows both as `estimate / actual`. Either side can be missing — a file that was never sliced has no estimate, a running or failed print has no actual — and the missing one reads as a dash rather than silently borrowing the other's number, which is what the card used to do.
+
 ### Changed
 
 - **The Skip Objects dialog is shorter — 60% of the window's height rather than 80%.** 0.5.0 introduced the taller dialog and its release notes say 80%; in use that turned out to be more window than the content needs. Objects per column follow the height, so a shorter dialog simply means the list wraps into its next column sooner.

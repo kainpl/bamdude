@@ -1031,7 +1031,11 @@ export default {
       date: 'Date',
       size: 'Size',
       actions: 'Actions',
-      hasTimelapse: 'Has timelapse'
+      hasTimelapse: 'Has timelapse',
+      printTime: 'Print time',
+      estimated: 'Estimated',
+      actual: 'Actual',
+      accuracy: 'Accuracy'
     }
   },
 

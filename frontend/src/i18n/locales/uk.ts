@@ -1037,7 +1037,11 @@ export default {
       date: 'Дата',
       size: 'Розмір',
       actions: 'Дії',
-      hasTimelapse: 'Має таймлапс'
+      hasTimelapse: 'Має таймлапс',
+      printTime: 'Час друку',
+      estimated: 'Орієнтовно',
+      actual: 'Фактично',
+      accuracy: 'Точність'
     }
   },
 

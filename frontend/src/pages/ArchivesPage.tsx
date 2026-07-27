@@ -1059,25 +1059,28 @@ function ArchiveCard({
         {/* Stats */}
         <div className="grid grid-cols-2 gap-2 text-xs mb-4 min-h-[48px]">
           {(archive.print_time_seconds || archive.actual_time_seconds) && (
-            <div className="flex items-center gap-1.5 text-bambu-gray" title={
-              archive.time_accuracy
-                ? `Estimated: ${formatDuration(archive.print_time_seconds || 0)}\nActual: ${formatDuration(archive.actual_time_seconds || 0)}\nAccuracy: ${archive.time_accuracy.toFixed(0)}%`
-                : archive.actual_time_seconds
-                  ? `Actual: ${formatDuration(archive.actual_time_seconds)}`
-                  : `Estimated: ${formatDuration(archive.print_time_seconds || 0)}`
-            }>
-              <Clock className="w-3 h-3" />
-              {formatDuration(archive.actual_time_seconds || archive.print_time_seconds || 0)}
-              {archive.time_accuracy && (
-                <span className={`text-[10px] px-1 rounded ${
-                  archive.time_accuracy >= 95 && archive.time_accuracy <= 105
-                    ? 'bg-bambu-green/20 text-bambu-green'
-                    : archive.time_accuracy > 105
-                      ? 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400'
-                      : 'bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400'
-                }`}>
-                  {archive.time_accuracy > 100 ? '+' : ''}{(archive.time_accuracy - 100).toFixed(0)}%
-                </span>
+            /* Estimate then actual, `1h20m / 1h35m`. One line rather than two
+               because this cell shares a cramped two-column grid with three
+               other stats; the estimate is dimmed so the eye still lands on
+               what the print really took. Either side may be missing — an
+               unsliced file has no estimate, a running or failed print has no
+               actual — so the separator only appears when both do, never as an
+               orphan slash. The tooltip spells both out by name. */
+            <div className="flex items-center gap-1.5 text-bambu-gray" title={printTimeTooltip(archive, t)}>
+              <Clock className="w-3 h-3 flex-shrink-0" />
+              <span className="truncate">
+                {archive.print_time_seconds && archive.actual_time_seconds ? (
+                  <>
+                    <span className="opacity-60">{formatDuration(archive.print_time_seconds)}</span>
+                    <span className="opacity-40"> / </span>
+                    {formatDuration(archive.actual_time_seconds)}
+                  </>
+                ) : (
+                  formatDuration(archive.actual_time_seconds || archive.print_time_seconds || 0)
+                )}
+              </span>
+              {archive.time_accuracy != null && (
+                <TimeAccuracyBadge accuracy={archive.time_accuracy} className="flex-shrink-0" />
               )}
             </div>
           )}
@@ -1559,6 +1562,50 @@ function ArchiveCard({
       />
     </Card>
   );
+}
+
+/** How far the real print ran from the slicer's estimate, as a signed badge.
+ *
+ * `time_accuracy` arrives as a percentage where 100 means the estimate was
+ * exact and above 100 means the print beat it, so the label is the delta
+ * (`-12%`, `+4%`) rather than the raw figure — "88%" reads like a score.
+ *
+ * Shared by the card and the list on purpose: the ±5% green band and the two
+ * out-of-band colours are a judgement about what counts as a good estimate,
+ * and a second copy would drift the moment either view is retuned.
+ */
+function TimeAccuracyBadge({ accuracy, className = '' }: { accuracy: number; className?: string }) {
+  const tone =
+    accuracy >= 95 && accuracy <= 105
+      ? 'bg-bambu-green/20 text-bambu-green'
+      : accuracy > 105
+        ? 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400'
+        : 'bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400';
+  return (
+    <span className={`text-[10px] px-1 rounded ${tone} ${className}`}>
+      {accuracy > 100 ? '+' : ''}
+      {(accuracy - 100).toFixed(0)}%
+    </span>
+  );
+}
+
+/** Tooltip text for a print's estimated / actual duration.
+ *
+ * Was three hardcoded English strings inline in the card — the project ships
+ * en + uk and never hardcodes user-facing text, so it moves here and gets keys.
+ */
+function printTimeTooltip(archive: Archive, t: TFunction): string {
+  const lines: string[] = [];
+  if (archive.print_time_seconds) {
+    lines.push(`${t('archives.list.estimated')}: ${formatDuration(archive.print_time_seconds)}`);
+  }
+  if (archive.actual_time_seconds) {
+    lines.push(`${t('archives.list.actual')}: ${formatDuration(archive.actual_time_seconds)}`);
+  }
+  if (archive.time_accuracy) {
+    lines.push(`${t('archives.list.accuracy')}: ${archive.time_accuracy.toFixed(0)}%`);
+  }
+  return lines.join('\n');
 }
 
 function ArchiveListRow({
@@ -2203,6 +2250,25 @@ function ArchiveListRow({
               <img src={bed.icon} alt={bed.label} title={bed.label} className="w-3.5 h-3.5 flex-shrink-0" />
             ) : null;
           })()}
+        </div>
+        {/* Print time — estimate above, actual below, mirroring the two-level
+            Date cell to its right. Unlike the card (one cramped line, slash
+            separated) there is room here to label nothing and still be clear:
+            top row is always the slicer's estimate, bottom row what it really
+            took. Each falls back to an em dash on its own, since an unsliced
+            file has no estimate and a running or failed print has no actual. */}
+        <div className="text-sm text-bambu-gray whitespace-nowrap" title={printTimeTooltip(archive, t)}>
+          <div className={archive.print_time_seconds ? 'opacity-70' : 'opacity-40'}>
+            {archive.print_time_seconds ? formatDuration(archive.print_time_seconds) : '—'}
+          </div>
+          <div className="flex items-center gap-1.5">
+            {archive.actual_time_seconds ? (
+              formatDuration(archive.actual_time_seconds)
+            ) : (
+              <span className="opacity-40">—</span>
+            )}
+            {archive.time_accuracy != null && <TimeAccuracyBadge accuracy={archive.time_accuracy} />}
+          </div>
         </div>
         <div className="text-sm text-bambu-gray whitespace-nowrap">
           <div>{formatDateTime(archive.created_at, timeFormat, dateFormat)}</div>
@@ -3624,13 +3690,14 @@ export function ArchivesPage() {
               (plain `1fr` resolves to `minmax(auto, 1fr)` and refuses to
               shrink below min-content). `divide-y` keeps the row separators
               now that we're not stacking divs anymore. */}
-          <div className="grid grid-cols-[auto_minmax(0,1fr)_auto_auto_auto_auto] gap-x-4 divide-y divide-bambu-dark-tertiary">
+          <div className="grid grid-cols-[auto_minmax(0,1fr)_auto_auto_auto_auto_auto] gap-x-4 divide-y divide-bambu-dark-tertiary">
             {/* List Header — centred per column (rows keep their own
                 left/right alignment). */}
             <div className="col-span-full grid grid-cols-subgrid px-4 py-3 text-xs text-bambu-gray font-medium text-center">
               <div></div>
               <div>{t('archives.list.name')}</div>
               <div>{t('archives.list.printer')}</div>
+              <div>{t('archives.list.printTime')}</div>
               <div>{t('archives.list.date')}</div>
               <div>{t('archives.list.size')}</div>
               <div>{t('archives.list.actions')}</div>
