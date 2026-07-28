@@ -153,3 +153,65 @@ class TestPickPngTier:
             z.writestr("Metadata/pick_1.png", _png(rows))
         with _open(buf.getvalue()) as zf:
             assert set(discover_plate_objects(zf, 1)) == {77}
+
+
+class TestGcodeHeaderTier:
+    def test_gcode_header_wins_over_both_other_sources(self):
+        """Measured: the header was right in all three disputed archives."""
+        data = make_3mf(slice_ids={941: "part.stl"}, gcode_ids=[941, 942], pick_ids=[941, 942, 943])
+        with _open(data) as zf:
+            assert set(discover_plate_objects(zf, 1)) == {941, 942}
+
+    def test_header_can_list_fewer_than_slice_info(self):
+        """swapmod_FUCS: slice_info claimed 12, header and pick agreed on 10."""
+        data = make_3mf(slice_ids={1: "a", 2: "b", 3: "c"}, gcode_ids=[2, 3])
+        with _open(data) as zf:
+            assert set(discover_plate_objects(zf, 1)) == {2, 3}
+
+    def test_names_come_from_slice_info_where_available(self):
+        data = make_3mf(slice_ids={941: "part.stl"}, gcode_ids=[941, 942, 943])
+        with _open(data) as zf:
+            found = discover_plate_objects(zf, 1)
+        assert found == {941: "part.stl", 942: "part.stl", 943: "part.stl"}
+
+    def test_malformed_header_falls_through(self):
+        data = make_3mf(slice_ids={941: "part.stl"}, pick_ids=[941, 942])
+        with zipfile.ZipFile(io.BytesIO(data)) as src:
+            payload = {n: src.read(n) for n in src.namelist()}
+        payload["Metadata/plate_1.gcode"] = b"; HEADER\n; model label id: \nG28\n"
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            for n, b in payload.items():
+                z.writestr(n, b)
+        with _open(buf.getvalue()) as zf:
+            assert set(discover_plate_objects(zf, 1)) == {941, 942}
+
+    def test_reads_only_the_head_of_a_large_gcode(self):
+        """The marker sits at byte ~234; never decompress a 34 MB entry for it."""
+        big = b"; HEADER\n; model label id: 941,942\n" + b"G1 X1 Y1\n" * 400_000
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr(
+                "Metadata/slice_info.config",
+                '<?xml version="1.0"?><config><plate><metadata key="index" value="1"/>'
+                '<object identify_id="941" name="part.stl" skipped="false"/></plate></config>',
+            )
+            z.writestr("Metadata/plate_1.gcode", big)
+        with _open(buf.getvalue()) as zf:
+            assert set(discover_plate_objects(zf, 1)) == {941, 942}
+
+    def test_falls_back_to_the_only_gcode_entry(self):
+        """A sliced 3MF has exactly one gcode, whatever plate index it declares."""
+        data = make_3mf(slice_ids={5: "x"}, gcode_ids=[5, 6], plate_index=1)
+        with _open(data) as zf:
+            assert set(discover_plate_objects(zf, 3)) == {5, 6}
+
+    def test_single_object_bambu_studio_file_has_no_header_and_needs_none(self):
+        """BS refuses to write the header for one object — GCode.cpp:2344 requires
+        num_object_instances() > 1. All 45 header-less files in the corpus are this
+        shape, and a one-object plate cannot be undercounted, so tier 3 answering
+        is correct rather than a degradation.
+        """
+        data = make_3mf(slice_ids={941: "part.stl"})
+        with _open(data) as zf:
+            assert discover_plate_objects(zf, 1) == {941: "part.stl"}
