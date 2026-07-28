@@ -47,6 +47,28 @@ class SmartPlug(Base):
         String(50), nullable=True
     )  # What value means "ON" (e.g., "ON", "true", "1")
 
+    # Lifetime (cumulative) energy source. Separate from ``mqtt_energy_path``
+    # for the same reason REST has a separate ``rest_energy_total_path``
+    # (m110 / upstream #2539): only a lifetime counter may feed
+    # ``smart_plug_energy_snapshots``, and which of the two figures a device
+    # reports cannot be inferred — Zigbee2MQTT's ``energy`` is cumulative,
+    # Tasmota's ``ENERGY.Today`` resets at midnight, and the operator chooses
+    # which one the path points at. Feeding a daily counter into lifetime
+    # snapshots would make every print spanning midnight record a negative delta.
+    mqtt_energy_total_topic: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    mqtt_energy_total_path: Mapped[str | None] = mapped_column(String(100), nullable=True)  # e.g., "energy"
+    mqtt_energy_total_multiplier: Mapped[float] = mapped_column(Float, default=1.0, server_default="1.0")
+
+    # Control. A plug with no command topic stays monitor-only, which is all
+    # this type could do before 0.5.x and remains valid configuration — a clamp
+    # meter reporting a printer's draw is not a switch.
+    # Payloads are free-form because they belong to the device, not to us:
+    # Zigbee2MQTT wants '{"state": "ON"}' on <name>/set, Tasmota wants a bare
+    # "ON" on cmnd/<name>/POWER.
+    mqtt_command_topic: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    mqtt_command_on: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mqtt_command_off: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Legacy multiplier - kept for backward compatibility
     mqtt_multiplier: Mapped[float] = mapped_column(Float, default=1.0)  # Deprecated, use mqtt_power_multiplier
 

@@ -2170,6 +2170,14 @@ export interface SmartPlug {
   mqtt_state_topic: string | null;  // Topic for state data
   mqtt_state_path: string | null;  // e.g., "state_l1" for ON/OFF
   mqtt_state_on_value: string | null;  // What value means "ON" (e.g., "ON", "true", "1")
+  // Lifetime energy source — only this figure may feed energy snapshots
+  mqtt_energy_total_topic: string | null;
+  mqtt_energy_total_path: string | null;
+  mqtt_energy_total_multiplier: number;
+  // Control — absent means monitor-only
+  mqtt_command_topic: string | null;
+  mqtt_command_on: string | null;
+  mqtt_command_off: string | null;
   // REST/Webhook fields (required when plug_type="rest")
   rest_on_url: string | null;
   rest_on_body: string | null;
@@ -2249,6 +2257,12 @@ export interface SmartPlugCreate {
   mqtt_state_topic?: string | null;
   mqtt_state_path?: string | null;
   mqtt_state_on_value?: string | null;
+  mqtt_energy_total_topic?: string | null;
+  mqtt_energy_total_path?: string | null;
+  mqtt_energy_total_multiplier?: number;
+  mqtt_command_topic?: string | null;
+  mqtt_command_on?: string | null;
+  mqtt_command_off?: string | null;
   // REST fields
   rest_on_url?: string | null;
   rest_on_body?: string | null;
@@ -2318,6 +2332,12 @@ export interface SmartPlugUpdate {
   mqtt_state_topic?: string | null;
   mqtt_state_path?: string | null;
   mqtt_state_on_value?: string | null;
+  mqtt_energy_total_topic?: string | null;
+  mqtt_energy_total_path?: string | null;
+  mqtt_energy_total_multiplier?: number;
+  mqtt_command_topic?: string | null;
+  mqtt_command_on?: string | null;
+  mqtt_command_off?: string | null;
   // REST fields
   rest_on_url?: string | null;
   rest_on_body?: string | null;

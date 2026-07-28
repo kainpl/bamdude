@@ -631,16 +631,15 @@ async def _get_plug_energy(plug, db) -> dict | None:
         homeassistant_service.configure(ha_settings["ha_url"], ha_settings["ha_token"])
         return await homeassistant_service.get_energy(plug)
     elif plug.plug_type == "mqtt":
-        # MQTT plugs report "today" energy, not lifetime total
-        # For per-print tracking, we use "today" as the counter (resets at midnight)
-        mqtt_data = mqtt_relay.smart_plug_service.get_plug_data(plug.id)
-        if mqtt_data:
-            return {
-                "power": mqtt_data.power,
-                "today": mqtt_data.energy,
-                "total": mqtt_data.energy,  # Use today as total for per-print calculations
-            }
-        return None
+        # Straight through the driver: it is the only place that knows which of
+        # the plug's two energy readings is the lifetime one
+        # (``mqtt_energy_total_*``) and which resets. Reproducing the mapping
+        # here is how this branch came to file the DAILY counter as ``total``,
+        # which per-print energy then differenced — so every print that spanned
+        # midnight recorded a negative delta.
+        from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
+
+        return await mqtt_smart_plug_service.get_energy(plug)
     elif plug.plug_type == "rest":
         from backend.app.services.rest_smart_plug import rest_smart_plug_service
 

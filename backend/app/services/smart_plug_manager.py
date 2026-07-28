@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.tasks import spawn_background_task
 from backend.app.services.homeassistant import homeassistant_service
+from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.rest_smart_plug import rest_smart_plug_service
 from backend.app.services.tasmota import tasmota_service
@@ -41,6 +42,8 @@ class SmartPlugManager:
             return homeassistant_service
         if plug.plug_type == "rest":
             return rest_smart_plug_service
+        if plug.plug_type == "mqtt":
+            return mqtt_smart_plug_service
         return tasmota_service
 
     async def _configure_ha_service(self, db: AsyncSession | None = None):
@@ -129,11 +132,6 @@ class SmartPlugManager:
             now = datetime.now(timezone.utc)
             captured = 0
             for plug in plugs:
-                # MQTT plugs only publish a "today" counter that resets at midnight -
-                # they can never feed cumulative snapshots, so skip them outright to
-                # avoid a noisy tasmota-service fallback attempt on an IP-less plug.
-                if plug.plug_type == "mqtt":
-                    continue
                 try:
                     service = await self.get_service_for_plug(plug, db)
                     energy = await service.get_energy(plug)
@@ -144,8 +142,8 @@ class SmartPlugManager:
                     continue
                 lifetime = energy.get("total")
                 if lifetime is None:
-                    # MQTT / REST plugs that only expose "today" can't be used for
-                    # cumulative snapshots - skip them.
+                    # No lifetime counter configured for this plug — a figure
+                    # that resets cannot feed cumulative snapshots.
                     continue
                 db.add(
                     SmartPlugEnergySnapshot(

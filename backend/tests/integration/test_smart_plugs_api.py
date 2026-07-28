@@ -658,8 +658,16 @@ class TestSmartPlugsAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_control_mqtt_plug_returns_error(self, async_client: AsyncClient, smart_plug_factory, db_session):
-        """Verify MQTT plugs cannot be controlled (monitor-only)."""
+    async def test_control_mqtt_plug_without_command_topic_fails(
+        self, async_client: AsyncClient, smart_plug_factory, db_session
+    ):
+        """A plug with no command topic is still monitor-only — but for a real reason.
+
+        This used to be a blanket 400 on the plug *type*: MQTT plugs could
+        never be controlled, however they were configured. Now the refusal
+        comes from the driver finding no command topic on this particular plug,
+        and surfaces as a 503 like any other device that could not be reached.
+        """
         plug = await smart_plug_factory(
             plug_type="mqtt",
             mqtt_topic="test/topic",
@@ -668,8 +676,33 @@ class TestSmartPlugsAPI:
 
         response = await async_client.post(f"/api/v1/smart-plugs/{plug.id}/control", json={"action": "on"})
 
-        assert response.status_code == 400
-        assert "monitor-only" in response.json()["detail"].lower()
+        assert response.status_code == 503
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_control_mqtt_plug_with_command_topic_publishes(
+        self, async_client: AsyncClient, smart_plug_factory, db_session
+    ):
+        """The case that was impossible before: a configured MQTT plug switches."""
+        from unittest.mock import AsyncMock, patch
+
+        plug = await smart_plug_factory(
+            plug_type="mqtt",
+            mqtt_topic="test/topic",
+            mqtt_power_path="power",
+            mqtt_command_topic="zigbee2mqtt/plug/set",
+            mqtt_command_on='{"state": "ON"}',
+        )
+
+        with patch(
+            "backend.app.services.mqtt_smart_plug.mqtt_smart_plug_service._publish",
+            new_callable=AsyncMock,
+        ) as mock_publish:
+            mock_publish.return_value = True
+            response = await async_client.post(f"/api/v1/smart-plugs/{plug.id}/control", json={"action": "on"})
+
+        assert response.status_code == 200
+        mock_publish.assert_awaited_once_with("zigbee2mqtt/plug/set", '{"state": "ON"}')
 
     @pytest.mark.asyncio
     @pytest.mark.integration

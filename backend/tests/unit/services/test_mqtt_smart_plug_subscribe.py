@@ -31,6 +31,9 @@ def _plug(**overrides):
         "mqtt_state_path": None,
         "mqtt_state_on_value": None,
         "mqtt_multiplier": None,
+        "mqtt_energy_total_topic": None,
+        "mqtt_energy_total_path": None,
+        "mqtt_energy_total_multiplier": None,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -143,3 +146,93 @@ def test_returns_unique_topic_list_when_same_topic_used_for_multiple_types():
     topics = subscribe_plug_to_mqtt(service, plug)
 
     assert topics == ["shared/topic"]
+
+
+class TestEnergyTotalSubscription:
+    """The lifetime counter is a fourth data_type beside power/energy/state.
+
+    It exists because only a lifetime figure may feed energy snapshots, and a
+    device's daily and cumulative readings usually arrive in the same payload
+    under different keys — so it needs its own path, not a flag on the existing
+    one. Mirrors ``rest_energy_total_path`` (m110).
+    """
+
+    def test_subscribe_registers_energy_total(self):
+        from backend.app.services.mqtt_smart_plug import MQTTSmartPlugService
+
+        service = MQTTSmartPlugService()
+        service.subscribe(
+            plug_id=1,
+            energy_total_topic="zigbee2mqtt/plug",
+            energy_total_path="energy",
+            energy_total_multiplier=1.0,
+        )
+
+        assert "energy_total" in service.plug_configs[1]
+        assert service.plug_configs[1]["energy_total"].topic == "zigbee2mqtt/plug"
+        assert service.plug_configs[1]["energy_total"].path == "energy"
+
+    def test_topic_falls_back_to_the_energy_topic(self):
+        """One payload usually carries both figures, so the topic is shared."""
+        from backend.app.services.mqtt_smart_plug import MQTTSmartPlugService
+
+        service = MQTTSmartPlugService()
+        plug = _plug(
+            mqtt_energy_topic="zigbee2mqtt/plug",
+            mqtt_energy_path="energy_today",
+            mqtt_energy_total_path="energy",
+            mqtt_energy_total_multiplier=0.001,
+        )
+
+        subscribe_plug_to_mqtt(service, plug)
+
+        cfg = service.plug_configs[1]["energy_total"]
+        assert cfg.topic == "zigbee2mqtt/plug"
+        assert cfg.multiplier == 0.001
+
+    def test_no_path_means_no_subscription(self):
+        """A bare topic cannot say which figure is the lifetime one."""
+        from backend.app.services.mqtt_smart_plug import MQTTSmartPlugService
+
+        service = MQTTSmartPlugService()
+        plug = _plug(mqtt_energy_topic="zigbee2mqtt/plug", mqtt_energy_path="energy_today")
+
+        subscribe_plug_to_mqtt(service, plug)
+
+        assert "energy_total" not in service.plug_configs[1]
+
+    def test_message_populates_energy_total(self):
+        import json
+
+        from backend.app.services.mqtt_smart_plug import MQTTSmartPlugService
+
+        service = MQTTSmartPlugService()
+        service.subscribe(
+            plug_id=3,
+            energy_total_topic="zigbee2mqtt/plug",
+            energy_total_path="energy",
+            energy_total_multiplier=1.0,
+        )
+
+        msg = MagicMock()
+        msg.topic = "zigbee2mqtt/plug"
+        msg.payload = json.dumps({"energy": 12.5}).encode()
+        service._on_message(MagicMock(), None, msg)
+
+        assert service.plug_data[3].energy_total == 12.5
+
+    def test_returned_topics_include_energy_total(self):
+        """Callers unsubscribe by this list; a missing topic leaks a subscription."""
+        from backend.app.services.mqtt_smart_plug import MQTTSmartPlugService
+
+        service = MQTTSmartPlugService()
+        plug = _plug(
+            mqtt_power_topic="shellies/plug",
+            mqtt_power_path="power",
+            mqtt_energy_total_topic="zigbee2mqtt/plug",
+            mqtt_energy_total_path="energy",
+        )
+
+        topics = subscribe_plug_to_mqtt(service, plug)
+
+        assert "zigbee2mqtt/plug" in topics

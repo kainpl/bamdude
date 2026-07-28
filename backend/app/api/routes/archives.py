@@ -1137,7 +1137,7 @@ async def _sum_live_plug_totals(db: AsyncSession) -> float:
     from backend.app.api.routes.settings import get_setting
     from backend.app.models.smart_plug import SmartPlug
     from backend.app.services.homeassistant import homeassistant_service
-    from backend.app.services.mqtt_relay import mqtt_relay
+    from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
     from backend.app.services.rest_smart_plug import rest_smart_plug_service
     from backend.app.services.tasmota import tasmota_service
 
@@ -1159,10 +1159,14 @@ async def _sum_live_plug_totals(db: AsyncSession) -> float:
             if energy and energy.get("total") is not None:
                 total += energy["total"]
         elif plug.plug_type == "mqtt":
-            # MQTT plugs only expose today's counter, not lifetime.
-            mqtt_data = mqtt_relay.smart_plug_service.get_plug_data(plug.id)
-            if mqtt_data and mqtt_data.energy is not None:
-                total += mqtt_data.energy
+            # Through the driver, and summing the LIFETIME figure like the
+            # branches above. This used to add the daily reading into a
+            # lifetime total; a plug with no lifetime source now contributes
+            # nothing, which is what the tasmota and homeassistant branches
+            # already do when their own total is missing.
+            energy = await mqtt_smart_plug_service.get_energy(plug)
+            if energy and energy.get("total") is not None:
+                total += energy["total"]
         elif plug.plug_type == "rest":
             energy = await rest_smart_plug_service.get_energy(plug)
             if energy and energy.get("today") is not None:
