@@ -1016,6 +1016,64 @@ def extract_printable_objects_from_3mf(
     return printable_objects
 
 
+def build_plate_objects_payload(data: bytes, plate_idx: int) -> dict:
+    """Everything the read-only plate preview needs, from one set of 3MF reads.
+
+    Lives here rather than in either route so ``/library/files/{id}/plate-objects``
+    and ``/archives/{id}/plate-objects`` answer identically — they differ only in
+    how they find the file and which plate they ask for.
+
+    ``has_top_view`` is checked rather than assumed. Markers are placed in
+    pick-PNG image space, which is top-down; over ``plate_N.png`` — a ¾ render —
+    they would sit convincingly on the wrong parts. The frontend suppresses the
+    image entirely when this is False, because no image beats a lying one.
+
+    Never raises: a corrupt or non-ZIP file yields an empty preview. The caller
+    has already established the row exists and the file is on disk, so a parse
+    failure here is a broken archive, not a missing one, and a 500 would tell
+    the operator less than an empty dialog does.
+    """
+    from io import BytesIO
+
+    objects, bbox_all, approximate = extract_printable_objects_from_3mf(
+        data, plate_idx, include_positions=True, with_confidence=True
+    )
+
+    has_top = False
+    try:
+        with zipfile.ZipFile(BytesIO(data), "r") as zf:
+            has_top = f"Metadata/top_{plate_idx}.png" in zf.namelist()
+    except Exception:
+        has_top = False
+
+    items: list[dict] = []
+    for oid, value in objects.items():
+        if isinstance(value, dict):
+            items.append(
+                {
+                    "id": oid,
+                    "name": value.get("name") or f"Object_{oid}",
+                    "x": value.get("x"),
+                    "y": value.get("y"),
+                    "norm": bool(value.get("norm")),
+                }
+            )
+        else:
+            items.append({"id": oid, "name": value, "x": None, "y": None, "norm": False})
+    # Sorted by id so the list order matches the marker numbers on the plate —
+    # dict order here is discovery order, which differs per tier.
+    items.sort(key=lambda o: o["id"])
+
+    return {
+        "plate_index": plate_idx,
+        "objects": items,
+        "bbox_all": bbox_all,
+        "positions_approximate": approximate,
+        "skip_objects_supported": extract_skip_support_from_3mf(data),
+        "has_top_view": has_top,
+    }
+
+
 def parse_plates_from_3mf(zf: zipfile.ZipFile) -> list[dict]:
     """Build the full per-plate metadata list for one 3MF.
 

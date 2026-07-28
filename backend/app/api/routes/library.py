@@ -64,6 +64,7 @@ from backend.app.schemas.library import (
     ZipExtractResponse,
     ZipExtractResult,
 )
+from backend.app.schemas.plate_objects import PlateObjectsResponse
 from backend.app.services.archive import ThreeMFParser
 from backend.app.services.library_helpers import (
     compute_file_tags,
@@ -3927,13 +3928,49 @@ async def get_library_file_plates(
     }
 
 
+@router.get("/files/{file_id}/plate-objects", response_model=PlateObjectsResponse)
+async def get_library_file_plate_objects(
+    file_id: int,
+    plate: int = 1,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_READ_ALL,
+            Permission.LIBRARY_READ_OWN,
+        )
+    ),
+):
+    """Objects on a plate, for the read-only preview. No skip action.
+
+    Read live from the 3MF rather than from ``file_metadata``: the preview must
+    be right even for rows the m114 backfill could not reach, and this is one
+    user-initiated request, not a list render.
+    """
+    from backend.app.services.archive import build_plate_objects_payload
+
+    user, can_read_all = auth_result
+    result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
+    lib_file = _ensure_library_file_visible(result.scalar_one_or_none(), user, can_read_all)
+
+    file_path = Path(app_settings.base_dir) / lib_file.file_path
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    return build_plate_objects_payload(file_path.read_bytes(), plate)
+
+
 @router.get("/files/{file_id}/plate-thumbnail/{plate_index}")
 async def get_library_file_plate_thumbnail(
     file_id: int,
     plate_index: int,
+    view: str = "plate",
     db: AsyncSession = Depends(get_db),
 ):
-    """Get the thumbnail image for a specific plate from a library file."""
+    """Get the thumbnail image for a specific plate from a library file.
+
+    ``view=top`` serves the top-down render the object-preview markers are
+    positioned against.
+    """
     from starlette.responses import Response
 
     result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
@@ -3948,7 +3985,12 @@ async def get_library_file_plate_thumbnail(
 
     try:
         with zipfile.ZipFile(file_path, "r") as zf:
-            thumb_path = f"Metadata/plate_{plate_index}.png"
+            # No fallback chain for the top view, unlike printers.py: that route
+            # degrades through plate_N/thumbnail so a camera card always shows
+            # something, but here the image carries markers positioned in
+            # top-down space. A ¾ render would place them convincingly on the
+            # wrong parts — a missing image is recoverable, a lying one is not.
+            thumb_path = f"Metadata/top_{plate_index}.png" if view == "top" else f"Metadata/plate_{plate_index}.png"
             if thumb_path in zf.namelist():
                 data = zf.read(thumb_path)
                 return Response(content=data, media_type="image/png")
