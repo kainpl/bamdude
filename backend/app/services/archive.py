@@ -732,6 +732,62 @@ def _objects_from_slice_info(zf: "zipfile.ZipFile", plate_idx: int) -> dict[int,
     return out
 
 
+def _name_for(oid: int, slice_names: dict[int, str]) -> str:
+    """Name for an id that slice_info never listed.
+
+    Instances of one model are consecutive ids, so the nearest smaller known id
+    is the model they were copied from. Duplicate names across instances are
+    correct — the slicer shows them the same way, and the id is what every skip
+    command actually addresses.
+    """
+    if oid in slice_names:
+        return slice_names[oid]
+    smaller = [k for k in slice_names if k <= oid]
+    if smaller:
+        return slice_names[max(smaller)]
+    if slice_names:
+        return slice_names[min(slice_names)]
+    return f"Object_{oid}"
+
+
+def _objects_from_pick_png(zf: "zipfile.ZipFile", plate_idx: int, slice_names: dict[int, str]) -> dict[int, str]:
+    """Tier 2: ids painted into ``Metadata/pick_{plate}.png``.
+
+    Each printed instance is filled with a colour encoding its identify_id as
+    ``id = r | g<<8 | b<<16`` — the same mapping the printer screen uses.
+
+    Rejects ``r == g == b``. Five archived files carry an ordinary greyscale
+    render under this name; their greys decode to large plausible-looking ids
+    (3881787 = RGB(59,59,59) and similar) which no pixel-count threshold filters
+    out, because the grey areas are enormous. A real identify_id is small enough
+    that b is 0, so a perfect grey is never one.
+    """
+    pick_path = f"Metadata/pick_{plate_idx}.png"
+    if pick_path not in zf.namelist():
+        return {}
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        img = Image.open(BytesIO(zf.read(pick_path))).convert("RGBA")
+        w, h = img.size
+        if w == 0 or h == 0:
+            return {}
+        raw = img.tobytes()
+        counts: dict[int, int] = {}
+        for i in range(0, len(raw), 4):
+            r, g, b, a = raw[i], raw[i + 1], raw[i + 2], raw[i + 3]
+            if a < 16 or (r < 16 and g < 16 and b < 16) or (r == g == b):
+                continue
+            oid = r | (g << 8) | (b << 16)
+            counts[oid] = counts.get(oid, 0) + 1
+        min_count = max(50, int(w * h * 0.0005))
+        return {oid: _name_for(oid, slice_names) for oid, c in counts.items() if c >= min_count}
+    except Exception:
+        return {}
+
+
 def discover_plate_objects(zf: "zipfile.ZipFile", plate_idx: int) -> dict[int, str]:
     """Every printable object on ``plate_idx``, as ``{identify_id: name}``.
 
@@ -741,7 +797,13 @@ def discover_plate_objects(zf: "zipfile.ZipFile", plate_idx: int) -> dict[int, s
 
     Discovery approach adapted from @latsss' bambu-cli 3mf-parser, with thanks.
     """
-    return _objects_from_slice_info(zf, plate_idx)
+    slice_names = _objects_from_slice_info(zf, plate_idx)
+
+    from_pick = _objects_from_pick_png(zf, plate_idx, slice_names)
+    if from_pick:
+        return from_pick
+
+    return slice_names
 
 
 def extract_printable_objects_from_3mf(

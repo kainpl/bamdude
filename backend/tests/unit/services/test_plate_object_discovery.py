@@ -94,3 +94,62 @@ class TestSliceInfoTier:
         data = make_3mf(slice_ids={941: "ok.stl"}).replace(b'identify_id="941"', b'identify_id="abc"')
         with _open(data) as zf:
             assert discover_plate_objects(zf, 1) == {}
+
+
+class TestPickPngTier:
+    def test_pick_png_beats_slice_info_when_it_has_more(self):
+        """The Orca 2.4+ case: one entry listed, several instances printed."""
+        data = make_3mf(slice_ids={941: "part.stl"}, pick_ids=[941, 942, 943])
+        with _open(data) as zf:
+            assert discover_plate_objects(zf, 1) == {
+                941: "part.stl",
+                942: "part.stl",
+                943: "part.stl",
+            }
+
+    def test_greyscale_png_is_rejected_entirely(self):
+        """Five archived files have an ordinary grey render named pick_1.png.
+
+        Their 'ids' decode to RGB(59,59,59), (117,117,117) and friends — perfect
+        greys, far above any pixel-count noise floor. Trusting them invents four
+        objects that do not exist, so r == g == b is rejected outright.
+        """
+        data = make_3mf(slice_ids={941: "part.stl"}, pick_ids=[941, 942, 943], grey=True)
+        with _open(data) as zf:
+            assert discover_plate_objects(zf, 1) == {941: "part.stl"}
+
+    def test_unknown_id_inherits_the_nearest_smaller_name(self):
+        data = make_3mf(slice_ids={100: "small.stl", 200: "big.stl"}, pick_ids=[100, 150, 200, 250])
+        with _open(data) as zf:
+            found = discover_plate_objects(zf, 1)
+        assert found[150] == "small.stl"
+        assert found[250] == "big.stl"
+
+    def test_id_below_every_known_one_takes_the_first_name(self):
+        data = make_3mf(slice_ids={200: "big.stl"}, pick_ids=[100, 200])
+        with _open(data) as zf:
+            assert discover_plate_objects(zf, 1)[100] == "big.stl"
+
+    def test_no_slice_info_names_at_all(self):
+        buf = io.BytesIO()
+        rows = [[(0, 0, 0)] * 40 for _ in range(40)]
+        for y in range(4, 20):
+            for x in range(4, 36):
+                rows[y][x] = (77, 0, 0)
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("Metadata/pick_1.png", _png(rows))
+        with _open(buf.getvalue()) as zf:
+            assert discover_plate_objects(zf, 1) == {77: "Object_77"}
+
+    def test_tiny_specks_are_ignored(self):
+        """Anti-aliasing fringe must not become an object."""
+        buf = io.BytesIO()
+        rows = [[(0, 0, 0)] * 40 for _ in range(40)]
+        for y in range(4, 20):
+            for x in range(4, 36):
+                rows[y][x] = (77, 0, 0)
+        rows[30][30] = (200, 0, 0)  # single stray pixel
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("Metadata/pick_1.png", _png(rows))
+        with _open(buf.getvalue()) as zf:
+            assert set(discover_plate_objects(zf, 1)) == {77}
