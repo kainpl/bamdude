@@ -3462,6 +3462,24 @@ export default {
   },
 
   library: {
+    // Read-only plate object preview, opened from a library file or an archive.
+    // The banner strings are the point of the feature: the button is never
+    // hidden when skipping is unavailable, because naming the slicer setting
+    // that turned it off is actionable where a missing button teaches nothing.
+    plateObjects: {
+      title: 'Objects on the plate',
+      badge: 'Skip objects',
+      badgeTooltip: 'Per-object skipping is available for this file',
+      open: 'View objects on the plate',
+      skipSupported: 'Object skipping is available for this file.',
+      skipUnsupported: 'Object skipping is unavailable — "Exclude objects" was off in the slicer when this file was sliced.',
+      approximate: 'Positions are approximate — this file carries no per-object pick data.',
+      noImage: 'This file has no plate preview image.',
+      empty: 'No objects found on this plate.',
+      plate: 'Plate {{index}}',
+      objectCount: '{{count}} object',
+      objectCount_other: '{{count}} objects',
+    },
     // Composite tag labels (m036). Surfaced by ``<FileTagBadges>`` in the
     // file manager and by the chip-row filter. Short, all-caps for badge
     // density. Keep en + uk in sync.

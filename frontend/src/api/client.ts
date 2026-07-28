@@ -1,4 +1,4 @@
-import type { ArchivePlatesResponse, LibraryFilePlatesResponse } from '../types/plates';
+import type { ArchivePlatesResponse, LibraryFilePlatesResponse, PlateObjectsResponse } from '../types/plates';
 
 export class ApiError extends Error {
   status: number;
@@ -730,6 +730,9 @@ export interface Archive {
   duplicate_sequence: number;  // 0 = original, 1+ = nth duplicate
   original_archive_id: number | null;  // ID of the first/original archive
   object_count: number | null;
+  // gcode_label_objects AND exclude_object. Badge in the list; the preview
+  // modal explains what it means rather than hiding itself when false.
+  skip_objects_supported: boolean;
   print_name: string | null;
   print_time_seconds: number | null;
   actual_time_seconds: number | null;  // Computed from started_at/completed_at
@@ -7527,6 +7530,17 @@ export const api = {
     }),
   getLibraryFilePlates: (fileId: number) =>
     request<LibraryFilePlatesResponse>(`/library/files/${fileId}/plates`),
+
+  // Read-only plate object preview. One call for both sources: they differ only
+  // in how the file is found. The archive route takes no plate — it answers for
+  // archive.plate_index, because an archive records one executed print and
+  // object ids are numbered per plate.
+  getPlateObjects: (source: 'library' | 'archive', id: number, plate = 1) =>
+    request<PlateObjectsResponse>(
+      source === 'library'
+        ? `/library/files/${id}/plate-objects?plate=${plate}`
+        : `/archives/${id}/plate-objects`,
+    ),
   getLibraryFileFilamentRequirements: (fileId: number, plateId?: number, requestId?: string) => {
     const params = new URLSearchParams();
     if (plateId !== undefined) params.set('plate_id', String(plateId));
@@ -8191,6 +8205,9 @@ export interface LibraryFile {
   print_time_seconds: number | null;
   filament_used_grams: number | null;
   object_count: number | null;
+  // gcode_label_objects AND exclude_object. Badge in the list; the preview
+  // modal explains what it means rather than hiding itself when false.
+  skip_objects_supported: boolean;
   sliced_for_model: string | null;
   swap_compatible: boolean;
   // Provenance (m033) — populated for MakerWorld imports + slicer outputs.
@@ -8222,6 +8239,9 @@ export interface LibraryFileListItem {
   print_time_seconds: number | null;
   filament_used_grams: number | null;
   object_count: number | null;
+  // gcode_label_objects AND exclude_object. Badge in the list; the preview
+  // modal explains what it means rather than hiding itself when false.
+  skip_objects_supported: boolean;
   sliced_for_model: string | null;
   swap_compatible: boolean;
   // True iff the 3MF carries 2+ plates (extracted at upload / m023 backfill).
