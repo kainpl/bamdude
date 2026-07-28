@@ -5999,6 +5999,13 @@ export default {
     multiplier: 'Множник',
     onValue: 'Значення ON',
     mqttPowerHint: 'JSON шлях витягує значення з JSON пейлоаду (напр., "power_l1"). Залиште порожнім для числових значень.\nМножник 0.001 для мВт\u2192Вт, 1000 для кВт\u2192Вт.',
+    mqttEnergyTotalTitle: 'Накопичена енергія',
+    mqttEnergyTotalPath: 'JSON шлях до накопиченої',
+    mqttEnergyTotalHint: 'Лічильник, що ніколи не обнуляється (Zigbee2MQTT: "energy", Tasmota: "ENERGY.Total"). Потрібен для обліку енергії та вартості за друк — денний лічильник не годиться, бо друк через опівніч вимірявся б як від’ємний.',
+    mqttControlTitle: 'Керування',
+    mqttCommandOn: 'Payload для увімкнення',
+    mqttCommandOff: 'Payload для вимкнення',
+    mqttCommandHint: 'Залиште топік порожнім, щоб розетка лишалась лише для моніторингу.\nZigbee2MQTT: публікує {"state": "ON"} у <name>/set. Tasmota: публікує ON у cmnd/<name>/POWER.',
     mqttEnergyHint: 'JSON шлях витягує значення з JSON пейлоаду. Залиште порожнім для числових значень.\nМножник 0.001 для Вт\u00b7год\u2192кВт\u00b7год, 1000 для МВт\u00b7год\u2192кВт\u00b7год.',
     mqttStateHint: 'JSON шлях витягує значення з JSON пейлоаду. Залиште порожнім для числових значень.\nЗначення ON: рядок, що означає "ON". Залиште порожнім для автовизначення (ON, true, 1).',
     // REST smart plug
