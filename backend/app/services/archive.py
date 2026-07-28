@@ -236,21 +236,20 @@ class ThreeMFParser:
                         elif key == "curr_bed_type" and value:
                             self.metadata["bed_type"] = value
 
-                    # Extract printable objects for skip object functionality
-                    # Objects are stored as <object identify_id="123" name="Part1" skipped="false" />
-                    printable_objects = {}
-                    for obj in plate.findall("object"):
-                        identify_id = obj.get("identify_id")
-                        name = obj.get("name")
-                        skipped = obj.get("skipped", "false")
-
-                        # Only include objects that are not pre-skipped
-                        if identify_id and name and skipped.lower() != "true":
+                    # Same discovery the Skip Objects list uses, so the count on a
+                    # library card and the list in the dialog can never disagree.
+                    # Reading slice_info here directly is what made both report one
+                    # object for a plate holding five.
+                    plate_idx = 1
+                    for meta_el in plate.findall("metadata"):
+                        if meta_el.get("key") == "index":
                             try:
-                                printable_objects[int(identify_id)] = name
+                                plate_idx = int(meta_el.get("value", "1"))
                             except ValueError:
-                                pass  # Skip objects with non-numeric identify_id
+                                pass
+                            break
 
+                    printable_objects = discover_plate_objects(zf, plate_idx)
                     if printable_objects:
                         self.metadata["printable_objects"] = printable_objects
 

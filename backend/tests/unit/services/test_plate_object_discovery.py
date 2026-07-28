@@ -247,3 +247,17 @@ class TestExtractorUsesDiscovery:
         assert set(objects) == {941, 999}
         assert objects[999]["x"] is None
         assert objects[999]["norm"] is False
+
+
+class TestParserMetadataCount:
+    def test_file_metadata_counts_every_instance(self, tmp_path):
+        """library.py derives object_count from len() of this dict."""
+        from backend.app.services.archive import ThreeMFParser
+
+        path = tmp_path / "job.gcode.3mf"
+        path.write_bytes(make_3mf(slice_ids={941: "part.stl"}, gcode_ids=[941, 942, 943]))
+
+        meta = ThreeMFParser(path).parse()
+
+        assert len(meta["printable_objects"]) == 3
+        assert set(meta["printable_objects"]) == {941, 942, 943}
