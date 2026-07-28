@@ -215,3 +215,35 @@ class TestGcodeHeaderTier:
         data = make_3mf(slice_ids={941: "part.stl"})
         with _open(data) as zf:
             assert discover_plate_objects(zf, 1) == {941: "part.stl"}
+
+
+class TestExtractorUsesDiscovery:
+    def test_returns_every_instance_not_just_the_slice_info_entry(self):
+        from backend.app.services.archive import extract_printable_objects_from_3mf
+
+        data = make_3mf(slice_ids={941: "part.stl"}, gcode_ids=[941, 942, 943])
+        assert extract_printable_objects_from_3mf(data) == {
+            941: "part.stl",
+            942: "part.stl",
+            943: "part.stl",
+        }
+
+    def test_positions_still_come_from_the_pick_png(self):
+        from backend.app.services.archive import extract_printable_objects_from_3mf
+
+        data = make_3mf(slice_ids={941: "part.stl"}, gcode_ids=[941, 942], pick_ids=[941, 942])
+        objects, _bbox = extract_printable_objects_from_3mf(data, include_positions=True)
+        assert set(objects) == {941, 942}
+        for oid in (941, 942):
+            assert objects[oid]["norm"] is True
+            assert 0.0 <= objects[oid]["x"] <= 1.0
+
+    def test_object_without_a_pick_region_still_appears(self):
+        """It loses its marker position, not its place in the list."""
+        from backend.app.services.archive import extract_printable_objects_from_3mf
+
+        data = make_3mf(slice_ids={941: "part.stl"}, gcode_ids=[941, 999], pick_ids=[941])
+        objects, _ = extract_printable_objects_from_3mf(data, include_positions=True)
+        assert set(objects) == {941, 999}
+        assert objects[999]["x"] is None
+        assert objects[999]["norm"] is False

@@ -965,38 +965,31 @@ def extract_printable_objects_from_3mf(
                     except (json.JSONDecodeError, KeyError):
                         pass  # Position data is optional; objects will lack x/y coordinates
 
-            # Extract objects from slice_info.config
-            for obj in plate.findall("object"):
-                identify_id = obj.get("identify_id")
-                name = obj.get("name")
-                skipped = obj.get("skipped", "false")
-
-                if identify_id and name and skipped.lower() != "true":
-                    try:
-                        obj_id = int(identify_id)
-                        if include_positions:
-                            x, y, norm = None, None, False
-                            if obj_id in pick_centroids:
-                                # Normalized image-space centroid from the pick PNG —
-                                # matches the printer screen. Frontend places directly.
-                                x, y = pick_centroids[obj_id]
-                                norm = True
-                            else:
-                                # Fallback: bbox center in mm (frontend maps via bbox_all).
-                                # Prefer id-match; fall back to name-match (pop for dup names).
-                                bbox = bbox_by_id.get(obj_id)
-                                if bbox is None:
-                                    bboxes = bbox_by_name.get(name)
-                                    if bboxes:
-                                        bbox = bboxes.pop(0)
-                                if bbox and len(bbox) >= 4:
-                                    x = (bbox[0] + bbox[2]) / 2
-                                    y = (bbox[1] + bbox[3]) / 2
-                            printable_objects[obj_id] = {"name": name, "x": x, "y": y, "norm": norm}
-                        else:
-                            printable_objects[obj_id] = name
-                    except ValueError:
-                        pass  # Skip objects with non-numeric identify_id
+            # Object list comes from discover_plate_objects, which prefers the
+            # gcode header over slice_info — this loop used to read slice_info
+            # directly and so reported one object for a plate holding five.
+            for obj_id, name in discover_plate_objects(zf, plate_idx).items():
+                if include_positions:
+                    x, y, norm = None, None, False
+                    if obj_id in pick_centroids:
+                        # Normalized image-space centroid from the pick PNG —
+                        # matches the printer screen. Frontend places directly.
+                        x, y = pick_centroids[obj_id]
+                        norm = True
+                    else:
+                        # Fallback: bbox center in mm (frontend maps via bbox_all).
+                        # Prefer id-match; fall back to name-match (pop for dup names).
+                        bbox = bbox_by_id.get(obj_id)
+                        if bbox is None:
+                            bboxes = bbox_by_name.get(name)
+                            if bboxes:
+                                bbox = bboxes.pop(0)
+                        if bbox and len(bbox) >= 4:
+                            x = (bbox[0] + bbox[2]) / 2
+                            y = (bbox[1] + bbox[3]) / 2
+                    printable_objects[obj_id] = {"name": name, "x": x, "y": y, "norm": norm}
+                else:
+                    printable_objects[obj_id] = name
 
     except Exception:
         pass  # Return empty dict if 3MF is corrupt or unreadable
