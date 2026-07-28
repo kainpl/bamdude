@@ -42,3 +42,15 @@ def test_snapshot_loop_no_longer_special_cases_mqtt():
     source = inspect.getsource(smart_plug_manager.SmartPlugManager._capture_energy_snapshots)
     assert 'plug_type == "mqtt"' not in source
     assert 'energy.get("total")' in source
+
+
+def test_control_endpoint_no_longer_rejects_mqtt():
+    """The endpoint used to 400 every MQTT control request as monitor-only.
+
+    Without this the automation paths (auto-on, auto-off, schedules, Obico's
+    pause_and_off) would work while the buttons in the UI kept failing — a
+    half-working feature that reads as a bug.
+    """
+    from backend.app.api.routes import smart_plugs
+
+    assert "MQTT plugs are monitor-only" not in inspect.getsource(smart_plugs)

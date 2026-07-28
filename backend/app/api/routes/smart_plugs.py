@@ -38,6 +38,7 @@ from backend.app.services.mqtt_smart_plug import subscribe_plug_to_mqtt
 from backend.app.services.notification_service import notification_service
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.rest_smart_plug import rest_smart_plug_service
+from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.services.tasmota import tasmota_service
 
 logger = logging.getLogger(__name__)
@@ -522,20 +523,16 @@ async def delete_smart_plug(
 
 
 async def _get_service_for_plug(plug: SmartPlug, db: AsyncSession):
-    """Get the appropriate service for the plug type.
+    """Resolve the driver for a plug.
 
-    For HA plugs, configures the service with current settings from DB.
+    Delegates rather than deciding: this was a verbatim second copy of
+    ``SmartPlugManager.get_service_for_plug`` — same branches, same Tasmota
+    fallthrough — and the two drifted the moment a fourth plug type gained a
+    driver. Routing a plug differently depending on whether the request came
+    through the API or through automation is the kind of split that only shows
+    up as "the button does nothing while the schedule works".
     """
-    if plug.plug_type == "homeassistant":
-        # Configure HA service with current settings
-        from backend.app.api.routes.settings import get_homeassistant_settings
-
-        ha_settings = await get_homeassistant_settings(db)
-        homeassistant_service.configure(ha_settings["ha_url"], ha_settings["ha_token"])
-        return homeassistant_service
-    if plug.plug_type == "rest":
-        return rest_smart_plug_service
-    return tasmota_service
+    return await smart_plug_manager.get_service_for_plug(plug, db)
 
 
 @router.post("/{plug_id}/control")
@@ -551,13 +548,10 @@ async def control_smart_plug(
     if not plug:
         raise HTTPException(404, "Smart plug not found")
 
-    # MQTT plugs are monitor-only - cannot control them
-    if plug.plug_type == "mqtt":
-        raise HTTPException(
-            400,
-            "MQTT plugs are monitor-only. Use your MQTT broker or home automation system to control them.",
-        )
-
+    # MQTT plugs used to be refused here as monitor-only. They now have a
+    # command channel (mqtt_command_topic + payloads), and a plug configured
+    # without one is handled a layer down: the driver returns False and this
+    # endpoint reports it the same way it reports an unreachable Tasmota.
     service = await _get_service_for_plug(plug, db)
 
     if control.action == "on":
