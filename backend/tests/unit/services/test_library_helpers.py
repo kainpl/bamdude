@@ -52,3 +52,18 @@ def test_agrees_with_live_3mf_gate(glo, eo, expected):
     # What _extract_print_settings writes for this input: both keys present and
     # already coerced, so the stored dict is the settings dict.
     assert skip_objects_supported_from_metadata(settings_json) is expected
+
+
+def test_schemas_expose_skip_objects_supported():
+    """Every list/detail surface the badge renders on must carry the field.
+
+    ``FileResponse`` is what ``routes/library.py`` imports as
+    ``FileResponseSchema`` — the alias only exists to avoid colliding with
+    Starlette's class of that name.
+    """
+    from backend.app.schemas.archive import ArchiveResponse
+    from backend.app.schemas.library import FileListResponse, FileResponse
+
+    for model in (FileListResponse, FileResponse, ArchiveResponse):
+        assert "skip_objects_supported" in model.model_fields
+        assert model.model_fields["skip_objects_supported"].default is False

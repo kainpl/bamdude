@@ -65,7 +65,11 @@ from backend.app.schemas.library import (
     ZipExtractResult,
 )
 from backend.app.services.archive import ThreeMFParser
-from backend.app.services.library_helpers import compute_file_tags, detect_file_type
+from backend.app.services.library_helpers import (
+    compute_file_tags,
+    detect_file_type,
+    skip_objects_supported_from_metadata,
+)
 from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing
 from backend.app.services.print_plan import inherit_folder_projects, sync_plan_for_file, sync_plan_for_folder
 from backend.app.services.stl_thumbnail import MIN_USABLE_STL_BYTES, generate_stl_thumbnail
@@ -450,6 +454,7 @@ async def save_3mf_bytes_to_library(
             source_type=source_type,
             swap_compatible=swap_compatible,
         ),
+        skip_objects_supported=skip_objects_supported_from_metadata(metadata or None),
         file_size=len(content),
         file_hash=file_hash,
         thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
@@ -1736,6 +1741,7 @@ async def scan_external_folder(
                     source_type=None,
                     swap_compatible=False,
                 ),
+                skip_objects_supported=skip_objects_supported_from_metadata(file_metadata),
                 file_size=stat.st_size,
                 file_hash=None,  # Skip hashing external files for performance
                 thumbnail_path=thumbnail_path,
@@ -2026,6 +2032,7 @@ async def list_files(
                 print_time_seconds=print_time,
                 filament_used_grams=filament_grams,
                 object_count=object_count,
+                skip_objects_supported=f.skip_objects_supported,
                 sliced_for_model=sliced_for_model,
                 swap_compatible=f.swap_compatible,
                 is_multi_plate=is_multi_plate,
@@ -2777,6 +2784,7 @@ async def slice_and_persist(
             source_type="sliced",
             swap_compatible=False,
         ),
+        skip_objects_supported=skip_objects_supported_from_metadata(metadata),
         file_size=len(sliced_bytes),
         file_hash=hashlib.sha256(sliced_bytes).hexdigest(),
         thumbnail_path=thumbnail_relative,
@@ -2950,6 +2958,7 @@ async def slice_and_persist_as_archive(
         # surfaces in the normal archives list, but do not stamp
         # started/completed_at — the user hasn't actually printed it yet.
         extra_data=metadata,
+        skip_objects_supported=skip_objects_supported_from_metadata(metadata),
     )
     db.add(new_archive)
     await db.commit()
@@ -3239,6 +3248,7 @@ async def upload_file(
                 source_type=None,
                 swap_compatible=swap_compatible,
             ),
+            skip_objects_supported=skip_objects_supported_from_metadata(metadata if metadata else None),
             file_size=len(content),
             file_hash=file_hash,
             thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
@@ -3504,6 +3514,7 @@ async def extract_zip_file(
                             source_type=None,
                             swap_compatible=False,
                         ),
+                        skip_objects_supported=skip_objects_supported_from_metadata(metadata if metadata else None),
                         file_size=len(file_content),
                         file_hash=file_hash,
                         thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
@@ -4502,6 +4513,7 @@ async def get_file(
         print_time_seconds=print_time,
         filament_used_grams=filament_grams,
         object_count=object_count,
+        skip_objects_supported=file.skip_objects_supported,
         sliced_for_model=sliced_for_model,
         swap_compatible=file.swap_compatible,
         source_type=file.source_type,

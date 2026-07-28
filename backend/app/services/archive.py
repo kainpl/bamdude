@@ -16,6 +16,7 @@ from backend.app.core.config import settings
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
+from backend.app.services.library_helpers import skip_objects_supported_from_metadata
 from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 
 logger = logging.getLogger(__name__)
@@ -2179,6 +2180,7 @@ class ArchiveService:
             cost=cost,
             quantity=quantity,
             extra_data=metadata,
+            skip_objects_supported=skip_objects_supported_from_metadata(metadata),
             created_by_id=created_by_id,
             project_id=project_id,
             subtask_id=subtask_id,
@@ -2398,6 +2400,9 @@ class ArchiveService:
             archive.makerworld_url = metadata.get("makerworld_url")
             archive.designer = metadata.get("designer")
             archive.extra_data = merged_extra
+            # The fallback row was created with no 3MF, so it defaulted to
+            # False. Now that the file has landed we know the real answer.
+            archive.skip_objects_supported = skip_objects_supported_from_metadata(metadata)
 
             # Backfill cost + quantity — fallback creation seeded them with
             # NULL / 1, and without this the archive stays stuck there even
