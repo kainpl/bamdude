@@ -863,8 +863,11 @@ def discover_plate_objects(zf: "zipfile.ZipFile", plate_idx: int) -> dict[int, s
 
 
 def extract_printable_objects_from_3mf(
-    data: bytes, plate_number: int | None = None, include_positions: bool = False
-) -> dict[int, str] | dict[int, dict] | tuple[dict[int, dict], list | None]:
+    data: bytes,
+    plate_number: int | None = None,
+    include_positions: bool = False,
+    with_confidence: bool = False,
+) -> dict[int, str] | dict[int, dict] | tuple[dict[int, dict], list | None] | tuple[dict[int, dict], list | None, bool]:
     """Extract printable objects from 3MF file bytes.
 
     This is a lightweight function used during print start to get the list
@@ -874,10 +877,17 @@ def extract_printable_objects_from_3mf(
         data: Raw bytes of the 3MF file
         plate_number: Which plate was printed (1-based), or None for first plate
         include_positions: If True, return tuple of (objects dict, bbox_all)
+        with_confidence: Adds a third element saying the positions are guesses.
+            Opt-in so the two existing return shapes stay exactly as they were.
 
     Returns:
         If include_positions=False: Dictionary mapping identify_id (int) to object name (str)
         If include_positions=True: Tuple of (dict mapping identify_id to {name, x, y}, bbox_all list or None)
+        If with_confidence=True as well: that tuple plus ``positions_approximate``
+        — True when NOT ONE object could be located in the pick PNG, so every
+        marker falls to the frontend's grid fallback and the plate it draws is
+        fictional. One real position is enough to anchor the rest, so the flag
+        is about a total absence, not partial coverage.
     """
     from io import BytesIO
 
@@ -994,6 +1004,13 @@ def extract_printable_objects_from_3mf(
         pass  # Return empty dict if 3MF is corrupt or unreadable
 
     if include_positions:
+        if with_confidence:
+            # Approximate only when nothing at all could be placed. A single real
+            # centroid means the pick PNG was readable and the rest simply are
+            # not visible in it (occluded), which is not the same as a wholly
+            # invented layout.
+            approximate = not any(o.get("norm") for o in printable_objects.values())
+            return printable_objects, bbox_all, approximate
         return printable_objects, bbox_all
     return printable_objects
 
@@ -1404,6 +1421,7 @@ def load_objects_from_archive_into_state(archive: PrintArchive, printer_id: int)
     if client is not None:
         client.state.printable_objects = {}
         client.state.printable_objects_bbox_all = None
+        client.state.printable_objects_approximate = False
         client.state.skipped_objects = []
         client.state.skip_objects_supported = False
 
@@ -1418,13 +1436,11 @@ def load_objects_from_archive_into_state(archive: PrintArchive, printer_id: int)
         # The archive knows which plate it printed, so scope to it (#2522) — a
         # multi-plate 3MF numbers identify_ids per plate, and an unscoped list
         # would offer plate 1's objects for a plate-3 job.
-        result = extract_printable_objects_from_3mf(
-            threemf_data, plate_number=archive.plate_index, include_positions=True
-        )
-        # Function returns either dict or (dict, bbox_all) depending on flag —
-        # we always pass include_positions=True so unpack accordingly.
-        printable_objects, bbox_all = (
-            result if isinstance(result, tuple) else (result, None)  # type: ignore[misc]
+        printable_objects, bbox_all, approximate = extract_printable_objects_from_3mf(
+            threemf_data,
+            plate_number=archive.plate_index,
+            include_positions=True,
+            with_confidence=True,
         )
         if not printable_objects:
             return False
@@ -1432,6 +1448,7 @@ def load_objects_from_archive_into_state(archive: PrintArchive, printer_id: int)
             return False
         client.state.printable_objects = printable_objects
         client.state.printable_objects_bbox_all = bbox_all
+        client.state.printable_objects_approximate = approximate
 
         # skip_objects_supported gate: requires BOTH flags true in
         # archive.extra_data. Strict — None / missing → False (hide

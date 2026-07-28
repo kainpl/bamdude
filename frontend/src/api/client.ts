@@ -4797,6 +4797,9 @@ export const api = {
       skipped_count: number;
       is_printing: boolean;
       bbox_all: [number, number, number, number] | null;
+      // True when not one object could be located in the plate's colour map, so
+      // every marker came from the grid fallback rather than the real layout.
+      positions_approximate?: boolean;
     }>(`/printers/${printerId}/print/objects`),
 
   skipObjects: (printerId: number, objectIds: number[]) =>

@@ -261,3 +261,43 @@ class TestParserMetadataCount:
 
         assert len(meta["printable_objects"]) == 3
         assert set(meta["printable_objects"]) == {941, 942, 943}
+
+
+class TestApproximatePositions:
+    def test_flag_set_when_no_object_has_a_pick_region(self):
+        from backend.app.services.archive import extract_printable_objects_from_3mf
+
+        data = make_3mf(slice_ids={941: "part.stl"}, gcode_ids=[941, 942])
+        objects, _bbox, approximate = extract_printable_objects_from_3mf(
+            data, include_positions=True, with_confidence=True
+        )
+        assert set(objects) == {941, 942}
+        assert approximate is True
+
+    def test_flag_clear_when_positions_are_real(self):
+        from backend.app.services.archive import extract_printable_objects_from_3mf
+
+        data = make_3mf(slice_ids={941: "part.stl"}, gcode_ids=[941], pick_ids=[941])
+        _objects, _bbox, approximate = extract_printable_objects_from_3mf(
+            data, include_positions=True, with_confidence=True
+        )
+        assert approximate is False
+
+    def test_flag_clear_when_only_some_positions_are_real(self):
+        """One real marker is enough to anchor the layout — not approximate."""
+        from backend.app.services.archive import extract_printable_objects_from_3mf
+
+        data = make_3mf(slice_ids={941: "part.stl"}, gcode_ids=[941, 999], pick_ids=[941])
+        _objects, _bbox, approximate = extract_printable_objects_from_3mf(
+            data, include_positions=True, with_confidence=True
+        )
+        assert approximate is False
+
+    def test_default_return_shape_is_unchanged(self):
+        """Four call sites unpack two values; they must keep working untouched."""
+        from backend.app.services.archive import extract_printable_objects_from_3mf
+
+        data = make_3mf(slice_ids={941: "part.stl"}, gcode_ids=[941])
+        objects, bbox = extract_printable_objects_from_3mf(data, include_positions=True)
+        assert set(objects) == {941}
+        assert bbox is None

@@ -3710,16 +3710,18 @@ async def on_print_start(printer_id: int, data: dict):
                     # really holds that id on the running plate. resolve_plate_id is
                     # the same resolver the cover/thumbnail path uses, so the object
                     # list cannot disagree with the picture it is drawn over.
-                    printable_objects, bbox_all = extract_printable_objects_from_3mf(
+                    printable_objects, bbox_all, approximate = extract_printable_objects_from_3mf(
                         threemf_data,
                         plate_number=resolve_plate_id(client.state) if client else None,
                         include_positions=True,
+                        with_confidence=True,
                     )
                     if printable_objects:
                         # Store objects in printer state
                         if client:
                             client.state.printable_objects = printable_objects
                             client.state.printable_objects_bbox_all = bbox_all
+                            client.state.printable_objects_approximate = approximate
                             client.state.skipped_objects = []  # Reset skipped objects for new print
                             # Gate the Skip-Objects UI button. Derived straight from the
                             # 3MF (not archive.extra_data, which this slicer-start path

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X, Loader2, Monitor, Box, Maximize2 } from 'lucide-react';
+import { X, Loader2, Monitor, Box, Maximize2, AlertTriangle } from 'lucide-react';
 import { api, withStreamToken } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -322,6 +322,19 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
                 {objectsData.skipped_count}/{objectsData.total} {t('printers.skipObjects.skipped')}
               </div>
             </div>
+
+            {/* Nothing on this plate could be located in the file's object map,
+                so every marker below came from markerPosition's grid fallback.
+                The picture looks like a real layout and is not one — saying so
+                is better than implying a precision we do not have. */}
+            {objectsData.positions_approximate && (
+              <div className="flex items-start gap-2 px-4 py-2 bg-amber-50 dark:bg-amber-500/10 border-b border-gray-200 dark:border-bambu-dark-tertiary">
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                <p className="text-[11px] text-amber-700 dark:text-amber-300/90">
+                  {t('printers.skipObjects.approximatePositions')}
+                </p>
+              </div>
+            )}
 
             {/* Content: Image + List side by side */}
             <div className="flex flex-1 min-h-0 overflow-hidden">

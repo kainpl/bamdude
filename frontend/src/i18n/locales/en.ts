@@ -597,6 +597,7 @@ export default {
       title: 'Skip Objects',
       matchIdsInfo: 'Match IDs with your printer display',
       printerShowsIds: 'The printer screen shows object IDs on the build plate',
+      approximatePositions: 'Marker positions are approximate — this file has no object map, so they are laid out in a grid rather than where the parts actually sit.',
       skipped: 'skipped',
       objectsSkipped: 'Objects skipped',
       activeCount: '{{count}} active',
