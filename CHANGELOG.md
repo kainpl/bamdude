@@ -14,6 +14,10 @@ All notable changes to BamDude will be documented in this file.
 
 - **Archives now show what a print was estimated to take next to what it really took.** The list view gains a Print time column between Printer and Date: the slicer's estimate on the top line, the actual duration below it, and beside that the same over/under percentage the cards already carried. The card view, which only ever showed one figure, now shows both as `estimate / actual`. Either side can be missing — a file that was never sliced has no estimate, a running or failed print has no actual — and the missing one reads as a dash rather than silently borrowing the other's number, which is what the card used to do.
 
+### Fixed
+
+- **Plates sliced in OrcaSlicer showed one object where there were several, and Skip Objects could only reach that one.** When you place copies of a model, newer OrcaSlicer records just the original in the file's object list, even though it prints and labels every copy — so a plate of five parts appeared as one, and the other four could not be skipped, on a printer perfectly able to skip them. BamDude now reads the object list the printer itself works from, in the print file's own G-code, and falls back to the plate's colour map when that is absent. The same list feeds the object counts shown for files and archives, which were undercounting for the same reason. Thanks to @latsss (bambu-cli) for identifying where the real list lives and for the reconciliation approach.
+
 ### Changed
 
 - **The Skip Objects dialog is shorter — 60% of the window's height rather than 80%.** 0.5.0 introduced the taller dialog and its release notes say 80%; in use that turned out to be more window than the content needs. Objects per column follow the height, so a shorter dialog simply means the list wraps into its next column sooner.
