@@ -689,6 +689,61 @@ def _pick_centroids_from_3mf(zf: "zipfile.ZipFile", plate_idx: int) -> dict[int,
         return {}
 
 
+def _objects_from_slice_info(zf: "zipfile.ZipFile", plate_idx: int) -> dict[int, str]:
+    """Tier 3: the plate's ``<object>`` entries. Today's only source.
+
+    Kept last because it is wrong in both directions on real files: OrcaSlicer
+    2.4+ lists one entry for N instances, and one archived file listed two ids
+    that appear in neither the gcode nor the pick PNG.
+    """
+    if "Metadata/slice_info.config" not in zf.namelist():
+        return {}
+    try:
+        root = ET.fromstring(zf.read("Metadata/slice_info.config").decode())
+    except Exception:
+        return {}
+
+    plate = None
+    for candidate in root.findall(".//plate"):
+        for meta in candidate.findall("metadata"):
+            if meta.get("key") == "index":
+                try:
+                    if int(meta.get("value", "")) == plate_idx:
+                        plate = candidate
+                        break
+                except ValueError:
+                    continue
+        if plate is not None:
+            break
+    if plate is None:
+        plate = root.find(".//plate")
+    if plate is None:
+        return {}
+
+    out: dict[int, str] = {}
+    for obj in plate.findall("object"):
+        identify_id = obj.get("identify_id")
+        name = obj.get("name")
+        if identify_id and name and obj.get("skipped", "false").lower() != "true":
+            try:
+                out[int(identify_id)] = name
+            except ValueError:
+                continue  # non-numeric identify_id is not addressable by the printer
+    return out
+
+
+def discover_plate_objects(zf: "zipfile.ZipFile", plate_idx: int) -> dict[int, str]:
+    """Every printable object on ``plate_idx``, as ``{identify_id: name}``.
+
+    Three sources, tried in descending order of trustworthiness; the FIRST one
+    that yields anything wins. Not a union — unioning would resurrect ids that
+    exist only in slice_info and nowhere else (measured on a real archive).
+
+    Discovery approach adapted from @latsss' bambu-cli 3mf-parser, with thanks.
+    """
+    return _objects_from_slice_info(zf, plate_idx)
+
+
 def extract_printable_objects_from_3mf(
     data: bytes, plate_number: int | None = None, include_positions: bool = False
 ) -> dict[int, str] | dict[int, dict] | tuple[dict[int, dict], list | None]:
