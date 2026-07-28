@@ -301,3 +301,41 @@ class TestApproximatePositions:
         objects, bbox = extract_printable_objects_from_3mf(data, include_positions=True)
         assert set(objects) == {941}
         assert bbox is None
+
+
+class TestPerPlateSkipMetadata:
+    """The fourth parse site. ``/plates`` feeds four plate galleries; before this
+    it read slice_info alone, so every gallery undercounted Orca instance plates
+    exactly as the other three sites did."""
+
+    def test_plate_objects_come_from_the_cascade(self):
+        from backend.app.services.archive import parse_per_plate_skip_metadata
+
+        data = make_3mf(slice_ids={941: "part"}, gcode_ids=[941, 942, 943, 944, 945])
+        with _open(data) as zf:
+            meta = parse_per_plate_skip_metadata(zf, [1])
+        assert sorted(meta["plates"][1]["printable_objects"]) == [941, 942, 943, 944, 945]
+
+    def test_plates_do_not_leak_into_each_other(self):
+        """Two plates, disjoint pick masks, no gcode: each keeps its own ids."""
+        from backend.app.services.archive import parse_per_plate_skip_metadata
+
+        one = make_3mf(slice_ids={11: "a"}, pick_ids=[11], plate_index=1)
+        two = make_3mf(slice_ids={22: "b"}, pick_ids=[22], plate_index=2)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            src1, src2 = _open(one), _open(two)
+            z.writestr(
+                "Metadata/slice_info.config",
+                '<?xml version="1.0"?><config>'
+                '<plate><metadata key="index" value="1"/><object identify_id="11" name="a" skipped="false"/></plate>'
+                '<plate><metadata key="index" value="2"/><object identify_id="22" name="b" skipped="false"/></plate>'
+                "</config>",
+            )
+            z.writestr("Metadata/pick_1.png", src1.read("Metadata/pick_1.png"))
+            z.writestr("Metadata/pick_2.png", src2.read("Metadata/pick_2.png"))
+
+        with _open(buf.getvalue()) as zf:
+            meta = parse_per_plate_skip_metadata(zf, [1, 2])
+        assert list(meta["plates"][1]["printable_objects"]) == [11]
+        assert list(meta["plates"][2]["printable_objects"]) == [22]

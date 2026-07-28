@@ -1280,8 +1280,12 @@ def parse_per_plate_skip_metadata(zf: zipfile.ZipFile, plate_indices: list[int])
     the whole 3MF, but copying makes the per-plate UI logic simpler — no
     cross-referencing required).
 
-    Single-pass over the ZIP: opens slice_info.config + project_settings.config
-    + plate_N.json once each, never re-decodes per plate.
+    Not a single pass any more: ``discover_plate_objects`` re-reads
+    slice_info.config and decodes ``pick_{idx}.png`` per plate, so a ten-plate
+    file pays ten pick decodes rather than one. That cost lands on the
+    ``/plates`` cache-MISS path and inside the m114 seed; a page render reads the
+    cached ``file_metadata["plates"]`` / ``extra_data["plates"]`` and is
+    unaffected. Worth it — the previous single pass produced wrong counts.
 
     Returns:
         ``{
@@ -1308,7 +1312,13 @@ def parse_per_plate_skip_metadata(zf: zipfile.ZipFile, plate_indices: list[int])
         except (json.JSONDecodeError, OSError, KeyError):
             pass  # Defaults already applied; missing/corrupt config is non-fatal.
 
-    # Per-plate ``printable_objects`` (id → name) from slice_info.config.
+    # Per-plate ``printable_objects`` (id → name). The slice_info walk below
+    # survives only to ENUMERATE the plate indices — the objects themselves come
+    # from ``discover_plate_objects``, because slice_info undercounts every plate
+    # that uses instances (OrcaSlicer records the source object once for N
+    # copies) and overcounts on at least one archived file. This was the fourth
+    # parse site and the last one still reading slice_info directly; the other
+    # three moved in the cycle that introduced the cascade.
     if "Metadata/slice_info.config" in namelist:
         try:
             content = zf.read("Metadata/slice_info.config").decode()
@@ -1325,17 +1335,7 @@ def parse_per_plate_skip_metadata(zf: zipfile.ZipFile, plate_indices: list[int])
                         break
                 if idx is None:
                     continue
-                printable: dict[int, str] = {}
-                for obj in plate_elem.findall("object"):
-                    identify_id = obj.get("identify_id")
-                    name = obj.get("name")
-                    skipped = obj.get("skipped", "false")
-                    if identify_id and name and skipped.lower() != "true":
-                        try:
-                            printable[int(identify_id)] = name
-                        except ValueError:
-                            pass  # Non-numeric identify_id — frontend can't M623 it anyway.
-                out["plates"].setdefault(idx, {})["printable_objects"] = printable
+                out["plates"].setdefault(idx, {})["printable_objects"] = discover_plate_objects(zf, idx)
         except (OSError, ET.ParseError):
             pass
 
