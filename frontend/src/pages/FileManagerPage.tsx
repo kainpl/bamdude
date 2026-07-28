@@ -76,6 +76,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { formatDateTime, formatDuration, parseUTCDate, type TimeFormat, type DateFormat } from '../utils/date';
 import { formatFileSize } from '../utils/file';
 import { FileTagBadges } from '../components/FileTagBadges';
+import { PlateObjectsPreviewModal } from '../components/PlateObjectsPreviewModal';
+import { SkipObjectsIcon } from '../components/SkipObjectsModal';
 import { KNOWN_FILE_TAGS, getTagStyle, isSliced, isSliceable, isMultiPlate } from '../lib/fileTags';
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
 import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
@@ -1099,6 +1101,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
   // stays a fixed 4 px regardless of menu height. Flip to top-anchor when
   // there isn't enough room above (e.g. trigger near top of viewport).
   const [coords, setCoords] = useState<{ top?: number; bottom?: number; right: number } | null>(null);
+  const [showPlateObjects, setShowPlateObjects] = useState(false);
 
   useEffect(() => {
     if (!showActions) return;
@@ -1241,14 +1244,24 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
             </span>
           )}
           {file.object_count != null && file.object_count > 0 && (
-            <span
-              className="flex items-center gap-1"
-              title={file.object_count === 1
-                ? t('archives.card.object', { count: file.object_count })
-                : t('archives.card.objects', { count: file.object_count })}
-            >
-              <Box className="w-3 h-3" />
-              {file.object_count}
+            <span className="flex items-center gap-1">
+              {/* The count itself opens the preview — no extra icon button to
+                  crowd the card. stopPropagation is load-bearing: the card
+                  itself is a selection target. */}
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setShowPlateObjects(true); }}
+                className="flex items-center gap-1 hover:text-bambu-green transition-colors"
+                title={t('library.plateObjects.open')}
+              >
+                <Box className="w-3 h-3" />
+                {file.object_count}
+              </button>
+              {/* Icon-only: most sliced files support skipping, so a text badge
+                  on every card would be noise. Absence is the signal. */}
+              {file.skip_objects_supported && (
+                <SkipObjectsIcon className="w-3 h-3 text-bambu-green/70" />
+              )}
             </span>
           )}
         </div>
@@ -1445,11 +1458,23 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
       >
         {isSelected && <div className="w-2 h-2 bg-white rounded-sm" />}
       </button>
+      {/* Sibling of the card body, NOT of the hover-revealed action cluster:
+          that wrapper is `opacity-0 group-hover:opacity-100`, so a modal nested
+          inside it would vanish the moment the pointer left the card. */}
+      {showPlateObjects && (
+        <PlateObjectsPreviewModal
+          source="library"
+          id={file.id}
+          isOpen
+          onClose={() => setShowPlateObjects(false)}
+        />
+      )}
     </div>
   );
 }
 
 export function FileManagerPage() {
+  const [previewFileId, setPreviewFileId] = useState<number | null>(null);
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -3118,6 +3143,25 @@ export function FileManagerPage() {
                         grid card's right-anchored layout). */}
                     <div className="flex items-center gap-1 flex-wrap">
                       <FileTagBadges tags={file.file_tags} compact direction="ltr" />
+                      {/* Object count + preview, mirroring the grid card. The
+                          list has no object column of its own, and adding one
+                          would mean re-cutting the grid template for every
+                          row — the badge row is already where per-file facts
+                          live. */}
+                      {file.object_count != null && file.object_count > 0 && (
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); setPreviewFileId(file.id); }}
+                          className="flex items-center gap-1 text-[11px] text-bambu-gray hover:text-bambu-green transition-colors"
+                          title={t('library.plateObjects.open')}
+                        >
+                          <Box className="w-3 h-3" />
+                          {file.object_count}
+                          {file.skip_objects_supported && (
+                            <SkipObjectsIcon className="w-3 h-3 text-bambu-green/70" />
+                          )}
+                        </button>
+                      )}
                       {/* #1268 — user-authored tag chips, inline in the same
                           cell (NOT a new subgrid column). Green pills, click
                           toggles the cross-cutting filter. */}
@@ -3263,6 +3307,17 @@ export function FileManagerPage() {
       </div>
 
       {/* Modals */}
+      {/* Page-level rather than per-row: the list view renders rows inline in
+          this component's map, so there is no row component to hold the state
+          the way FileCard does for the grid. */}
+      {previewFileId != null && (
+        <PlateObjectsPreviewModal
+          source="library"
+          id={previewFileId}
+          isOpen
+          onClose={() => setPreviewFileId(null)}
+        />
+      )}
       {galleryFile && (
         <LibraryPlateGalleryModal
           fileId={galleryFile.id}

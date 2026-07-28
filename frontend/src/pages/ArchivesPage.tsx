@@ -81,6 +81,8 @@ import { BatchTagModal } from '../components/BatchTagModal';
 import { BatchProjectModal } from '../components/BatchProjectModal';
 import { CalendarView } from '../components/CalendarView';
 import { QRCodeModal } from '../components/QRCodeModal';
+import { PlateObjectsPreviewModal } from '../components/PlateObjectsPreviewModal';
+import { SkipObjectsIcon } from '../components/SkipObjectsModal';
 import { PhotoGalleryModal } from '../components/PhotoGalleryModal';
 import { ProjectPageModal } from '../components/ProjectPageModal';
 import { TimelapseViewer } from '../components/TimelapseViewer';
@@ -205,6 +207,7 @@ function ArchiveCard({
   const [showViewer, setShowViewer] = useState(false);
   const [showReprint, setShowReprint] = useState(false);
   const [showSlice, setShowSlice] = useState(false);
+  const [showPlateObjects, setShowPlateObjects] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const [showTimelapse, setShowTimelapse] = useState(false);
@@ -1115,9 +1118,24 @@ function ArchiveCard({
             </div>
           )}
           {archive.object_count != null && archive.object_count > 0 && (
-            <div className="flex items-center gap-1.5 text-bambu-gray" title={archive.object_count === 1 ? t('archives.card.object', { count: archive.object_count }) : t('archives.card.objects', { count: archive.object_count })}>
-              <Box className="w-3 h-3" />
-              {archive.object_count === 1 ? t('archives.card.object', { count: archive.object_count }) : t('archives.card.objects', { count: archive.object_count })}
+            <div className="flex items-center gap-1.5">
+              {/* The count itself opens the preview — no extra icon button to
+                  crowd the card. stopPropagation is load-bearing: the card
+                  navigates to the archive on click. */}
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setShowPlateObjects(true); }}
+                className="flex items-center gap-1.5 text-bambu-gray hover:text-bambu-green transition-colors"
+                title={t('library.plateObjects.open')}
+              >
+                <Box className="w-3 h-3" />
+                {archive.object_count === 1 ? t('archives.card.object', { count: archive.object_count }) : t('archives.card.objects', { count: archive.object_count })}
+              </button>
+              {/* Icon-only: most sliced files support skipping, so a text badge
+                  on every row would be noise. Absence is the signal. */}
+              {archive.skip_objects_supported && (
+                <SkipObjectsIcon className="w-3 h-3 text-bambu-green/70" />
+              )}
             </div>
           )}
           {archive.sliced_for_model && (
@@ -1472,6 +1490,16 @@ function ArchiveCard({
         </div>
       )}
 
+      {/* Read-only plate object preview, opened from the object count. */}
+      {showPlateObjects && (
+        <PlateObjectsPreviewModal
+          source="archive"
+          id={archive.id}
+          isOpen
+          onClose={() => setShowPlateObjects(false)}
+        />
+      )}
+
       {/* QR Code Modal */}
       {showQRCode && (
         <QRCodeModal
@@ -1641,6 +1669,7 @@ function ArchiveListRow({
   const useSlicerApi: boolean = !!(rowSettings as Record<string, unknown> | undefined)?.use_slicer_api;
   const [showEdit, setShowEdit] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showPlateObjects, setShowPlateObjects] = useState(false);
   const [showReprint, setShowReprint] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
   const [showSlice, setShowSlice] = useState(false);
@@ -2272,13 +2301,21 @@ function ArchiveListRow({
               );
             }
             if (archive.object_count != null && archive.object_count > 0) {
-              const label = archive.object_count === 1
-                ? t('archives.card.object', { count: archive.object_count })
-                : t('archives.card.objects', { count: archive.object_count });
               facts.push(
-                <span key="objects" className="flex items-center gap-1" title={label}>
-                  <Box className="w-2.5 h-2.5" />
-                  {archive.object_count}
+                <span key="objects" className="flex items-center gap-1">
+                  {/* stopPropagation: the row opens the archive on click. */}
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setShowPlateObjects(true); }}
+                    className="flex items-center gap-1 hover:text-bambu-green transition-colors"
+                    title={t('library.plateObjects.open')}
+                  >
+                    <Box className="w-2.5 h-2.5" />
+                    {archive.object_count}
+                  </button>
+                  {archive.skip_objects_supported && (
+                    <SkipObjectsIcon className="w-2.5 h-2.5 text-bambu-green/70" />
+                  )}
                 </span>,
               );
             }
@@ -2585,6 +2622,16 @@ function ArchiveListRow({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Read-only plate object preview, opened from the object count. */}
+      {showPlateObjects && (
+        <PlateObjectsPreviewModal
+          source="archive"
+          id={archive.id}
+          isOpen
+          onClose={() => setShowPlateObjects(false)}
+        />
       )}
 
       {/* QR Code Modal */}
