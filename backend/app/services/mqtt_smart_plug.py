@@ -22,7 +22,8 @@ class SmartPlugMQTTData:
 
     plug_id: int
     power: float | None = None  # Current power in watts
-    energy: float | None = None  # Energy in kWh (today)
+    energy: float | None = None  # Energy in kWh — whatever the operator's energy path points at
+    energy_total: float | None = None  # Lifetime kWh — the only figure energy snapshots may use
     state: str | None = None  # "ON" or "OFF"
     last_seen: datetime = field(default_factory=datetime.utcnow)
 
@@ -279,6 +280,13 @@ class MQTTSmartPlugService:
                     except (ValueError, TypeError):
                         pass  # Ignore unparseable energy reading from MQTT
 
+                elif data_type == "energy_total":
+                    try:
+                        data.energy_total = float(raw_value) * config.multiplier
+                        logger.debug("MQTT smart plug %s: energy_total=%s", plug_id, data.energy_total)
+                    except (ValueError, TypeError):
+                        pass  # Ignore unparseable lifetime reading from MQTT
+
                 elif data_type == "state":
                     state_str = str(raw_value)
                     # Check against configured ON value if set
@@ -343,6 +351,10 @@ class MQTTSmartPlugService:
         energy_topic: str | None = None,
         energy_path: str | None = None,
         energy_multiplier: float = 1.0,
+        # Lifetime energy source (separate from the above — see the model)
+        energy_total_topic: str | None = None,
+        energy_total_path: str | None = None,
+        energy_total_multiplier: float = 1.0,
         # State source
         state_topic: str | None = None,
         state_path: str | None = None,
@@ -389,6 +401,21 @@ class MQTTSmartPlugService:
                 )
                 self.plug_configs[plug_id]["energy"] = config
                 self._add_subscription(plug_id, effective_energy_topic, "energy")
+
+            # Configure the LIFETIME counter. Unlike the three above this
+            # REQUIRES a path: a device's daily and cumulative readings usually
+            # arrive in the same payload under different keys, so a bare topic
+            # cannot say which one is the lifetime figure — and guessing is the
+            # bug this whole source exists to remove.
+            effective_total_topic = energy_total_topic or effective_energy_topic
+            if effective_total_topic and energy_total_path:
+                config = MQTTDataSourceConfig(
+                    topic=effective_total_topic,
+                    path=energy_total_path,
+                    multiplier=energy_total_multiplier,
+                )
+                self.plug_configs[plug_id]["energy_total"] = config
+                self._add_subscription(plug_id, effective_total_topic, "energy_total")
 
             # Configure state subscription (path is optional - empty means use raw payload)
             if effective_state_topic:
@@ -505,8 +532,13 @@ def subscribe_plug_to_mqtt(service: "MQTTSmartPlugService", plug: Any) -> list[s
     power_topic = plug.mqtt_power_topic or plug.mqtt_topic
     energy_topic = plug.mqtt_energy_topic or plug.mqtt_topic
     state_topic = plug.mqtt_state_topic or plug.mqtt_topic
+    energy_total_topic = plug.mqtt_energy_total_topic or energy_topic
 
-    if not (power_topic or energy_topic or state_topic):
+    # Counted in the guard so a plug configured with ONLY a lifetime source is
+    # still subscribed. The API validator does not currently allow that shape,
+    # but the helper is also called from the startup restore path, where the
+    # row comes straight from the database.
+    if not (power_topic or energy_topic or state_topic or energy_total_topic):
         return []
 
     legacy_mult = plug.mqtt_multiplier or 1.0
@@ -518,11 +550,14 @@ def subscribe_plug_to_mqtt(service: "MQTTSmartPlugService", plug: Any) -> list[s
         energy_topic=energy_topic,
         energy_path=plug.mqtt_energy_path,
         energy_multiplier=plug.mqtt_energy_multiplier or legacy_mult,
+        energy_total_topic=energy_total_topic,
+        energy_total_path=plug.mqtt_energy_total_path,
+        energy_total_multiplier=plug.mqtt_energy_total_multiplier or 1.0,
         state_topic=state_topic,
         state_path=plug.mqtt_state_path,
         state_on_value=plug.mqtt_state_on_value,
     )
-    return [t for t in {power_topic, energy_topic, state_topic} if t]
+    return [t for t in {power_topic, energy_topic, state_topic, energy_total_topic} if t]
 
 
 # Global instance
