@@ -132,6 +132,15 @@ class PrintArchive(Base):
     # Swap mode compatibility (processed for plate swapper)
     swap_compatible: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Whether per-object skipping will work for this archive's 3MF —
+    # ``gcode_label_objects`` AND ``exclude_object``, both from
+    # ``Metadata/project_settings.config``. Denormalised out of ``extra_data``
+    # (m114) so the archive list can badge it without a JSON dig per row. Always
+    # written through ``services.library_helpers.skip_objects_supported_from_metadata``
+    # — never inline — so the badge cannot disagree with the live 3MF gate the
+    # preview reads.
+    skip_objects_supported: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
