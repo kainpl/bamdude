@@ -127,3 +127,25 @@ def compute_file_tags(
         tags.append("makerworld")
 
     return tags
+
+
+def skip_objects_supported_from_metadata(file_metadata: dict | None) -> bool:
+    """Whether per-object skipping will work for a file, from stored metadata.
+
+    Mirrors ``services.archive.extract_skip_support_from_3mf`` — which reads the
+    same two fields live from the 3MF — so the list badge and the preview banner
+    can never contradict each other. Agreement is by construction, not by
+    coincidence: ``ThreeMFParser._extract_print_settings`` has already applied
+    the "absent ``gcode_label_objects`` means True" Bambu Studio default before
+    writing the key, and already omits ``exclude_object`` entirely when the 3MF
+    carries no interpretable value. A missing key therefore reads as False here,
+    which is the honest answer — without ``exclude_object`` the slicer emits no
+    ``M624``/``M625`` and the printer physically cannot exclude anything,
+    whatever the object list says.
+
+    Lives beside :func:`compute_file_tags` for the same reason it does: every
+    ``LibraryFile()`` construction site and the m114 backfill must derive an
+    identical value from identical inputs.
+    """
+    meta = file_metadata or {}
+    return bool(meta.get("gcode_label_objects")) and bool(meta.get("exclude_object"))
