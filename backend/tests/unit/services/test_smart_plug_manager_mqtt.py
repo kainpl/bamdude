@@ -54,3 +54,18 @@ def test_control_endpoint_no_longer_rejects_mqtt():
     from backend.app.api.routes import smart_plugs
 
     assert "MQTT plugs are monitor-only" not in inspect.getsource(smart_plugs)
+
+
+def test_energy_reads_go_through_the_driver():
+    """Three copies of the MQTT energy mapping, and two had already drifted.
+
+    ``_get_plug_energy`` and the archives aggregate each had their own MQTT
+    branch that filed the cached reading as "today" and never set "total" —
+    so a correct driver would have been bypassed by exactly the paths that
+    feed per-print energy.
+    """
+    from backend.app import main
+    from backend.app.api.routes import archives
+
+    assert "MQTT plugs report" not in inspect.getsource(main._get_plug_energy)
+    assert "MQTT plugs only expose today" not in inspect.getsource(archives)
