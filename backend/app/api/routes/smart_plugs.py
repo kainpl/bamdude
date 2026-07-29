@@ -156,6 +156,17 @@ async def create_smart_plug(
         topics = subscribe_plug_to_mqtt(mqtt_relay.smart_plug_service, plug)
         if topics:
             logger.info("Created MQTT plug '%s' subscribed to %s", plug.name, ", ".join(topics))
+    elif plug.plug_type == "zigbee":
+        # Subscribed immediately, in the same place MQTT plugs are: without it
+        # the plug switches on command but reports nothing, so its status reads
+        # "unreachable" until the next restart. The parallel with the MQTT
+        # branch above is deliberate — both types need their transport wired at
+        # creation, not just at startup.
+        from backend.app.services.zigbee.driver import zigbee_smart_plug_service
+        from backend.app.services.zigbee.reporting import subscribe_all
+
+        await subscribe_all(zigbee_smart_plug_service, [plug])
+        logger.info("Created Zigbee plug '%s' (%s)", plug.name, plug.zigbee_ieee)
     elif plug.plug_type == "homeassistant":
         logger.info("Created Home Assistant plug '%s' (%s)", plug.name, plug.ha_entity_id)
     else:

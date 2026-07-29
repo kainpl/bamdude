@@ -111,3 +111,66 @@ class TestNoise:
         disappear. Handle it here where it can be logged."""
         service = ZigbeeSmartPlugService()
         _listener(service, METERING, multiplier=1, divisor=1000).attribute_updated(ATTR_SUMMATION, "not a number", None)
+
+
+class TestSubscriptionIsActuallyWired:
+    """The gap the hardware pass found.
+
+    ``bind_plug`` existed and was never called, so commands worked — they go
+    straight to the cluster — while status and energy stayed empty forever. The
+    plug switched on and reported ``{state: null, reachable: false}``.
+
+    A driver whose commands work and whose readings never arrive is the worst
+    shape of this bug: it looks configured.
+    """
+
+    @pytest.mark.asyncio
+    async def test_subscribe_all_binds_every_zigbee_plug(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+
+        from backend.app.services.zigbee import reporting
+
+        plugs = [
+            SimpleNamespace(id=1, plug_type="zigbee", zigbee_ieee="aa"),
+            SimpleNamespace(id=2, plug_type="zigbee", zigbee_ieee="bb"),
+        ]
+        service = SimpleNamespace(_device_for=lambda p: SimpleNamespace(ieee=p.zigbee_ieee))
+
+        with patch.object(reporting, "bind_plug", AsyncMock(return_value={})) as bind:
+            await reporting.subscribe_all(service, plugs)
+
+        assert bind.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_plug_whose_device_is_absent_is_skipped_not_fatal(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+
+        from backend.app.services.zigbee import reporting
+
+        plugs = [SimpleNamespace(id=1, plug_type="zigbee", zigbee_ieee="gone")]
+        service = SimpleNamespace(_device_for=lambda p: None)
+
+        with patch.object(reporting, "bind_plug", AsyncMock()) as bind:
+            await reporting.subscribe_all(service, plugs)
+
+        bind.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_one_plug_failing_does_not_stop_the_others(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+
+        from backend.app.services.zigbee import reporting
+
+        plugs = [
+            SimpleNamespace(id=1, plug_type="zigbee", zigbee_ieee="aa"),
+            SimpleNamespace(id=2, plug_type="zigbee", zigbee_ieee="bb"),
+        ]
+        service = SimpleNamespace(_device_for=lambda p: SimpleNamespace(ieee=p.zigbee_ieee))
+
+        with patch.object(reporting, "bind_plug", AsyncMock(side_effect=[OSError("boom"), {}])) as bind:
+            await reporting.subscribe_all(service, plugs)
+
+        assert bind.await_count == 2

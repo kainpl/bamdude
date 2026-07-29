@@ -6630,6 +6630,26 @@ async def lifespan(app: FastAPI):
                 for _k in ("zigbee_enabled", "zigbee_transport", "zigbee_path")
             }
         await zigbee_coordinator.start(_zb_settings)
+
+        # Reporting for every Zigbee plug already bound to a printer. Without
+        # this the driver looks configured and does half its job: commands go
+        # straight to the cluster and work, so the plug switches — but nothing
+        # feeds the cache, so status stays "unreachable" and energy never
+        # arrives. Best-effort, like the start above.
+        if zigbee_coordinator.app is not None:
+            from sqlalchemy import select as _zb_select
+
+            from backend.app.models.smart_plug import SmartPlug as _ZbPlug
+            from backend.app.services.zigbee.driver import zigbee_smart_plug_service as _zb_driver
+            from backend.app.services.zigbee.reporting import subscribe_all as _zb_subscribe
+
+            async with _zb_session() as _zb_db2:
+                _zb_rows = (
+                    (await _zb_db2.execute(_zb_select(_ZbPlug).where(_ZbPlug.plug_type == "zigbee"))).scalars().all()
+                )
+            if _zb_rows:
+                _zb_wired = await _zb_subscribe(_zb_driver, _zb_rows)
+                logging.getLogger(__name__).info("Zigbee reporting set up for %s/%s plug(s)", _zb_wired, len(_zb_rows))
     except Exception as _zb_exc:
         logging.getLogger(__name__).warning("Zigbee coordinator not started: %s", _zb_exc)
 

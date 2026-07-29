@@ -159,3 +159,30 @@ async def bind_plug(service, plug, device) -> dict[int, bool]:
             plug.id,
         )
     return wired
+
+
+async def subscribe_all(service, plugs) -> int:
+    """Bind and subscribe every Zigbee plug that is on the mesh.
+
+    This is the step whose absence made the driver look configured while doing
+    half its job: commands go straight to the cluster and worked, so the plug
+    switched on — but nothing fed the cache, so status stayed
+    ``{state: null, reachable: false}`` and energy never arrived at all. Found
+    on hardware, because every unit test had populated the cache by hand.
+
+    Best-effort per plug, deliberately: one plug that is unplugged or refuses to
+    bind must not cost the others their reporting. Returns how many were wired
+    so the caller can log it rather than leave a silent partial result.
+    """
+    wired = 0
+    for plug in plugs:
+        device = service._device_for(plug)
+        if device is None:
+            logger.info("Zigbee plug %s: device not on the mesh, no reporting set up", plug.id)
+            continue
+        try:
+            await bind_plug(service, plug, device)
+            wired += 1
+        except Exception as exc:  # noqa: BLE001 — one plug must not lose the rest
+            logger.warning("Zigbee plug %s: could not set up reporting: %s", plug.id, exc)
+    return wired
