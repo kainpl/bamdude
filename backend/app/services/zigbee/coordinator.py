@@ -18,10 +18,13 @@ is why the lifecycle is testable without hardware.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
 
+from backend.app.core.tasks import spawn_background_task
+from backend.app.core.websocket import ws_manager
+from backend.app.services.zigbee.devices import describe_device
 from backend.app.services.zigbee.radio_lock import RadioLock
 from backend.app.services.zigbee.transport import TransportConfigError, resolve_transport
 
@@ -136,6 +139,85 @@ class ZigbeeCoordinator:
                 logger.warning("Zigbee shutdown raised, continuing: %s", exc)
         self._lock.release()
         self._status = CoordinatorStatus(CoordinatorState.DISABLED)
+
+    # ---- zigpy listener callbacks -------------------------------------------
+    #
+    # Two properties of zigpy's dispatch shape everything below, and both make
+    # mistakes here SILENT rather than loud:
+    #
+    # 1. ``listener_event`` invokes callbacks with ``method(*args)`` and never
+    #    awaits. An ``async def`` callback would return a coroutine nobody runs,
+    #    so every broadcast would simply never happen — no error, no log. Hence
+    #    plain ``def`` throughout, with work handed to ``spawn_background_task``.
+    # 2. zigpy already wraps callbacks in ``except Exception`` and logs at DEBUG.
+    #    A raising callback therefore does not destabilise the stack; it
+    #    disappears. The guards below exist to make failures visible at WARNING,
+    #    not to protect zigpy.
+
+    def _emit(self, message: dict) -> None:
+        """Schedule a WebSocket broadcast from a synchronous zigpy callback."""
+        try:
+            spawn_background_task(ws_manager.broadcast(message), name=f"zigbee-{message['type']}")
+        except Exception as exc:  # noqa: BLE001 — see the block comment above
+            logger.warning("Zigbee event %s not broadcast: %s", message.get("type"), exc)
+
+    def device_joined(self, device) -> None:
+        """A device announced itself; the interview has not run yet.
+
+        Announced separately from :meth:`device_initialized` because
+        interviewing can take tens of seconds, and a UI that shows nothing for
+        that long looks broken rather than busy.
+        """
+        try:
+            self._emit({"type": "zigbee_device_joining", "ieee": str(device.ieee)})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Zigbee device_joined handler failed: %s", exc)
+
+    def device_initialized(self, device) -> None:
+        """Interview complete — accept it, or remove it and say why."""
+        try:
+            info = describe_device(device)
+            if info.is_plug:
+                logger.info("Paired Zigbee plug %s (%s)", info.ieee, info.model)
+                self._emit({"type": "zigbee_device_paired", "device": asdict(info)})
+                return
+
+            # Removed, not merely ignored: a device left joined but unusable
+            # occupies a network address and reappears in every device list,
+            # indistinguishable from a plug that failed for another reason.
+            logger.info("Rejecting non-plug Zigbee device %s (%s)", info.ieee, info.model)
+            self._emit({"type": "zigbee_device_rejected", "device": asdict(info)})
+            if self._app is not None:
+                spawn_background_task(self._app.remove(device.ieee), name="zigbee-remove-non-plug")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Zigbee device_initialized handler failed: %s", exc)
+
+    def device_left(self, device) -> None:
+        try:
+            self._emit({"type": "zigbee_device_left", "ieee": str(device.ieee)})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Zigbee device_left handler failed: %s", exc)
+
+    def connection_lost(self, exc: Exception) -> None:
+        """The radio is gone.
+
+        Phase 1 left ``status`` as a startup snapshot and deferred liveness to
+        phase 3. This costs one line here because the listener exists anyway,
+        and without it pairing would run against a dead radio while the status
+        endpoint still reported ``up``.
+        """
+        try:
+            self._status = CoordinatorStatus(CoordinatorState.ERROR, f"Connection to the Zigbee radio was lost: {exc}")
+            logger.warning("Zigbee radio connection lost: %s", exc)
+            self._emit(
+                {
+                    "type": "zigbee_status_changed",
+                    "state": self._status.state.value,
+                    "reason": self._status.reason,
+                }
+            )
+        except Exception as inner:  # noqa: BLE001
+            logger.warning("Zigbee connection_lost handler failed: %s", inner)
 
     async def _open_radio(self, device: str):
         """The only place that talks to zigpy. Isolated so the lifecycle is testable.
