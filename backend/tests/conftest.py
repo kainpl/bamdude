@@ -324,10 +324,13 @@ async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, N
 @pytest.fixture
 def mock_tasmota_service():
     """Mock the Tasmota service for smart plug tests."""
-    # Patch both the module where it's defined and where it's imported
+    # Patch every module that holds its own reference. `smart_plug_manager` is
+    # one of them and is now the single resolver both the API and automation go
+    # through, so leaving it out means the route gets the real service back.
     with (
         patch("backend.app.services.tasmota.tasmota_service") as mock,
         patch("backend.app.api.routes.smart_plugs.tasmota_service") as mock2,
+        patch("backend.app.services.smart_plug_manager.tasmota_service", new=mock),
     ):
         mock.turn_on = AsyncMock(return_value=True)
         mock.turn_off = AsyncMock(return_value=True)
@@ -357,10 +360,11 @@ def mock_tasmota_service():
 @pytest.fixture
 def mock_homeassistant_service():
     """Mock the Home Assistant service for smart plug tests."""
-    # Patch both the module where it's defined and where it's imported
+    # See mock_tasmota_service for why smart_plug_manager is patched too.
     with (
         patch("backend.app.services.homeassistant.homeassistant_service") as mock,
         patch("backend.app.api.routes.smart_plugs.homeassistant_service") as mock2,
+        patch("backend.app.services.smart_plug_manager.homeassistant_service", new=mock),
     ):
         mock.turn_on = AsyncMock(return_value=True)
         mock.turn_off = AsyncMock(return_value=True)

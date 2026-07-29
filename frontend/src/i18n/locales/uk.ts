@@ -607,6 +607,7 @@ export default {
       title: 'Пропустити об\'єкти',
       matchIdsInfo: 'Зіставте ідентифікатори з дисплеєм принтера',
       printerShowsIds: 'Екран принтера показує ідентифікатори об\'єктів на платформі',
+      approximatePositions: 'Позиції маркерів приблизні — у цьому файлі немає карти обʼєктів, тож вони розкладені сіткою, а не там, де деталі стоять насправді.',
       skipped: 'пропущено',
       objectsSkipped: 'Об\'єкти пропущено',
       activeCount: '{{count}} активних',
@@ -1037,7 +1038,11 @@ export default {
       date: 'Дата',
       size: 'Розмір',
       actions: 'Дії',
-      hasTimelapse: 'Має таймлапс'
+      hasTimelapse: 'Має таймлапс',
+      printTime: 'Час друку',
+      estimated: 'Орієнтовно',
+      actual: 'Фактично',
+      accuracy: 'Точність'
     }
   },
 
@@ -3474,6 +3479,20 @@ export default {
   },
 
   library: {
+    plateObjects: {
+      title: 'Об’єкти на плиті',
+      badge: 'Скіп об’єктів',
+      badgeTooltip: 'Для цього файлу доступне скасування окремих об’єктів',
+      open: 'Переглянути об’єкти на плиті',
+      skipSupported: 'Для цього файлу доступне скасування окремих об’єктів.',
+      skipUnsupported: 'Скасування об’єктів недоступне — під час нарізки був вимкнений «Exclude objects».',
+      approximate: 'Позиції приблизні — файл не містить даних про розташування окремих об’єктів.',
+      noImage: 'У цьому файлі немає зображення плити.',
+      empty: 'На цій плиті об’єктів не знайдено.',
+      plate: 'Плита {{index}}',
+      objectCount: '{{count}} об’єкт',
+      objectCount_other: '{{count}} об’єктів',
+    },
     tags: {
       '3mf': '3MF',
       gcode: 'GCODE',
@@ -5995,6 +6014,13 @@ export default {
     multiplier: 'Множник',
     onValue: 'Значення ON',
     mqttPowerHint: 'JSON шлях витягує значення з JSON пейлоаду (напр., "power_l1"). Залиште порожнім для числових значень.\nМножник 0.001 для мВт\u2192Вт, 1000 для кВт\u2192Вт.',
+    mqttEnergyTotalTitle: 'Накопичена енергія',
+    mqttEnergyTotalPath: 'JSON шлях до накопиченої',
+    mqttEnergyTotalHint: 'Лічильник, що ніколи не обнуляється (Zigbee2MQTT: "energy", Tasmota: "ENERGY.Total"). Потрібен для обліку енергії та вартості за друк — денний лічильник не годиться, бо друк через опівніч вимірявся б як від’ємний.',
+    mqttControlTitle: 'Керування',
+    mqttCommandOn: 'Payload для увімкнення',
+    mqttCommandOff: 'Payload для вимкнення',
+    mqttCommandHint: 'Залиште топік порожнім, щоб розетка лишалась лише для моніторингу.\nZigbee2MQTT: публікує {"state": "ON"} у <name>/set. Tasmota: публікує ON у cmnd/<name>/POWER.',
     mqttEnergyHint: 'JSON шлях витягує значення з JSON пейлоаду. Залиште порожнім для числових значень.\nМножник 0.001 для Вт\u00b7год\u2192кВт\u00b7год, 1000 для МВт\u00b7год\u2192кВт\u00b7год.',
     mqttStateHint: 'JSON шлях витягує значення з JSON пейлоаду. Залиште порожнім для числових значень.\nЗначення ON: рядок, що означає "ON". Залиште порожнім для автовизначення (ON, true, 1).',
     // REST smart plug

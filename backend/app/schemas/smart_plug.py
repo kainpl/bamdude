@@ -41,6 +41,18 @@ class SmartPlugBase(BaseModel):
         default=None, max_length=50
     )  # What value means "ON" (e.g., "ON", "true", "1")
 
+    # Lifetime energy source (mirrors rest_energy_total_*). Only this figure may
+    # feed energy snapshots; see the model for why it is a separate path rather
+    # than a flag on mqtt_energy_path.
+    mqtt_energy_total_topic: str | None = Field(default=None, max_length=200)
+    mqtt_energy_total_path: str | None = Field(default=None, max_length=100)  # e.g., "energy"
+    mqtt_energy_total_multiplier: float = Field(default=1.0, ge=0.0001, le=10000)
+
+    # Control - absent means monitor-only, which is valid configuration
+    mqtt_command_topic: str | None = Field(default=None, max_length=200)
+    mqtt_command_on: str | None = Field(default=None)  # e.g., '{"state": "ON"}'
+    mqtt_command_off: str | None = Field(default=None)
+
     # Legacy multiplier - kept for backward compatibility
     mqtt_multiplier: float = Field(default=1.0, ge=0.0001, le=10000)  # Deprecated, use mqtt_power_multiplier
 
@@ -145,6 +157,14 @@ class SmartPlugUpdate(BaseModel):
     mqtt_state_topic: str | None = None
     mqtt_state_path: str | None = None
     mqtt_state_on_value: str | None = None
+    # MQTT lifetime energy fields
+    mqtt_energy_total_topic: str | None = None
+    mqtt_energy_total_path: str | None = None
+    mqtt_energy_total_multiplier: float | None = Field(default=None, ge=0.0001, le=10000)
+    # MQTT control fields
+    mqtt_command_topic: str | None = None
+    mqtt_command_on: str | None = None
+    mqtt_command_off: str | None = None
     # REST fields
     rest_on_url: str | None = None
     rest_on_body: str | None = None

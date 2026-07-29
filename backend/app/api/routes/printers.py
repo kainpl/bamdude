@@ -3380,12 +3380,13 @@ async def get_printable_objects(
                     if disk.exists():
                         with open(disk, "rb") as f:
                             data = f.read()
-                        objects, bbox_all = extract_printable_objects_from_3mf(
-                            data, plate_number=ar.plate_index, include_positions=True
+                        objects, bbox_all, approximate = extract_printable_objects_from_3mf(
+                            data, plate_number=ar.plate_index, include_positions=True, with_confidence=True
                         )
                         if objects:
                             client.state.printable_objects = objects
                             client.state.printable_objects_bbox_all = bbox_all
+                            client.state.printable_objects_approximate = approximate
                             # Set the UI gate too — otherwise an MQTT reconnect (which
                             # swaps in a fresh client with empty state) repopulates objects
                             # here but leaves the Skip button dark until restart.
@@ -3446,14 +3447,16 @@ async def get_printable_objects(
                     # branch above, which already passes ar.plate_index. Without it
                     # this fallback hands back plate 1's ids for whatever plate is
                     # actually running.
-                    objects, bbox_all = extract_printable_objects_from_3mf(
+                    objects, bbox_all, approximate = extract_printable_objects_from_3mf(
                         data,
                         plate_number=resolve_plate_id(client.state),
                         include_positions=True,
+                        with_confidence=True,
                     )
                     if objects:
                         client.state.printable_objects = objects
                         client.state.printable_objects_bbox_all = bbox_all
+                        client.state.printable_objects_approximate = approximate
                         client.state.skip_objects_supported = extract_skip_support_from_3mf(data)
                         logger.info(
                             "Reloaded %s objects for printer %s (skip_objects_supported=%s)",
@@ -3501,6 +3504,10 @@ async def get_printable_objects(
         "skipped_count": len(client.state.skipped_objects),
         "is_printing": client.state.state in ("RUNNING", "PAUSE"),
         "bbox_all": getattr(client.state, "printable_objects_bbox_all", None),
+        # True when not one object could be located in the pick PNG, so every
+        # marker the dialog draws came from the grid fallback rather than the
+        # plate. Lets the UI say so instead of implying precision it lacks.
+        "positions_approximate": getattr(client.state, "printable_objects_approximate", False),
     }
 
 

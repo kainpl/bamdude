@@ -16,6 +16,7 @@ from backend.app.core.config import settings
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
+from backend.app.services.library_helpers import skip_objects_supported_from_metadata
 from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 
 logger = logging.getLogger(__name__)
@@ -236,21 +237,20 @@ class ThreeMFParser:
                         elif key == "curr_bed_type" and value:
                             self.metadata["bed_type"] = value
 
-                    # Extract printable objects for skip object functionality
-                    # Objects are stored as <object identify_id="123" name="Part1" skipped="false" />
-                    printable_objects = {}
-                    for obj in plate.findall("object"):
-                        identify_id = obj.get("identify_id")
-                        name = obj.get("name")
-                        skipped = obj.get("skipped", "false")
-
-                        # Only include objects that are not pre-skipped
-                        if identify_id and name and skipped.lower() != "true":
+                    # Same discovery the Skip Objects list uses, so the count on a
+                    # library card and the list in the dialog can never disagree.
+                    # Reading slice_info here directly is what made both report one
+                    # object for a plate holding five.
+                    plate_idx = 1
+                    for meta_el in plate.findall("metadata"):
+                        if meta_el.get("key") == "index":
                             try:
-                                printable_objects[int(identify_id)] = name
+                                plate_idx = int(meta_el.get("value", "1"))
                             except ValueError:
-                                pass  # Skip objects with non-numeric identify_id
+                                pass
+                            break
 
+                    printable_objects = discover_plate_objects(zf, plate_idx)
                     if printable_objects:
                         self.metadata["printable_objects"] = printable_objects
 
@@ -689,9 +689,186 @@ def _pick_centroids_from_3mf(zf: "zipfile.ZipFile", plate_idx: int) -> dict[int,
         return {}
 
 
+def _objects_from_slice_info(zf: "zipfile.ZipFile", plate_idx: int) -> dict[int, str]:
+    """Tier 3: the plate's ``<object>`` entries. Today's only source.
+
+    Kept last because it is wrong in both directions on real files: OrcaSlicer
+    2.4+ lists one entry for N instances, and one archived file listed two ids
+    that appear in neither the gcode nor the pick PNG.
+    """
+    if "Metadata/slice_info.config" not in zf.namelist():
+        return {}
+    try:
+        root = ET.fromstring(zf.read("Metadata/slice_info.config").decode())
+    except Exception:
+        return {}
+
+    plate = None
+    for candidate in root.findall(".//plate"):
+        for meta in candidate.findall("metadata"):
+            if meta.get("key") == "index":
+                try:
+                    if int(meta.get("value", "")) == plate_idx:
+                        plate = candidate
+                        break
+                except ValueError:
+                    continue
+        if plate is not None:
+            break
+    if plate is None:
+        plate = root.find(".//plate")
+    if plate is None:
+        return {}
+
+    out: dict[int, str] = {}
+    for obj in plate.findall("object"):
+        identify_id = obj.get("identify_id")
+        name = obj.get("name")
+        if identify_id and name and obj.get("skipped", "false").lower() != "true":
+            try:
+                out[int(identify_id)] = name
+            except ValueError:
+                continue  # non-numeric identify_id is not addressable by the printer
+    return out
+
+
+_MODEL_LABEL_RE = re.compile(rb"; model label id: *([\d,]+)")
+
+# The header sits in the first few hundred bytes; one read covers it with room
+# to spare, and never decompresses the rest of a multi-megabyte entry.
+_GCODE_HEAD_BYTES = 65536
+
+
+def _objects_from_gcode_header(zf: "zipfile.ZipFile", plate_idx: int, slice_names: dict[int, str]) -> dict[int, str]:
+    """Tier 1: the ``; model label id: a,b,c`` line at the top of the plate gcode.
+
+    This is the list the firmware itself works from, which is why a printer
+    happily skips instances that slice_info never mentions. Measured at byte
+    offset 234 of a 34 MB gcode, present in 133 of 178 archived sliced files,
+    and correct in all three archives where the other two sources disagreed.
+
+    Absent for single-object Bambu Studio files by design — its guard requires
+    ``num_object_instances() > 1`` (BambuStudio GCode.cpp:2344). OrcaSlicer has
+    no such condition and enumerates per *instance*
+    (OrcaSlicer v2.4.2 GCode.cpp:2588), which is precisely why its header lists
+    five ids where its own slice_info.config lists one.
+
+    Neither slicer gates this on ``gcode_label_objects`` or ``exclude_object``,
+    so the presence of this header says nothing about whether skipping is
+    allowed — that stays the job of ``extract_skip_support_from_3mf``.
+    """
+    names = zf.namelist()
+    candidate = f"Metadata/plate_{plate_idx}.gcode"
+    if candidate not in names:
+        gcodes = [n for n in names if n.endswith(".gcode")]
+        if len(gcodes) != 1:
+            return {}
+        candidate = gcodes[0]
+
+    try:
+        with zf.open(candidate) as fh:
+            head = fh.read(_GCODE_HEAD_BYTES)
+    except Exception:
+        return {}
+
+    match = _MODEL_LABEL_RE.search(head)
+    if not match:
+        return {}
+
+    out: dict[int, str] = {}
+    for token in match.group(1).split(b","):
+        try:
+            oid = int(token)
+        except ValueError:
+            continue
+        out[oid] = _name_for(oid, slice_names)
+    return out
+
+
+def _name_for(oid: int, slice_names: dict[int, str]) -> str:
+    """Name for an id that slice_info never listed.
+
+    Instances of one model are consecutive ids, so the nearest smaller known id
+    is the model they were copied from. Duplicate names across instances are
+    correct — the slicer shows them the same way, and the id is what every skip
+    command actually addresses.
+    """
+    if oid in slice_names:
+        return slice_names[oid]
+    smaller = [k for k in slice_names if k <= oid]
+    if smaller:
+        return slice_names[max(smaller)]
+    if slice_names:
+        return slice_names[min(slice_names)]
+    return f"Object_{oid}"
+
+
+def _objects_from_pick_png(zf: "zipfile.ZipFile", plate_idx: int, slice_names: dict[int, str]) -> dict[int, str]:
+    """Tier 2: ids painted into ``Metadata/pick_{plate}.png``.
+
+    Each printed instance is filled with a colour encoding its identify_id as
+    ``id = r | g<<8 | b<<16`` — the same mapping the printer screen uses.
+
+    Rejects ``r == g == b``. Five archived files carry an ordinary greyscale
+    render under this name; their greys decode to large plausible-looking ids
+    (3881787 = RGB(59,59,59) and similar) which no pixel-count threshold filters
+    out, because the grey areas are enormous. A real identify_id is small enough
+    that b is 0, so a perfect grey is never one.
+    """
+    pick_path = f"Metadata/pick_{plate_idx}.png"
+    if pick_path not in zf.namelist():
+        return {}
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        img = Image.open(BytesIO(zf.read(pick_path))).convert("RGBA")
+        w, h = img.size
+        if w == 0 or h == 0:
+            return {}
+        raw = img.tobytes()
+        counts: dict[int, int] = {}
+        for i in range(0, len(raw), 4):
+            r, g, b, a = raw[i], raw[i + 1], raw[i + 2], raw[i + 3]
+            if a < 16 or (r < 16 and g < 16 and b < 16) or (r == g == b):
+                continue
+            oid = r | (g << 8) | (b << 16)
+            counts[oid] = counts.get(oid, 0) + 1
+        min_count = max(50, int(w * h * 0.0005))
+        return {oid: _name_for(oid, slice_names) for oid, c in counts.items() if c >= min_count}
+    except Exception:
+        return {}
+
+
+def discover_plate_objects(zf: "zipfile.ZipFile", plate_idx: int) -> dict[int, str]:
+    """Every printable object on ``plate_idx``, as ``{identify_id: name}``.
+
+    Three sources, tried in descending order of trustworthiness; the FIRST one
+    that yields anything wins. Not a union — unioning would resurrect ids that
+    exist only in slice_info and nowhere else (measured on a real archive).
+
+    Discovery approach adapted from @latsss' bambu-cli 3mf-parser, with thanks.
+    """
+    slice_names = _objects_from_slice_info(zf, plate_idx)
+
+    from_gcode = _objects_from_gcode_header(zf, plate_idx, slice_names)
+    if from_gcode:
+        return from_gcode
+
+    from_pick = _objects_from_pick_png(zf, plate_idx, slice_names)
+    if from_pick:
+        return from_pick
+
+    return slice_names
+
+
 def extract_printable_objects_from_3mf(
-    data: bytes, plate_number: int | None = None, include_positions: bool = False
-) -> dict[int, str] | dict[int, dict] | tuple[dict[int, dict], list | None]:
+    data: bytes,
+    plate_number: int | None = None,
+    include_positions: bool = False,
+    with_confidence: bool = False,
+) -> dict[int, str] | dict[int, dict] | tuple[dict[int, dict], list | None] | tuple[dict[int, dict], list | None, bool]:
     """Extract printable objects from 3MF file bytes.
 
     This is a lightweight function used during print start to get the list
@@ -701,10 +878,17 @@ def extract_printable_objects_from_3mf(
         data: Raw bytes of the 3MF file
         plate_number: Which plate was printed (1-based), or None for first plate
         include_positions: If True, return tuple of (objects dict, bbox_all)
+        with_confidence: Adds a third element saying the positions are guesses.
+            Opt-in so the two existing return shapes stay exactly as they were.
 
     Returns:
         If include_positions=False: Dictionary mapping identify_id (int) to object name (str)
         If include_positions=True: Tuple of (dict mapping identify_id to {name, x, y}, bbox_all list or None)
+        If with_confidence=True as well: that tuple plus ``positions_approximate``
+        — True when NOT ONE object could be located in the pick PNG, so every
+        marker falls to the frontend's grid fallback and the plate it draws is
+        fictional. One real position is enough to anchor the rest, so the flag
+        is about a total absence, not partial coverage.
     """
     from io import BytesIO
 
@@ -791,45 +975,103 @@ def extract_printable_objects_from_3mf(
                     except (json.JSONDecodeError, KeyError):
                         pass  # Position data is optional; objects will lack x/y coordinates
 
-            # Extract objects from slice_info.config
-            for obj in plate.findall("object"):
-                identify_id = obj.get("identify_id")
-                name = obj.get("name")
-                skipped = obj.get("skipped", "false")
-
-                if identify_id and name and skipped.lower() != "true":
-                    try:
-                        obj_id = int(identify_id)
-                        if include_positions:
-                            x, y, norm = None, None, False
-                            if obj_id in pick_centroids:
-                                # Normalized image-space centroid from the pick PNG —
-                                # matches the printer screen. Frontend places directly.
-                                x, y = pick_centroids[obj_id]
-                                norm = True
-                            else:
-                                # Fallback: bbox center in mm (frontend maps via bbox_all).
-                                # Prefer id-match; fall back to name-match (pop for dup names).
-                                bbox = bbox_by_id.get(obj_id)
-                                if bbox is None:
-                                    bboxes = bbox_by_name.get(name)
-                                    if bboxes:
-                                        bbox = bboxes.pop(0)
-                                if bbox and len(bbox) >= 4:
-                                    x = (bbox[0] + bbox[2]) / 2
-                                    y = (bbox[1] + bbox[3]) / 2
-                            printable_objects[obj_id] = {"name": name, "x": x, "y": y, "norm": norm}
-                        else:
-                            printable_objects[obj_id] = name
-                    except ValueError:
-                        pass  # Skip objects with non-numeric identify_id
+            # Object list comes from discover_plate_objects, which prefers the
+            # gcode header over slice_info — this loop used to read slice_info
+            # directly and so reported one object for a plate holding five.
+            for obj_id, name in discover_plate_objects(zf, plate_idx).items():
+                if include_positions:
+                    x, y, norm = None, None, False
+                    if obj_id in pick_centroids:
+                        # Normalized image-space centroid from the pick PNG —
+                        # matches the printer screen. Frontend places directly.
+                        x, y = pick_centroids[obj_id]
+                        norm = True
+                    else:
+                        # Fallback: bbox center in mm (frontend maps via bbox_all).
+                        # Prefer id-match; fall back to name-match (pop for dup names).
+                        bbox = bbox_by_id.get(obj_id)
+                        if bbox is None:
+                            bboxes = bbox_by_name.get(name)
+                            if bboxes:
+                                bbox = bboxes.pop(0)
+                        if bbox and len(bbox) >= 4:
+                            x = (bbox[0] + bbox[2]) / 2
+                            y = (bbox[1] + bbox[3]) / 2
+                    printable_objects[obj_id] = {"name": name, "x": x, "y": y, "norm": norm}
+                else:
+                    printable_objects[obj_id] = name
 
     except Exception:
         pass  # Return empty dict if 3MF is corrupt or unreadable
 
     if include_positions:
+        if with_confidence:
+            # Approximate only when nothing at all could be placed. A single real
+            # centroid means the pick PNG was readable and the rest simply are
+            # not visible in it (occluded), which is not the same as a wholly
+            # invented layout.
+            approximate = not any(o.get("norm") for o in printable_objects.values())
+            return printable_objects, bbox_all, approximate
         return printable_objects, bbox_all
     return printable_objects
+
+
+def build_plate_objects_payload(data: bytes, plate_idx: int) -> dict:
+    """Everything the read-only plate preview needs, from one set of 3MF reads.
+
+    Lives here rather than in either route so ``/library/files/{id}/plate-objects``
+    and ``/archives/{id}/plate-objects`` answer identically — they differ only in
+    how they find the file and which plate they ask for.
+
+    ``has_top_view`` is checked rather than assumed. Markers are placed in
+    pick-PNG image space, which is top-down; over ``plate_N.png`` — a ¾ render —
+    they would sit convincingly on the wrong parts. The frontend suppresses the
+    image entirely when this is False, because no image beats a lying one.
+
+    Never raises: a corrupt or non-ZIP file yields an empty preview. The caller
+    has already established the row exists and the file is on disk, so a parse
+    failure here is a broken archive, not a missing one, and a 500 would tell
+    the operator less than an empty dialog does.
+    """
+    from io import BytesIO
+
+    objects, bbox_all, approximate = extract_printable_objects_from_3mf(
+        data, plate_idx, include_positions=True, with_confidence=True
+    )
+
+    has_top = False
+    try:
+        with zipfile.ZipFile(BytesIO(data), "r") as zf:
+            has_top = f"Metadata/top_{plate_idx}.png" in zf.namelist()
+    except Exception:
+        has_top = False
+
+    items: list[dict] = []
+    for oid, value in objects.items():
+        if isinstance(value, dict):
+            items.append(
+                {
+                    "id": oid,
+                    "name": value.get("name") or f"Object_{oid}",
+                    "x": value.get("x"),
+                    "y": value.get("y"),
+                    "norm": bool(value.get("norm")),
+                }
+            )
+        else:
+            items.append({"id": oid, "name": value, "x": None, "y": None, "norm": False})
+    # Sorted by id so the list order matches the marker numbers on the plate —
+    # dict order here is discovery order, which differs per tier.
+    items.sort(key=lambda o: o["id"])
+
+    return {
+        "plate_index": plate_idx,
+        "objects": items,
+        "bbox_all": bbox_all,
+        "positions_approximate": approximate,
+        "skip_objects_supported": extract_skip_support_from_3mf(data),
+        "has_top_view": has_top,
+    }
 
 
 def parse_plates_from_3mf(zf: zipfile.ZipFile) -> list[dict]:
@@ -1097,8 +1339,12 @@ def parse_per_plate_skip_metadata(zf: zipfile.ZipFile, plate_indices: list[int])
     the whole 3MF, but copying makes the per-plate UI logic simpler — no
     cross-referencing required).
 
-    Single-pass over the ZIP: opens slice_info.config + project_settings.config
-    + plate_N.json once each, never re-decodes per plate.
+    Not a single pass any more: ``discover_plate_objects`` re-reads
+    slice_info.config and decodes ``pick_{idx}.png`` per plate, so a ten-plate
+    file pays ten pick decodes rather than one. That cost lands on the
+    ``/plates`` cache-MISS path and inside the m114 seed; a page render reads the
+    cached ``file_metadata["plates"]`` / ``extra_data["plates"]`` and is
+    unaffected. Worth it — the previous single pass produced wrong counts.
 
     Returns:
         ``{
@@ -1125,7 +1371,13 @@ def parse_per_plate_skip_metadata(zf: zipfile.ZipFile, plate_indices: list[int])
         except (json.JSONDecodeError, OSError, KeyError):
             pass  # Defaults already applied; missing/corrupt config is non-fatal.
 
-    # Per-plate ``printable_objects`` (id → name) from slice_info.config.
+    # Per-plate ``printable_objects`` (id → name). The slice_info walk below
+    # survives only to ENUMERATE the plate indices — the objects themselves come
+    # from ``discover_plate_objects``, because slice_info undercounts every plate
+    # that uses instances (OrcaSlicer records the source object once for N
+    # copies) and overcounts on at least one archived file. This was the fourth
+    # parse site and the last one still reading slice_info directly; the other
+    # three moved in the cycle that introduced the cascade.
     if "Metadata/slice_info.config" in namelist:
         try:
             content = zf.read("Metadata/slice_info.config").decode()
@@ -1142,17 +1394,7 @@ def parse_per_plate_skip_metadata(zf: zipfile.ZipFile, plate_indices: list[int])
                         break
                 if idx is None:
                     continue
-                printable: dict[int, str] = {}
-                for obj in plate_elem.findall("object"):
-                    identify_id = obj.get("identify_id")
-                    name = obj.get("name")
-                    skipped = obj.get("skipped", "false")
-                    if identify_id and name and skipped.lower() != "true":
-                        try:
-                            printable[int(identify_id)] = name
-                        except ValueError:
-                            pass  # Non-numeric identify_id — frontend can't M623 it anyway.
-                out["plates"].setdefault(idx, {})["printable_objects"] = printable
+                out["plates"].setdefault(idx, {})["printable_objects"] = discover_plate_objects(zf, idx)
         except (OSError, ET.ParseError):
             pass
 
@@ -1238,6 +1480,7 @@ def load_objects_from_archive_into_state(archive: PrintArchive, printer_id: int)
     if client is not None:
         client.state.printable_objects = {}
         client.state.printable_objects_bbox_all = None
+        client.state.printable_objects_approximate = False
         client.state.skipped_objects = []
         client.state.skip_objects_supported = False
 
@@ -1252,13 +1495,11 @@ def load_objects_from_archive_into_state(archive: PrintArchive, printer_id: int)
         # The archive knows which plate it printed, so scope to it (#2522) — a
         # multi-plate 3MF numbers identify_ids per plate, and an unscoped list
         # would offer plate 1's objects for a plate-3 job.
-        result = extract_printable_objects_from_3mf(
-            threemf_data, plate_number=archive.plate_index, include_positions=True
-        )
-        # Function returns either dict or (dict, bbox_all) depending on flag —
-        # we always pass include_positions=True so unpack accordingly.
-        printable_objects, bbox_all = (
-            result if isinstance(result, tuple) else (result, None)  # type: ignore[misc]
+        printable_objects, bbox_all, approximate = extract_printable_objects_from_3mf(
+            threemf_data,
+            plate_number=archive.plate_index,
+            include_positions=True,
+            with_confidence=True,
         )
         if not printable_objects:
             return False
@@ -1266,6 +1507,7 @@ def load_objects_from_archive_into_state(archive: PrintArchive, printer_id: int)
             return False
         client.state.printable_objects = printable_objects
         client.state.printable_objects_bbox_all = bbox_all
+        client.state.printable_objects_approximate = approximate
 
         # skip_objects_supported gate: requires BOTH flags true in
         # archive.extra_data. Strict — None / missing → False (hide
@@ -1996,6 +2238,7 @@ class ArchiveService:
             cost=cost,
             quantity=quantity,
             extra_data=metadata,
+            skip_objects_supported=skip_objects_supported_from_metadata(metadata),
             created_by_id=created_by_id,
             project_id=project_id,
             subtask_id=subtask_id,
@@ -2215,6 +2458,9 @@ class ArchiveService:
             archive.makerworld_url = metadata.get("makerworld_url")
             archive.designer = metadata.get("designer")
             archive.extra_data = merged_extra
+            # The fallback row was created with no 3MF, so it defaulted to
+            # False. Now that the file has landed we know the real answer.
+            archive.skip_objects_supported = skip_objects_supported_from_metadata(metadata)
 
             # Backfill cost + quantity — fallback creation seeded them with
             # NULL / 1, and without this the archive stays stuck there even

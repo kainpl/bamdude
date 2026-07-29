@@ -1,80 +1,23 @@
 import { useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X, Loader2, Monitor, Box, Maximize2 } from 'lucide-react';
+import { X, Loader2, Monitor, Box, Maximize2, AlertTriangle } from 'lucide-react';
 import { api, withStreamToken } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { ConfirmModal } from './ConfirmModal';
-
-/* ── Layout knobs ───────────────────────────────────────────────────────────
- * Every dimension worth tuning by eye lives here rather than being buried in a
- * className soup below. These are whole Tailwind class strings on purpose:
- * Tailwind's scanner reads the raw file text, so a class only survives the
- * build if it appears literally — `w-[${n}%]` would silently produce no CSS.
- *
- * DIALOG_FRAME    — the height, as a percentage of the viewport, plus two max-*
- *                   caps that only bite on a small window. The overlay is
- *                   `fixed inset-0`, so a percentage here is a share of the
- *                   client area — `vh` would include the scrollbar gutter.
- *                   Width is absent on purpose — see DIALOG_WIDTH_PX.
- * PLATE_IMAGE_PX  — rendered edge of the square plate image inside the dialog.
- *                   Deliberately fixed and deliberately NOT tied to the dialog
- *                   width: the markers are a fixed size, so growing the plate is
- *                   what spreads them apart. A plain number applied as an inline
- *                   style rather than a Tailwind class, because the column width
- *                   and the full-screen size are both derived from it and a
- *                   literal class string cannot express arithmetic.
- * LIGHTBOX_SCALE  — how much bigger the full-screen plate is than the dialog's.
- *                   The source PNG is 512px (`Metadata/top_N.png`, served
- *                   straight out of the 3MF with no resizing), so past ~1.45x the
- *                   photo softens. The markers do not: they are DOM nodes placed
- *                   by percentage, so they stay sharp and simply spread further
- *                   apart — which is the entire reason the view exists.
- * LIST_COLUMN     — width of ONE object column as a share of the list viewport.
- *                   100% ⇒ a single column visible; 50% ⇒ two; 33.333% ⇒ three.
- *                   Anything past the visible count scrolls horizontally. This
- *                   is a share of the list viewport, whose own width is
- *                   LIST_WIDTH_SCALE — the two are independent knobs.
- * LIST_ROW_HEIGHT — fixed row height driving how many objects stack before the
- *                   list wraps into the next column. Must stay ≥ the tallest row
- *                   (48px ID badge + 24px padding = 72px = 4.5rem), or content
- *                   clips; 5rem leaves a little air.
- */
-const DIALOG_FRAME = 'h-[80%] max-w-[calc(100vw-2rem)] max-h-[calc(100vh-2rem)]';
-const PLATE_IMAGE_PX = 352;
-const PLATE_GUTTER_PX = 32; // the column's p-4, both sides
-const LIGHTBOX_SCALE = 1.5;
-const LIST_COLUMN = 'auto-cols-[100%]';
-const LIST_ROW_HEIGHT = 'grid-rows-[repeat(auto-fill,5rem)]';
-
-/** The plate column: the image plus its gutters. */
-const COLUMN_PX = PLATE_IMAGE_PX + PLATE_GUTTER_PX;
-
-/** The object list, as a multiple of the plate column.
- *
- * Its own knob rather than a shared width: object names are long and the row
- * carries an ID badge and a Skip button besides, so the list wants more room
- * than the square plate does. 1 pins the two columns equal.
- */
-const LIST_WIDTH_SCALE = 1.25;
-const LIST_COLUMN_PX = Math.round(COLUMN_PX * LIST_WIDTH_SCALE);
-
-/** Dialog width, cut to its content rather than to a share of the screen.
- *
- * Both columns are a fixed size, so a percentage width would only ever add
- * empty background to the right of the list. Derived instead of hard-coded so
- * that tuning PLATE_IMAGE_PX still leaves the dialog flush.
- *
- * The `+ 2` is the 1px border on each side. Tailwind sets `box-sizing:
- * border-box` globally, so the border eats into this number — without it the
- * content is 2px wider than its own container and `overflow-hidden` shaves a
- * sliver off the list's right edge.
- *
- * NOT computed with `w-fit`: the info banner's paragraphs would then set the
- * width, making the dialog as wide as the longest translated string.
- */
-const DIALOG_WIDTH_PX = COLUMN_PX + LIST_COLUMN_PX + 2;
+import { PlateMarkers } from './PlateObjectMarkers';
+import {
+  COLUMN_PX,
+  DIALOG_FRAME,
+  DIALOG_WIDTH_PX,
+  LIGHTBOX_SCALE,
+  LIST_COLUMN,
+  LIST_COLUMN_PX,
+  LIST_ROW_HEIGHT,
+  PLATE_IMAGE_PX,
+  type PlateObject,
+} from './plateDialogLayout';
 
 // Custom Skip Objects icon - arrow jumping over boxes
 export const SkipObjectsIcon = ({ className }: { className?: string }) => (
@@ -88,131 +31,6 @@ export const SkipObjectsIcon = ({ className }: { className?: string }) => (
     <polyline points="12,10 14,12 12,14" />
   </svg>
 );
-
-type PlateObject = {
-  id: number;
-  name: string;
-  x: number | null;
-  y: number | null;
-  norm?: boolean;
-  skipped: boolean;
-};
-
-/** Where a marker sits on the plate image, as percentages of the image box.
- *
- * Four sources in descending order of trust; the first that has usable data
- * wins. Kept as a plain function so the inline preview and the enlarged
- * lightbox cannot drift apart — they used to carry two verbatim copies of this.
- */
-function markerPosition(
-  obj: PlateObject,
-  idx: number,
-  total: number,
-  bboxAll: number[] | null | undefined,
-): { x: number; y: number } {
-  // 1. Normalised pick-PNG centroid — matches what the printer's own screen shows.
-  if (obj.norm && obj.x != null && obj.y != null) {
-    return {
-      x: Math.max(2, Math.min(98, obj.x * 100)),
-      y: Math.max(2, Math.min(98, obj.y * 100)),
-    };
-  }
-  // 2. Millimetre coords mapped through the bbox the top view was rendered from.
-  if (obj.x != null && obj.y != null && bboxAll) {
-    const [xMin, yMin, xMax, yMax] = bboxAll;
-    const padding = 8; // the top_N.png render leaves roughly this much margin
-    const contentArea = 100 - padding * 2;
-    return {
-      x: Math.max(5, Math.min(95, padding + ((obj.x - xMin) / (xMax - xMin)) * contentArea)),
-      // Image Y grows downward, 3D Y grows toward the back of the plate.
-      y: Math.max(5, Math.min(95, padding + ((yMax - obj.y) / (yMax - yMin)) * contentArea)),
-    };
-  }
-  // 3. No bbox — assume a full 256mm plate.
-  if (obj.x != null && obj.y != null) {
-    const buildPlate = 256;
-    return {
-      x: Math.max(5, Math.min(95, (obj.x / buildPlate) * 100)),
-      y: Math.max(5, Math.min(95, 100 - (obj.y / buildPlate) * 100)),
-    };
-  }
-  // 4. No coordinates at all — lay them out in a grid so every object is still
-  //    reachable. Positions are meaningless here; the list is the real UI.
-  const cols = Math.ceil(Math.sqrt(total));
-  const rows = Math.ceil(total / cols);
-  return {
-    x: 15 + (idx % cols) * (70 / cols) + 35 / cols,
-    y: 15 + Math.floor(idx / cols) * (70 / rows) + 35 / rows,
-  };
-}
-
-/** Clickable object-ID markers laid over a plate image.
- *
- * Size is deliberately independent of the plate: markers are a fixed ``w-6 h-6``
- * placed by percentage, so a bigger plate spreads them further apart instead of
- * making them bulkier. Never scale them with the image — the readability win is
- * the gap between them.
- *
- * The overlay is ``pointer-events-none`` so a click on bare plate still reaches
- * whatever the parent does with it (enlarge, in the inline preview); each marker
- * opts back in and stops propagation so skipping never doubles as that action.
- */
-function PlateMarkers({
-  objects,
-  bboxAll,
-  canSkip,
-  onSkip,
-  t,
-}: {
-  objects: PlateObject[];
-  bboxAll?: number[] | null;
-  canSkip: (obj: PlateObject) => boolean;
-  onSkip: (target: { id: number; name: string }) => void;
-  t: (key: string, options?: Record<string, unknown>) => string;
-}) {
-  if (objects.length === 0) return null;
-
-  return (
-    <div className="absolute inset-0 pointer-events-none">
-      {objects.map((obj, idx) => {
-        const { x, y } = markerPosition(obj, idx, objects.length, bboxAll);
-        const skippable = canSkip(obj);
-
-        return (
-          <button
-            key={obj.id}
-            type="button"
-            disabled={!skippable}
-            onClick={(e) => {
-              // Keep the click off the parent: in the inline preview that would
-              // open the lightbox, in the lightbox it would close it.
-              e.stopPropagation();
-              onSkip({ id: obj.id, name: obj.name });
-            }}
-            className={`absolute flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold shadow-lg transition-transform ${
-              obj.skipped ? 'bg-red-500 text-white line-through' : 'bg-bambu-green text-black'
-            } ${
-              skippable
-                ? 'pointer-events-auto cursor-pointer hover:scale-125 focus:outline-none focus:ring-2 focus:ring-white/80'
-                : 'cursor-default'
-            }`}
-            style={{ left: `${x}%`, top: `${y}%`, transform: 'translate(-50%, -50%)' }}
-            title={
-              obj.skipped
-                ? `${obj.name} — ${t('printers.willBeSkipped')}`
-                : skippable
-                  ? `${obj.name} — ${t('printers.skipObjects.skip')}`
-                  : obj.name
-            }
-            aria-label={obj.name}
-          >
-            {obj.id}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
 
 interface SkipObjectsModalProps {
   printerId: number;
@@ -322,6 +140,19 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
                 {objectsData.skipped_count}/{objectsData.total} {t('printers.skipObjects.skipped')}
               </div>
             </div>
+
+            {/* Nothing on this plate could be located in the file's object map,
+                so every marker below came from markerPosition's grid fallback.
+                The picture looks like a real layout and is not one — saying so
+                is better than implying a precision we do not have. */}
+            {objectsData.positions_approximate && (
+              <div className="flex items-start gap-2 px-4 py-2 bg-amber-50 dark:bg-amber-500/10 border-b border-gray-200 dark:border-bambu-dark-tertiary">
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                <p className="text-[11px] text-amber-700 dark:text-amber-300/90">
+                  {t('printers.skipObjects.approximatePositions')}
+                </p>
+              </div>
+            )}
 
             {/* Content: Image + List side by side */}
             <div className="flex flex-1 min-h-0 overflow-hidden">

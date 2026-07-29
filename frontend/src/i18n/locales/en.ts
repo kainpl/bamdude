@@ -597,6 +597,7 @@ export default {
       title: 'Skip Objects',
       matchIdsInfo: 'Match IDs with your printer display',
       printerShowsIds: 'The printer screen shows object IDs on the build plate',
+      approximatePositions: 'Marker positions are approximate — this file has no object map, so they are laid out in a grid rather than where the parts actually sit.',
       skipped: 'skipped',
       objectsSkipped: 'Objects skipped',
       activeCount: '{{count}} active',
@@ -1031,7 +1032,11 @@ export default {
       date: 'Date',
       size: 'Size',
       actions: 'Actions',
-      hasTimelapse: 'Has timelapse'
+      hasTimelapse: 'Has timelapse',
+      printTime: 'Print time',
+      estimated: 'Estimated',
+      actual: 'Actual',
+      accuracy: 'Accuracy'
     }
   },
 
@@ -3457,6 +3462,24 @@ export default {
   },
 
   library: {
+    // Read-only plate object preview, opened from a library file or an archive.
+    // The banner strings are the point of the feature: the button is never
+    // hidden when skipping is unavailable, because naming the slicer setting
+    // that turned it off is actionable where a missing button teaches nothing.
+    plateObjects: {
+      title: 'Objects on the plate',
+      badge: 'Skip objects',
+      badgeTooltip: 'Per-object skipping is available for this file',
+      open: 'View objects on the plate',
+      skipSupported: 'Object skipping is available for this file.',
+      skipUnsupported: 'Object skipping is unavailable — "Exclude objects" was off in the slicer when this file was sliced.',
+      approximate: 'Positions are approximate — this file carries no per-object pick data.',
+      noImage: 'This file has no plate preview image.',
+      empty: 'No objects found on this plate.',
+      plate: 'Plate {{index}}',
+      objectCount: '{{count}} object',
+      objectCount_other: '{{count}} objects',
+    },
     // Composite tag labels (m036). Surfaced by ``<FileTagBadges>`` in the
     // file manager and by the chip-row filter. Short, all-caps for badge
     // density. Keep en + uk in sync.
@@ -5989,6 +6012,13 @@ export default {
     multiplier: 'Multiplier',
     onValue: 'ON Value',
     mqttPowerHint: 'JSON path extracts value from JSON payload (e.g., "power_l1"). Leave empty if topic publishes raw numeric values.\nUse multiplier 0.001 for mW→W, 1000 for kW→W.',
+    mqttEnergyTotalTitle: 'Lifetime Energy',
+    mqttEnergyTotalPath: 'Lifetime JSON path',
+    mqttEnergyTotalHint: 'A running total that never resets (Zigbee2MQTT: "energy", Tasmota: "ENERGY.Total"). Required for per-print energy and cost — a counter that resets each day cannot be used, because a print that runs past midnight would measure as negative.',
+    mqttControlTitle: 'Control',
+    mqttCommandOn: 'Payload to turn ON',
+    mqttCommandOff: 'Payload to turn OFF',
+    mqttCommandHint: 'Leave the topic empty to keep this plug monitor-only.\nZigbee2MQTT: publish {"state": "ON"} to <name>/set. Tasmota: publish ON to cmnd/<name>/POWER.',
     mqttEnergyHint: 'JSON path extracts value from JSON payload. Leave empty for raw values.\nUse multiplier 0.001 for Wh→kWh, 1000 for MWh→kWh.',
     mqttStateHint: 'JSON path extracts value from JSON payload. Leave empty for raw values.\nON value: the exact string that means "ON". Leave empty for auto-detect (ON, true, 1).',
     // REST smart plug

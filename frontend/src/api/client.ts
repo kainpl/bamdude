@@ -1,4 +1,4 @@
-import type { ArchivePlatesResponse, LibraryFilePlatesResponse } from '../types/plates';
+import type { ArchivePlatesResponse, LibraryFilePlatesResponse, PlateObjectsResponse } from '../types/plates';
 
 export class ApiError extends Error {
   status: number;
@@ -730,6 +730,9 @@ export interface Archive {
   duplicate_sequence: number;  // 0 = original, 1+ = nth duplicate
   original_archive_id: number | null;  // ID of the first/original archive
   object_count: number | null;
+  // gcode_label_objects AND exclude_object. Badge in the list; the preview
+  // modal explains what it means rather than hiding itself when false.
+  skip_objects_supported: boolean;
   print_name: string | null;
   print_time_seconds: number | null;
   actual_time_seconds: number | null;  // Computed from started_at/completed_at
@@ -2170,6 +2173,14 @@ export interface SmartPlug {
   mqtt_state_topic: string | null;  // Topic for state data
   mqtt_state_path: string | null;  // e.g., "state_l1" for ON/OFF
   mqtt_state_on_value: string | null;  // What value means "ON" (e.g., "ON", "true", "1")
+  // Lifetime energy source — only this figure may feed energy snapshots
+  mqtt_energy_total_topic: string | null;
+  mqtt_energy_total_path: string | null;
+  mqtt_energy_total_multiplier: number;
+  // Control — absent means monitor-only
+  mqtt_command_topic: string | null;
+  mqtt_command_on: string | null;
+  mqtt_command_off: string | null;
   // REST/Webhook fields (required when plug_type="rest")
   rest_on_url: string | null;
   rest_on_body: string | null;
@@ -2249,6 +2260,12 @@ export interface SmartPlugCreate {
   mqtt_state_topic?: string | null;
   mqtt_state_path?: string | null;
   mqtt_state_on_value?: string | null;
+  mqtt_energy_total_topic?: string | null;
+  mqtt_energy_total_path?: string | null;
+  mqtt_energy_total_multiplier?: number;
+  mqtt_command_topic?: string | null;
+  mqtt_command_on?: string | null;
+  mqtt_command_off?: string | null;
   // REST fields
   rest_on_url?: string | null;
   rest_on_body?: string | null;
@@ -2318,6 +2335,12 @@ export interface SmartPlugUpdate {
   mqtt_state_topic?: string | null;
   mqtt_state_path?: string | null;
   mqtt_state_on_value?: string | null;
+  mqtt_energy_total_topic?: string | null;
+  mqtt_energy_total_path?: string | null;
+  mqtt_energy_total_multiplier?: number;
+  mqtt_command_topic?: string | null;
+  mqtt_command_on?: string | null;
+  mqtt_command_off?: string | null;
   // REST fields
   rest_on_url?: string | null;
   rest_on_body?: string | null;
@@ -4797,6 +4820,9 @@ export const api = {
       skipped_count: number;
       is_printing: boolean;
       bbox_all: [number, number, number, number] | null;
+      // True when not one object could be located in the plate's colour map, so
+      // every marker came from the grid fallback rather than the real layout.
+      positions_approximate?: boolean;
     }>(`/printers/${printerId}/print/objects`),
 
   skipObjects: (printerId: number, objectIds: number[]) =>
@@ -7504,6 +7530,17 @@ export const api = {
     }),
   getLibraryFilePlates: (fileId: number) =>
     request<LibraryFilePlatesResponse>(`/library/files/${fileId}/plates`),
+
+  // Read-only plate object preview. One call for both sources: they differ only
+  // in how the file is found. The archive route takes no plate — it answers for
+  // archive.plate_index, because an archive records one executed print and
+  // object ids are numbered per plate.
+  getPlateObjects: (source: 'library' | 'archive', id: number, plate = 1) =>
+    request<PlateObjectsResponse>(
+      source === 'library'
+        ? `/library/files/${id}/plate-objects?plate=${plate}`
+        : `/archives/${id}/plate-objects`,
+    ),
   getLibraryFileFilamentRequirements: (fileId: number, plateId?: number, requestId?: string) => {
     const params = new URLSearchParams();
     if (plateId !== undefined) params.set('plate_id', String(plateId));
@@ -8168,6 +8205,9 @@ export interface LibraryFile {
   print_time_seconds: number | null;
   filament_used_grams: number | null;
   object_count: number | null;
+  // gcode_label_objects AND exclude_object. Badge in the list; the preview
+  // modal explains what it means rather than hiding itself when false.
+  skip_objects_supported: boolean;
   sliced_for_model: string | null;
   swap_compatible: boolean;
   // Provenance (m033) — populated for MakerWorld imports + slicer outputs.
@@ -8199,6 +8239,9 @@ export interface LibraryFileListItem {
   print_time_seconds: number | null;
   filament_used_grams: number | null;
   object_count: number | null;
+  // gcode_label_objects AND exclude_object. Badge in the list; the preview
+  // modal explains what it means rather than hiding itself when false.
+  skip_objects_supported: boolean;
   sliced_for_model: string | null;
   swap_compatible: boolean;
   // True iff the 3MF carries 2+ plates (extracted at upload / m023 backfill).

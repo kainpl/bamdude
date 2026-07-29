@@ -22,9 +22,16 @@ class SmartPlugMQTTData:
 
     plug_id: int
     power: float | None = None  # Current power in watts
-    energy: float | None = None  # Energy in kWh (today)
+    energy: float | None = None  # Energy in kWh — whatever the operator's energy path points at
+    energy_total: float | None = None  # Lifetime kWh — the only figure energy snapshots may use
     state: str | None = None  # "ON" or "OFF"
-    last_seen: datetime = field(default_factory=datetime.utcnow)
+    # Timezone-AWARE, because ``is_reachable`` subtracts this from
+    # ``datetime.now(timezone.utc)`` and ``_on_message`` writes an aware value.
+    # A naive default made that subtraction raise TypeError for any plug that
+    # had been subscribed but had not yet received a message — which is every
+    # plug between being added and its device's first publish, and the status
+    # endpoint calls ``is_reachable`` unconditionally.
+    last_seen: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
@@ -42,6 +49,12 @@ class MQTTSmartPlugService:
 
     # Consider plug unreachable if no message received in this time
     REACHABLE_TIMEOUT_MINUTES = 5
+
+    # How long turn_on/turn_off wait for the device to report the new state.
+    # MQTT gives no reply to a publish, so confirmation can only come from the
+    # state topic coming back round. Worth waiting for: auto-off and Obico's
+    # pause_and_off cut mains to a printer.
+    CONTROL_CONFIRM_TIMEOUT_SECONDS: float = 3.0
 
     def __init__(self):
         self.client: mqtt.Client | None = None
@@ -279,6 +292,13 @@ class MQTTSmartPlugService:
                     except (ValueError, TypeError):
                         pass  # Ignore unparseable energy reading from MQTT
 
+                elif data_type == "energy_total":
+                    try:
+                        data.energy_total = float(raw_value) * config.multiplier
+                        logger.debug("MQTT smart plug %s: energy_total=%s", plug_id, data.energy_total)
+                    except (ValueError, TypeError):
+                        pass  # Ignore unparseable lifetime reading from MQTT
+
                 elif data_type == "state":
                     state_str = str(raw_value)
                     # Check against configured ON value if set
@@ -343,6 +363,10 @@ class MQTTSmartPlugService:
         energy_topic: str | None = None,
         energy_path: str | None = None,
         energy_multiplier: float = 1.0,
+        # Lifetime energy source (separate from the above — see the model)
+        energy_total_topic: str | None = None,
+        energy_total_path: str | None = None,
+        energy_total_multiplier: float = 1.0,
         # State source
         state_topic: str | None = None,
         state_path: str | None = None,
@@ -389,6 +413,21 @@ class MQTTSmartPlugService:
                 )
                 self.plug_configs[plug_id]["energy"] = config
                 self._add_subscription(plug_id, effective_energy_topic, "energy")
+
+            # Configure the LIFETIME counter. Unlike the three above this
+            # REQUIRES a path: a device's daily and cumulative readings usually
+            # arrive in the same payload under different keys, so a bare topic
+            # cannot say which one is the lifetime figure — and guessing is the
+            # bug this whole source exists to remove.
+            effective_total_topic = energy_total_topic or effective_energy_topic
+            if effective_total_topic and energy_total_path:
+                config = MQTTDataSourceConfig(
+                    topic=effective_total_topic,
+                    path=energy_total_path,
+                    multiplier=energy_total_multiplier,
+                )
+                self.plug_configs[plug_id]["energy_total"] = config
+                self._add_subscription(plug_id, effective_total_topic, "energy_total")
 
             # Configure state subscription (path is optional - empty means use raw payload)
             if effective_state_topic:
@@ -475,6 +514,116 @@ class MQTTSmartPlugService:
         timeout = timedelta(minutes=self.REACHABLE_TIMEOUT_MINUTES)
         return datetime.now(timezone.utc) - data.last_seen < timeout
 
+    # -- driver interface -------------------------------------------------
+    # Same four-and-a-bit methods Tasmota / REST / Home Assistant implement, so
+    # smart_plug_manager can route to this service like any other.
+
+    async def _publish(self, topic: str, payload: str) -> bool:
+        """Publish one command. Returns True if the broker accepted it.
+
+        QoS 1 because a dropped switch command is worse than a duplicate one.
+        Never retained: a retained command payload would be redelivered on every
+        broker reconnect and switch the plug at an arbitrary later time.
+        """
+        if not self.client or not self.connected:
+            logger.warning("MQTT smart plug: cannot publish to %s - not connected", topic)
+            return False
+        try:
+            info = await asyncio.to_thread(self.client.publish, topic, payload, qos=1, retain=False)
+        except Exception as e:
+            logger.error("MQTT smart plug: publish to %s failed: %s", topic, e)
+            return False
+        if info.rc != mqtt.MQTT_ERR_SUCCESS:
+            logger.error("MQTT smart plug: publish to %s rejected (rc=%s)", topic, info.rc)
+            return False
+        return True
+
+    async def _switch(self, plug: Any, payload: str | None, expected_state: str) -> bool:
+        """Publish a command and, where possible, confirm it took effect."""
+        topic = getattr(plug, "mqtt_command_topic", None)
+        if not topic:
+            logger.info(
+                "MQTT smart plug %s: no command topic configured - monitor-only, ignoring switch request",
+                plug.id,
+            )
+            return False
+
+        if not await self._publish(topic, payload or ""):
+            return False
+
+        # Without a state topic there is nothing to confirm against.
+        if not getattr(plug, "mqtt_state_topic", None):
+            return True
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.CONTROL_CONFIRM_TIMEOUT_SECONDS
+        while loop.time() < deadline:
+            data = self.get_plug_data(plug.id)
+            if data and data.state == expected_state:
+                return True
+            await asyncio.sleep(0.1)
+
+        # The broker accepted it at QoS 1; the device just hasn't reported back
+        # yet. Returning False here would mark a healthy plug as failed.
+        logger.warning(
+            "MQTT smart plug %s: no state confirmation within %ss (command was delivered)",
+            plug.id,
+            self.CONTROL_CONFIRM_TIMEOUT_SECONDS,
+        )
+        return True
+
+    async def turn_on(self, plug: Any) -> bool:
+        """Turn on the plug. Returns True if the command was delivered."""
+        return await self._switch(plug, getattr(plug, "mqtt_command_on", None), "ON")
+
+    async def turn_off(self, plug: Any) -> bool:
+        """Turn off the plug. Returns True if the command was delivered."""
+        return await self._switch(plug, getattr(plug, "mqtt_command_off", None), "OFF")
+
+    async def toggle(self, plug: Any) -> bool:
+        """Flip the plug based on its last reported state.
+
+        Deliberately refuses when the state is unknown. The other drivers can
+        toggle blind because their transport answers back; here the only source
+        of truth is the state topic, and switching a printer's mains on a guess
+        is worse than declining.
+        """
+        data = self.get_plug_data(plug.id)
+        if not data or data.state not in ("ON", "OFF"):
+            logger.warning(
+                "MQTT smart plug %s: cannot toggle - no known state (configure a state topic)",
+                plug.id,
+            )
+            return False
+        return await (self.turn_off(plug) if data.state == "ON" else self.turn_on(plug))
+
+    async def get_status(self, plug: Any) -> dict:
+        """Current state from the subscription cache."""
+        data = self.get_plug_data(plug.id)
+        if not data:
+            return {"state": None, "reachable": False, "device_name": None}
+        return {"state": data.state, "reachable": self.is_reachable(plug.id), "device_name": None}
+
+    async def get_energy(self, plug: Any) -> dict | None:
+        """Energy data from the cache.
+
+        ``today`` and ``total`` are deliberately distinct: only ``total`` may
+        feed ``smart_plug_energy_snapshots``, so a plug with no lifetime source
+        must leave it absent and keep being skipped there.
+        """
+        data = self.get_plug_data(plug.id)
+        if not data:
+            return None
+
+        energy: dict[str, float] = {}
+        if data.power is not None:
+            energy["power"] = data.power
+        if data.energy is not None:
+            energy["today"] = data.energy
+        if data.energy_total is not None:
+            energy["total"] = data.energy_total
+        return energy or None
+
     async def disconnect(self, timeout: float = 0):
         """Disconnect from MQTT broker."""
         if self.client:
@@ -505,8 +654,13 @@ def subscribe_plug_to_mqtt(service: "MQTTSmartPlugService", plug: Any) -> list[s
     power_topic = plug.mqtt_power_topic or plug.mqtt_topic
     energy_topic = plug.mqtt_energy_topic or plug.mqtt_topic
     state_topic = plug.mqtt_state_topic or plug.mqtt_topic
+    energy_total_topic = plug.mqtt_energy_total_topic or energy_topic
 
-    if not (power_topic or energy_topic or state_topic):
+    # Counted in the guard so a plug configured with ONLY a lifetime source is
+    # still subscribed. The API validator does not currently allow that shape,
+    # but the helper is also called from the startup restore path, where the
+    # row comes straight from the database.
+    if not (power_topic or energy_topic or state_topic or energy_total_topic):
         return []
 
     legacy_mult = plug.mqtt_multiplier or 1.0
@@ -518,11 +672,14 @@ def subscribe_plug_to_mqtt(service: "MQTTSmartPlugService", plug: Any) -> list[s
         energy_topic=energy_topic,
         energy_path=plug.mqtt_energy_path,
         energy_multiplier=plug.mqtt_energy_multiplier or legacy_mult,
+        energy_total_topic=energy_total_topic,
+        energy_total_path=plug.mqtt_energy_total_path,
+        energy_total_multiplier=plug.mqtt_energy_total_multiplier or 1.0,
         state_topic=state_topic,
         state_path=plug.mqtt_state_path,
         state_on_value=plug.mqtt_state_on_value,
     )
-    return [t for t in {power_topic, energy_topic, state_topic} if t]
+    return [t for t in {power_topic, energy_topic, state_topic, energy_total_topic} if t]
 
 
 # Global instance

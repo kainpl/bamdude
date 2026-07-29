@@ -8,6 +8,42 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-29
+
+Image: `ghcr.io/kainpl/bamdude:0.5.1` / `kainpl/bamdude:0.5.1` (`:latest` tracks this).
+
+**A short release with one theme: knowing what is on a plate, and being able to act on it.** BamDude had been reading the object list from the wrong place in the print file, which meant a plate of five copies showed up as one object — in the file library, in the archives, in the plate galleries, and in Skip Objects, where the other four could not be cancelled at all. That is fixed at its source, and the same corrected list now backs a new read-only preview you can open from any file or archived print: the plate seen from above, with the same object-ID markers the printer's own screen uses.
+
+**Smart plugs connected over MQTT can now actually be switched.** Until now they could report power but every command silently did nothing — including "turn off after the print" and the AI failure detection's "pause and cut power". Two fields on the plug form (a command topic and the payloads your device expects) turn all of that on. Per-print energy for those plugs was also wrong rather than absent, and now says which reading is the lifetime counter instead of assuming.
+
+> **First start after this update takes longer on a large history.** Existing library files and archives have their object counts recalculated by opening each 3MF still on disk — roughly 50–200 ms per file, so an installation with thousands of archives will sit for a few minutes before the interface responds. It runs once. Progress is written to the log (`m114 print_archives: progress N/M`) if you want to watch it.
+
+Object discovery credit: **@latsss** ([bambu-cli](https://github.com/latsss/bambu-cli)), for identifying where the real object list lives and for the reconciliation approach.
+
+### Added
+
+- **See what is on a plate before you print it.** The object count in the file library and in the archives is now a button: it opens the plate seen from above, with the object-ID markers the printer's own screen uses, alongside the list of objects. Read-only — there is no skipping here, this is the "what's actually on this one" view you want before queuing a reprint or choosing between two similar files. A multi-plate file opens on the first plate that actually holds something rather than on an empty plate 1. Both lists also now mark the files where per-object skipping will work, and when it will not the preview says why instead of hiding itself.
+
+- Existing library files and archives get their object counts recalculated on the first start after this update, using the same evidence-ranked extraction new files get. On an installation with thousands of archives this one-time pass takes a few minutes before the interface responds.
+
+- **The Archives list shows filament weight, cost, layers and object count.** They were on the cards but not in the list, so switching to the list to compare prints meant giving up exactly the numbers you were comparing. All four join the printer model and filament already under the print name — that is the one column that can grow without widening the table — and the line wraps instead of overflowing on a narrow window. Weight and cost carry no icon, since `g` and the currency symbol say what they are; layers and objects are bare numbers and keep theirs, with the spelled-out label on hover.
+
+- **Archives now show what a print was estimated to take next to what it really took.** The list view gains a Print time column between Printer and Date: the slicer's estimate on the top line, the actual duration below it, and beside that the same over/under percentage the cards already carried. The card view, which only ever showed one figure, now shows both as `estimate / actual`. Either side can be missing — a file that was never sliced has no estimate, a running or failed print has no actual — and the missing one reads as a dash rather than silently borrowing the other's number, which is what the card used to do.
+
+### Fixed
+
+- **Plates sliced in OrcaSlicer showed one object where there were several, and Skip Objects could only reach that one.** When you place copies of a model, newer OrcaSlicer records just the original in the file's object list, even though it prints and labels every copy — so a plate of five parts appeared as one, and the other four could not be skipped, on a printer perfectly able to skip them. BamDude now reads the object list the printer itself works from, in the print file's own G-code, and falls back to the plate's colour map when that is absent. The same list feeds the object counts shown for files and archives, which were undercounting for the same reason. Thanks to @latsss (bambu-cli) for identifying where the real list lives and for the reconciliation approach.
+
+- **Per-plate object counts were undercounting too.** The fix above reached the count shown for a file as a whole but not the one shown against each individual plate, so a multi-plate file could report five objects in the list and one on the plate that held five. The plate galleries, the plate picker in the print dialog and the model viewer all read that number and all now take it from the same source as everything else.
+
+- **Smart plugs connected over MQTT can now be switched on and off.** They could report power and energy but never respond to a command: the plug type had nowhere to publish to, so BamDude quietly fell back to talking HTTP to an IP address an MQTT plug does not have. Every switch silently did nothing — turning on at print start, turning off afterwards, scheduled times, the buttons on the plug card, and the AI failure detection's "pause and cut power" action. Give the plug a command topic and the exact payloads your device expects, and all of those start working. A plug left without one keeps behaving as before, which is the right answer for a clamp meter that only measures. Toggling is the one exception: with no state topic configured BamDude declines rather than guessing, because guessing wrong cuts power to a running print.
+
+- **Energy and cost per print were wrong for MQTT plugs, not merely missing.** BamDude took whichever energy reading you pointed it at and treated it as a lifetime total. For a plug reporting a daily counter — the common case for Tasmota — that counter resets at midnight, so any print running past midnight measured as having consumed a negative amount. There is now a separate field for the lifetime reading, so you say which is which instead of BamDude assuming. Fill it in and prints record what they actually cost; leave it empty and the plug simply contributes nothing to energy history, which is honest rather than wrong. Zigbee2MQTT users want `energy`; Tasmota users want `ENERGY.Total`.
+
+### Changed
+
+- **The Skip Objects dialog is shorter — 60% of the window's height rather than 80%.** 0.5.0 introduced the taller dialog and its release notes say 80%; in use that turned out to be more window than the content needs. Objects per column follow the height, so a shorter dialog simply means the list wraps into its next column sooner.
+
 ## [0.5.0] - 2026-07-27
 
 Stable 0.5.0 release — consolidates the cumulative `0.4.7b1`–`0.4.7b5` beta cycle (see those sections below for the full per-beta detail) plus the post-b5 work listed here. Image: `ghcr.io/kainpl/bamdude:0.5.0` / `kainpl/bamdude:0.5.0` (`:latest` tracks this).

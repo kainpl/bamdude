@@ -215,6 +215,10 @@ class FileResponse(BaseModel):
     print_time_seconds: int | None = None
     filament_used_grams: float | None = None
     object_count: int | None = None
+    # gcode_label_objects AND exclude_object — badge in the file list, and the
+    # preview banner explains what it means. Denormalised column (m114), not a
+    # JSON dig, so the list stays filterable server-side.
+    skip_objects_supported: bool = False
     sliced_for_model: str | None = None
     swap_compatible: bool = False
     # True iff the file has 2+ plates (extracted at upload / m023). Frontend
@@ -307,6 +311,10 @@ class FileListResponse(BaseModel):
     print_time_seconds: int | None = None
     filament_used_grams: float | None = None
     object_count: int | None = None
+    # gcode_label_objects AND exclude_object — badge in the file list, and the
+    # preview banner explains what it means. Denormalised column (m114), not a
+    # JSON dig, so the list stays filterable server-side.
+    skip_objects_supported: bool = False
     sliced_for_model: str | None = None
     swap_compatible: bool = False
     is_multi_plate: bool = False

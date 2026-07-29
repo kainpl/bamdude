@@ -619,7 +619,11 @@ class VirtualPrinterInstance:
             )
             from backend.app.models.library import LibraryFile
             from backend.app.services.archive import ThreeMFParser
-            from backend.app.services.library_helpers import compute_file_tags, detect_file_type
+            from backend.app.services.library_helpers import (
+                compute_file_tags,
+                detect_file_type,
+                skip_objects_supported_from_metadata,
+            )
 
             async with self._session_factory() as db_session:
                 filename = file_path.name
@@ -733,6 +737,7 @@ class VirtualPrinterInstance:
                         source_type=detected_source_type,
                         swap_compatible=False,
                     ),
+                    skip_objects_supported=skip_objects_supported_from_metadata(metadata),
                     file_size=file_path.stat().st_size,
                     file_hash=file_hash,
                     thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,

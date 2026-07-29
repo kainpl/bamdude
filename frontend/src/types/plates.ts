@@ -78,3 +78,35 @@ export interface PlateAssignment {
   object_id: string;
   plate_id: number | null;
 }
+
+/** Read-only plate object preview — GET /{library|archives}/…/plate-objects.
+ *
+ * Deliberately has no `skipped` field. Nothing in the preview is skippable —
+ * the live SkipObjectsModal owns that — and an always-false flag would be an
+ * invitation to grow one.
+ */
+export interface PlateObjectItem {
+  id: number;
+  name: string;
+  // Normalised pick-PNG centroid when `norm` is true, millimetres otherwise,
+  // null when the object appears in no positional source at all (markerPosition
+  // then lays it out on its tier-4 grid).
+  x: number | null;
+  y: number | null;
+  norm: boolean;
+}
+
+export interface PlateObjectsResponse {
+  plate_index: number;
+  objects: PlateObjectItem[];
+  bbox_all: number[] | null;
+  // True when NOT ONE object had a pick-PNG centroid: every marker is on the
+  // fallback grid and the layout drawn is plausible-looking fiction.
+  positions_approximate: boolean;
+  // gcode_label_objects AND exclude_object, read live from the 3MF.
+  skip_objects_supported: boolean;
+  // False when Metadata/top_N.png is absent. The modal then shows the list with
+  // NO image — markers are positioned in top-down space and would sit
+  // convincingly on the wrong parts of a 3/4 render.
+  has_top_view: boolean;
+}

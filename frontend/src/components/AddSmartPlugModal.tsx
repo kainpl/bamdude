@@ -40,6 +40,14 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
   );
   // MQTT fields - State
   const [mqttStateTopic, setMqttStateTopic] = useState(plug?.mqtt_state_topic || '');
+  const [mqttEnergyTotalTopic, setMqttEnergyTotalTopic] = useState(plug?.mqtt_energy_total_topic || '');
+  const [mqttEnergyTotalPath, setMqttEnergyTotalPath] = useState(plug?.mqtt_energy_total_path || '');
+  const [mqttEnergyTotalMultiplier, setMqttEnergyTotalMultiplier] = useState(
+    String(plug?.mqtt_energy_total_multiplier ?? 1),
+  );
+  const [mqttCommandTopic, setMqttCommandTopic] = useState(plug?.mqtt_command_topic || '');
+  const [mqttCommandOn, setMqttCommandOn] = useState(plug?.mqtt_command_on || '');
+  const [mqttCommandOff, setMqttCommandOff] = useState(plug?.mqtt_command_off || '');
   const [mqttStatePath, setMqttStatePath] = useState(plug?.mqtt_state_path || '');
   const [mqttStateOnValue, setMqttStateOnValue] = useState(plug?.mqtt_state_on_value || '');
   // REST fields
@@ -366,6 +374,12 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
       mqtt_energy_topic: plugType === 'mqtt' ? (mqttEnergyTopic.trim() || null) : null,
       mqtt_energy_path: plugType === 'mqtt' ? (mqttEnergyPath.trim() || null) : null,
       mqtt_energy_multiplier: plugType === 'mqtt' ? (parseFloat(mqttEnergyMultiplier) || 1) : 1,
+      mqtt_energy_total_topic: plugType === 'mqtt' ? (mqttEnergyTotalTopic.trim() || null) : null,
+      mqtt_energy_total_path: plugType === 'mqtt' ? (mqttEnergyTotalPath.trim() || null) : null,
+      mqtt_energy_total_multiplier: plugType === 'mqtt' ? (parseFloat(mqttEnergyTotalMultiplier) || 1) : 1,
+      mqtt_command_topic: plugType === 'mqtt' ? (mqttCommandTopic.trim() || null) : null,
+      mqtt_command_on: plugType === 'mqtt' ? (mqttCommandOn.trim() || null) : null,
+      mqtt_command_off: plugType === 'mqtt' ? (mqttCommandOff.trim() || null) : null,
       // MQTT state fields
       mqtt_state_topic: plugType === 'mqtt' ? (mqttStateTopic.trim() || null) : null,
       mqtt_state_path: plugType === 'mqtt' ? (mqttStatePath.trim() || null) : null,
@@ -1090,6 +1104,89 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
                     </div>
                     <p className="text-xs text-bambu-gray" style={{ whiteSpace: 'pre-line' }}>
                       {t('smartPlugs.mqttEnergyHint')}
+                    </p>
+                  </div>
+
+                  {/* Lifetime Energy Section — separate from the one above
+                      because only a never-resetting counter can feed per-print
+                      energy, and most devices publish both figures in the same
+                      payload under different keys. */}
+                  <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+                    <p className="text-white font-medium text-sm">{t('smartPlugs.mqttEnergyTotalTitle')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></p>
+                    <div>
+                      <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.topic')}</label>
+                      <input
+                        type="text"
+                        value={mqttEnergyTotalTopic}
+                        onChange={(e) => setMqttEnergyTotalTopic(e.target.value)}
+                        placeholder="Same as energy topic, or different"
+                        className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.mqttEnergyTotalPath')}</label>
+                        <input
+                          type="text"
+                          value={mqttEnergyTotalPath}
+                          onChange={(e) => setMqttEnergyTotalPath(e.target.value)}
+                          placeholder="energy"
+                          className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.multiplier')}</label>
+                        <input
+                          type="text"
+                          value={mqttEnergyTotalMultiplier}
+                          onChange={(e) => setMqttEnergyTotalMultiplier(e.target.value)}
+                          placeholder="1"
+                          className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                    <p className="text-xs text-bambu-gray" style={{ whiteSpace: 'pre-line' }}>
+                      {t('smartPlugs.mqttEnergyTotalHint')}
+                    </p>
+                  </div>
+
+                  {/* Control Section */}
+                  <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+                    <p className="text-white font-medium text-sm">{t('smartPlugs.mqttControlTitle')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></p>
+                    <div>
+                      <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.topic')}</label>
+                      <input
+                        type="text"
+                        value={mqttCommandTopic}
+                        onChange={(e) => setMqttCommandTopic(e.target.value)}
+                        placeholder="zigbee2mqtt/printer-plug/set"
+                        className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.mqttCommandOn')}</label>
+                        <input
+                          type="text"
+                          value={mqttCommandOn}
+                          onChange={(e) => setMqttCommandOn(e.target.value)}
+                          placeholder='{"state": "ON"}'
+                          className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.mqttCommandOff')}</label>
+                        <input
+                          type="text"
+                          value={mqttCommandOff}
+                          onChange={(e) => setMqttCommandOff(e.target.value)}
+                          placeholder='{"state": "OFF"}'
+                          className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                    <p className="text-xs text-bambu-gray" style={{ whiteSpace: 'pre-line' }}>
+                      {t('smartPlugs.mqttCommandHint')}
                     </p>
                   </div>
 

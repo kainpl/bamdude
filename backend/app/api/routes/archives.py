@@ -32,6 +32,7 @@ from backend.app.schemas.archive import (
     PaginationMeta,
     ReprintRequest,
 )
+from backend.app.schemas.plate_objects import PlateObjectsResponse
 from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.http import build_content_disposition
@@ -1137,7 +1138,7 @@ async def _sum_live_plug_totals(db: AsyncSession) -> float:
     from backend.app.api.routes.settings import get_setting
     from backend.app.models.smart_plug import SmartPlug
     from backend.app.services.homeassistant import homeassistant_service
-    from backend.app.services.mqtt_relay import mqtt_relay
+    from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
     from backend.app.services.rest_smart_plug import rest_smart_plug_service
     from backend.app.services.tasmota import tasmota_service
 
@@ -1159,10 +1160,14 @@ async def _sum_live_plug_totals(db: AsyncSession) -> float:
             if energy and energy.get("total") is not None:
                 total += energy["total"]
         elif plug.plug_type == "mqtt":
-            # MQTT plugs only expose today's counter, not lifetime.
-            mqtt_data = mqtt_relay.smart_plug_service.get_plug_data(plug.id)
-            if mqtt_data and mqtt_data.energy is not None:
-                total += mqtt_data.energy
+            # Through the driver, and summing the LIFETIME figure like the
+            # branches above. This used to add the daily reading into a
+            # lifetime total; a plug with no lifetime source now contributes
+            # nothing, which is what the tasmota and homeassistant branches
+            # already do when their own total is missing.
+            energy = await mqtt_smart_plug_service.get_energy(plug)
+            if energy and energy.get("total") is not None:
+                total += energy["total"]
         elif plug.plug_type == "rest":
             energy = await rest_smart_plug_service.get_energy(plug)
             if energy and energy.get("today") is not None:
@@ -3179,13 +3184,49 @@ def _archive_has_gcode(file_path: Path) -> bool:
         return False
 
 
+@router.get("/{archive_id}/plate-objects", response_model=PlateObjectsResponse)
+async def get_archive_plate_objects(
+    archive_id: int,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.ARCHIVES_READ_ALL,
+            Permission.ARCHIVES_READ_OWN,
+        )
+    ),
+):
+    """Objects on the archived print's plate, read-only.
+
+    No ``plate`` parameter, deliberately: an archive is the record of one
+    executed print, so its plate is ``archive.plate_index``. Letting the caller
+    pick another plate here would put the wrong object ids in front of someone
+    about to reprint — the ids are per-plate, so a skip aimed with plate 1's
+    numbers cancels a different part on plate 3.
+    """
+    from backend.app.services.archive import build_plate_objects_payload
+
+    user, can_read_all = auth_result
+    service = ArchiveService(db)
+    archive = _ensure_archive_visible(await service.get_archive(archive_id), user, can_read_all)
+
+    file_path = settings.base_dir / archive.file_path
+    if not file_path.is_file():
+        raise HTTPException(404, "Archive file not found")
+
+    return build_plate_objects_payload(file_path.read_bytes(), archive.plate_index or 1)
+
+
 @router.get("/{archive_id}/plate-thumbnail/{plate_index}")
 async def get_plate_thumbnail(
     archive_id: int,
     plate_index: int,
+    view: str = "plate",
     db: AsyncSession = Depends(get_db),
 ):
     """Get the thumbnail image for a specific plate.
+
+    ``view=top`` serves the top-down render the object-preview markers are
+    positioned against.
 
     Note: Unauthenticated - loaded via <img> tags which can't send auth headers.
     """
@@ -3200,7 +3241,12 @@ async def get_plate_thumbnail(
 
     try:
         with zipfile.ZipFile(file_path, "r") as zf:
-            thumb_path = f"Metadata/plate_{plate_index}.png"
+            # No fallback chain for the top view, unlike printers.py: that route
+            # degrades through plate_N/thumbnail so a camera card always shows
+            # something, but here the image carries markers positioned in
+            # top-down space. A ¾ render would place them convincingly on the
+            # wrong parts — a missing image is recoverable, a lying one is not.
+            thumb_path = f"Metadata/top_{plate_index}.png" if view == "top" else f"Metadata/plate_{plate_index}.png"
             if thumb_path in zf.namelist():
                 data = zf.read(thumb_path)
                 return Response(content=data, media_type="image/png")

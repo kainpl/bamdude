@@ -67,6 +67,11 @@ class ArchiveResponse(BaseModel):
     # Object count (computed from extra_data.printable_objects)
     object_count: int | None = None
 
+    # gcode_label_objects AND exclude_object — badge in the archive list, and
+    # the preview banner explains what it means. Denormalised column (m114),
+    # populated straight from the model by from_attributes.
+    skip_objects_supported: bool = False
+
     print_name: str | None
     print_time_seconds: int | None  # Estimated time from slicer
     actual_time_seconds: int | None = None  # Computed from started_at/completed_at

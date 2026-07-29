@@ -81,6 +81,8 @@ import { BatchTagModal } from '../components/BatchTagModal';
 import { BatchProjectModal } from '../components/BatchProjectModal';
 import { CalendarView } from '../components/CalendarView';
 import { QRCodeModal } from '../components/QRCodeModal';
+import { PlateObjectsPreviewModal } from '../components/PlateObjectsPreviewModal';
+import { SkipObjectsIcon } from '../components/SkipObjectsModal';
 import { PhotoGalleryModal } from '../components/PhotoGalleryModal';
 import { ProjectPageModal } from '../components/ProjectPageModal';
 import { TimelapseViewer } from '../components/TimelapseViewer';
@@ -205,6 +207,7 @@ function ArchiveCard({
   const [showViewer, setShowViewer] = useState(false);
   const [showReprint, setShowReprint] = useState(false);
   const [showSlice, setShowSlice] = useState(false);
+  const [showPlateObjects, setShowPlateObjects] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const [showTimelapse, setShowTimelapse] = useState(false);
@@ -1059,25 +1062,28 @@ function ArchiveCard({
         {/* Stats */}
         <div className="grid grid-cols-2 gap-2 text-xs mb-4 min-h-[48px]">
           {(archive.print_time_seconds || archive.actual_time_seconds) && (
-            <div className="flex items-center gap-1.5 text-bambu-gray" title={
-              archive.time_accuracy
-                ? `Estimated: ${formatDuration(archive.print_time_seconds || 0)}\nActual: ${formatDuration(archive.actual_time_seconds || 0)}\nAccuracy: ${archive.time_accuracy.toFixed(0)}%`
-                : archive.actual_time_seconds
-                  ? `Actual: ${formatDuration(archive.actual_time_seconds)}`
-                  : `Estimated: ${formatDuration(archive.print_time_seconds || 0)}`
-            }>
-              <Clock className="w-3 h-3" />
-              {formatDuration(archive.actual_time_seconds || archive.print_time_seconds || 0)}
-              {archive.time_accuracy && (
-                <span className={`text-[10px] px-1 rounded ${
-                  archive.time_accuracy >= 95 && archive.time_accuracy <= 105
-                    ? 'bg-bambu-green/20 text-bambu-green'
-                    : archive.time_accuracy > 105
-                      ? 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400'
-                      : 'bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400'
-                }`}>
-                  {archive.time_accuracy > 100 ? '+' : ''}{(archive.time_accuracy - 100).toFixed(0)}%
-                </span>
+            /* Estimate then actual, `1h20m / 1h35m`. One line rather than two
+               because this cell shares a cramped two-column grid with three
+               other stats; the estimate is dimmed so the eye still lands on
+               what the print really took. Either side may be missing — an
+               unsliced file has no estimate, a running or failed print has no
+               actual — so the separator only appears when both do, never as an
+               orphan slash. The tooltip spells both out by name. */
+            <div className="flex items-center gap-1.5 text-bambu-gray" title={printTimeTooltip(archive, t)}>
+              <Clock className="w-3 h-3 flex-shrink-0" />
+              <span className="truncate">
+                {archive.print_time_seconds && archive.actual_time_seconds ? (
+                  <>
+                    <span className="opacity-60">{formatDuration(archive.print_time_seconds)}</span>
+                    <span className="opacity-40"> / </span>
+                    {formatDuration(archive.actual_time_seconds)}
+                  </>
+                ) : (
+                  formatDuration(archive.actual_time_seconds || archive.print_time_seconds || 0)
+                )}
+              </span>
+              {archive.time_accuracy != null && (
+                <TimeAccuracyBadge accuracy={archive.time_accuracy} className="flex-shrink-0" />
               )}
             </div>
           )}
@@ -1112,9 +1118,24 @@ function ArchiveCard({
             </div>
           )}
           {archive.object_count != null && archive.object_count > 0 && (
-            <div className="flex items-center gap-1.5 text-bambu-gray" title={archive.object_count === 1 ? t('archives.card.object', { count: archive.object_count }) : t('archives.card.objects', { count: archive.object_count })}>
-              <Box className="w-3 h-3" />
-              {archive.object_count === 1 ? t('archives.card.object', { count: archive.object_count }) : t('archives.card.objects', { count: archive.object_count })}
+            <div className="flex items-center gap-1.5">
+              {/* The count itself opens the preview — no extra icon button to
+                  crowd the card. stopPropagation is load-bearing: the card
+                  navigates to the archive on click. */}
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setShowPlateObjects(true); }}
+                className="flex items-center gap-1.5 text-bambu-gray hover:text-bambu-green transition-colors"
+                title={t('library.plateObjects.open')}
+              >
+                <Box className="w-3 h-3" />
+                {archive.object_count === 1 ? t('archives.card.object', { count: archive.object_count }) : t('archives.card.objects', { count: archive.object_count })}
+              </button>
+              {/* Icon-only: most sliced files support skipping, so a text badge
+                  on every row would be noise. Absence is the signal. */}
+              {archive.skip_objects_supported && (
+                <SkipObjectsIcon className="w-3 h-3 text-bambu-green/70" />
+              )}
             </div>
           )}
           {archive.sliced_for_model && (
@@ -1469,6 +1490,16 @@ function ArchiveCard({
         </div>
       )}
 
+      {/* Read-only plate object preview, opened from the object count. */}
+      {showPlateObjects && (
+        <PlateObjectsPreviewModal
+          source="archive"
+          id={archive.id}
+          isOpen
+          onClose={() => setShowPlateObjects(false)}
+        />
+      )}
+
       {/* QR Code Modal */}
       {showQRCode && (
         <QRCodeModal
@@ -1561,6 +1592,50 @@ function ArchiveCard({
   );
 }
 
+/** How far the real print ran from the slicer's estimate, as a signed badge.
+ *
+ * `time_accuracy` arrives as a percentage where 100 means the estimate was
+ * exact and above 100 means the print beat it, so the label is the delta
+ * (`-12%`, `+4%`) rather than the raw figure — "88%" reads like a score.
+ *
+ * Shared by the card and the list on purpose: the ±5% green band and the two
+ * out-of-band colours are a judgement about what counts as a good estimate,
+ * and a second copy would drift the moment either view is retuned.
+ */
+function TimeAccuracyBadge({ accuracy, className = '' }: { accuracy: number; className?: string }) {
+  const tone =
+    accuracy >= 95 && accuracy <= 105
+      ? 'bg-bambu-green/20 text-bambu-green'
+      : accuracy > 105
+        ? 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400'
+        : 'bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400';
+  return (
+    <span className={`text-[10px] px-1 rounded ${tone} ${className}`}>
+      {accuracy > 100 ? '+' : ''}
+      {(accuracy - 100).toFixed(0)}%
+    </span>
+  );
+}
+
+/** Tooltip text for a print's estimated / actual duration.
+ *
+ * Was three hardcoded English strings inline in the card — the project ships
+ * en + uk and never hardcodes user-facing text, so it moves here and gets keys.
+ */
+function printTimeTooltip(archive: Archive, t: TFunction): string {
+  const lines: string[] = [];
+  if (archive.print_time_seconds) {
+    lines.push(`${t('archives.list.estimated')}: ${formatDuration(archive.print_time_seconds)}`);
+  }
+  if (archive.actual_time_seconds) {
+    lines.push(`${t('archives.list.actual')}: ${formatDuration(archive.actual_time_seconds)}`);
+  }
+  if (archive.time_accuracy) {
+    lines.push(`${t('archives.list.accuracy')}: ${archive.time_accuracy.toFixed(0)}%`);
+  }
+  return lines.join('\n');
+}
+
 function ArchiveListRow({
   archive,
   printerName,
@@ -1590,9 +1665,11 @@ function ArchiveListRow({
   const { data: rowSettings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
   const timeFormat: TimeFormat = (rowSettings as Record<string, string> | undefined)?.time_format as TimeFormat || 'system';
   const dateFormat: DateFormat = (rowSettings as Record<string, string> | undefined)?.date_format as DateFormat || 'system';
+  const rowCurrency = getCurrencySymbol((rowSettings as Record<string, string> | undefined)?.currency || 'USD');
   const useSlicerApi: boolean = !!(rowSettings as Record<string, unknown> | undefined)?.use_slicer_api;
   const [showEdit, setShowEdit] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showPlateObjects, setShowPlateObjects] = useState(false);
   const [showReprint, setShowReprint] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
   const [showSlice, setShowSlice] = useState(false);
@@ -2166,34 +2243,94 @@ function ArchiveListRow({
               </Link>
             )}
           </div>
-          {(archive.filament_type || archive.sliced_for_model) && (
-            <div className="flex items-center gap-1.5 mt-0.5">
-              {archive.sliced_for_model && (
-                <span className="text-xs text-bambu-gray flex items-center gap-1" title={t('archives.card.slicedFor', { model: archive.sliced_for_model })}>
+          {/* Facts about the file itself, dot-separated under its name. This is
+              the only `minmax(0,1fr)` column, so it is the one place that can
+              absorb more text without widening the table — every other column
+              is `auto` and pushes the row out.
+
+              Built as a list and joined rather than as a chain of conditional
+              `·` spans: with six optional items the separators are where that
+              pattern goes wrong, and a stray leading dot is the usual symptom.
+              Weight and cost carry no icon because `g` and the currency symbol
+              already identify them; layers and objects are bare numbers, so
+              they keep theirs and put the spelled-out label in the tooltip. */}
+          {(() => {
+            const facts: React.ReactNode[] = [];
+            if (archive.sliced_for_model) {
+              facts.push(
+                <span key="model" className="flex items-center gap-1" title={t('archives.card.slicedFor', { model: archive.sliced_for_model })}>
                   <Printer className="w-2.5 h-2.5" />
                   {archive.sliced_for_model}
-                </span>
-              )}
-              {archive.sliced_for_model && archive.filament_type && (
-                <span className="text-bambu-gray/50">·</span>
-              )}
-              {archive.filament_type && (
-                <span className="text-xs text-bambu-gray">{archive.filament_type}</span>
-              )}
-              {archive.filament_color && (
-                <div className="flex items-center gap-0.5 flex-wrap">
-                  {archive.filament_color.split(',').map((color, i) => (
-                    <div
-                      key={i}
-                      className="w-2.5 h-2.5 rounded-full border border-black/20"
-                      style={{ backgroundColor: color }}
-                      title={color}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+                </span>,
+              );
+            }
+            if (archive.filament_type || archive.filament_color) {
+              facts.push(
+                <span key="filament" className="flex items-center gap-1">
+                  {archive.filament_type}
+                  {archive.filament_color && (
+                    <span className="flex items-center gap-0.5">
+                      {archive.filament_color.split(',').map((color, i) => (
+                        <span
+                          key={i}
+                          className="w-2.5 h-2.5 rounded-full border border-black/20"
+                          style={{ backgroundColor: color }}
+                          title={color}
+                        />
+                      ))}
+                    </span>
+                  )}
+                </span>,
+              );
+            }
+            if (archive.filament_used_grams) {
+              facts.push(<span key="grams">{archive.filament_used_grams.toFixed(1)}g</span>);
+            }
+            if (archive.cost != null) {
+              facts.push(<span key="cost">{rowCurrency}{archive.cost.toFixed(2)}</span>);
+            }
+            if (archive.total_layers) {
+              const label = archive.total_layers === 1
+                ? t('archives.card.layer', { count: archive.total_layers })
+                : t('archives.card.layers', { count: archive.total_layers });
+              facts.push(
+                <span key="layers" className="flex items-center gap-1" title={label}>
+                  <Layers className="w-2.5 h-2.5" />
+                  {archive.total_layers}
+                </span>,
+              );
+            }
+            if (archive.object_count != null && archive.object_count > 0) {
+              facts.push(
+                <span key="objects" className="flex items-center gap-1">
+                  {/* stopPropagation: the row opens the archive on click. */}
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setShowPlateObjects(true); }}
+                    className="flex items-center gap-1 hover:text-bambu-green transition-colors"
+                    title={t('library.plateObjects.open')}
+                  >
+                    <Box className="w-2.5 h-2.5" />
+                    {archive.object_count}
+                  </button>
+                  {archive.skip_objects_supported && (
+                    <SkipObjectsIcon className="w-2.5 h-2.5 text-bambu-green/70" />
+                  )}
+                </span>,
+              );
+            }
+            if (!facts.length) return null;
+            return (
+              <div className="flex items-center flex-wrap gap-x-1.5 gap-y-0.5 mt-0.5 text-xs text-bambu-gray">
+                {facts.map((fact, i) => (
+                  <span key={i} className="flex items-center gap-1.5">
+                    {i > 0 && <span className="text-bambu-gray/50">·</span>}
+                    {fact}
+                  </span>
+                ))}
+              </div>
+            );
+          })()}
         </div>
         <div className="text-sm text-bambu-gray whitespace-nowrap flex items-center gap-1.5">
           <span>{printerName}</span>
@@ -2203,6 +2340,25 @@ function ArchiveListRow({
               <img src={bed.icon} alt={bed.label} title={bed.label} className="w-3.5 h-3.5 flex-shrink-0" />
             ) : null;
           })()}
+        </div>
+        {/* Print time — estimate above, actual below, mirroring the two-level
+            Date cell to its right. Unlike the card (one cramped line, slash
+            separated) there is room here to label nothing and still be clear:
+            top row is always the slicer's estimate, bottom row what it really
+            took. Each falls back to an em dash on its own, since an unsliced
+            file has no estimate and a running or failed print has no actual. */}
+        <div className="text-sm text-bambu-gray whitespace-nowrap" title={printTimeTooltip(archive, t)}>
+          <div className={archive.print_time_seconds ? 'opacity-70' : 'opacity-40'}>
+            {archive.print_time_seconds ? formatDuration(archive.print_time_seconds) : '—'}
+          </div>
+          <div className="flex items-center gap-1.5">
+            {archive.actual_time_seconds ? (
+              formatDuration(archive.actual_time_seconds)
+            ) : (
+              <span className="opacity-40">—</span>
+            )}
+            {archive.time_accuracy != null && <TimeAccuracyBadge accuracy={archive.time_accuracy} />}
+          </div>
         </div>
         <div className="text-sm text-bambu-gray whitespace-nowrap">
           <div>{formatDateTime(archive.created_at, timeFormat, dateFormat)}</div>
@@ -2466,6 +2622,16 @@ function ArchiveListRow({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Read-only plate object preview, opened from the object count. */}
+      {showPlateObjects && (
+        <PlateObjectsPreviewModal
+          source="archive"
+          id={archive.id}
+          isOpen
+          onClose={() => setShowPlateObjects(false)}
+        />
       )}
 
       {/* QR Code Modal */}
@@ -3624,13 +3790,14 @@ export function ArchivesPage() {
               (plain `1fr` resolves to `minmax(auto, 1fr)` and refuses to
               shrink below min-content). `divide-y` keeps the row separators
               now that we're not stacking divs anymore. */}
-          <div className="grid grid-cols-[auto_minmax(0,1fr)_auto_auto_auto_auto] gap-x-4 divide-y divide-bambu-dark-tertiary">
+          <div className="grid grid-cols-[auto_minmax(0,1fr)_auto_auto_auto_auto_auto] gap-x-4 divide-y divide-bambu-dark-tertiary">
             {/* List Header — centred per column (rows keep their own
                 left/right alignment). */}
             <div className="col-span-full grid grid-cols-subgrid px-4 py-3 text-xs text-bambu-gray font-medium text-center">
               <div></div>
               <div>{t('archives.list.name')}</div>
               <div>{t('archives.list.printer')}</div>
+              <div>{t('archives.list.printTime')}</div>
               <div>{t('archives.list.date')}</div>
               <div>{t('archives.list.size')}</div>
               <div>{t('archives.list.actions')}</div>

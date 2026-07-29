@@ -631,16 +631,15 @@ async def _get_plug_energy(plug, db) -> dict | None:
         homeassistant_service.configure(ha_settings["ha_url"], ha_settings["ha_token"])
         return await homeassistant_service.get_energy(plug)
     elif plug.plug_type == "mqtt":
-        # MQTT plugs report "today" energy, not lifetime total
-        # For per-print tracking, we use "today" as the counter (resets at midnight)
-        mqtt_data = mqtt_relay.smart_plug_service.get_plug_data(plug.id)
-        if mqtt_data:
-            return {
-                "power": mqtt_data.power,
-                "today": mqtt_data.energy,
-                "total": mqtt_data.energy,  # Use today as total for per-print calculations
-            }
-        return None
+        # Straight through the driver: it is the only place that knows which of
+        # the plug's two energy readings is the lifetime one
+        # (``mqtt_energy_total_*``) and which resets. Reproducing the mapping
+        # here is how this branch came to file the DAILY counter as ``total``,
+        # which per-print energy then differenced — so every print that spanned
+        # midnight recorded a negative delta.
+        from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
+
+        return await mqtt_smart_plug_service.get_energy(plug)
     elif plug.plug_type == "rest":
         from backend.app.services.rest_smart_plug import rest_smart_plug_service
 
@@ -3710,16 +3709,18 @@ async def on_print_start(printer_id: int, data: dict):
                     # really holds that id on the running plate. resolve_plate_id is
                     # the same resolver the cover/thumbnail path uses, so the object
                     # list cannot disagree with the picture it is drawn over.
-                    printable_objects, bbox_all = extract_printable_objects_from_3mf(
+                    printable_objects, bbox_all, approximate = extract_printable_objects_from_3mf(
                         threemf_data,
                         plate_number=resolve_plate_id(client.state) if client else None,
                         include_positions=True,
+                        with_confidence=True,
                     )
                     if printable_objects:
                         # Store objects in printer state
                         if client:
                             client.state.printable_objects = printable_objects
                             client.state.printable_objects_bbox_all = bbox_all
+                            client.state.printable_objects_approximate = approximate
                             client.state.skipped_objects = []  # Reset skipped objects for new print
                             # Gate the Skip-Objects UI button. Derived straight from the
                             # 3MF (not archive.extra_data, which this slicer-start path
