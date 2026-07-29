@@ -73,6 +73,7 @@ from backend.app.api.routes import (
     virtual_printers,
     webhook,
     websocket,
+    zigbee,
 )
 from backend.app.api.routes.maintenance import _get_printer_maintenance_internal, ensure_default_types
 from backend.app.api.routes.support import init_debug_logging
@@ -6607,6 +6608,31 @@ async def lifespan(app: FastAPI):
 
     await init_db()
 
+    # Zigbee coordinator. Best-effort by contract: start() never raises, so a
+    # missing, busy or wrong-mode dongle leaves the app fully usable with the
+    # reason available at GET /zigbee/status. Skipped entirely when disabled,
+    # which is the default — an install that never wants Zigbee pays nothing.
+    # The outer guard covers the settings read, not the coordinator: this is
+    # startup, and nothing here may take the application down.
+    try:
+        # ``async_session`` is aliased, not used from module scope: a later block
+        # in this same function imports that name locally, which makes Python
+        # treat it as a local for the WHOLE function — so the module-level one
+        # would raise UnboundLocalError here. Ruff (F823) catches it; the alias
+        # sidesteps the shadowing entirely.
+        from backend.app.api.routes.settings import get_setting as _zb_get_setting
+        from backend.app.core.database import async_session as _zb_session
+        from backend.app.services.zigbee.coordinator import zigbee_coordinator
+
+        async with _zb_session() as _zb_db:
+            _zb_settings = {
+                _k: (await _zb_get_setting(_zb_db, _k) or "")
+                for _k in ("zigbee_enabled", "zigbee_transport", "zigbee_path")
+            }
+        await zigbee_coordinator.start(_zb_settings)
+    except Exception as _zb_exc:
+        logging.getLogger(__name__).warning("Zigbee coordinator not started: %s", _zb_exc)
+
     # Drop timelapse frame directories no session will reclaim. Sessions are
     # tracked in memory, so a restart mid-print orphans one permanently and
     # nothing else ever walks that tree. Filesystem-only and best-effort — a
@@ -7073,6 +7099,12 @@ async def lifespan(app: FastAPI):
     auto_queue_scheduler.stop()
     await background_dispatch.stop()
     smart_plug_manager.stop_scheduler()
+    try:
+        from backend.app.services.zigbee.coordinator import zigbee_coordinator
+
+        await zigbee_coordinator.stop()
+    except Exception:
+        pass
     try:
         from backend.app.services.obico_detection import obico_detection_service
 
@@ -7646,6 +7678,7 @@ app.include_router(slicer_pipelines.router, prefix=app_settings.api_prefix)
 app.include_router(slice_jobs.router, prefix=app_settings.api_prefix)
 app.include_router(makerworld.router, prefix=app_settings.api_prefix)
 app.include_router(smart_plugs.router, prefix=app_settings.api_prefix)
+app.include_router(zigbee.router, prefix=app_settings.api_prefix)
 app.include_router(print_queue.router, prefix=app_settings.api_prefix)
 app.include_router(print_options_preferences.router, prefix=app_settings.api_prefix)
 app.include_router(auto_queue.router, prefix=app_settings.api_prefix)
