@@ -8,6 +8,10 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Per-print energy could have been read from the wrong smart plug driver.** The two places that record what a print cost each worked out how to reach a plug on their own instead of asking the one component that knows. Any plug type they did not explicitly list would have fallen through to Tasmota's HTTP polling in one case, or been dropped from the totals entirely in the other. No shipping plug type was affected — every one of them was listed — but the shape meant the next plug type added would have been silently wrong rather than visibly missing.
+
 ## [0.5.1] - 2026-07-29
 
 Image: `ghcr.io/kainpl/bamdude:0.5.1` / `kainpl/bamdude:0.5.1` (`:latest` tracks this).
