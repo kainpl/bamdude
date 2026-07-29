@@ -44,6 +44,13 @@ class SmartPlugManager:
             return rest_smart_plug_service
         if plug.plug_type == "mqtt":
             return mqtt_smart_plug_service
+        if plug.plug_type == "zigbee":
+            # Imported here rather than at module scope: the zigbee package
+            # pulls zigpy in, and this module is imported during startup long
+            # before the coordinator exists.
+            from backend.app.services.zigbee.driver import zigbee_smart_plug_service
+
+            return zigbee_smart_plug_service
         return tasmota_service
 
     async def _configure_ha_service(self, db: AsyncSession | None = None):
