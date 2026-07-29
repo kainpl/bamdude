@@ -2,6 +2,7 @@ import io
 import logging
 import os
 import shutil
+import sqlite3
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -526,6 +527,34 @@ async def get_homeassistant_settings(db: AsyncSession) -> dict:
     }
 
 
+def _snapshot_sqlite(src: Path, dest: Path) -> None:
+    """Consistent copy of a live SQLite database, WAL included.
+
+    A plain file copy is wrong here and silently so. zigpy runs its database in
+    WAL mode, so a freshly-formed network lives in ``zigbee.db-wal`` while
+    ``zigbee.db`` itself is still an empty 4 KB header — measured on the first
+    real dongle run: copying the main file alone produced a database with **zero
+    tables**, while the live one had 13 and held the network key.
+
+    That is the worst shape a backup bug can take: the ZIP looks right, the
+    restore reports success, and the operator discovers at the worst possible
+    moment that every device has to be paired again.
+
+    ``Connection.backup`` is the supported way to snapshot a database that
+    another process has open. Copying the -wal and -shm sidecars instead would
+    also work but has to catch them mid-write; this does not.
+    """
+    source = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+    try:
+        target = sqlite3.connect(dest)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+    finally:
+        source.close()
+
+
 def _stage_zigbee_db(data_dir: Path, staging: Path) -> None:
     """Copy zigpy's device database into the backup staging tree.
 
@@ -546,8 +575,8 @@ def _stage_zigbee_db(data_dir: Path, staging: Path) -> None:
     try:
         dest_dir = staging / "zigbee"
         dest_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dest_dir / "zigbee.db")
-    except OSError as exc:
+        _snapshot_sqlite(src, dest_dir / "zigbee.db")
+    except (OSError, sqlite3.Error) as exc:
         logger.warning(
             "Could not include the Zigbee network database in backup (%s). "
             "Restoring from this ZIP will require re-pairing every device.",

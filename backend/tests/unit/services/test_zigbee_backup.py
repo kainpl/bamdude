@@ -17,14 +17,25 @@ from backend.app.api.routes.settings import _restore_zigbee_db, _stage_zigbee_db
 
 
 def test_staged_when_present(tmp_path):
+    """Staged as a real database snapshot, not a byte-for-byte file copy."""
+    import sqlite3
+
     data_dir, staging = tmp_path / "data", tmp_path / "stage"
     (data_dir / "zigbee").mkdir(parents=True)
-    (data_dir / "zigbee" / "zigbee.db").write_bytes(b"network-key-lives-here")
     staging.mkdir()
+
+    conn = sqlite3.connect(data_dir / "zigbee" / "zigbee.db")
+    conn.execute("CREATE TABLE devices_v15 (ieee TEXT)")
+    conn.execute("INSERT INTO devices_v15 VALUES ('34:8d:13:ff:fe:11:e4:6f')")
+    conn.commit()
+    conn.close()
 
     _stage_zigbee_db(data_dir, staging)
 
-    assert (staging / "zigbee" / "zigbee.db").read_bytes() == b"network-key-lives-here"
+    copied = sqlite3.connect(staging / "zigbee" / "zigbee.db")
+    rows = copied.execute("SELECT ieee FROM devices_v15").fetchall()
+    copied.close()
+    assert rows == [("34:8d:13:ff:fe:11:e4:6f",)]
 
 
 def test_absent_is_not_an_error(tmp_path):
@@ -38,23 +49,53 @@ def test_absent_is_not_an_error(tmp_path):
     assert not (staging / "zigbee").exists()
 
 
-def test_unreadable_source_warns_but_does_not_raise(tmp_path, monkeypatch):
-    """An optional radio must not be able to fail the whole backup."""
-    import shutil as _shutil
+def test_a_corrupt_source_warns_but_does_not_raise(tmp_path):
+    """An optional radio must not be able to fail the whole backup.
 
+    A file that is not a database at all is the cheapest way to make the
+    snapshot fail for real, rather than patching the call out.
+    """
     data_dir, staging = tmp_path / "data", tmp_path / "stage"
     (data_dir / "zigbee").mkdir(parents=True)
-    (data_dir / "zigbee" / "zigbee.db").write_bytes(b"x")
+    (data_dir / "zigbee" / "zigbee.db").write_bytes(b"definitely not sqlite")
     staging.mkdir()
-
-    def _boom(*_a, **_k):
-        raise OSError("permission denied")
-
-    monkeypatch.setattr(_shutil, "copy2", _boom)
 
     _stage_zigbee_db(data_dir, staging)  # must not raise
 
-    assert not (staging / "zigbee" / "zigbee.db").exists()
+
+def test_wal_contents_are_included(tmp_path):
+    """The bug this whole helper exists to avoid.
+
+    zigpy runs WAL, so a freshly-formed network sits in zigbee.db-wal while the
+    main file is still an empty header. Measured on the first dongle run: a
+    plain copy of zigbee.db yielded ZERO tables while the live database had 13,
+    including the network key. The backup would have looked fine and restored to
+    nothing.
+    """
+    import sqlite3
+
+    data_dir, staging = tmp_path / "data", tmp_path / "stage"
+    (data_dir / "zigbee").mkdir(parents=True)
+    staging.mkdir()
+    live = data_dir / "zigbee" / "zigbee.db"
+
+    conn = sqlite3.connect(live)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE network_backups_v15 (key TEXT)")
+    conn.execute("INSERT INTO network_backups_v15 VALUES ('the-network-key')")
+    conn.commit()
+    # Deliberately NOT closed and NOT checkpointed: this is the live-database
+    # state a backup actually runs against.
+    try:
+        _stage_zigbee_db(data_dir, staging)
+
+        copied = sqlite3.connect(staging / "zigbee" / "zigbee.db")
+        rows = copied.execute("SELECT key FROM network_backups_v15").fetchall()
+        copied.close()
+    finally:
+        conn.close()
+
+    assert rows == [("the-network-key",)]
 
 
 def test_restore_puts_it_back(tmp_path):
