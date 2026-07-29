@@ -7,10 +7,12 @@ reported — On/Off, Metering and ElectricalMeasurement on one endpoint, with th
 scaling attributes present.
 """
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from zigpy.zcl import foundation
 
 from backend.app.services.zigbee.devices import ELECTRICAL_MEASUREMENT, METERING, ON_OFF
 from backend.app.services.zigbee.driver import ZigbeeSmartPlugService
@@ -18,8 +20,34 @@ from backend.app.services.zigbee.driver import ZigbeeSmartPlugService
 IEEE = "a4:c1:38:0b:5a:9c:ff:ff"
 
 
-def _cluster(attrs=None):
-    return SimpleNamespace(command=AsyncMock(), _attr_cache={}, attrs=attrs or {})
+def _cluster(attrs=None, command_status=foundation.Status.SUCCESS, cached=None, readable=True):
+    """A stub cluster shaped like the real one on the two points that bit us.
+
+    ``command`` answers with a Default Response, because a refusal does not
+    raise — it comes back in that frame, and a stub returning a bare mock would
+    let the driver treat every refusal as a success and never notice.
+
+    ``get`` is the cluster's attribute cache and is the ONLY place a value comes
+    from. ``read_attributes`` refreshes the device and returns nothing useful
+    here on purpose: zigpy suppresses the update event for the attribute being
+    read and hands back the pre-quirk raw value, so any code that trusted its
+    return value would bypass every device fix. ``cached`` is therefore what the
+    cache holds once the read has happened — including the case where a quirk
+    swallowed the reading and the cache keeps what it had.
+    """
+    cache = dict(cached or {})
+    cluster = SimpleNamespace(
+        command=AsyncMock(return_value=[0x00, command_status]),
+        _attr_cache={},
+        attrs=attrs or {},
+        add_listener=lambda _listener: None,
+        get=lambda attr, default=None: cache.get(attr, default),
+        update_attribute=lambda attr, value: cache.__setitem__(attr, value),
+    )
+    cluster.cache = cache
+    if readable:
+        cluster.read_attributes = AsyncMock(return_value=({}, {}))
+    return cluster
 
 
 def _device(clusters=None, ieee=IEEE, endpoint=1):
@@ -31,6 +59,21 @@ def _device(clusters=None, ieee=IEEE, endpoint=1):
         manufacturer="SONOFF",
         model="S60ZBTPF",
         endpoints={0: SimpleNamespace(in_clusters={}), endpoint: SimpleNamespace(in_clusters=clusters)},
+    )
+
+
+def _cached(state=None, power=None, energy_total=None, age_seconds=0):
+    """A cache entry, fresh unless aged on purpose.
+
+    Stands in for ``ZigbeePlugData``, which always carries ``last_seen`` — a
+    stub without it would be testing a shape the driver never sees, and
+    freshness is now load-bearing.
+    """
+    return SimpleNamespace(
+        state=state,
+        power=power,
+        energy_total=energy_total,
+        last_seen=datetime.now(timezone.utc) - timedelta(seconds=age_seconds),
     )
 
 
@@ -96,7 +139,7 @@ class TestSwitching:
         """
         onoff = _cluster()
         onoff.command.side_effect = OSError("no route to device")
-        service._cache[1] = SimpleNamespace(state="ON", power=None, energy_total=None)
+        service._cache[1] = _cached(state="ON")
 
         with _with_app(_app(_device({ON_OFF: onoff}))):
             assert await service.turn_off(_plug()) is False
@@ -119,7 +162,7 @@ class TestToggle:
     @pytest.mark.asyncio
     async def test_toggle_turns_a_known_on_state_off(self, service):
         onoff = _cluster()
-        service._cache[1] = SimpleNamespace(state="ON", power=None, energy_total=None)
+        service._cache[1] = _cached(state="ON")
 
         with _with_app(_app(_device({ON_OFF: onoff}))):
             assert await service.toggle(_plug()) is True
@@ -146,7 +189,7 @@ class TestStatus:
 
     @pytest.mark.asyncio
     async def test_a_reported_state_is_returned(self, service):
-        service._cache[1] = SimpleNamespace(state="ON", power=None, energy_total=None)
+        service._cache[1] = _cached(state="ON")
 
         with _with_app(_app(_device())):
             status = await service.get_status(_plug())
@@ -158,7 +201,7 @@ class TestStatus:
 class TestEnergy:
     @pytest.mark.asyncio
     async def test_total_is_returned_in_kwh(self, service):
-        service._cache[1] = SimpleNamespace(state="ON", power=None, energy_total=12.345)
+        service._cache[1] = _cached(state="ON", energy_total=12.345)
 
         with _with_app(_app(_device({ON_OFF: _cluster(), METERING: _cluster()}))):
             energy = await service.get_energy(_plug())
@@ -167,7 +210,7 @@ class TestEnergy:
 
     @pytest.mark.asyncio
     async def test_power_is_returned_in_watts(self, service):
-        service._cache[1] = SimpleNamespace(state="ON", power=42.0, energy_total=None)
+        service._cache[1] = _cached(state="ON", power=42.0)
 
         with _with_app(_app(_device({ON_OFF: _cluster(), ELECTRICAL_MEASUREMENT: _cluster()}))):
             energy = await service.get_energy(_plug())
@@ -179,7 +222,7 @@ class TestEnergy:
         """Only ``total`` feeds smart_plug_energy_snapshots. A plug with no
         lifetime source must be skipped there, and a zero would instead be
         differenced as real consumption."""
-        service._cache[1] = SimpleNamespace(state="ON", power=42.0, energy_total=None)
+        service._cache[1] = _cached(state="ON", power=42.0)
 
         with _with_app(_app(_device({ON_OFF: _cluster()}))):
             energy = await service.get_energy(_plug())
@@ -189,7 +232,7 @@ class TestEnergy:
     @pytest.mark.asyncio
     async def test_zero_total_is_reported(self, service):
         """A brand-new plug legitimately reads zero."""
-        service._cache[1] = SimpleNamespace(state="ON", power=None, energy_total=0.0)
+        service._cache[1] = _cached(state="ON", energy_total=0.0)
 
         with _with_app(_app(_device({ON_OFF: _cluster(), METERING: _cluster()}))):
             energy = await service.get_energy(_plug())
@@ -221,3 +264,206 @@ class TestClusterLocation:
 
         with _with_app(_app(_device({ON_OFF: onoff}))):
             assert await service.turn_on(_plug(ieee=IEEE.upper())) is True
+
+
+class TestStaleness:
+    """A cache with no freshness bound eventually lies.
+
+    Found on hardware and reported bluntly: the plug was switched OFF with a fan
+    attached and the API kept answering ``power: 32``. It was a value read once
+    at bind time and never refreshed — presented as current because ``reachable``
+    only asked whether the cache had *anything* in it.
+
+    Reporting keeps the cache fresh when it works. When it does not, a read on
+    demand is the difference between an honest answer and a confident wrong one.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_stale_entry_triggers_a_live_read(self, service):
+        onoff = _cluster(cached={0x0000: 0})
+        service._cache[1] = _cached(state="ON", power=32.0, energy_total=0.0, age_seconds=3600)
+
+        with _with_app(_app(_device({ON_OFF: onoff}))):
+            status = await service.get_status(_plug())
+
+        onoff.read_attributes.assert_awaited()
+        assert status["state"] == "OFF"
+
+    @pytest.mark.asyncio
+    async def test_a_fresh_entry_is_not_re_read(self, service):
+        """Reporting is the normal path; a read per status call would be the
+        polling this driver deliberately avoids."""
+        onoff = _cluster(cached={0x0000: 0})
+        service._cache[1] = _cached(state="ON")
+
+        with _with_app(_app(_device({ON_OFF: onoff}))):
+            status = await service.get_status(_plug())
+
+        onoff.read_attributes.assert_not_awaited()
+        assert status["state"] == "ON"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_refresh_reports_unreachable_rather_than_stale(self, service):
+        """The whole point: never hand back a number we cannot stand behind."""
+        onoff = _cluster()
+        onoff.read_attributes = AsyncMock(side_effect=OSError("no route"))
+        service._cache[1] = _cached(state="ON", power=32.0, energy_total=0.0, age_seconds=3600)
+        service._listeners.clear()
+
+        with _with_app(_app(_device({ON_OFF: onoff}))):
+            status = await service.get_status(_plug())
+
+        assert status["reachable"] is False
+        assert status["state"] is None
+
+    @pytest.mark.asyncio
+    async def test_stale_energy_is_withheld(self, service):
+        """A stale wattage is worse than none: it reads as a measurement."""
+        service._cache[1] = _cached(state="ON", power=32.0, energy_total=1.0, age_seconds=3600)
+
+        with _with_app(_app(_device({ON_OFF: _cluster(readable=False)}))):
+            energy = await service.get_energy(_plug())
+
+        assert energy is None or "power" not in energy
+
+
+class TestStateAfterSwitching:
+    """The device's acknowledgement is what updates state — not a read-back.
+
+    ZHA does the same (``Switch.async_turn_on``: check the Default Response
+    status, then write the attribute through). This does not reopen phase 0's
+    rule against recording a hoped-for state: the ack is the device saying it
+    did the thing, and a command that is refused or unanswered still leaves the
+    cache alone.
+
+    A read-back was tried first and was actively harmful — see the power test
+    below.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_acknowledged_command_updates_the_state(self, service):
+        onoff = _cluster()
+        service._cache[1] = _cached(state="OFF")
+
+        with _with_app(_app(_device({ON_OFF: onoff}))):
+            assert await service.turn_on(_plug()) is True
+            status = await service.get_status(_plug())
+
+        assert status["state"] == "ON"
+
+    @pytest.mark.asyncio
+    async def test_a_refused_command_fails_and_leaves_the_state_alone(self, service):
+        """A refusal arrives as a status in the response, not as an exception.
+
+        Without checking it the driver would report success and cache a state
+        the plug never entered.
+        """
+        onoff = _cluster(command_status=foundation.Status.FAILURE)
+        service._cache[1] = _cached(state="OFF")
+
+        with _with_app(_app(_device({ON_OFF: onoff}))):
+            assert await service.turn_on(_plug()) is False
+
+        assert service._cache[1].state == "OFF"
+
+    @pytest.mark.asyncio
+    async def test_switching_on_drops_the_previous_reading(self, service):
+        """The reported bug, in the direction where nothing else covers it.
+
+        The plug's power register updates on its own schedule, so any reading
+        held at the moment of a switch describes the load that just went away.
+        Switching ON must therefore report nothing until a real measurement
+        arrives — a leftover number would read as the new load. The poller
+        refills it within a cycle.
+
+        The OFF direction is covered by the physical rule instead: an open relay
+        carries nothing, so it reports zero rather than nothing.
+        """
+        onoff = _cluster()
+        service._cache[1] = _cached(state="OFF", power=33.0, energy_total=1.0)
+
+        with _with_app(_app(_device({ON_OFF: onoff, METERING: _cluster()}))):
+            assert await service.turn_on(_plug()) is True
+            energy = await service.get_energy(_plug())
+
+        assert "power" not in (energy or {})
+        assert energy["total"] == pytest.approx(1.0)
+
+    @pytest.mark.asyncio
+    async def test_switching_off_reports_zero_not_the_old_load(self, service):
+        onoff = _cluster()
+        service._cache[1] = _cached(state="ON", power=33.0, energy_total=1.0)
+
+        with _with_app(_app(_device({ON_OFF: onoff, METERING: _cluster()}))):
+            assert await service.turn_off(_plug()) is True
+            energy = await service.get_energy(_plug())
+
+        assert energy["power"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_switching_costs_no_read(self, service):
+        """The ack already carries the answer; a read-back would only add a
+        round-trip to every switch."""
+        onoff = _cluster()
+
+        with _with_app(_app(_device({ON_OFF: onoff}))):
+            assert await service.turn_on(_plug()) is True
+
+        onoff.read_attributes.assert_not_awaited()
+
+
+class TestPowerWhileTheSocketIsOff:
+    """An open relay carries no load, whatever the device says.
+
+    Stated as physics rather than trusted from the plug, because plugs lie about
+    exactly this. Ours keeps answering with the last wattage it measured, so a
+    socket with nothing running reported 33 W — twice, once from a value read at
+    bind time and once from a value restored out of zigpy's database.
+
+    The upstream quirk for that model does zero the reading, but only on a
+    transition it witnesses: its OnOff half writes 0 into ``active_power`` while
+    its ElectricalMeasurement half blocks every write to ``active_power`` once the
+    socket reads off, so the zero lands only because the on/off cache still says
+    ON at that instant. After a restart there is no transition to witness. This
+    rule needs neither a transition nor a quirk for the plug at hand.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_stale_wattage_is_not_reported_while_off(self, service):
+        service._cache[1] = _cached(state="OFF", power=33.0, energy_total=1.0)
+
+        with _with_app(_app(_device({ON_OFF: _cluster(), METERING: _cluster()}))):
+            energy = await service.get_energy(_plug())
+
+        assert energy["power"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_the_lifetime_counter_is_untouched_by_the_rule(self, service):
+        """``total`` is a counter, not a measurement of now — and it is the only
+        key that feeds per-print energy."""
+        service._cache[1] = _cached(state="OFF", power=33.0, energy_total=1.234)
+
+        with _with_app(_app(_device({ON_OFF: _cluster(), METERING: _cluster()}))):
+            energy = await service.get_energy(_plug())
+
+        assert energy["total"] == pytest.approx(1.234)
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_state_does_not_claim_zero(self, service):
+        """Zero is only honest when we know the relay is open. Not knowing the
+        state is not the same as knowing it is off."""
+        service._cache[1] = _cached(state=None, power=33.0)
+
+        with _with_app(_app(_device({ON_OFF: _cluster()}))):
+            energy = await service.get_energy(_plug())
+
+        assert energy["power"] == pytest.approx(33.0)
+
+    @pytest.mark.asyncio
+    async def test_a_measurement_is_reported_while_on(self, service):
+        service._cache[1] = _cached(state="ON", power=35.0)
+
+        with _with_app(_app(_device({ON_OFF: _cluster()}))):
+            energy = await service.get_energy(_plug())
+
+        assert energy["power"] == pytest.approx(35.0)

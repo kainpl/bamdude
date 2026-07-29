@@ -198,7 +198,10 @@ class TestInitialRead:
             add_listener=lambda _l: None,
             bind=AsyncMock(),
             configure_reporting=AsyncMock(return_value={}),
-            read_attributes=AsyncMock(return_value=({ATTR_ON_OFF: 1}, {})),
+            read_attributes=AsyncMock(return_value=({}, {})),
+            # The value comes from the cluster's cache, never from what the read
+            # returned — that is where quirks have had their say.
+            get=lambda attr, default=None: {ATTR_ON_OFF: 1}.get(attr, default),
         )
         device = SimpleNamespace(endpoints={1: SimpleNamespace(in_clusters={ON_OFF: onoff})})
 
@@ -221,6 +224,7 @@ class TestInitialRead:
             bind=AsyncMock(),
             configure_reporting=AsyncMock(return_value={}),
             read_attributes=AsyncMock(side_effect=OSError("device asleep")),
+            get=lambda attr, default=None: default,
         )
         device = SimpleNamespace(endpoints={1: SimpleNamespace(in_clusters={ON_OFF: onoff})})
 
@@ -282,3 +286,127 @@ class TestReportingRefusalIsNoticed:
             _warn_if_reporting_refused(1, ON_OFF, "not a mapping at all")
 
         assert caplog.text
+
+
+class TestBindRefusalIsNoticed:
+    """``bind()`` returns its ZDO status; it does not raise.
+
+    The counterpart to the configure_reporting check. A device that refuses the
+    binding has nowhere to send reports, so the whole subscription is silent —
+    and every log line still reads as success. This is the first thing to look at
+    when the cache only moves on a restart.
+    """
+
+    def test_a_refused_binding_is_reported(self, caplog):
+        from zigpy.zdo import types as zdo_types
+
+        from backend.app.services.zigbee.reporting import _warn_if_bind_refused
+
+        with caplog.at_level("WARNING"):
+            _warn_if_bind_refused(1, ON_OFF, [zdo_types.Status.NOT_SUPPORTED])
+
+        assert "refused the binding" in caplog.text
+
+    def test_a_successful_binding_is_quiet(self, caplog):
+        from zigpy.zdo import types as zdo_types
+
+        from backend.app.services.zigbee.reporting import _warn_if_bind_refused
+
+        with caplog.at_level("WARNING"):
+            _warn_if_bind_refused(1, ON_OFF, [zdo_types.Status.SUCCESS])
+
+        assert caplog.text == ""
+
+    def test_an_unfamiliar_shape_is_not_assumed_good(self, caplog):
+        from backend.app.services.zigbee.reporting import _warn_if_bind_refused
+
+        with caplog.at_level("WARNING"):
+            _warn_if_bind_refused(1, ON_OFF, None)
+
+        assert "refused the binding" in caplog.text
+
+
+class TestScalingIsReadOnce:
+    """Multiplier and divisor are device constants.
+
+    An on-demand read that rebuilt its listener would re-read both every time —
+    two extra round-trips per cluster on the shared radio, for a number that
+    never changes. The bind-time listener already holds them.
+    """
+
+    @pytest.mark.asyncio
+    async def test_refresh_reuses_the_bind_time_listener(self):
+        from unittest.mock import AsyncMock
+
+        from backend.app.services.zigbee.metering import ENERGY_DIVISOR, ENERGY_MULTIPLIER
+        from backend.app.services.zigbee.reporting import bind_plug, refresh_plug
+
+        service = ZigbeeSmartPlugService()
+        metering = SimpleNamespace(
+            add_listener=lambda _l: None,
+            bind=AsyncMock(return_value=[0]),
+            configure_reporting=AsyncMock(return_value={}),
+            read_attributes=AsyncMock(return_value=({ENERGY_MULTIPLIER: 1, ENERGY_DIVISOR: 1000}, {})),
+            get=lambda attr, default=None: {ATTR_SUMMATION: 5000}.get(attr, default),
+        )
+        device = SimpleNamespace(endpoints={1: SimpleNamespace(in_clusters={METERING: metering})})
+        plug = SimpleNamespace(id=1)
+
+        await bind_plug(service, plug, device)
+        scaling_reads_after_bind = sum(
+            1 for call in metering.read_attributes.await_args_list if ENERGY_MULTIPLIER in call.args[0]
+        )
+        assert service.get_plug_data(1).energy_total == pytest.approx(5.0)
+
+        await refresh_plug(service, plug, device)
+        scaling_reads_total = sum(
+            1 for call in metering.read_attributes.await_args_list if ENERGY_MULTIPLIER in call.args[0]
+        )
+
+        assert scaling_reads_after_bind == 1
+        assert scaling_reads_total == 1
+
+
+class TestQuirksAreNotBypassed:
+    """The bug that cost a whole hardware session.
+
+    The plug's firmware keeps reporting the last measured power after its socket
+    is switched off, so a socket with nothing plugged in answered 33 W. The quirk
+    for that model swallows the reading — but it does so **between**
+    ``read_attributes`` returning and the cluster cache being written, and the
+    raw pre-quirk value stays in the return value.
+
+    So reading the return value walks straight past every device fix, and does it
+    silently: the number is well-formed, plausible, and wrong. The value has to
+    come from the cluster's cache, which is where the quirk had its say.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_swallowed_value_is_not_what_gets_cached(self):
+        from unittest.mock import AsyncMock
+
+        from backend.app.services.zigbee.metering import POWER_DIVISOR, POWER_MULTIPLIER
+        from backend.app.services.zigbee.reporting import bind_plug
+
+        service = ZigbeeSmartPlugService()
+        em = SimpleNamespace(
+            add_listener=lambda _l: None,
+            bind=AsyncMock(return_value=[0]),
+            configure_reporting=AsyncMock(return_value={}),
+            # What the device answered: the stale 33 W from the load it used to
+            # carry.
+            read_attributes=AsyncMock(
+                side_effect=lambda attrs, **kw: (
+                    ({POWER_MULTIPLIER: 1, POWER_DIVISOR: 1}, {})
+                    if POWER_MULTIPLIER in attrs
+                    else ({ATTR_ACTIVE_POWER: 33}, {})
+                )
+            ),
+            # What the quirk left in the cache: zero, because the socket is off.
+            get=lambda attr, default=None: {ATTR_ACTIVE_POWER: 0}.get(attr, default),
+        )
+        device = SimpleNamespace(endpoints={1: SimpleNamespace(in_clusters={ELECTRICAL_MEASUREMENT: em})})
+
+        await bind_plug(service, SimpleNamespace(id=1), device)
+
+        assert service.get_plug_data(1).power == 0

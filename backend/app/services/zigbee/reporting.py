@@ -1,9 +1,9 @@
 """Binding a plug's clusters and routing their reports into the driver cache.
 
-Reporting rather than polling: the device pushes changes, so a farm's worth of
-plugs costs no airtime while nothing is happening. ``bind`` tells the device
-where to send reports; ``configure_reporting`` says which attributes and how
-often.
+``bind`` tells the device where to send reports; ``configure_reporting`` says
+which attributes and how often. Both are set up here, and both are treated as a
+bonus rather than the mechanism: reports are welcome when they arrive, and
+``poller.py`` keeps the cache honest whether they do or not.
 
 **One listener per cluster, never one per device.** ``OnOff.on_off`` and
 ``Metering.current_summ_delivered`` are *both* attribute id ``0x0000``, so a
@@ -21,13 +21,12 @@ from __future__ import annotations
 import logging
 
 from zigpy.zcl import foundation
+from zigpy.zdo import types as zdo_types
 
 from backend.app.services.zigbee.devices import ELECTRICAL_MEASUREMENT, METERING, ON_OFF
 from backend.app.services.zigbee.metering import (
-    ENERGY_DIVISOR,
-    ENERGY_MULTIPLIER,
-    POWER_DIVISOR,
-    POWER_MULTIPLIER,
+    ENERGY_SCALING_ATTRS,
+    POWER_SCALING_ATTRS,
     scale,
 )
 
@@ -43,8 +42,23 @@ ATTR_ACTIVE_POWER = 0x050B
 # mesh; the maximum is a heartbeat, so a plug that never changes still proves it
 # is alive rather than looking unreachable forever.
 _MIN_INTERVAL = 5
-_MAX_INTERVAL = 300
+_MAX_INTERVAL = 900
 _REPORTABLE_CHANGE = 1
+
+# The three clusters we bind, subscribe and poll, with the scaling pair each one
+# needs and the attribute that carries its reading. One table so bind and poll
+# can never drift apart — a cluster subscribed but not polled is exactly the
+# silent half-configuration this module keeps rediscovering.
+#
+# **On/Off comes first, and the order is load-bearing.** The S60ZBTPF quirk gates
+# power on the socket's cached on_off value, so reading power before on_off in the
+# same cycle would judge a freshly-switched-on socket by its previous state and
+# discard the first real measurement.
+_POLLED_CLUSTERS = (
+    (ON_OFF, (), ATTR_ON_OFF),
+    (METERING, ENERGY_SCALING_ATTRS, ATTR_SUMMATION),
+    (ELECTRICAL_MEASUREMENT, POWER_SCALING_ATTRS, ATTR_ACTIVE_POWER),
+)
 
 
 class ClusterReportListener:
@@ -104,20 +118,31 @@ class ClusterReportListener:
             logger.warning("Zigbee plug %s: report for 0x%04X ignored: %s", self._plug_id, attrid, exc)
 
 
-async def _scaling_pair(cluster, multiplier_attr: str, divisor_attr: str):
-    """Read a cluster's multiplier/divisor once.
+async def _scaling_pair(cluster, attrs: tuple[str, ...]):
+    """Read a cluster's multiplier/divisor once, trying pairs in order.
+
+    ``attrs`` is (multiplier, divisor) pairs flattened, most-preferred first —
+    all of them fetched in a single read, then first-hit wins. One read rather
+    than one per pair: they are device constants and the fallback exists only
+    because some devices implement the second pair instead of the first.
 
     Failure returns ``(None, None)``, which downstream turns into "no reading"
     rather than a guess — a device that will not say what its counter means has
     not told us anything.
     """
     try:
-        result = await cluster.read_attributes([multiplier_attr, divisor_attr])
+        result = await cluster.read_attributes(list(attrs))
         values = result[0] if isinstance(result, (list, tuple)) else result
-        return values.get(multiplier_attr), values.get(divisor_attr)
     except Exception as exc:  # noqa: BLE001 — an unreadable scale is not fatal
-        logger.warning("Zigbee: could not read %s/%s: %s", multiplier_attr, divisor_attr, exc)
+        logger.warning("Zigbee: could not read scaling attributes %s: %s", attrs, exc)
         return None, None
+
+    values = values or {}
+    for i in range(0, len(attrs), 2):
+        multiplier, divisor = values.get(attrs[i]), values.get(attrs[i + 1])
+        if divisor is not None:
+            return multiplier, divisor
+    return None, None
 
 
 async def bind_plug(service, plug, device) -> dict[int, bool]:
@@ -130,19 +155,15 @@ async def bind_plug(service, plug, device) -> dict[int, bool]:
     """
     wired: dict[int, bool] = {}
 
-    for cluster_id, mult_attr, div_attr, attr in (
-        (ON_OFF, None, None, ATTR_ON_OFF),
-        (METERING, ENERGY_MULTIPLIER, ENERGY_DIVISOR, ATTR_SUMMATION),
-        (ELECTRICAL_MEASUREMENT, POWER_MULTIPLIER, POWER_DIVISOR, ATTR_ACTIVE_POWER),
-    ):
+    for cluster_id, scaling_attrs, attr in _POLLED_CLUSTERS:
         cluster = service._cluster(device, cluster_id)
         if cluster is None:
             wired[cluster_id] = False
             continue
 
         multiplier = divisor = None
-        if mult_attr:
-            multiplier, divisor = await _scaling_pair(cluster, mult_attr, div_attr)
+        if scaling_attrs:
+            multiplier, divisor = await _scaling_pair(cluster, scaling_attrs)
 
         listener = ClusterReportListener(
             service=service,
@@ -151,9 +172,11 @@ async def bind_plug(service, plug, device) -> dict[int, bool]:
             multiplier=multiplier,
             divisor=divisor,
         )
+        service._listeners[(plug.id, cluster_id)] = listener
         try:
             cluster.add_listener(listener)
-            await cluster.bind()
+            bind_result = await cluster.bind()
+            _warn_if_bind_refused(plug.id, cluster_id, bind_result)
             result = await cluster.configure_reporting(attr, _MIN_INTERVAL, _MAX_INTERVAL, _REPORTABLE_CHANGE)
             _warn_if_reporting_refused(plug.id, cluster_id, result)
             wired[cluster_id] = True
@@ -167,7 +190,7 @@ async def bind_plug(service, plug, device) -> dict[int, bool]:
         # to change or the max interval elapses — which on hardware looked
         # exactly like a broken driver: "reporting set up for 1/1 plug(s)" in the
         # log, and status still {state: null, reachable: false}.
-        await _seed_from_read(cluster, listener, attr)
+        await _read_into_cache(cluster, listener, attr)
 
     if not wired.get(METERING):
         logger.info(
@@ -239,17 +262,98 @@ def _warn_if_reporting_refused(plug_id: int, cluster_id: int, result) -> None:
         )
 
 
-async def _seed_from_read(cluster, listener: ClusterReportListener, attr: int) -> None:
-    """Read the attribute once and feed it through the same listener.
+def _warn_if_bind_refused(plug_id: int, cluster_id: int, result) -> None:
+    """``bind()`` does not raise on a ZDO refusal either — it returns the status.
 
-    Routed through the listener rather than written to the cache directly so a
-    seeded value and a reported one go through identical scaling and mapping —
-    two paths into one cache is how they come to disagree.
+    Same shape of bug as ``configure_reporting``: the call returns cleanly, the
+    log says reporting is set up, and no report ever arrives. Without the device
+    accepting the binding it has nowhere to send them, so this is the first thing
+    to look at when the cache only ever moves on a restart.
+
+    The response is a list whose first element is the ZDO status. An unfamiliar
+    shape is logged rather than assumed good.
+    """
+    status = result[0] if isinstance(result, (list, tuple)) and result else result
+    if status == zdo_types.Status.SUCCESS:
+        return
+    logger.warning(
+        "Zigbee plug %s: device refused the binding for cluster 0x%04X (status=%r). "
+        "It will not send reports; readings will only update when we read it.",
+        plug_id,
+        cluster_id,
+        status,
+    )
+
+
+async def _read_into_cache(cluster, listener: ClusterReportListener, attr: int) -> bool:
+    """Refresh one attribute from the device, then cache the value the quirk left.
+
+    The value is taken from the cluster's own attribute cache, **not** from what
+    ``read_attributes`` returns, and both halves of that matter:
+
+    * zigpy suppresses the ``attribute_updated`` event for the attribute being
+      read (``_legacy_apply_quirk_attribute_update`` wraps the update in
+      ``_suppress_attribute_update_event``), so a listener never hears a read and
+      waiting for the event would cache nothing at all;
+    * the returned dict holds the **raw** value, from before quirks ran. Our
+      plug's firmware keeps reporting the last measured power after its socket is
+      switched off, and the quirk for it swallows exactly that value — reading
+      the response dict walks straight past the fix and caches 33 W for a socket
+      with nothing running. That was the bug.
+
+    ZHA reads the same way round: ``safe_read`` to refresh the cluster, then
+    ``cluster.get(name)`` to use the value.
+
+    Still routed through the listener rather than written to the cache directly,
+    so a read and a report get identical scaling and mapping — two paths into one
+    cache is how they come to disagree.
     """
     try:
-        result = await cluster.read_attributes([attr])
-        values = result[0] if isinstance(result, (list, tuple)) else result
-        if attr in (values or {}):
-            listener.attribute_updated(attr, values[attr], None)
-    except Exception as exc:  # noqa: BLE001 — a sleeping device is not a failure
-        logger.info("Zigbee: initial read of 0x%04X failed, waiting for a report instead: %s", attr, exc)
+        await cluster.read_attributes([attr], allow_cache=False, only_cache=False)
+    except Exception as exc:  # noqa: BLE001 — a sleeping or absent device is not a failure
+        logger.info("Zigbee: read of 0x%04X failed, waiting for a report instead: %s", attr, exc)
+        return False
+
+    value = cluster.get(attr)
+    if value is None:
+        return False
+    listener.attribute_updated(attr, value, None)
+    return True
+
+
+async def refresh_plug(service, plug, device) -> bool:
+    """Read every subscribed attribute once, now.
+
+    Called on the poller's timer and, off-cycle, when a caller asks about a plug
+    whose cache has aged out. Reads have proved reliable on the same mesh where
+    unsolicited reports never arrived, which is why this — not reporting — is
+    what the freshness of a reading actually rests on.
+    """
+    ok = False
+    for cluster_id, scaling_attrs, attr in _POLLED_CLUSTERS:
+        cluster = service._cluster(device, cluster_id)
+        if cluster is None:
+            continue
+
+        # Reuse the bind-time listener: it already holds this cluster's
+        # multiplier and divisor, which never change. Building a fresh one here
+        # would re-read both on every refresh — two extra round-trips per
+        # cluster, on the shared radio, for a constant.
+        listener = service._listeners.get((plug.id, cluster_id))
+        if listener is None:
+            multiplier = divisor = None
+            if scaling_attrs:
+                multiplier, divisor = await _scaling_pair(cluster, scaling_attrs)
+            listener = ClusterReportListener(
+                service=service,
+                plug_id=plug.id,
+                cluster_id=cluster_id,
+                multiplier=multiplier,
+                divisor=divisor,
+            )
+            service._listeners[(plug.id, cluster_id)] = listener
+            cluster.add_listener(listener)
+
+        if await _read_into_cache(cluster, listener, attr):
+            ok = True
+    return ok

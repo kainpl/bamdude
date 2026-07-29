@@ -6650,6 +6650,14 @@ async def lifespan(app: FastAPI):
             if _zb_rows:
                 _zb_wired = await _zb_subscribe(_zb_driver, _zb_rows)
                 logging.getLogger(__name__).info("Zigbee reporting set up for %s/%s plug(s)", _zb_wired, len(_zb_rows))
+
+            # Polling, started whether or not any plug is configured yet: the
+            # loop re-queries each cycle, so a plug added later joins without a
+            # restart. Reporting alone does not keep readings current — ZHA
+            # polls this hardware class by default for the same reason.
+            from backend.app.services.zigbee.poller import zigbee_poller as _zb_poller
+
+            _zb_poller.start(_zb_driver, _zb_session)
     except Exception as _zb_exc:
         logging.getLogger(__name__).warning("Zigbee coordinator not started: %s", _zb_exc)
 
@@ -7121,7 +7129,12 @@ async def lifespan(app: FastAPI):
     smart_plug_manager.stop_scheduler()
     try:
         from backend.app.services.zigbee.coordinator import zigbee_coordinator
+        from backend.app.services.zigbee.poller import zigbee_poller
 
+        # Poller first: it reads through the radio the coordinator owns, so
+        # stopping that out from under an in-flight read is how shutdown starts
+        # logging exceptions nobody can act on.
+        await zigbee_poller.stop()
         await zigbee_coordinator.stop()
     except Exception:
         pass

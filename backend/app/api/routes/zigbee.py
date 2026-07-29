@@ -211,3 +211,97 @@ async def remove_device(
     await app.remove(match.ieee)
     logger.info("Removed Zigbee device %s from the network", ieee)
     return {"removed": str(match.ieee)}
+
+
+@router.get("/devices/{ieee}/attributes")
+async def read_device_attributes(
+    ieee: str,
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
+):
+    """Raw dump of every measurement attribute a plug exposes.
+
+    A diagnostic, not a feature. It exists because the driver reported a
+    confident wattage that turned out not to track the load at all, and no
+    amount of reading our own code could say which register the device was
+    actually answering with. This reads them all, unscaled and scaled, so the
+    one that moves when a load is switched can be identified instead of guessed.
+
+    Every attribute is read individually: an unsupported one makes a whole batch
+    read fail, and the unsupported ones are exactly what needs to be visible.
+    """
+    app = _require_up()
+    wanted = ieee.strip().lower()
+    device = next((d for k, d in app.devices.items() if str(k).lower() == wanted), None)
+    if device is None:
+        raise HTTPException(status_code=404, detail=f"No Zigbee device with address {ieee}.")
+
+    candidates = {
+        0x0006: ["on_off"],
+        0x0002: ["current_temperature"],
+        0x0702: [
+            "current_summ_delivered",
+            "instantaneous_demand",
+            "multiplier",
+            "divisor",
+            "unit_of_measure",
+            "summation_formatting",
+            "demand_formatting",
+            "metering_device_type",
+        ],
+        0x0B04: [
+            "active_power",
+            "apparent_power",
+            "rms_voltage",
+            "rms_current",
+            "ac_power_multiplier",
+            "ac_power_divisor",
+            "power_multiplier",
+            "power_divisor",
+            "ac_voltage_multiplier",
+            "ac_voltage_divisor",
+            "ac_current_multiplier",
+            "ac_current_divisor",
+            "measurement_type",
+        ],
+    }
+
+    out: dict[str, dict] = {}
+    for endpoint_id, endpoint in (getattr(device, "endpoints", None) or {}).items():
+        for cluster_id, names in candidates.items():
+            cluster = (getattr(endpoint, "in_clusters", None) or {}).get(cluster_id)
+            if cluster is None:
+                continue
+            values: dict[str, object] = {"__class__": type(cluster).__name__}
+            for name in names:
+                try:
+                    result = await cluster.read_attributes([name], allow_cache=False, only_cache=False)
+                    read = result[0] if isinstance(result, (list, tuple)) else result
+                    raw = repr((read or {}).get(name))
+                except Exception as exc:  # noqa: BLE001 — an unsupported attribute is the answer, not an error
+                    raw = f"unreadable: {exc}"
+                # Raw and cached side by side. They differ exactly where a quirk
+                # intervened, which is the only way to tell a quirk that is
+                # working from one that silently did not match.
+                try:
+                    cached = repr(cluster.get(name))
+                except Exception as exc:  # noqa: BLE001
+                    cached = f"uncached: {exc}"
+                values[name] = {"raw": raw, "cached": cached}
+            out[f"ep{endpoint_id}/0x{cluster_id:04X}"] = values
+
+    # Which quirk (if any) zigpy resolved this device to, and the firmware
+    # version the quirk registry filtered on. Both are here because a quirk that
+    # silently does not match looks exactly like a quirk that does not exist, and
+    # the difference decides whether a wrong reading is the device's fault or
+    # ours.
+    quirk = getattr(device, "quirk_registry_entry", None) or getattr(device, "_quirk_registry_entry", None)
+    firmware = getattr(device, "firmware_version", None)
+    return {
+        "ieee": str(device.ieee),
+        "manufacturer": getattr(device, "manufacturer", None),
+        "model": getattr(device, "model", None),
+        "device_class": type(device).__name__,
+        "firmware_version": f"0x{firmware:08X}" if isinstance(firmware, int) else repr(firmware),
+        "quirk": repr(quirk) if quirk is not None else None,
+        "attributes": out,
+    }

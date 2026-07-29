@@ -8,6 +8,12 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Zigbee smart plugs, without Home Assistant or Zigbee2MQTT.** BamDude now drives a Zigbee dongle itself: plug it in over Ethernet or USB, open a pairing window, press the button on the plug, and bind it to a printer. From there it behaves like any other smart plug — turning on at print start, off afterwards, on a schedule, and from the plug card — and where the plug reports energy, each print records what it actually cost. On the Ukrainian market Zigbee plugs are what you can actually buy, so this is meant to be the main way plugs get connected rather than an alternative to the MQTT path, which stays exactly as it is. Verified end to end on a SONOFF Dongle-M and an S60ZBTPF; other Zigbee plugs should work if they expose a standard On/Off cluster, and BamDude refuses to pair anything that does not, since it could not switch it anyway.
+
+- **Power readings are the device's, corrected.** BamDude loads the same per-model workaround library Home Assistant uses, so plugs with known firmware faults are handled rather than believed — and it applies one rule of its own on top: a socket that is switched off reports zero watts, because an open relay carries no load no matter what the plug claims. Between switching a socket and the plug producing a fresh measurement, no wattage is shown at all instead of the previous one. The lifetime energy counter, which is what per-print cost is calculated from, is never guessed at or zero-filled.
+
 ### Fixed
 
 - **Per-print energy could have been read from the wrong smart plug driver.** The two places that record what a print cost each worked out how to reach a plug on their own instead of asking the one component that knows. Any plug type they did not explicitly list would have fallen through to Tasmota's HTTP polling in one case, or been dropped from the totals entirely in the other. No shipping plug type was affected — every one of them was listed — but the shape meant the next plug type added would have been silently wrong rather than visibly missing.

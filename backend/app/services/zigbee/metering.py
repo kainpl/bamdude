@@ -26,6 +26,15 @@ POWER_ATTR = "active_power"
 POWER_MULTIPLIER = "ac_power_multiplier"
 POWER_DIVISOR = "ac_power_divisor"
 
+# Scaling attributes in preference order, read in one go and first-hit wins.
+# The AC pair is what most plugs implement; the DC pair is the fallback for
+# devices that expose only it. ZHA carries the same fallback
+# (``_divisor_fallback_attribute_name`` on its active-power sensor), which is
+# the reason to have it: without the fallback such a device yields no divisor,
+# and no divisor means no reading at all.
+POWER_SCALING_ATTRS = (POWER_MULTIPLIER, POWER_DIVISOR, "power_multiplier", "power_divisor")
+ENERGY_SCALING_ATTRS = (ENERGY_MULTIPLIER, ENERGY_DIVISOR)
+
 
 def scale(raw: int | float | None, multiplier: int | None, divisor: int | None) -> float | None:
     """``raw × multiplier ÷ divisor``, or None when the answer would be a guess.

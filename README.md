@@ -114,7 +114,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - **G-code macros** — execute from printer menu, ACK-based MQTT confirmation, `stg_cur` completion tracking, real-time status on printer card
 - Model-aware maintenance types with history tracking and Excel export
 - Clear plate confirmation between prints
-- Smart plug integration (Tasmota, HA, MQTT, REST/webhook)
+- Smart plug integration (Tasmota, HA, MQTT, REST/webhook, and **Zigbee** — BamDude drives the dongle itself, no Home Assistant or Zigbee2MQTT needed)
 - Energy consumption tracking
 - Auto power-on/off
 - Background print dispatch with WebSocket progress

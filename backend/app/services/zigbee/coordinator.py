@@ -225,10 +225,21 @@ class ZigbeeCoordinator:
         ``auto_form`` creates a network on the very first start; afterwards the
         database is adopted, which is what makes a restore reuse the existing
         network instead of orphaning every paired device.
+
+        ``device_resolver`` is what applies per-model quirks, and without it
+        zigpy applies **none** — ``_resolve_device`` returns the bare device when
+        no resolver is registered. That is not a detail. The plug this was
+        developed against runs a firmware that keeps reporting the last measured
+        power and current after its socket is switched off, so BamDude read 33 W
+        from a socket with nothing plugged in and switched off; the quirk for it
+        zeroes those readings on switch-off and blocks further updates until the
+        socket is on again. Home Assistant's ZHA passes the same resolver
+        (``zha/application/gateway.py``: ``device_resolver=DEVICE_REGISTRY.resolve``).
         """
         from bellows.zigbee.application import ControllerApplication
 
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        resolver = _quirk_resolver()
         # The plain dict is passed deliberately — do NOT pre-run it through
         # ``ControllerApplication.SCHEMA``. ``new()`` validates internally, and
         # validating twice breaks on the OTA section: the first pass turns the
@@ -244,7 +255,31 @@ class ZigbeeCoordinator:
             },
             auto_form=True,
             start_radio=True,
+            device_resolver=resolver,
         )
+
+
+def _quirk_resolver():
+    """Register every quirk and return zigpy's device resolver, or None.
+
+    Called once per radio start. ``zhaquirks.setup()`` imports the whole quirk
+    library for its registration side effects — v1 quirks land in zigpy's legacy
+    registry, v2 quirks in the one this returns — so it is not cheap, but it
+    happens once and only when Zigbee is enabled.
+
+    Returning None on failure is deliberate: quirks make readings correct, and a
+    radio that comes up with uncorrected readings is still a radio the operator
+    can switch printers with. Refusing to start would trade a partial feature
+    for none at all.
+    """
+    try:
+        import zhaquirks
+
+        zhaquirks.setup()
+        return zhaquirks.ZHA_DEVICE_REGISTRY.resolve
+    except Exception as exc:  # noqa: BLE001 — see the docstring
+        logger.warning("Zigbee device quirks unavailable, readings may be uncorrected: %s", exc)
+        return None
 
 
 def _default_data_dir() -> Path:

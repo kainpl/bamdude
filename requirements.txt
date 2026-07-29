@@ -161,3 +161,17 @@ tzdata>=2024.1; sys_platform == "win32"
 # (EFR32MG24 in the SONOFF Dongle-M); zigpy is the stack above it.
 zigpy>=2.1.0
 bellows>=1.0.0
+
+# Per-device workarounds, the same set Home Assistant's ZHA loads. Not optional
+# polish: the plug this was developed against ships a firmware that keeps
+# reporting the last measured power, current and voltage after the socket is
+# switched off, so BamDude read 33 W from a socket with nothing running. The
+# quirk for it forces those readings to zero on switch-off and blocks further
+# updates until the socket is on again. Every cheap plug has some version of
+# this, and guessing at them one model at a time is not a plan.
+#
+# Pulls ``zha`` (the quirk-authoring API imports its enums) plus zigpy's other
+# radio libraries — deconz, znp, xbee, zigate, ziggurat. About 10 MB of pure
+# Python all told, and those radio libraries are what a second supported dongle
+# would need anyway.
+zha-quirks>=2.2.0

@@ -454,3 +454,68 @@ class TestBindingAPlugToAPrinter:
         resp = await async_client.post("/api/v1/smart-plugs/", json={"name": "nowhere", "plug_type": "zigbee"})
 
         assert resp.status_code in (400, 422)
+
+
+class TestAttributeDump:
+    """The diagnostic that made a silent quirk failure visible.
+
+    Kept in the code rather than deleted after the debugging session: it shows
+    the device's raw answer next to the value the cluster cache holds, and those
+    two diverge exactly where a quirk intervened. Without that comparison there
+    is no way to tell a quirk that is working from one that silently did not
+    match — which cost a full hardware session to learn once.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_unknown_device_is_404(self, async_client: AsyncClient, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        app = AsyncMock()
+        app.devices = {}
+        _up(monkeypatch, app)
+
+        resp = await async_client.get("/api/v1/zigbee/devices/aa:bb:cc:dd:ee:ff:00:11/attributes")
+
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_raw_and_cached_are_reported_separately(self, async_client: AsyncClient, monkeypatch):
+        """A quirk that swallows a reading leaves the raw answer intact and the
+        cache holding something else. Collapsing the two would hide it."""
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from backend.app.services.zigbee.devices import ELECTRICAL_MEASUREMENT, ON_OFF
+
+        em = SimpleNamespace(
+            cluster_id=ELECTRICAL_MEASUREMENT,
+            read_attributes=AsyncMock(return_value=({"active_power": 33}, {})),
+            get=lambda name, default=None: {"active_power": 0}.get(name, default),
+        )
+        onoff = SimpleNamespace(
+            cluster_id=ON_OFF,
+            read_attributes=AsyncMock(return_value=({"on_off": 0}, {})),
+            get=lambda name, default=None: {"on_off": 0}.get(name, default),
+        )
+        device = SimpleNamespace(
+            ieee="a4:c1:38:0b:5a:9c:ff:ff",
+            nwk=0x1234,
+            manufacturer="SONOFF",
+            model="S60ZBTPF",
+            firmware_version=None,
+            endpoints={1: SimpleNamespace(in_clusters={ON_OFF: onoff, ELECTRICAL_MEASUREMENT: em})},
+        )
+        app = AsyncMock()
+        app.devices = {device.ieee: device}
+        _up(monkeypatch, app)
+
+        resp = await async_client.get(f"/api/v1/zigbee/devices/{device.ieee}/attributes")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["device_class"] == "SimpleNamespace"
+        power = body["attributes"]["ep1/0x0B04"]["active_power"]
+        assert "33" in power["raw"]
+        assert "0" in power["cached"]

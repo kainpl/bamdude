@@ -199,4 +199,11 @@ async def test_open_radio_hands_zigpy_an_unvalidated_config(tmp_path):
     assert set(captured["config"]) == {"database_path", "device"}, (
         "config was pre-validated before new() — that is the double-validation bug"
     )
-    assert captured["kwargs"] == {"auto_form": True, "start_radio": True}
+    assert captured["kwargs"]["auto_form"] is True
+    assert captured["kwargs"]["start_radio"] is True
+    # Without a resolver zigpy applies NO quirks at all — ``_resolve_device``
+    # returns the bare device — and per-model fixes are not cosmetic here: the
+    # plug this was built against keeps reporting the last measured power after
+    # its socket is switched off, so BamDude read 33 W from a socket with nothing
+    # running. ZHA passes the same resolver.
+    assert captured["kwargs"]["device_resolver"] is not None
