@@ -94,3 +94,35 @@ class TestZigbeePorts:
         assert resp.json()["ports"] == [
             {"device": "COM7", "description": "SONOFF Zigbee Dongle", "hwid": "USB\\VID_1A86"}
         ]
+
+
+class TestZigbeeSettingsAreReachable:
+    """The three coordinator settings must be writable through the normal API.
+
+    ``update_settings`` persists exactly the fields ``AppSettingsUpdate``
+    declares, and Pydantic drops anything undeclared *silently*. Without these
+    fields the settings appear to save and simply do not — leaving no way to
+    configure Zigbee short of writing to the database by hand.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_settings_round_trip(self, async_client: AsyncClient):
+        resp = await async_client.patch(
+            "/api/v1/settings",
+            json={"zigbee_enabled": True, "zigbee_transport": "usb", "zigbee_path": "COM7"},
+        )
+        assert resp.status_code == 200
+
+        current = await async_client.get("/api/v1/settings")
+        body = current.json()
+        assert body["zigbee_enabled"] is True
+        assert body["zigbee_transport"] == "usb"
+        assert body["zigbee_path"] == "COM7"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_defaults_are_off(self, async_client: AsyncClient):
+        body = (await async_client.get("/api/v1/settings")).json()
+        assert body["zigbee_enabled"] is False
+        assert body["zigbee_transport"] == "ethernet"

@@ -35,6 +35,18 @@ class AppSettings(BaseModel):
 
     # Spoolman integration
     spoolman_enabled: bool = Field(default=False, description="Enable Spoolman integration for filament tracking")
+
+    # Zigbee coordinator (phase 1). Declared here rather than left as loose
+    # key-value rows because ``update_settings`` persists exactly the fields
+    # this schema declares — an undeclared key is silently dropped by Pydantic,
+    # so without these there is no way to configure Zigbee short of writing to
+    # the database by hand. The phase-4 UI binds to the same three.
+    zigbee_enabled: bool = Field(default=False, description="Run the built-in Zigbee coordinator")
+    zigbee_transport: str = Field(default="ethernet", description="Zigbee dongle transport: ethernet or usb")
+    zigbee_path: str = Field(
+        default="",
+        description="Zigbee dongle address: host:port for ethernet, serial device path for usb",
+    )
     spoolman_url: str = Field(default="", description="Spoolman server URL (e.g., http://localhost:7912)")
     spoolman_sync_mode: str = Field(
         default="auto", description="Sync mode: 'auto' syncs immediately, 'manual' requires button press"
@@ -466,6 +478,9 @@ class AppSettingsUpdate(BaseModel):
     energy_cost_per_kwh: float | None = None
     energy_tracking_mode: str | None = None
     spoolman_enabled: bool | None = None
+    zigbee_enabled: bool | None = None
+    zigbee_transport: str | None = None
+    zigbee_path: str | None = None
     spoolman_url: str | None = None
     spoolman_sync_mode: str | None = None
     spoolman_disable_weight_sync: bool | None = None
