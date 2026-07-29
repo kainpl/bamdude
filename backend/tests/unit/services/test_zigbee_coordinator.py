@@ -9,7 +9,7 @@ All of these run without hardware: the single seam that touches zigpy is
 ``_open_radio``, and it is patched throughout.
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -187,3 +187,32 @@ async def test_open_radio_config_is_accepted_by_zigpy(tmp_path):
     message = str(exc.value)
     assert "ZigpyOtaProvider" not in message
     assert not isinstance(exc.value, AttributeError), f"config rejected before any I/O: {message}"
+
+
+@pytest.mark.asyncio
+async def test_app_is_exposed_only_while_up(tmp_path):
+    """Routes need the application; reaching into _app from outside does not scale."""
+    coord = ZigbeeCoordinator(data_dir=tmp_path)
+    assert coord.app is None
+
+    app = AsyncMock()
+    with patch.object(coord, "_open_radio", AsyncMock(return_value=app)):
+        await coord.start(_settings())
+    assert coord.app is app
+
+    await coord.stop()
+    assert coord.app is None
+
+
+@pytest.mark.asyncio
+async def test_listener_is_registered_on_start(tmp_path):
+    """Without this the coordinator never hears about a device joining."""
+    coord = ZigbeeCoordinator(data_dir=tmp_path)
+    app = AsyncMock()
+    app.add_listener = MagicMock()
+
+    with patch.object(coord, "_open_radio", AsyncMock(return_value=app)):
+        await coord.start(_settings())
+
+    app.add_listener.assert_called_once_with(coord)
+    await coord.stop()

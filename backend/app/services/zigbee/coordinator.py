@@ -57,6 +57,17 @@ class ZigbeeCoordinator:
         return self._status
 
     @property
+    def app(self):
+        """The live ``ControllerApplication``, or None when the radio is not up.
+
+        A narrow accessor rather than callers reaching into ``_app``: phase 1
+        deliberately exposed no device surface at all, and keeping the widening
+        to one reviewed place is what stops every new route taking a private
+        attribute and quietly depending on the internals.
+        """
+        return self._app
+
+    @property
     def database_path(self) -> Path:
         """zigpy's own SQLite device database.
 
@@ -102,6 +113,11 @@ class ZigbeeCoordinator:
             self._status = CoordinatorStatus(CoordinatorState.ERROR, str(exc))
             logger.warning("Zigbee coordinator failed to start on %s: %s", device, exc)
             return
+
+        # Registered here rather than inside _open_radio so that seam stays
+        # purely "talk to zigpy" and the listener wiring is visible in the
+        # lifecycle, where anyone reading start() will see it.
+        self._app.add_listener(self)
 
         self._status = CoordinatorStatus(CoordinatorState.UP)
         logger.info("Zigbee coordinator up on %s", device)
