@@ -8,6 +8,18 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-29
+
+Image: `ghcr.io/kainpl/bamdude:0.5.1` / `kainpl/bamdude:0.5.1` (`:latest` tracks this).
+
+**A short release with one theme: knowing what is on a plate, and being able to act on it.** BamDude had been reading the object list from the wrong place in the print file, which meant a plate of five copies showed up as one object — in the file library, in the archives, in the plate galleries, and in Skip Objects, where the other four could not be cancelled at all. That is fixed at its source, and the same corrected list now backs a new read-only preview you can open from any file or archived print: the plate seen from above, with the same object-ID markers the printer's own screen uses.
+
+**Smart plugs connected over MQTT can now actually be switched.** Until now they could report power but every command silently did nothing — including "turn off after the print" and the AI failure detection's "pause and cut power". Two fields on the plug form (a command topic and the payloads your device expects) turn all of that on. Per-print energy for those plugs was also wrong rather than absent, and now says which reading is the lifetime counter instead of assuming.
+
+> **First start after this update takes longer on a large history.** Existing library files and archives have their object counts recalculated by opening each 3MF still on disk — roughly 50–200 ms per file, so an installation with thousands of archives will sit for a few minutes before the interface responds. It runs once. Progress is written to the log (`m114 print_archives: progress N/M`) if you want to watch it.
+
+Object discovery credit: **@latsss** ([bambu-cli](https://github.com/latsss/bambu-cli)), for identifying where the real object list lives and for the reconciliation approach.
+
 ### Added
 
 - **See what is on a plate before you print it.** The object count in the file library and in the archives is now a button: it opens the plate seen from above, with the object-ID markers the printer's own screen uses, alongside the list of objects. Read-only — there is no skipping here, this is the "what's actually on this one" view you want before queuing a reprint or choosing between two similar files. A multi-plate file opens on the first plate that actually holds something rather than on an empty plate 1. Both lists also now mark the files where per-object skipping will work, and when it will not the preview says why instead of hiding itself.
