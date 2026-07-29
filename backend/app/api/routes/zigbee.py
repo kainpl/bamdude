@@ -136,7 +136,13 @@ async def list_devices(
     app = zigbee_coordinator.app
     if app is None:
         return {"devices": []}
-    return {"devices": [asdict(describe_device(d)) for d in app.devices.values()]}
+    # The coordinator sits in zigpy's device table alongside real devices, and
+    # the Dongle-M advertises an On/Off cluster — so without this filter the
+    # radio shows up as a pairable plug. Filtered here rather than only marked
+    # is_plug=false: an entry the operator cannot act on is noise, and phase 4
+    # would have to special-case it in the UI instead.
+    described = (describe_device(d) for d in app.devices.values())
+    return {"devices": [asdict(info) for info in described if not info.is_coordinator]}
 
 
 @router.delete("/devices/{ieee}")
@@ -153,7 +159,12 @@ async def remove_device(
     # Case-insensitive: zigpy stringifies EUI64 lower-case, but a UI will echo
     # whatever the operator typed or pasted.
     wanted = ieee.strip().lower()
-    match = next((d for k, d in app.devices.items() if str(k).lower() == wanted), None)
+    match = next(
+        (d for k, d in app.devices.items() if str(k).lower() == wanted and not describe_device(d).is_coordinator),
+        None,
+    )
+    # The coordinator is deliberately unmatchable: remove() on our own radio
+    # would take the network down with it.
     if match is None:
         raise HTTPException(status_code=404, detail=f"No Zigbee device with address {ieee}.")
 

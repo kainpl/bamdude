@@ -83,3 +83,37 @@ def test_identity_fields_survive_missing_manufacturer_and_model():
     assert info.model is None
     assert info.manufacturer == "SONOFF"
     assert info.ieee == "34:8d:13:ff:fe:11:e4:6f"
+
+
+def test_the_coordinator_itself_is_never_a_plug():
+    """Found on real hardware: the radio was listed as a pairable plug.
+
+    zigpy keeps the coordinator in its own device table, and the Dongle-M
+    reports an On/Off cluster on endpoint 1 — so a gate that only looks at
+    clusters classifies the radio as a switchable device. Left in, phase 3 would
+    let someone bind the dongle to a printer, and DELETE would call remove() on
+    our own radio.
+
+    NWK 0x0000 is the coordinator address by Zigbee spec, which is why it is a
+    safe discriminator without needing the application object.
+    """
+    radio = SimpleNamespace(
+        ieee="34:8d:13:ff:fe:11:e4:6f",
+        nwk=0x0000,
+        manufacturer="Silicon Labs",
+        model="EZSP",
+        endpoints={1: SimpleNamespace(in_clusters={ON_OFF: object(), METERING: object()})},
+    )
+
+    info = describe_device(radio)
+
+    assert info.is_coordinator is True
+    assert info.is_plug is False
+    assert "coordinator" in info.reject_reason.lower()
+
+
+def test_a_real_plug_is_not_mistaken_for_the_coordinator():
+    info = describe_device(_device([ON_OFF]))
+
+    assert info.is_coordinator is False
+    assert info.is_plug is True

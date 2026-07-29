@@ -16,6 +16,10 @@ from dataclasses import dataclass
 # Zigbee Cluster Library ids. Named rather than inlined because a bare 0x0006 in
 # a conditional is exactly the sort of thing that gets "tidied" into the wrong
 # constant later.
+# NWK 0x0000 is the coordinator's address by Zigbee spec — a stable
+# discriminator that needs no reference to the application object.
+COORDINATOR_NWK = 0x0000
+
 ON_OFF = 0x0006
 METERING = 0x0702
 ELECTRICAL_MEASUREMENT = 0x0B04
@@ -27,6 +31,10 @@ class DeviceInfo:
     nwk: int | None
     manufacturer: str | None
     model: str | None
+    # The radio itself lives in zigpy's device table alongside real devices,
+    # and the Dongle-M reports an On/Off cluster — so this has to be answered
+    # explicitly or the coordinator reads as a switchable plug.
+    is_coordinator: bool
     is_plug: bool
     # Recorded even though nothing reads them yet: phase 3 needs to know a plug
     # will never report energy *before* it starts treating an absent reading as
@@ -53,19 +61,31 @@ def _cluster_ids(device) -> set[int]:
 def describe_device(device) -> DeviceInfo:
     """Identity plus the one verdict that matters: is this a plug?"""
     clusters = _cluster_ids(device)
-    is_plug = ON_OFF in clusters
+    nwk = getattr(device, "nwk", None)
+    # Checked BEFORE the cluster test, not after: the coordinator genuinely has
+    # an On/Off cluster, so cluster presence alone would classify our own radio
+    # as a plug. Found on real hardware — the dongle appeared in the device list
+    # as pairable, which would have let phase 3 bind it to a printer and let
+    # DELETE call remove() on the radio running the network.
+    is_coordinator = nwk == COORDINATOR_NWK
+    is_plug = (not is_coordinator) and ON_OFF in clusters
 
     return DeviceInfo(
         ieee=str(device.ieee),
-        nwk=getattr(device, "nwk", None),
+        nwk=nwk,
         manufacturer=getattr(device, "manufacturer", None),
         model=getattr(device, "model", None),
+        is_coordinator=is_coordinator,
         is_plug=is_plug,
         has_metering=METERING in clusters,
         has_electrical_measurement=ELECTRICAL_MEASUREMENT in clusters,
         reject_reason=(
             None
             if is_plug
-            else ("This device has no On/Off cluster, so it cannot be switched. BamDude pairs smart plugs only.")
+            else (
+                "This is the Zigbee coordinator itself, not a device on the network."
+                if is_coordinator
+                else "This device has no On/Off cluster, so it cannot be switched. BamDude pairs smart plugs only."
+            )
         ),
     )

@@ -239,3 +239,60 @@ class TestDeviceList:
 
         assert resp.status_code == 200
         app.remove.assert_awaited_once()
+
+
+class TestCoordinatorIsNotADevice:
+    """Found on real hardware: GET /devices listed the radio itself.
+
+    zigpy keeps the coordinator in its own device table and the Dongle-M reports
+    an On/Off cluster, so it arrived looking exactly like a pairable plug.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_radio_is_not_listed(self, async_client: AsyncClient, monkeypatch):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from backend.app.services.zigbee.devices import ON_OFF
+
+        radio = SimpleNamespace(
+            ieee="34:8d:13:ff:fe:11:e4:6f",
+            nwk=0x0000,
+            manufacturer="Silicon Labs",
+            model="EZSP",
+            endpoints={1: SimpleNamespace(in_clusters={ON_OFF: 1})},
+        )
+        plug = SimpleNamespace(
+            ieee="a4:c1:38:0b:5a:9c:ff:ff",
+            nwk=0xF6B4,
+            manufacturer="SONOFF",
+            model="S60ZBTPF",
+            endpoints={1: SimpleNamespace(in_clusters={ON_OFF: 1})},
+        )
+        app = AsyncMock()
+        app.devices = {radio.ieee: radio, plug.ieee: plug}
+        _up(monkeypatch, app)
+
+        devices = (await async_client.get("/api/v1/zigbee/devices")).json()["devices"]
+
+        assert [d["model"] for d in devices] == ["S60ZBTPF"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_radio_cannot_be_deleted(self, async_client: AsyncClient, monkeypatch):
+        """remove() on our own radio would take the network with it."""
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        radio = SimpleNamespace(
+            ieee="34:8d:13:ff:fe:11:e4:6f", nwk=0x0000, manufacturer=None, model="EZSP", endpoints={}
+        )
+        app = AsyncMock()
+        app.devices = {radio.ieee: radio}
+        _up(monkeypatch, app)
+
+        resp = await async_client.delete("/api/v1/zigbee/devices/34:8d:13:ff:fe:11:e4:6f")
+
+        assert resp.status_code == 404
+        app.remove.assert_not_awaited()
