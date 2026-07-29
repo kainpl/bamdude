@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import logging
 
+from zigpy.zcl import foundation
+
 from backend.app.services.zigbee.devices import ELECTRICAL_MEASUREMENT, METERING, ON_OFF
 from backend.app.services.zigbee.metering import (
     ENERGY_DIVISOR,
@@ -136,22 +138,30 @@ async def bind_plug(service, plug, device) -> dict[int, bool]:
         if mult_attr:
             multiplier, divisor = await _scaling_pair(cluster, mult_attr, div_attr)
 
+        listener = ClusterReportListener(
+            service=service,
+            plug_id=plug.id,
+            cluster_id=cluster_id,
+            multiplier=multiplier,
+            divisor=divisor,
+        )
         try:
-            cluster.add_listener(
-                ClusterReportListener(
-                    service=service,
-                    plug_id=plug.id,
-                    cluster_id=cluster_id,
-                    multiplier=multiplier,
-                    divisor=divisor,
-                )
-            )
+            cluster.add_listener(listener)
             await cluster.bind()
-            await cluster.configure_reporting(attr, _MIN_INTERVAL, _MAX_INTERVAL, _REPORTABLE_CHANGE)
+            result = await cluster.configure_reporting(attr, _MIN_INTERVAL, _MAX_INTERVAL, _REPORTABLE_CHANGE)
+            _warn_if_reporting_refused(plug.id, cluster_id, result)
             wired[cluster_id] = True
         except Exception as exc:  # noqa: BLE001 — one cluster failing must not lose the others
             logger.warning("Zigbee plug %s: could not subscribe cluster 0x%04X: %s", plug.id, cluster_id, exc)
             wired[cluster_id] = False
+            continue
+
+        # Reporting is about CHANGES; it says nothing about the state right now.
+        # Without this read a freshly bound plug stays unknown until it happens
+        # to change or the max interval elapses — which on hardware looked
+        # exactly like a broken driver: "reporting set up for 1/1 plug(s)" in the
+        # log, and status still {state: null, reachable: false}.
+        await _seed_from_read(cluster, listener, attr)
 
     if not wired.get(METERING):
         logger.info(
@@ -186,3 +196,41 @@ async def subscribe_all(service, plugs) -> int:
         except Exception as exc:  # noqa: BLE001 — one plug must not lose the rest
             logger.warning("Zigbee plug %s: could not set up reporting: %s", plug.id, exc)
     return wired
+
+
+def _warn_if_reporting_refused(plug_id: int, cluster_id: int, result) -> None:
+    """``configure_reporting`` answers per attribute; it does not raise on refusal.
+
+    Treating "no exception" as success is how a device that declined the
+    subscription looks identical to one that accepted it — and the only symptom
+    is readings that never arrive.
+    """
+    try:
+        records = result[0] if isinstance(result, (list, tuple)) else result
+        for record in records or []:
+            status = getattr(record, "status", None)
+            if status is not None and status != foundation.Status.SUCCESS:
+                logger.warning(
+                    "Zigbee plug %s: device refused reporting on cluster 0x%04X (status=%s)",
+                    plug_id,
+                    cluster_id,
+                    status,
+                )
+    except Exception:  # noqa: BLE001 — a shape we did not expect is not a failure
+        return
+
+
+async def _seed_from_read(cluster, listener: ClusterReportListener, attr: int) -> None:
+    """Read the attribute once and feed it through the same listener.
+
+    Routed through the listener rather than written to the cache directly so a
+    seeded value and a reported one go through identical scaling and mapping —
+    two paths into one cache is how they come to disagree.
+    """
+    try:
+        result = await cluster.read_attributes([attr])
+        values = result[0] if isinstance(result, (list, tuple)) else result
+        if attr in (values or {}):
+            listener.attribute_updated(attr, values[attr], None)
+    except Exception as exc:  # noqa: BLE001 — a sleeping device is not a failure
+        logger.info("Zigbee: initial read of 0x%04X failed, waiting for a report instead: %s", attr, exc)

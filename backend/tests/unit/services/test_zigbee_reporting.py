@@ -174,3 +174,55 @@ class TestSubscriptionIsActuallyWired:
             await reporting.subscribe_all(service, plugs)
 
         assert bind.await_count == 2
+
+
+class TestInitialRead:
+    """Reporting is about CHANGES. It says nothing about the current state.
+
+    Found on hardware: binding succeeded, the log said "reporting set up for
+    1/1 plug(s)", and status stayed {state: null, reachable: false} because no
+    report had happened yet. Subscribing is not the same as knowing.
+    """
+
+    @pytest.mark.asyncio
+    async def test_binding_seeds_the_cache_with_a_read(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from backend.app.services.zigbee.driver import ZigbeeSmartPlugService
+        from backend.app.services.zigbee.reporting import bind_plug
+
+        service = ZigbeeSmartPlugService()
+        onoff = SimpleNamespace(
+            add_listener=lambda _l: None,
+            bind=AsyncMock(),
+            configure_reporting=AsyncMock(return_value={}),
+            read_attributes=AsyncMock(return_value=({ATTR_ON_OFF: 1}, {})),
+        )
+        device = SimpleNamespace(endpoints={1: SimpleNamespace(in_clusters={ON_OFF: onoff})})
+
+        await bind_plug(service, SimpleNamespace(id=1), device)
+
+        assert service.get_plug_data(1).state == "ON"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_initial_read_is_not_fatal(self):
+        """An unreadable device should still get its reporting subscription."""
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from backend.app.services.zigbee.driver import ZigbeeSmartPlugService
+        from backend.app.services.zigbee.reporting import bind_plug
+
+        service = ZigbeeSmartPlugService()
+        onoff = SimpleNamespace(
+            add_listener=lambda _l: None,
+            bind=AsyncMock(),
+            configure_reporting=AsyncMock(return_value={}),
+            read_attributes=AsyncMock(side_effect=OSError("device asleep")),
+        )
+        device = SimpleNamespace(endpoints={1: SimpleNamespace(in_clusters={ON_OFF: onoff})})
+
+        wired = await bind_plug(service, SimpleNamespace(id=1), device)
+
+        assert wired[ON_OFF] is True
