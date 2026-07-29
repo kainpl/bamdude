@@ -603,8 +603,13 @@ def _restore_zigbee_db(staging: Path, data_dir: Path) -> None:
         # discard them. It does — but "the network key probably survives" is not
         # a standard worth holding, and the staged file is a complete snapshot
         # that needs no sidecar of its own.
-        for sidecar in ("zigbee.db-wal", "zigbee.db-shm"):
-            (dest_dir / sidecar).unlink(missing_ok=True)
+        # Written out rather than looped so the two names stay literal at the
+        # join site: the path-safety scanner reads `<dir> / <variable>` as
+        # arithmetic on untrusted input, and it is right to. A SEC-PATH-OK
+        # suppression would work here and be a small permanent debt; two lines
+        # are self-evidently safe to the scanner and to a reader.
+        (dest_dir / "zigbee.db-wal").unlink(missing_ok=True)
+        (dest_dir / "zigbee.db-shm").unlink(missing_ok=True)
         shutil.copy2(src, dest_dir / "zigbee.db")
         logger.info("Restored the Zigbee network database from backup")
     except OSError as exc:
