@@ -364,3 +364,93 @@ class TestCoordinatorIdentityInStatus:
         assert body["state"] == "disabled"
         assert body["coordinator"] is None
         assert body["network"] is None
+
+
+class TestBindingAPlugToAPrinter:
+    """Turning a paired device into a working plug.
+
+    Phase 2 deliberately created no rows; this is where they appear. The
+    validation matters more than it looks: an IEEE that is not on the mesh, or
+    the coordinator's own address, would both produce a plug row that can never
+    switch anything — and the operator would see a broken plug rather than a
+    rejected request.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_binding_a_paired_plug_succeeds(self, async_client: AsyncClient, monkeypatch):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from backend.app.services.zigbee.devices import METERING, ON_OFF
+
+        plug = SimpleNamespace(
+            ieee="a4:c1:38:0b:5a:9c:ff:ff",
+            nwk=0xF6B4,
+            manufacturer="SONOFF",
+            model="S60ZBTPF",
+            endpoints={1: SimpleNamespace(in_clusters={ON_OFF: 1, METERING: 1})},
+        )
+        app = AsyncMock()
+        app.devices = {plug.ieee: plug}
+        _up(monkeypatch, app)
+
+        resp = await async_client.post(
+            "/api/v1/smart-plugs/",
+            json={"name": "Printer 1 power", "plug_type": "zigbee", "zigbee_ieee": plug.ieee},
+        )
+
+        assert resp.status_code in (200, 201), resp.text
+        assert resp.json()["zigbee_ieee"] == plug.ieee
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_an_ieee_that_is_not_paired_is_refused(self, async_client: AsyncClient, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        app = AsyncMock()
+        app.devices = {}
+        _up(monkeypatch, app)
+
+        resp = await async_client.post(
+            "/api/v1/smart-plugs/",
+            json={"name": "ghost", "plug_type": "zigbee", "zigbee_ieee": "00:11:22:33:44:55:66:77"},
+        )
+
+        assert resp.status_code == 400
+        assert "00:11:22:33:44:55:66:77" in resp.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_coordinator_cannot_be_bound(self, async_client: AsyncClient, monkeypatch):
+        """Phase 2 stopped the radio appearing in the device list; this is the
+        endpoint that would otherwise still let someone bind it."""
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from backend.app.services.zigbee.devices import ON_OFF
+
+        radio = SimpleNamespace(
+            ieee="34:8d:13:ff:fe:11:e4:6f",
+            nwk=0x0000,
+            manufacturer="Silicon Labs",
+            model="EZSP",
+            endpoints={1: SimpleNamespace(in_clusters={ON_OFF: 1})},
+        )
+        app = AsyncMock()
+        app.devices = {radio.ieee: radio}
+        _up(monkeypatch, app)
+
+        resp = await async_client.post(
+            "/api/v1/smart-plugs/",
+            json={"name": "the dongle", "plug_type": "zigbee", "zigbee_ieee": radio.ieee},
+        )
+
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_zigbee_without_an_ieee_is_refused(self, async_client: AsyncClient):
+        resp = await async_client.post("/api/v1/smart-plugs/", json={"name": "nowhere", "plug_type": "zigbee"})
+
+        assert resp.status_code in (400, 422)

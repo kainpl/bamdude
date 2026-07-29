@@ -82,6 +82,32 @@ async def create_smart_plug(
             if result.scalar_one_or_none():
                 raise HTTPException(400, "This printer already has a Tasmota plug assigned")
 
+    # For Zigbee plugs the address must belong to a device that is actually on
+    # our mesh. Validated here rather than in the schema because only the route
+    # can see the coordinator.
+    #
+    # Rejecting is the point: an address that is not paired, or the radio's own,
+    # would create a plug row that can never switch anything — and the operator
+    # would be left diagnosing a broken plug instead of reading a refusal.
+    if data.plug_type == "zigbee":
+        from backend.app.services.zigbee.coordinator import zigbee_coordinator
+        from backend.app.services.zigbee.devices import describe_device
+
+        zb_app = zigbee_coordinator.app
+        if zb_app is None:
+            raise HTTPException(400, "The Zigbee coordinator is not running, so no device can be bound yet.")
+
+        wanted = (data.zigbee_ieee or "").strip().lower()
+        device = next((d for k, d in zb_app.devices.items() if str(k).lower() == wanted), None)
+        if device is None:
+            raise HTTPException(400, f"No paired Zigbee device with address {data.zigbee_ieee}. Pair it first.")
+
+        info = describe_device(device)
+        if info.is_coordinator:
+            raise HTTPException(400, "That address is the Zigbee coordinator itself, not a plug.")
+        if not info.is_plug:
+            raise HTTPException(400, info.reject_reason or "That Zigbee device cannot be switched.")
+
     # For MQTT plugs, ensure MQTT broker is configured and service is connected
     if data.plug_type == "mqtt":
         # Try to configure the smart plug service if not already configured
