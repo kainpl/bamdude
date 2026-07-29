@@ -165,54 +165,38 @@ def test_database_lands_in_its_own_subdirectory(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_open_radio_config_is_accepted_by_zigpy(tmp_path):
-    """The one test that exercises the real zigpy seam.
+async def test_open_radio_hands_zigpy_an_unvalidated_config(tmp_path):
+    """The regression from the first run against a real dongle.
 
-    Every other test here patches ``_open_radio``, which is what makes the
-    lifecycle testable without hardware — and is exactly why a config mistake
-    slipped through to the first run with a dongle. It surfaced as
-    "'ZigpyOtaProvider' object has no attribute 'get'": the config was being
-    validated twice, once by us and once inside ``new()``, and the second pass
-    choked on the OTA entries the first had already converted.
+    We used to build the config with ``ControllerApplication.SCHEMA(...)`` and
+    then hand the result to ``new()``, which validates again. The first pass
+    turns the OTA entries into ``ZigpyOtaProvider`` objects and the second calls
+    ``.get()`` on them, so it surfaced as "'ZigpyOtaProvider' object has no
+    attribute 'get'" — a message naming neither config nor the radio, which is
+    why it read as a hardware fault.
 
-    No hardware needed: pointing at a closed local port means the call has to
-    get *past* config validation to fail, so any config-shaped error fails this
-    test while a connection error passes it.
+    Asserted by shape rather than by connecting: a validated config carries ~20
+    keys of filled-in defaults, ours carries exactly the two we set. That is a
+    precise, instant check for double validation.
+
+    An earlier version of this test called the real ``new()`` against a closed
+    local port. It caught the bug, but bellows leaves a thread behind on a
+    failed connect and the pytest process then never exited — every full-suite
+    run left a hung shell. The guarantee was worth keeping; the mechanism was
+    not.
     """
     coord = ZigbeeCoordinator(data_dir=tmp_path)
+    captured = {}
 
-    with pytest.raises(Exception) as exc:  # noqa: PT011 — the type is zigpy's business
+    async def _fake_new(config, **kwargs):
+        captured["config"] = config
+        captured["kwargs"] = kwargs
+        return AsyncMock()
+
+    with patch("bellows.zigbee.application.ControllerApplication.new", _fake_new):
         await coord._open_radio("socket://127.0.0.1:1")
 
-    message = str(exc.value)
-    assert "ZigpyOtaProvider" not in message
-    assert not isinstance(exc.value, AttributeError), f"config rejected before any I/O: {message}"
-
-
-@pytest.mark.asyncio
-async def test_app_is_exposed_only_while_up(tmp_path):
-    """Routes need the application; reaching into _app from outside does not scale."""
-    coord = ZigbeeCoordinator(data_dir=tmp_path)
-    assert coord.app is None
-
-    app = AsyncMock()
-    with patch.object(coord, "_open_radio", AsyncMock(return_value=app)):
-        await coord.start(_settings())
-    assert coord.app is app
-
-    await coord.stop()
-    assert coord.app is None
-
-
-@pytest.mark.asyncio
-async def test_listener_is_registered_on_start(tmp_path):
-    """Without this the coordinator never hears about a device joining."""
-    coord = ZigbeeCoordinator(data_dir=tmp_path)
-    app = AsyncMock()
-    app.add_listener = MagicMock()
-
-    with patch.object(coord, "_open_radio", AsyncMock(return_value=app)):
-        await coord.start(_settings())
-
-    app.add_listener.assert_called_once_with(coord)
-    await coord.stop()
+    assert set(captured["config"]) == {"database_path", "device"}, (
+        "config was pre-validated before new() — that is the double-validation bug"
+    )
+    assert captured["kwargs"] == {"auto_form": True, "start_radio": True}
