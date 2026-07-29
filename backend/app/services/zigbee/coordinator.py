@@ -131,13 +131,22 @@ class ZigbeeCoordinator:
         from bellows.zigbee.application import ControllerApplication
 
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        config = ControllerApplication.SCHEMA(
+        # The plain dict is passed deliberately — do NOT pre-run it through
+        # ``ControllerApplication.SCHEMA``. ``new()`` validates internally, and
+        # validating twice breaks on the OTA section: the first pass turns the
+        # provider entries into ``ZigpyOtaProvider`` objects, and the second
+        # pass fails with "'ZigpyOtaProvider' object has no attribute 'get'"
+        # because ``cv_ota_provider`` expects the dict form it already
+        # converted. The error names OTA and mentions neither config nor the
+        # radio, which is what made it look like a dongle fault.
+        return await ControllerApplication.new(
             {
                 "database_path": str(self.database_path),
                 "device": {"path": device},
-            }
+            },
+            auto_form=True,
+            start_radio=True,
         )
-        return await ControllerApplication.new(config, auto_form=True, start_radio=True)
 
 
 def _default_data_dir() -> Path:

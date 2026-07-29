@@ -162,3 +162,28 @@ def test_database_lands_in_its_own_subdirectory(tmp_path):
     """
     coord = ZigbeeCoordinator(data_dir=tmp_path)
     assert coord.database_path == tmp_path / "zigbee" / "zigbee.db"
+
+
+@pytest.mark.asyncio
+async def test_open_radio_config_is_accepted_by_zigpy(tmp_path):
+    """The one test that exercises the real zigpy seam.
+
+    Every other test here patches ``_open_radio``, which is what makes the
+    lifecycle testable without hardware — and is exactly why a config mistake
+    slipped through to the first run with a dongle. It surfaced as
+    "'ZigpyOtaProvider' object has no attribute 'get'": the config was being
+    validated twice, once by us and once inside ``new()``, and the second pass
+    choked on the OTA entries the first had already converted.
+
+    No hardware needed: pointing at a closed local port means the call has to
+    get *past* config validation to fail, so any config-shaped error fails this
+    test while a connection error passes it.
+    """
+    coord = ZigbeeCoordinator(data_dir=tmp_path)
+
+    with pytest.raises(Exception) as exc:  # noqa: PT011 — the type is zigpy's business
+        await coord._open_radio("socket://127.0.0.1:1")
+
+    message = str(exc.value)
+    assert "ZigpyOtaProvider" not in message
+    assert not isinstance(exc.value, AttributeError), f"config rejected before any I/O: {message}"
