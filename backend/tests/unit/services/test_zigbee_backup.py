@@ -136,3 +136,26 @@ def test_restore_without_the_entry_leaves_an_existing_database_alone(tmp_path):
 @pytest.mark.parametrize("helper", [_stage_zigbee_db, _restore_zigbee_db])
 def test_helpers_tolerate_a_missing_destination_tree(tmp_path, helper):
     helper(tmp_path / "nope", tmp_path / "also-nope")
+
+
+def test_restore_clears_the_previous_networks_wal(tmp_path):
+    """Sidecars belong to the database being replaced, not the restored one.
+
+    Leaving them would mean trusting SQLite's salt check to reject a WAL from a
+    different database. It does reject it — but the thing at stake is the
+    network key, and the staged file is already a complete snapshot that needs
+    no sidecar.
+    """
+    data_dir, staging = tmp_path / "data", tmp_path / "stage"
+    (data_dir / "zigbee").mkdir(parents=True)
+    (data_dir / "zigbee" / "zigbee.db").write_bytes(b"old")
+    (data_dir / "zigbee" / "zigbee.db-wal").write_bytes(b"old-wal")
+    (data_dir / "zigbee" / "zigbee.db-shm").write_bytes(b"old-shm")
+    (staging / "zigbee").mkdir(parents=True)
+    (staging / "zigbee" / "zigbee.db").write_bytes(b"restored")
+
+    _restore_zigbee_db(staging, data_dir)
+
+    assert (data_dir / "zigbee" / "zigbee.db").read_bytes() == b"restored"
+    assert not (data_dir / "zigbee" / "zigbee.db-wal").exists()
+    assert not (data_dir / "zigbee" / "zigbee.db-shm").exists()

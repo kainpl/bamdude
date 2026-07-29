@@ -597,6 +597,14 @@ def _restore_zigbee_db(staging: Path, data_dir: Path) -> None:
     try:
         dest_dir = data_dir / "zigbee"
         dest_dir.mkdir(parents=True, exist_ok=True)
+        # Drop the previous network's WAL sidecars BEFORE writing the restored
+        # file. They belong to the database being replaced, and leaving them to
+        # sit beside a different one means trusting SQLite's salt check to
+        # discard them. It does — but "the network key probably survives" is not
+        # a standard worth holding, and the staged file is a complete snapshot
+        # that needs no sidecar of its own.
+        for sidecar in ("zigbee.db-wal", "zigbee.db-shm"):
+            (dest_dir / sidecar).unlink(missing_ok=True)
         shutil.copy2(src, dest_dir / "zigbee.db")
         logger.info("Restored the Zigbee network database from backup")
     except OSError as exc:
