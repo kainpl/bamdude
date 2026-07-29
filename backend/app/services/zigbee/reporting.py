@@ -72,7 +72,13 @@ class ClusterReportListener:
         """
         try:
             if self._cluster_id == ON_OFF and attrid == ATTR_ON_OFF:
-                self._service.update(self._plug_id, state="ON" if value else "OFF")
+                state = "ON" if value else "OFF"
+                # Logged at INFO, unlike the energy reports below: whether
+                # on/off reports arrive at all is the question that took a
+                # hardware session to answer, and an empty log looked the same
+                # as a working subscription.
+                logger.info("Zigbee plug %s reported state %s", self._plug_id, state)
+                self._service.update(self._plug_id, state=state)
                 return
 
             if self._cluster_id == METERING and attrid == ATTR_SUMMATION:
@@ -201,23 +207,36 @@ async def subscribe_all(service, plugs) -> int:
 def _warn_if_reporting_refused(plug_id: int, cluster_id: int, result) -> None:
     """``configure_reporting`` answers per attribute; it does not raise on refusal.
 
-    Treating "no exception" as success is how a device that declined the
-    subscription looks identical to one that accepted it — and the only symptom
-    is readings that never arrive.
+    The result is a **dict** of ``{ZCLAttributeDef: Status}``. The first version
+    of this function iterated it as a list of records and read ``.status`` off
+    each element — iterating a dict yields keys, which have no such attribute,
+    so it never fired once. It was written to catch a silent refusal and was
+    itself silent, which is worse than not having it: an empty log read as proof
+    the device had accepted.
+
+    An unrecognised shape is therefore logged rather than swallowed. If this
+    check stops matching a future zigpy, that should be visible.
     """
-    try:
-        records = result[0] if isinstance(result, (list, tuple)) else result
-        for record in records or []:
-            status = getattr(record, "status", None)
-            if status is not None and status != foundation.Status.SUCCESS:
-                logger.warning(
-                    "Zigbee plug %s: device refused reporting on cluster 0x%04X (status=%s)",
-                    plug_id,
-                    cluster_id,
-                    status,
-                )
-    except Exception:  # noqa: BLE001 — a shape we did not expect is not a failure
+    if not isinstance(result, dict):
+        logger.debug(
+            "Zigbee plug %s: unexpected configure_reporting result for cluster 0x%04X: %r",
+            plug_id,
+            cluster_id,
+            result,
+        )
         return
+
+    for attr, status in result.items():
+        if status == foundation.Status.SUCCESS:
+            continue
+        logger.warning(
+            "Zigbee plug %s: device refused reporting for %s on cluster 0x%04X (status=%s). "
+            "Its state will only update when something else reads it.",
+            plug_id,
+            getattr(attr, "name", attr),
+            cluster_id,
+            status,
+        )
 
 
 async def _seed_from_read(cluster, listener: ClusterReportListener, attr: int) -> None:

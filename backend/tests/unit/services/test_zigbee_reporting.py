@@ -13,6 +13,7 @@ every report would silently vanish. Established in phase 2, unchanged.
 """
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -226,3 +227,58 @@ class TestInitialRead:
         wired = await bind_plug(service, SimpleNamespace(id=1), device)
 
         assert wired[ON_OFF] is True
+
+
+class _Attr:
+    """Hashable stand-in for ZCLAttributeDef.
+
+    SimpleNamespace defines __eq__ and is therefore unhashable, so it cannot be
+    a dict key — and configure_reporting keys its result by attribute.
+    """
+
+    def __init__(self, name):
+        self.name = name
+
+
+class TestReportingRefusalIsNoticed:
+    """The check that was written against the wrong shape and saw nothing.
+
+    ``configure_reporting`` returns a **dict** of {attribute: Status}. The first
+    version of this check iterated it as a list of records and read ``.status``
+    off each element — iterating a dict yields keys, which have no such
+    attribute, so it silently never fired. A blind check is worse than none: it
+    reads as evidence the device accepted.
+    """
+
+    def test_a_refusal_is_reported(self, caplog):
+        from zigpy.zcl import foundation
+
+        from backend.app.services.zigbee.reporting import _warn_if_reporting_refused
+
+        attr = _Attr("on_off")
+        with caplog.at_level("WARNING"):
+            _warn_if_reporting_refused(1, ON_OFF, {attr: foundation.Status.UNSUPPORTED_ATTRIBUTE})
+
+        assert "refused" in caplog.text.lower()
+        assert "on_off" in caplog.text
+
+    def test_success_is_quiet(self, caplog):
+        from zigpy.zcl import foundation
+
+        from backend.app.services.zigbee.reporting import _warn_if_reporting_refused
+
+        attr = _Attr("on_off")
+        with caplog.at_level("WARNING"):
+            _warn_if_reporting_refused(1, ON_OFF, {attr: foundation.Status.SUCCESS})
+
+        assert "refused" not in caplog.text.lower()
+
+    def test_an_unexpected_shape_is_logged_not_swallowed(self, caplog):
+        """Silently returning on a shape we did not expect is how the first
+        version hid its own bug."""
+        from backend.app.services.zigbee.reporting import _warn_if_reporting_refused
+
+        with caplog.at_level("DEBUG"):
+            _warn_if_reporting_refused(1, ON_OFF, "not a mapping at all")
+
+        assert caplog.text
