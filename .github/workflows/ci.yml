@@ -267,26 +267,12 @@ jobs:
           # Only audit production dependencies and filter out npm-internal packages.
           # npm 10.x audit/ls reports vulns in its own bundled deps (npm, tar, minimatch)
           # so we parse package-lock.json directly to get the real prod dep list.
+          #
+          # Accepted findings live in .github/audit-exceptions.json, keyed by GHSA id.
+          # Keyed by ADVISORY, never by package name: a different future hole in the
+          # same package must still fail this gate.
           npm audit --omit=dev --json > /tmp/audit.json 2>/dev/null || true
-          python3 -c "
-          import json, sys
-          data = json.load(open('/tmp/audit.json'))
-          lock = json.load(open('package-lock.json'))
-          prod = set()
-          for path, info in lock.get('packages', {}).items():
-              if path and not info.get('dev') and not info.get('devOptional'):
-                  prod.add(path.split('node_modules/')[-1])
-          vulns = data.get('vulnerabilities', {})
-          fixable = {n: v for n, v in vulns.items()
-                     if n in prod and v.get('severity') in ('high', 'critical') and v.get('fixAvailable')}
-          skipped = len(vulns) - len({n: v for n, v in vulns.items() if n in prod})
-          if fixable:
-              for name, v in fixable.items():
-                  print(f'FIXABLE {v[\"severity\"].upper()}: {name}')
-              sys.exit(1)
-          total = sum(1 for n, v in vulns.items() if n in prod and v.get('severity') in ('high', 'critical'))
-          print(f'npm audit: {total} high/critical (0 fixable), {len(vulns)} total ({skipped} npm-internal filtered)')
-          "
+          python3 ../.github/scripts/audit_gate.py /tmp/audit.json package-lock.json ../.github/audit-exceptions.json
 
   frontend-typecheck:
     name: Frontend Type Check

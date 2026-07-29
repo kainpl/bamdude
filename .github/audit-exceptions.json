@@ -1,0 +1,24 @@
+{
+  "_readme": [
+    "Accepted npm-audit findings, keyed by GHSA advisory id — never by package name,",
+    "so a different future vulnerability in the same package still fails the gate.",
+    "",
+    "An entry belongs here only when the finding does not apply to how BamDude actually",
+    "uses the dependency. 'We haven't got round to it' is not a reason — that is what a",
+    "red advisory job is for.",
+    "",
+    "The gate prints every accepted finding on each run, and warns when an entry no",
+    "longer matches anything (dependency updated past it) so the list cannot silently rot."
+  ],
+  "exceptions": {
+    "GHSA-qwww-vcr4-c8h2": {
+      "package": "react-router",
+      "title": "React Router: RSC Mode CSRF Bypass Allows Action Execution Before 400 Response",
+      "why": "Only reachable in React Server Components mode. BamDude is a plain SPA: App.tsx mounts <BrowserRouter>, and there is no @react-router/rsc, unstable_RSC, createCallServer or routeRSCServerRequest anywhere in frontend/src. The RSC request pipeline this bypasses does not exist in our bundle.",
+      "no_patch_on_our_line": "Vulnerable range is >=7.12.0 <8.3.0 — there is no fix within 7.x. `npm audit fix --force` proposes downgrading to react-router-dom@7.11.0, which is a regression, not a fix.",
+      "resolution": "Drops out on its own when the roadmapped React Router 8 upgrade lands (also needs react >=19.2.7; we are on 19.2.4). No separate action needed here — the gate will tell us this entry is stale.",
+      "accepted": "2026-07-29",
+      "review_by": "2026-10-29"
+    }
+  }
+}
