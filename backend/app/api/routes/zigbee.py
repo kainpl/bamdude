@@ -58,7 +58,47 @@ async def get_zigbee_status(
     returned verbatim rather than mapped to a code.
     """
     status = zigbee_coordinator.status
-    return {"state": status.state.value, "reason": status.reason}
+    return {
+        "state": status.state.value,
+        "reason": status.reason,
+        **_radio_identity(),
+    }
+
+
+def _radio_identity() -> dict:
+    """The coordinator's own identity, and the network it runs.
+
+    Lives on /status rather than in /devices because the radio is not something
+    the operator manages — /devices answers "what can I pair and control", and
+    an entry there that cannot be acted on is noise. But "which dongle am I
+    actually talking to, and on which channel" is real diagnostic value, and
+    without this it would be unreachable through the API entirely.
+
+    Fields are listed explicitly, never dumped wholesale: ``network_info`` also
+    carries ``network_key`` and ``tc_link_key``. Those are the secrets whose
+    loss means re-pairing every device — serialising them into a status
+    endpoint any reader can reach would be far worse than losing them.
+    """
+    app = zigbee_coordinator.app
+    if app is None:
+        return {"coordinator": None, "network": None}
+
+    try:
+        node = app.state.node_info
+        net = app.state.network_info
+        return {
+            "coordinator": {
+                "ieee": str(node.ieee),
+                "nwk": node.nwk,
+                "model": node.model,
+                "manufacturer": node.manufacturer,
+                "version": node.version,
+            },
+            "network": {"channel": net.channel, "pan_id": net.pan_id},
+        }
+    except Exception as exc:  # noqa: BLE001 — status must answer even when zigpy cannot
+        logger.warning("Zigbee radio identity unavailable: %s", exc)
+        return {"coordinator": None, "network": None}
 
 
 @router.get("/ports")

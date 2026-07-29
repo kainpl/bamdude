@@ -37,7 +37,13 @@ class TestZigbeeStatus:
         resp = await async_client.get("/api/v1/zigbee/status")
 
         assert resp.status_code == 200
-        assert resp.json() == {"state": "error", "reason": "no such device"}
+        # Field-wise, not whole-payload equality: this test is about the reason
+        # surfacing, and /status is expected to grow fields (it already gained
+        # the radio identity). An exact-match assertion here would fail on every
+        # future addition while telling nobody anything about the reason.
+        body = resp.json()
+        assert body["state"] == "error"
+        assert body["reason"] == "no such device"
 
 
 class TestZigbeePorts:
@@ -296,3 +302,65 @@ class TestCoordinatorIsNotADevice:
 
         assert resp.status_code == 404
         app.remove.assert_not_awaited()
+
+
+class TestCoordinatorIdentityInStatus:
+    """The radio's identity belongs with its status, not in the device list.
+
+    /devices answers "what can I manage"; the coordinator is not one of those.
+    But its identity is real diagnostic value — which dongle am I actually
+    talking to, and on which channel — so it lives here instead of nowhere.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_status_carries_the_radio_identity_when_up(self, async_client: AsyncClient, monkeypatch):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        app = AsyncMock()
+        app.state = SimpleNamespace(
+            node_info=SimpleNamespace(
+                ieee="34:8d:13:ff:fe:11:e4:6f",
+                nwk=0x0000,
+                model="EZSP",
+                manufacturer="Silicon Labs",
+                version="7.4.5",
+            ),
+            network_info=SimpleNamespace(channel=25, pan_id=0x1A2B, network_key="SECRET-DO-NOT-LEAK"),
+        )
+        _up(monkeypatch, app)
+
+        body = (await async_client.get("/api/v1/zigbee/status")).json()
+
+        assert body["coordinator"]["ieee"] == "34:8d:13:ff:fe:11:e4:6f"
+        assert body["coordinator"]["model"] == "EZSP"
+        assert body["network"]["channel"] == 25
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_network_key_is_never_serialised(self, async_client: AsyncClient, monkeypatch):
+        """Losing it means re-pairing every device; leaking it is worse."""
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        app = AsyncMock()
+        app.state = SimpleNamespace(
+            node_info=SimpleNamespace(ieee="a", nwk=0, model="m", manufacturer="x", version="1"),
+            network_info=SimpleNamespace(channel=25, pan_id=1, network_key="SECRET-DO-NOT-LEAK"),
+        )
+        _up(monkeypatch, app)
+
+        raw = (await async_client.get("/api/v1/zigbee/status")).text
+
+        assert "SECRET-DO-NOT-LEAK" not in raw
+        assert "network_key" not in raw
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_status_omits_identity_when_the_radio_is_down(self, async_client: AsyncClient):
+        body = (await async_client.get("/api/v1/zigbee/status")).json()
+
+        assert body["state"] == "disabled"
+        assert body["coordinator"] is None
+        assert body["network"] is None
