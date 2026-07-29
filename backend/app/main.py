@@ -86,7 +86,6 @@ from backend.app.services.auto_queue_scheduler import auto_queue_scheduler
 from backend.app.services.background_dispatch import background_dispatch
 from backend.app.services.bambu_mqtt import PrinterState
 from backend.app.services.git_backup import git_backup_service
-from backend.app.services.homeassistant import homeassistant_service
 from backend.app.services.local_backup import local_backup_service
 from backend.app.services.mqtt_relay import mqtt_relay
 from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
@@ -108,7 +107,6 @@ from backend.app.services.spoolman_tracking import (
     report_usage as _report_spoolman_usage,
     store_print_data as _store_spoolman_print_data,
 )
-from backend.app.services.tasmota import tasmota_service
 
 
 # =============================================================================
@@ -618,34 +616,24 @@ def _clear_unknown_tag_dedup(printer_id: int, ams_id: int, tray_id: int) -> None
 
 
 async def _get_plug_energy(plug, db) -> dict | None:
-    """Get energy from plug regardless of type (Tasmota, Home Assistant, MQTT, or REST).
+    """Energy for one plug, through whichever driver the manager resolves.
 
-    For HA plugs, configures the service with current settings from DB.
-    For MQTT plugs, returns data from the subscription service.
-    For REST plugs, polls the status URL with JSON path extraction.
+    This was a hand-rolled ``if/elif`` chain ending in ``else:
+    tasmota_service``. That default is what made it dangerous rather than merely
+    incomplete: a plug type the chain predated did not fail, it silently got
+    Tasmota's answer — an HTTP poll against an IP that a Zigbee plug does not
+    have. Since this feeds per-print energy, the result would have been a wrong
+    number rather than a missing one.
+
+    ``SmartPlugManager.get_service_for_plug`` is the single resolver, so a new
+    plug type is one line there and every caller follows. It also configures the
+    Home Assistant service from settings, which is why dropping the HA branch
+    here loses nothing.
+
+    The driver each type returns is unchanged — only the route to it.
     """
-    if plug.plug_type == "homeassistant":
-        from backend.app.api.routes.settings import get_homeassistant_settings
-
-        ha_settings = await get_homeassistant_settings(db)
-        homeassistant_service.configure(ha_settings["ha_url"], ha_settings["ha_token"])
-        return await homeassistant_service.get_energy(plug)
-    elif plug.plug_type == "mqtt":
-        # Straight through the driver: it is the only place that knows which of
-        # the plug's two energy readings is the lifetime one
-        # (``mqtt_energy_total_*``) and which resets. Reproducing the mapping
-        # here is how this branch came to file the DAILY counter as ``total``,
-        # which per-print energy then differenced — so every print that spanned
-        # midnight recorded a negative delta.
-        from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
-
-        return await mqtt_smart_plug_service.get_energy(plug)
-    elif plug.plug_type == "rest":
-        from backend.app.services.rest_smart_plug import rest_smart_plug_service
-
-        return await rest_smart_plug_service.get_energy(plug)
-    else:
-        return await tasmota_service.get_energy(plug)
+    service = await smart_plug_manager.get_service_for_plug(plug, db)
+    return await service.get_energy(plug)
 
 
 async def _default_queue_id_for_printer(db, printer_id: int) -> int | None:

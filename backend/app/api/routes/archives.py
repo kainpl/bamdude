@@ -34,6 +34,7 @@ from backend.app.schemas.archive import (
 )
 from backend.app.schemas.plate_objects import PlateObjectsResponse
 from backend.app.services.archive import ArchiveService, resolve_display_stem
+from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.safe_path import safe_join_under
@@ -1135,43 +1136,34 @@ async def _sum_live_plug_totals(db: AsyncSession) -> float:
     available so this can't be date-filtered - use `_sum_snapshot_deltas` for
     that case.
     """
-    from backend.app.api.routes.settings import get_setting
     from backend.app.models.smart_plug import SmartPlug
-    from backend.app.services.homeassistant import homeassistant_service
-    from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
-    from backend.app.services.rest_smart_plug import rest_smart_plug_service
-    from backend.app.services.tasmota import tasmota_service
 
     plugs_result = await db.execute(select(SmartPlug))
     plugs = list(plugs_result.scalars().all())
 
-    ha_url = await get_setting(db, "ha_url") or ""
-    ha_token = await get_setting(db, "ha_token") or ""
-    homeassistant_service.configure(ha_url, ha_token)
-
+    # Resolved per plug rather than branched on by hand. The chain this replaces
+    # had no ``else``, so a plug type it predated matched nothing and silently
+    # contributed zero to the total — the sibling of main.py::_get_plug_energy,
+    # whose own chain defaulted to Tasmota instead. Going through the manager
+    # means a new plug type is one line there. It also configures the Home
+    # Assistant service itself, which is why the ha_url/ha_token preamble that
+    # used to sit here is gone.
     total = 0.0
     for plug in plugs:
-        if plug.plug_type == "tasmota":
-            energy = await tasmota_service.get_energy(plug)
-            if energy and energy.get("total") is not None:
-                total += energy["total"]
-        elif plug.plug_type == "homeassistant":
-            energy = await homeassistant_service.get_energy(plug)
-            if energy and energy.get("total") is not None:
-                total += energy["total"]
-        elif plug.plug_type == "mqtt":
-            # Through the driver, and summing the LIFETIME figure like the
-            # branches above. This used to add the daily reading into a
-            # lifetime total; a plug with no lifetime source now contributes
-            # nothing, which is what the tasmota and homeassistant branches
-            # already do when their own total is missing.
-            energy = await mqtt_smart_plug_service.get_energy(plug)
-            if energy and energy.get("total") is not None:
-                total += energy["total"]
-        elif plug.plug_type == "rest":
-            energy = await rest_smart_plug_service.get_energy(plug)
-            if energy and energy.get("today") is not None:
-                total += energy["today"]
+        service = await smart_plug_manager.get_service_for_plug(plug, db)
+        energy = await service.get_energy(plug)
+        if not energy:
+            continue
+        # REST reports only a daily figure; every other driver reports a
+        # lifetime one. That asymmetry is real — a REST plug has no lifetime
+        # counter — so it survives the collapse of the per-type chain rather
+        # than being tidied into a single key, which would drop REST plugs out
+        # of the totals entirely.
+        value = energy.get("total")
+        if value is None and plug.plug_type == "rest":
+            value = energy.get("today")
+        if value is not None:
+            total += value
     return total
 
 
