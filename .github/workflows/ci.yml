@@ -63,10 +63,10 @@ jobs:
     needs: check-duplicate
     if: needs.check-duplicate.outputs.should_skip != 'true' && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -90,10 +90,10 @@ jobs:
     if: needs.check-duplicate.outputs.should_skip != 'true' && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -129,18 +129,18 @@ jobs:
     if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     continue-on-error: true  # Some pre-existing tests may fail
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Single interpreter on purpose: 3.12 is the floor in pyproject.toml, what
       # the Dockerfile ships and what Ubuntu 24.04 LTS hands a bare-metal
       # install. A matrix here would test runtimes nobody runs us on. This was
       # briefly 3.12 + 3.11 because the mock FTPS server needed pyftpdlib, whose
       # `asyncore` left the stdlib in 3.12; that mock is stdlib-only now.
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Cache pip
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-py${{ env.PYTHON_VERSION }}-${{ hashFiles('requirements.txt') }}
@@ -186,13 +186,13 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Cache pip
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-py${{ env.PYTHON_VERSION }}-${{ hashFiles('requirements.txt') }}
@@ -220,10 +220,10 @@ jobs:
     needs: check-duplicate
     if: needs.check-duplicate.outputs.should_skip != 'true' && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -248,10 +248,10 @@ jobs:
     if: needs.check-duplicate.outputs.should_skip != 'true' && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -294,10 +294,10 @@ jobs:
     needs: check-duplicate
     if: needs.check-duplicate.outputs.should_skip != 'true' && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -317,9 +317,9 @@ jobs:
     needs: [frontend-lint, frontend-typecheck]
     if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -338,10 +338,10 @@ jobs:
     needs: [frontend-tests]
     if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -366,7 +366,7 @@ jobs:
     if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Test 1: Docker Build
       - name: Build production image
