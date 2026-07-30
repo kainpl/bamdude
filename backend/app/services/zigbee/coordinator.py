@@ -48,6 +48,28 @@ class CoordinatorStatus:
     reason: str = ""
 
 
+def _describe_exception(exc: BaseException | None) -> str:
+    """A reason that always says something.
+
+    ``reason`` is the whole explanation of why the radio is not up — the settings
+    card renders it verbatim, the status badge falls back to a generic label
+    without it, and the toast has nothing else to show. So an empty one defeats
+    every consumer at once.
+
+    Measured on hardware: pointing the coordinator at a closed port produced
+    ``state: error`` with ``reason: ""``, because what bellows raised stringifies
+    to nothing. And ``connection_lost`` was called with ``None``, which rendered
+    as "Connection to the Zigbee radio was lost: None".
+
+    An exception class name is a poor explanation. It is still far better than a
+    blank, which reads as "no idea, and we are not saying".
+    """
+    if exc is None:
+        return "the connection closed without an error"
+    message = str(exc).strip()
+    return message or type(exc).__name__
+
+
 class ZigbeeCoordinator:
     def __init__(self, data_dir: Path | str):
         self._data_dir = Path(data_dir)
@@ -99,7 +121,7 @@ class ZigbeeCoordinator:
         except TransportConfigError as exc:
             # Before the lock on purpose: a misconfigured install must not leave
             # a lock file implying it ever owned the radio.
-            self._status = CoordinatorStatus(CoordinatorState.ERROR, str(exc))
+            self._status = CoordinatorStatus(CoordinatorState.ERROR, _describe_exception(exc))
             logger.warning("Zigbee coordinator not started: %s", exc)
             return
 
@@ -113,8 +135,8 @@ class ZigbeeCoordinator:
         except Exception as exc:  # noqa: BLE001 — the contract is that nothing escapes
             self._lock.release()
             self._app = None
-            self._status = CoordinatorStatus(CoordinatorState.ERROR, str(exc))
-            logger.warning("Zigbee coordinator failed to start on %s: %s", device, exc)
+            self._status = CoordinatorStatus(CoordinatorState.ERROR, _describe_exception(exc))
+            logger.warning("Zigbee coordinator failed to start on %s: %s", device, _describe_exception(exc))
             return
 
         # Registered here rather than inside _open_radio so that seam stays
@@ -207,8 +229,11 @@ class ZigbeeCoordinator:
         endpoint still reported ``up``.
         """
         try:
-            self._status = CoordinatorStatus(CoordinatorState.ERROR, f"Connection to the Zigbee radio was lost: {exc}")
-            logger.warning("Zigbee radio connection lost: %s", exc)
+            self._status = CoordinatorStatus(
+                CoordinatorState.ERROR,
+                f"Connection to the Zigbee radio was lost: {_describe_exception(exc)}",
+            )
+            logger.warning("Zigbee radio connection lost: %s", _describe_exception(exc))
             self._emit(
                 {
                     "type": "zigbee_status_changed",

@@ -1,5 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { ZigbeeStatusBadge } from '../components/zigbee/ZigbeeStatusBadge';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -5111,6 +5112,9 @@ function PrinterCard({
               <div className="flex items-center gap-2 min-w-0">
                 <Zap className="w-4 h-4 text-bambu-gray flex-shrink-0" />
                 <span className="text-sm text-white truncate">{smartPlug.name}</span>
+                {/* This is where power gets switched, so this is where a dead
+                    radio explains a button that does nothing. */}
+                {smartPlug.plug_type === 'zigbee' && <ZigbeeStatusBadge variant="dot" />}
                 {plugStatus && (
                   <span
                     className={`text-xs px-1.5 py-0.5 rounded flex-shrink-0 ${

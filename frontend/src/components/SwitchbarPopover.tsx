@@ -5,6 +5,7 @@ import { Plug, Power, PowerOff, Loader2, Wifi, WifiOff, Zap, Radio, Eye } from '
 import { api } from '../api/client';
 import type { SmartPlug } from '../api/client';
 import { ConfirmModal } from './ConfirmModal';
+import { ZigbeeStatusBadge } from './zigbee/ZigbeeStatusBadge';
 
 interface SwitchbarPopoverProps {
   onClose: () => void;
@@ -167,6 +168,9 @@ export function SwitchbarPopover({ onClose }: SwitchbarPopoverProps) {
         <h3 className="text-sm font-semibold text-white flex items-center gap-2">
           <Plug className="w-4 h-4 text-bambu-green" />
           Smart Switches
+          {/* A dead radio makes every Zigbee switch in this panel stop
+              responding, and nothing else here would say why. */}
+          <ZigbeeStatusBadge variant="dot" />
         </h3>
       </div>
 

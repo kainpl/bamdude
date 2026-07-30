@@ -207,3 +207,40 @@ async def test_open_radio_hands_zigpy_an_unvalidated_config(tmp_path):
     # its socket is switched off, so BamDude read 33 W from a socket with nothing
     # running. ZHA passes the same resolver.
     assert captured["kwargs"]["device_resolver"] is not None
+
+
+class TestTheReasonIsNeverEmpty:
+    """`reason` is the whole explanation, so it must always say something.
+
+    Measured on hardware: pointing the coordinator at a closed port produced
+    `state: error` with `reason: ""`, because the exception bellows raised
+    stringifies to nothing. Every consumer built in phase 4 — the settings card,
+    the status badge, the toast — falls back to a generic label in that case, so
+    the operator is told "the radio is down" and nothing about why.
+
+    An exception class name is a poor explanation. It is still infinitely better
+    than an empty string.
+    """
+
+    def test_an_exception_with_no_message_still_yields_a_reason(self):
+        from backend.app.services.zigbee.coordinator import _describe_exception
+
+        assert _describe_exception(TimeoutError()) == "TimeoutError"
+
+    def test_a_message_is_preferred_when_there_is_one(self):
+        from backend.app.services.zigbee.coordinator import _describe_exception
+
+        assert _describe_exception(OSError("no such device")) == "no such device"
+
+    def test_whitespace_counts_as_empty(self):
+        from backend.app.services.zigbee.coordinator import _describe_exception
+
+        assert _describe_exception(OSError("   ")) == "OSError"
+
+    def test_none_is_described_rather_than_printed(self):
+        """`connection_lost(None)` is what bellows actually passed on a dropped
+        socket, and "Connection to the Zigbee radio was lost: None" is not an
+        explanation."""
+        from backend.app.services.zigbee.coordinator import _describe_exception
+
+        assert _describe_exception(None) == "the connection closed without an error"

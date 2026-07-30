@@ -7,6 +7,7 @@ import type { SmartPlug, SmartPlugUpdate } from '../api/client';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
+import { ZigbeeStatusBadge } from './zigbee/ZigbeeStatusBadge';
 import { useToast } from '../contexts/ToastContext';
 
 interface SmartPlugCardProps {
@@ -216,6 +217,10 @@ export function SmartPlugCard({ plug, onEdit }: SmartPlugCardProps) {
                   <span>{t('smartPlugs.offline')}</span>
                 </div>
               )}
+              {/* Why the plug stopped answering, when the cause is the radio
+                  rather than the plug. Different problems, different fixes. */}
+              {plug.plug_type === 'zigbee' && <ZigbeeStatusBadge variant="inline" />}
+
               {/* Admin page link - only for Tasmota */}
               {adminUrl && (
                 <a
