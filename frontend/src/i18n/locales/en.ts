@@ -5928,6 +5928,21 @@ export default {
   // Maintenance type descriptions (built-in)
   // Smart Plugs
   smartPlugs: {
+    plugType: 'Plug type',
+    zigbeeDevice: 'Zigbee device',
+    zigbeePickDevice: 'Choose a paired device…',
+    zigbeeDeviceHint: 'Only paired devices that can be switched are listed.',
+    zigbeeDeviceRequired: 'Choose which paired Zigbee device this plug is.',
+    zigbeeNoDevices:
+        'No unbound Zigbee plugs. Pair one under Settings → Smart plugs → Zigbee coordinator.',
+    zigbeeCoordinatorDown:
+        'The Zigbee coordinator is not connected. Connect it under Settings → Smart plugs → Zigbee coordinator.',
+    zigbeeNoMeteringWarning:
+        'This device reports no energy, so it can be switched but the energy figures will stay empty.',
+    rebindDropsInflightEnergy:
+        'A print is measured against this plug. Changing the printer drops the energy figure for the print currently running, rather than recording one taken from two different meters.',
+    alreadyHasMainsPlug:
+        'This printer already has a power plug ({{name}}). Energy for its prints is measured with that one.',
     offline: 'Offline',
     admin: 'Admin',
     openPlugAdminPage: 'Open plug admin page',

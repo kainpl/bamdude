@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
-import { X, Save, Loader2, Wifi, WifiOff, CheckCircle, Bell, Clock, LayoutGrid, Search, Plug, Power, Home, Radio, Eye, Globe } from 'lucide-react';
+import { X, Save, Loader2, Wifi, WifiOff, CheckCircle, Bell, Clock, LayoutGrid, Search, Plug, Power, Eye } from 'lucide-react';
+import { ZigbeePlugFields } from './smartPlug/ZigbeePlugFields';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import type { SmartPlug, SmartPlugCreate, SmartPlugUpdate, DiscoveredTasmotaDevice } from '../api/client';
@@ -18,6 +19,7 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
 
   // Plug type selection
   const [plugType, setPlugType] = useState<'tasmota' | 'homeassistant' | 'mqtt' | 'rest' | 'zigbee'>(plug?.plug_type || 'tasmota');
+  const [zigbeeIeee, setZigbeeIeee] = useState<string | null>(plug?.zigbee_ieee ?? null);
 
   const [name, setName] = useState(plug?.name || '');
   // Tasmota fields
@@ -308,6 +310,13 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
 
   // For Tasmota plugs, only one per printer (physical device)
   // For HA scripts, allow multiple per printer
+  // Which plug the printer's energy is charged to, for the hint below. Several
+  // plugs per printer is legal; two claiming the mains feed is merely ambiguous,
+  // and the backend resolves it deterministically.
+  const existingMainsPlug = existingPlugs?.find(
+    (p) => p.printer_id === printerId && p.id !== plug?.id && p.controls_printer_power,
+  );
+
   const availablePrinters = printers?.filter(p => {
     if (plugType === 'tasmota') {
       const hasTasmotaPlug = existingPlugs?.some(
@@ -350,6 +359,11 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
       }
     }
 
+    if (plugType === 'zigbee' && !zigbeeIeee) {
+      setError(t('smartPlugs.zigbeeDeviceRequired'));
+      return;
+    }
+
     if (plugType === 'rest') {
       if (!restOnUrl.trim() && !restOffUrl.trim()) {
         setError(t('smartPlugs.restUrlRequired'));
@@ -360,6 +374,7 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
     const data = {
       name: name.trim(),
       plug_type: plugType,
+      zigbee_ieee: plugType === 'zigbee' ? zigbeeIeee : null,
       ip_address: plugType === 'tasmota' ? ipAddress.trim() : null,
       ha_entity_id: plugType === 'homeassistant' ? haEntityId : null,
       // HA energy sensor entities (optional)
@@ -458,73 +473,28 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
             </div>
           )}
 
-          {/* Plug Type Selector - only show when not editing */}
+          {/* Plug Type Selector - only show when not editing.
+              A select rather than a row of buttons: five types no longer fit
+              across one row on a narrow screen, and the list is expected to keep
+              growing. */}
           {!isEditing && (
-            <div className="flex gap-2 mb-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setPlugType('tasmota');
+            <div>
+              <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.plugType')}</label>
+              <select
+                value={plugType}
+                onChange={(e) => {
+                  setPlugType(e.target.value as typeof plugType);
                   setTestResult(null);
                   setError(null);
                 }}
-                className={`flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg font-medium transition-colors ${
-                  plugType === 'tasmota'
-                    ? 'bg-bambu-green text-white'
-                    : 'bg-bambu-dark text-bambu-gray hover:text-white border border-bambu-dark-tertiary'
-                }`}
+                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
               >
-                <Plug className="w-4 h-4" />
-                Tasmota
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setPlugType('homeassistant');
-                  setTestResult(null);
-                  setError(null);
-                }}
-                className={`flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg font-medium transition-colors ${
-                  plugType === 'homeassistant'
-                    ? 'bg-bambu-green text-white'
-                    : 'bg-bambu-dark text-bambu-gray hover:text-white border border-bambu-dark-tertiary'
-                }`}
-              >
-                <Home className="w-4 h-4" />
-                HA
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setPlugType('mqtt');
-                  setTestResult(null);
-                  setError(null);
-                }}
-                className={`flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg font-medium transition-colors ${
-                  plugType === 'mqtt'
-                    ? 'bg-bambu-green text-white'
-                    : 'bg-bambu-dark text-bambu-gray hover:text-white border border-bambu-dark-tertiary'
-                }`}
-              >
-                <Radio className="w-4 h-4" />
-                MQTT
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setPlugType('rest');
-                  setTestResult(null);
-                  setError(null);
-                }}
-                className={`flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg font-medium transition-colors ${
-                  plugType === 'rest'
-                    ? 'bg-bambu-green text-white'
-                    : 'bg-bambu-dark text-bambu-gray hover:text-white border border-bambu-dark-tertiary'
-                }`}
-              >
-                <Globe className="w-4 h-4" />
-                REST
-              </button>
+                <option value="tasmota">Tasmota</option>
+                <option value="homeassistant">Home Assistant</option>
+                <option value="mqtt">MQTT</option>
+                <option value="rest">REST</option>
+                <option value="zigbee">Zigbee</option>
+              </select>
             </div>
           )}
 
@@ -1591,8 +1561,22 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
             </>
           )}
 
-          {/* Link to Printer - not shown for MQTT plugs (monitor-only) */}
-          {plugType !== 'mqtt' && (
+          {plugType === 'zigbee' && (
+            <ZigbeePlugFields
+              value={zigbeeIeee}
+              onChange={setZigbeeIeee}
+              excludeIeees={(existingPlugs ?? [])
+                .filter((p) => p.plug_type === 'zigbee' && p.id !== plug?.id && p.zigbee_ieee)
+                .map((p) => (p.zigbee_ieee as string).toLowerCase())}
+            />
+          )}
+
+          {/* Link to Printer — shown for EVERY type.
+              It used to be hidden for MQTT as "monitor-only", but phase 0 (m113)
+              gave MQTT plugs a command topic, so they control printer power
+              exactly like a Tasmota one. Hiding the binding withheld the very
+              capability that phase had just added. */}
+          {(
             <div>
               <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.linkToPrinter')}</label>
               <select
@@ -1627,6 +1611,26 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
                     </span>
                   </span>
                 </label>
+              )}
+
+              {/* Not a refusal. Several plugs per printer is a designed
+                  situation (#2629) and the codebase resolves it by preference,
+                  so this only removes the surprise of energy being measured
+                  somewhere else. */}
+              {controlsPrinterPower && printerId !== null && existingMainsPlug && (
+                <p className="text-xs text-bambu-gray mt-2">
+                  {t('smartPlugs.alreadyHasMainsPlug', { name: existingMainsPlug.name })}
+                </p>
+              )}
+
+              {/* Moving the plug that a running print is measured against would
+                  otherwise leave an archive holding a delta across two different
+                  meters. Say so before it happens, not after the figure is
+                  missing. */}
+              {isEditing && plug?.printer_id && controlsPrinterPower && printerId !== plug.printer_id && (
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
+                  {t('smartPlugs.rebindDropsInflightEnergy')}
+                </p>
               )}
             </div>
           )}
