@@ -47,6 +47,13 @@ logger = logging.getLogger(__name__)
 # already re-armed the fresh client's completion tracking).
 _ACTIVE_STATES = frozenset({"RUNNING", "PAUSE"})
 
+# How long after its row was created an archive is still considered "a job on
+# its way to the printer" rather than an orphan. Covers the whole dispatch
+# pipeline plus the printer's own run-up: on a swap farm the gap between the
+# archive being created and the print actually starting was measured at ~1m50s
+# (plate change, then heat-up). Matches ``PrintScheduler._dispatch_max_hold``.
+_JUST_DISPATCHED_SECONDS = 180
+
 
 def _file_matches(archive_filename: str, live_file: str) -> bool:
     """True when the archive's print file is the printer's current file.
@@ -367,6 +374,18 @@ async def _reconcile(
         )
         return
 
+    # The dispatch hold above only exists once the print command has *landed*
+    # (``_mark_printer_dispatched`` runs after a successful dispatch), and the
+    # collision happens earlier than that — the dispatcher calls
+    # ``ensure_fresh_connection_for_printer`` before uploading, so a stale link
+    # reconnects, re-arms this sweep, and the first push arrives while the FTP
+    # upload is still going. In the operator's log the sweep closed the archive
+    # 0.9 s after it was created and 1m44s before its print began.
+    #
+    # ``created_at`` is the signal that covers that window: it is stamped when
+    # the row is inserted and never moves, unlike ``started_at``, which is only
+    # filled once the printer really starts.
+    now = datetime.now(timezone.utc)
     orphans = list(
         (
             await db.execute(
@@ -381,6 +400,19 @@ async def _reconcile(
 
     closed = 0
     for archive in orphans:
+        created = archive.created_at
+        if created is not None:
+            created = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
+            if (now - created).total_seconds() < _JUST_DISPATCHED_SECONDS:
+                logger.info(
+                    "reconcile: archive %d on printer %d was created %.0fs ago — a job that has not "
+                    "started yet is not an orphan, leaving it alone",
+                    archive.id,
+                    printer_id,
+                    (now - created).total_seconds(),
+                )
+                continue
+
         # File-name match (P1S/A1/etc.) OR subtask-name match (H2/X-series report
         # a generic ``/data/Metadata/plate_N.gcode`` that never matches the
         # sliced filename — see :func:`_name_matches_subtask`).

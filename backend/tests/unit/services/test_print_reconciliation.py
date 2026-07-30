@@ -182,6 +182,11 @@ def test_slicer_estimates_scopes_the_parse_to_the_printed_plate(tmp_path, monkey
 
 
 async def _make_archive(db, **overrides):
+    # Aged by default: this factory exists to build *orphans*, and a real orphan
+    # is a print the app lost track of — minutes or hours old, never seconds.
+    # The sweep now skips rows created within _JUST_DISPATCHED_SECONDS, so a
+    # "just created" default would quietly make every orphan test a no-op.
+    created_at = overrides.get("created_at", datetime.now(timezone.utc) - timedelta(hours=2))
     archive = PrintArchive(
         printer_id=overrides.get("printer_id", 1),
         filename=overrides.get("filename", "widget.3mf"),
@@ -194,6 +199,7 @@ async def _make_archive(db, **overrides):
         filament_used_grams=overrides.get("filament_used_grams"),
         subtask_id=overrides.get("subtask_id"),
     )
+    archive.created_at = created_at.replace(tzinfo=None) if created_at.tzinfo else created_at
     db.add(archive)
     await db.flush()
     return archive
@@ -483,6 +489,44 @@ class TestADispatchInFlightIsNotAnOrphan:
         from backend.app.services.print_scheduler import scheduler
 
         scheduler._dispatch_holds.pop(printer_id, None)
+
+    @pytest.mark.asyncio
+    async def test_the_operators_timeline_no_hold_yet_just_a_fresh_archive(self, db_session):
+        """The real collision, reproduced.
+
+        The dispatch hold is only registered once the print command has landed
+        (``_mark_printer_dispatched`` runs after a successful dispatch), and the
+        sweep fires earlier than that: the dispatcher refreshes a stale MQTT
+        link *before* uploading, the reconnect re-arms this sweep, and the first
+        push arrives while FTP is still running. In the operator's log the
+        archive was closed 0.9 s after it was created and 1m44s before its print
+        began — with no hold in place at any point.
+        """
+        archive = await _make_archive(db_session, printer_id=11, filename="nose_110mm.3mf")
+        archive.created_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        await db_session.flush()
+        self._clear(11)  # no dispatch hold — exactly as it was
+
+        await _reconcile(db_session, 11, live_state="FINISH", live_file="nose_110mm.3mf")
+
+        assert archive.status == "printing", "a job created a second ago has not had time to be an orphan"
+
+    @pytest.mark.asyncio
+    async def test_an_archive_older_than_the_window_is_still_closed(self, db_session):
+        """The guard is a window, not an amnesty: a print interrupted by a
+        restart must still be reconciled."""
+        from backend.app.services.print_reconciliation import _JUST_DISPATCHED_SECONDS
+
+        archive = await _make_archive(db_session, printer_id=12, filename="nose_110mm.3mf")
+        archive.created_at = (datetime.now(timezone.utc) - timedelta(seconds=_JUST_DISPATCHED_SECONDS + 60)).replace(
+            tzinfo=None
+        )
+        await db_session.flush()
+        self._clear(12)
+
+        await _reconcile(db_session, 12, live_state="FINISH", live_file="nose_110mm.3mf")
+
+        assert archive.status == "completed"
 
     @pytest.mark.asyncio
     async def test_an_archive_from_an_in_flight_dispatch_survives(self, db_session):
