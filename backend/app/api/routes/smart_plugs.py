@@ -441,6 +441,53 @@ async def get_smart_plug(
     return plug
 
 
+async def _void_inflight_energy(db: AsyncSession, printer_id: int, plug_id: int) -> int:
+    """Drop the start reading of any measurement still in flight on this printer.
+
+    Per-print energy is a difference: the plug's lifetime counter is recorded on
+    the archive at print start and subtracted from the counter at the end. Move
+    the plug and the end reading comes from a **different physical meter**, so the
+    subtraction produces a plausible, wrong number instead of a missing one.
+
+    Refusing the move would put an accounting side-effect ahead of an operator's
+    decision on their own farm, so the move is allowed and the figure is dropped.
+    Nothing downstream needs changing: the end-handler already returns early and
+    records nothing when the start value is NULL.
+
+    In flight means ``completed_at IS NULL`` **and** ``energy_start_kwh IS NOT
+    NULL`` — together "a print that started measuring and has not finished",
+    which needs no assumption about the ``status`` vocabulary. All matches are
+    cleared; any of them would otherwise difference two different meters.
+
+    Logged at INFO so a later "why is this archive's energy empty?" has an answer
+    here rather than looking like data loss.
+    """
+    from backend.app.models.archive import PrintArchive
+
+    rows = (
+        (
+            await db.execute(
+                select(PrintArchive).where(
+                    PrintArchive.printer_id == printer_id,
+                    PrintArchive.completed_at.is_(None),
+                    PrintArchive.energy_start_kwh.is_not(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for archive in rows:
+        archive.energy_start_kwh = None
+        logger.info(
+            "Smart plug %s left printer %s mid-measurement; cleared energy start on archive %s",
+            plug_id,
+            printer_id,
+            archive.id,
+        )
+    return len(rows)
+
+
 @router.patch("/{plug_id}", response_model=SmartPlugResponse)
 async def update_smart_plug(
     plug_id: int,
@@ -479,6 +526,17 @@ async def update_smart_plug(
             )
             if result.scalar_one_or_none():
                 raise HTTPException(400, "This printer already has a Tasmota plug assigned")
+
+    # The old printer's in-flight measurement dies with the binding, whether the
+    # plug is moving to another printer or being unlinked entirely. Read the OLD
+    # printer_id here — after the setattr loop below it is gone.
+    if (
+        "printer_id" in update_data
+        and update_data["printer_id"] != plug.printer_id
+        and plug.printer_id
+        and plug.controls_printer_power
+    ):
+        await _void_inflight_energy(db, plug.printer_id, plug_id)
 
     # Track old MQTT settings for comparison
     old_plug_type = plug.plug_type
