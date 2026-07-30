@@ -92,11 +92,26 @@ class TestFreshInstall:
         missing = sorted(set(result["declared"]) - set(result["tables"]))
         assert not missing, f"create_all did not produce: {missing}"
 
-    def test_migration_chain_completes_without_gaps(self, result):
+    def test_every_shipped_migration_applied(self, result):
+        """Every migration the package ships ran — measured against what ships,
+        not against a contiguous range.
+
+        This used to assert ``range(first, last + 1)`` had no holes, which read
+        an unused version number as a skipped migration. m116 then left 115 free
+        on purpose so the zigbee branch could claim it without two files
+        colliding on one version, and the chain is discovered and ordered by each
+        module's own ``version`` — so a hole is not a defect and cannot become
+        one. What IS a defect is a migration that exists and never applied, and
+        contiguity never tested that: a missing *last* migration leaves no gap
+        at all.
+        """
+        from backend.app.migrations import _discover_migrations
+
         versions = result["migrations"]
         assert versions, "no migrations recorded — the chain never ran"
-        gaps = [v for v in range(versions[0], versions[-1] + 1) if v not in versions]
-        assert not gaps, f"missing migration versions: {gaps}"
+        shipped = {m["version"] for m in _discover_migrations()}
+        missing = sorted(shipped - set(versions))
+        assert not missing, f"migrations that ship but never applied: {missing}"
 
     def test_system_groups_are_seeded_with_permissions(self, result):
         names = {g["name"] for g in result["groups"]}

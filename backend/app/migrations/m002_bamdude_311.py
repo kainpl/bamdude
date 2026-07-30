@@ -197,7 +197,23 @@ async def upgrade(conn):
     # ── Clean up print_queue: drop legacy columns ──
     # Remove: printer_id, require_previous_success, target_model, target_location,
     # filament_overrides, required_filament_types (all from removed model-based assignment)
-    has_legacy = await column_exists(conn, "print_queue", "require_previous_success")
+    #
+    # ``vibration_cali`` is the sentinel, NOT ``require_previous_success``.
+    # The latter used to be safe — m002 dropped it and nothing put it back, so
+    # its presence meant "legacy table". m116 then returned it to the model for
+    # the queue gate, and on a fresh install ``create_all`` now materialises a
+    # ``print_queue`` that has it. This block fired on a table it was never
+    # written for and died copying ``vibration_cali``, which m007 dropped and
+    # the model therefore no longer declares — every fresh install of 0.5.1.2
+    # failed to boot.
+    #
+    # A sentinel has to be a column the CURRENT model cannot have. ``vibration_cali``
+    # qualifies permanently: m007 dropped it, so anything re-adding it would be
+    # reviving a column Bambu's own firmware ignores. Both are required so the
+    # guard names the legacy shape in full rather than one of its halves.
+    has_legacy = await column_exists(conn, "print_queue", "require_previous_success") and await column_exists(
+        conn, "print_queue", "vibration_cali"
+    )
     if has_legacy:
         await recreate_table(
             conn,
