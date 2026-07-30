@@ -2493,7 +2493,7 @@ export default {
     metricsPrintsTotal: 'Всього друків за результатом',
     metricsMore: '...та більше (шари, вентилятори, черга, використання філаменту)',
     // Smart Plugs
-    smartPlugsDescription: 'Підключіть розумні розетки (Tasmota або Home Assistant) для автоматизації керування живленням та відстеження енергоспоживання принтерів.',
+    smartPlugsDescription: 'Підключіть розумні розетки — Zigbee, Tasmota, Home Assistant, MQTT або REST-вебхук — для автоматизації керування живленням та відстеження енергоспоживання принтерів.',
     allOn: 'Увімкнути всі',
     allOff: 'Вимкнути всі',
     addSmartPlug: 'Додати розумну розетку',

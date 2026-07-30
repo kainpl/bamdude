@@ -2479,7 +2479,7 @@ export default {
     metricsPrintsTotal: 'Total prints by result',
     metricsMore: '...and more (layers, fans, queue, filament usage)',
     // Smart Plugs
-    smartPlugsDescription: 'Connect smart plugs (Tasmota or Home Assistant) to automate power control and track energy usage for your printers.',
+    smartPlugsDescription: 'Connect smart plugs — Zigbee, Tasmota, Home Assistant, MQTT or a REST webhook — to automate power control and track energy usage for your printers.',
     allOn: 'All On',
     allOff: 'All Off',
     addSmartPlug: 'Add Smart Plug',
