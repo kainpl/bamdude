@@ -1097,6 +1097,7 @@ export default {
     stats: {
       printing: 'Printing',
       pending: 'Pending',
+      awaitingRouting: 'Awaiting routing',
       estimatedRemaining: 'Est. remaining',
       errors: 'Errors'
     },

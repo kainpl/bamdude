@@ -92,6 +92,14 @@ export function QueuePage() {
     refetchInterval: 30000,
   });
 
+  // Auto-queue work still waiting to be routed. Shares its key with the nav
+  // badge so TanStack serves both from one request.
+  const { data: unassignedAutoItems } = useQuery({
+    queryKey: ['auto-queue', 'pending'],
+    queryFn: () => api.getAutoQueue('pending'),
+    refetchInterval: 30000,
+  });
+
   // Fetch all printing items (real + virtual external/direct) so Timeline
   // can lay out the "now" slot even for prints initiated outside BamDude.
   const { data: allPrintingItems } = useQuery({
@@ -248,7 +256,13 @@ export function QueuePage() {
 
       {/* Stats bar */}
       {!isLoading && queues && queues.length > 0 && (
-        <QueueStatsBar queues={queues} pendingItems={allPendingItems} />
+        <QueueStatsBar
+          queues={queues}
+          pendingItems={allPendingItems}
+          printingItems={allPrintingItems}
+          stagedItems={unassignedAutoItems}
+          unassignedCount={unassignedAutoItems?.length ?? 0}
+        />
       )}
 
       {/* Auto-queue router items (sits above per-printer queues). Hidden when empty. */}

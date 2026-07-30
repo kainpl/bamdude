@@ -1103,6 +1103,7 @@ export default {
     stats: {
       printing: 'Друкується',
       pending: 'У черзі',
+      awaitingRouting: 'Чекає розподілу',
       estimatedRemaining: 'Залишилось',
       errors: 'Помилок'
     },
