@@ -39,5 +39,13 @@ class FilamentSkuSettings(Base):
     # "days" → multiplied by daily-rate to form a grams figure; "g" → already grams.
     safety_margin_unit: Mapped[str] = mapped_column(String(10), default="days")
     alerts_snoozed: Mapped[bool] = mapped_column(Boolean, default=False)
+    # When the stock-break alert for this SKU last went out (m118). NULL = never.
+    # Machine state rather than operator preference, kept here because this is
+    # already the per-SKU row; see the migration for why it isn't its own table.
+    stock_break_notified_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # The reorder alert's own stamp (m119). Separate from the break one because
+    # the two states are mutually exclusive — sharing a stamp would silence a SKU
+    # for a day exactly as it slid from "reorder now" into "will run out".
+    stock_reorder_notified_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

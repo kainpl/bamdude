@@ -108,6 +108,7 @@ from backend.app.services.spoolman_tracking import (
     report_usage as _report_spoolman_usage,
     store_print_data as _store_spoolman_print_data,
 )
+from backend.app.services.stock_forecast_alerts import stock_forecast_alerts
 from backend.app.services.tasmota import tasmota_service
 
 
@@ -6925,6 +6926,11 @@ async def lifespan(app: FastAPI):
     # printers; assignment hands off to print_scheduler/background_dispatch.
     spawn_background_task(auto_queue_scheduler.run(), name="auto-queue-scheduler")
 
+    # Start the stock-break aggregator — the forecast that used to exist only in
+    # the browser, so "this filament runs out before a replacement arrives"
+    # reaches the operator when nobody has the Inventory page open (m118).
+    spawn_background_task(stock_forecast_alerts.run(), name="stock-forecast-alerts")
+
     # Start background dispatch worker for send/start operations
     await background_dispatch.start()
 
@@ -7112,6 +7118,7 @@ async def lifespan(app: FastAPI):
         pass
     print_scheduler.stop()
     auto_queue_scheduler.stop()
+    stock_forecast_alerts.stop()
     await background_dispatch.stop()
     smart_plug_manager.stop_scheduler()
     try:

@@ -1772,12 +1772,17 @@ class NotificationService:
         self,
         printer_id: int,
         printer_name: str,
-        slot: int,
+        slot: int | str,
         remaining_percent: int,
         db: AsyncSession,
         color: str | None = None,
     ):
-        """Handle low filament event."""
+        """Handle low filament event.
+
+        ``slot`` accepts the canonical label ("A1", "Ext-L", "HT-A") as well as a
+        bare number — the template renders it verbatim, and a label is what every
+        other slot-shaped message in BamDude carries.
+        """
         providers = await self._get_providers_for_event(db, "on_filament_low", printer_id)
         if not providers:
             return

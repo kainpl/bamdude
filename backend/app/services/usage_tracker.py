@@ -292,6 +292,99 @@ def actual_filament_grams(status: str, tracked_grams: float, estimate: float | N
     return estimate or 0.0
 
 
+# Same default the Inventory page uses when the global setting is unset, so a
+# spool the UI paints as low is exactly the one that warns.
+_DEFAULT_LOW_STOCK_THRESHOLD = 20.0
+
+
+def _global_tray_id(ams_id: int, tray_id: int) -> int:
+    """``(ams_id, tray_id)`` → global tray ID.
+
+    The exact inverse of the decomposition this module already does in the 3MF
+    paths, and it is not ``ams_id * 4 + tray_id`` across the board: an AMS-HT
+    unit holds one spool and *is* its own global ID, and the external spools sit
+    at 254/255 behind a sentinel ams_id. Getting this wrong doesn't fail loudly —
+    it just labels an HT spool as some nonexistent slot in the warning.
+    """
+    if ams_id >= 254:
+        return 254 + tray_id
+    if ams_id >= 128:
+        return ams_id
+    return ams_id * 4 + tray_id
+
+
+async def _global_low_stock_threshold(db: AsyncSession) -> float:
+    from backend.app.models.settings import Settings
+
+    raw = (await db.execute(select(Settings.value).where(Settings.key == "low_stock_threshold"))).scalar_one_or_none()
+    if raw is None:
+        return _DEFAULT_LOW_STOCK_THRESHOLD
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_LOW_STOCK_THRESHOLD
+
+
+async def _warn_if_low_stock(db: AsyncSession, spool: Spool, printer_id: int, global_tray_id: int) -> None:
+    """Fire ``filament_low`` once per run-down, right after consumption lands.
+
+    Called from every path that writes ``weight_used``, straight after the write,
+    so the number in the message is the one now stored. It is safe to call more
+    than once for the same spool in one pass — the flag makes every call after
+    the first a no-op.
+
+    The arithmetic deliberately mirrors the Inventory page exactly (remaining =
+    ``label_weight - weight_used`` clamped at 0, strict ``<`` against the
+    per-spool override or the global setting, archived spools ignored). A
+    notification that disagrees with what the page shows is worse than none.
+    """
+    from backend.app.models.printer import Printer
+    from backend.app.services.notification_service import notification_service
+
+    # The one place slot labels are built (A1 / Ext-L / HT-A / Lite-3). Imported
+    # rather than re-derived — a second numbering scheme in notifications is how
+    # "slot 3" comes to mean two different trays.
+    from backend.app.services.spool_assignment_notifications import _slot_label_from_global_tray
+
+    if spool.archived_at is not None:
+        return
+    label = spool.label_weight or 0
+    if label <= 0:
+        return
+
+    remaining = max(0.0, label - (spool.weight_used or 0))
+    remaining_pct = remaining / label * 100.0
+    threshold = spool.low_stock_threshold_pct
+    if threshold is None:
+        threshold = await _global_low_stock_threshold(db)
+
+    if remaining_pct >= threshold:
+        # Back above the line — a refill, or a usage reset. Re-arm so the next
+        # run-down is announced.
+        spool.low_stock_notified = False
+        return
+    if spool.low_stock_notified:
+        return
+
+    spool.low_stock_notified = True
+    printer_name = (
+        await db.execute(select(Printer.name).where(Printer.id == printer_id))
+    ).scalar_one_or_none() or "Unknown"
+    try:
+        await notification_service.on_filament_low(
+            printer_id=printer_id,
+            printer_name=printer_name,
+            slot=_slot_label_from_global_tray(global_tray_id),
+            remaining_percent=int(remaining_pct),
+            db=db,
+            color=spool.color_name,
+        )
+    except Exception:
+        # Tracking consumption is the job; announcing it is not allowed to lose
+        # the write that just happened.
+        logger.exception("[UsageTracker] filament_low notification failed for spool %s", spool.id)
+
+
 async def _resolve_spool_id_for_tray(
     printer_id: int,
     ams_id: int,
@@ -563,6 +656,7 @@ async def on_print_complete(
                     # Update spool
                     spool.weight_used = (spool.weight_used or 0) + weight_grams
                     spool.last_used = datetime.now(timezone.utc)
+                    await _warn_if_low_stock(db, spool, printer_id, _global_tray_id(ams_id, tray_id))
 
                     # Calculate cost for this usage
                     cost = None
@@ -966,6 +1060,7 @@ async def _track_from_3mf(
 
                 spool.weight_used = (spool.weight_used or 0) + segment_grams
                 spool.last_used = datetime.now(timezone.utc)
+                await _warn_if_low_stock(db, spool, printer_id, tray_global)
 
                 percent = round(segment_grams / (spool.label_weight or 1000) * 100)
 
@@ -1105,6 +1200,7 @@ async def _track_from_3mf(
         # Update spool
         spool.weight_used = (spool.weight_used or 0) + weight_grams
         spool.last_used = datetime.now(timezone.utc)
+        await _warn_if_low_stock(db, spool, printer_id, global_tray_id)
 
         percent = round(weight_grams / (spool.label_weight or 1000) * 100)
 

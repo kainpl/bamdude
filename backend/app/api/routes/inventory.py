@@ -2380,6 +2380,10 @@ async def _return_usage_weight(db: AsyncSession, spool: "Spool | None", rows: li
         spool.weight_used = max(0.0, round((spool.weight_used or 0) - total, 1))
         if (spool.weight_used_baseline or 0) > spool.weight_used:
             spool.weight_used_baseline = spool.weight_used
+        # Consumption was given back, so the spool may be above its low-stock
+        # line again. Re-arm the warning (m117) rather than leave it latched on
+        # a figure that is no longer true; the next print re-decides.
+        spool.low_stock_notified = False
 
     per_archive: dict[int, float] = {}
     for r in rows:
@@ -2548,6 +2552,10 @@ async def sync_weights_from_ams(
                 new_used,
                 remain_val,
             )
+            if new_used < old_used:
+                # The tray reports more filament than we had recorded — a refill
+                # or a corrected reading. Re-arm the low-stock warning (m117).
+                spool.low_stock_notified = False
             spool.weight_used = new_used
             synced += 1
         else:

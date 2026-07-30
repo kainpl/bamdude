@@ -91,6 +91,13 @@ EVENT_CATEGORIES = {
             "first_layer_complete",
         ],
     },
+    "inventory": {
+        "label": "Inventory",
+        "events": [
+            "stock_break_alert",
+            "stock_reorder_alert",
+        ],
+    },
     "queue": {
         "label": "Queue",
         "events": [
@@ -126,6 +133,8 @@ EVENT_LABELS = {
     "plate_not_empty": "Plate not empty",
     "bed_cooled": "Bed cooled",
     "first_layer_complete": "First layer complete",
+    "stock_break_alert": "Stock break risk",
+    "stock_reorder_alert": "Stock reorder point",
     "queue_job_added": "Queue job added",
     "queue_job_started": "Queue job started",
     "queue_job_waiting": "Queue job waiting",
