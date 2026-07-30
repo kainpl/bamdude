@@ -55,12 +55,18 @@ print("APPLIED:" + json.dumps(sorted(asyncio.run(main()))))
 
 
 def _declared_versions() -> set[int]:
-    """Every migration the package ships, by filename number.
+    """Every migration the package ships, via the loader's own discovery.
 
-    Read from filenames rather than by importing: an import failure would make
-    this return an empty set and the test would pass by finding nothing.
+    Deliberately the same function ``init_db`` runs (``_discover_migrations``)
+    rather than a filename scan: it reads each module's real ``version``, so a
+    file whose name and ``version`` disagree cannot slip through, and the test
+    can never disagree with the loader about what "ships" means.
     """
-    return {int(m.group(1)) for p in MIGRATIONS_DIR.glob("m[0-9]*.py") if (m := re.match(r"m(\d+)_", p.name))}
+    from backend.app.migrations import _discover_migrations
+
+    versions = {m["version"] for m in _discover_migrations()}
+    assert versions, "no migrations discovered - the loader found nothing to run"
+    return versions
 
 
 def test_fresh_sqlite_install_boots(tmp_path):
