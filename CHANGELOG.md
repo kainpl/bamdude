@@ -8,6 +8,14 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.1.1] - 2026-07-30
+
+Image: `ghcr.io/kainpl/bamdude:0.5.1.1` / `kainpl/bamdude:0.5.1.1` (`:latest` tracks this).
+
+**A repair release for one report: a farm of swap-mode A1 Minis whose queue stopped moving, with nothing in the logs to say why.** All three fixes below came out of that one investigation, and the third is the reason the first two were so hard to find — the explanation existed, it just never reached the log. If you run swap mode, this is worth taking.
+
+> **If a printer is stuck right now, press Clear Plate on its card once.** The fix releases the stale request on the printer's next successful swap print, so the very first one still needs a nudge. After that it looks after itself.
+
 ### Fixed
 
 - **A swap-mode printer could stop taking queued prints, permanently and silently.** After a print that did not end cleanly — cancelled, failed, or simply started from the printer's own screen — BamDude asks for the manual **Clear Plate** confirmation, which is correct: the part is still on the bed. What was not correct is that a later successful swap print never took that request back. It skipped *asking again* but left the earlier request standing, and the request survives restarts, so the printer waited for a confirmation nobody knew was pending while its queue sat still. Reported from a farm of three swap A1 Minis where the queue "just stopped moving" and pressing Clear Plate started everything at once. A successful swap now clears the request, and a print that ends badly still keeps it.
