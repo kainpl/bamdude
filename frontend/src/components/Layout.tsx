@@ -287,7 +287,19 @@ export function Layout() {
     refetchInterval: 5 * 1000, // Refresh every 5 seconds
     refetchOnWindowFocus: true,
   });
-  const pendingQueueCount = queueItems?.length ?? 0;
+  // Auto-queue work not yet routed to a printer. The badge shows the *total*
+  // amount of waiting work — the split between "queued on a printer" and
+  // "awaiting routing" is what the Queue page's stats bar is for; there is no
+  // room for two numbers here, and a badge that ignored the staging area read
+  // as an empty queue while a whole batch waited.
+  const { data: unassignedAutoItems } = useQuery({
+    queryKey: ['auto-queue', 'pending'],
+    queryFn: () => api.getAutoQueue('pending'),
+    staleTime: 5 * 1000,
+    refetchInterval: 5 * 1000,
+    refetchOnWindowFocus: true,
+  });
+  const pendingQueueCount = (queueItems?.length ?? 0) + (unassignedAutoItems?.length ?? 0);
 
   // Check if any printer with pending queue items needs plate clearing
   const queuePrinterIds = useMemo(() => {

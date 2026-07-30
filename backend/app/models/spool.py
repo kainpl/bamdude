@@ -98,6 +98,10 @@ class Spool(Base):
     # setting. Lets users mark production spools with a higher threshold
     # without changing the global default.
     low_stock_threshold_pct: Mapped[int | None] = mapped_column(Integer)
+    # "The low-stock warning for this spool has already gone out" (m117). Set
+    # when the notification fires, cleared when the spool climbs back above its
+    # threshold — so one run-down produces one warning, not one per print.
+    low_stock_notified: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

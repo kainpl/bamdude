@@ -1097,6 +1097,7 @@ export default {
     stats: {
       printing: 'Printing',
       pending: 'Pending',
+      awaitingRouting: 'Awaiting routing',
       estimatedRemaining: 'Est. remaining',
       errors: 'Errors'
     },
@@ -5279,6 +5280,8 @@ export default {
     dateAndTime: 'Date & Time',
     invalidDateTime: 'Please enter a valid date and time',
     powerOffWhenDone: 'Power off printer when done',
+    requirePreviousSuccess: 'Only run if the previous print succeeded',
+    requirePreviousSuccessHint: "Held back when the printer's last print failed. A print you cancelled yourself doesn't count.",
     hintAsap: 'Print will start as soon as the printer is idle.',
     hintScheduled: 'Print will start at the scheduled time if the printer is idle. If busy, it will wait until the printer becomes available.',
     hintManual: "Print will be staged but won't start automatically. Use the Start button to release it to the queue.",

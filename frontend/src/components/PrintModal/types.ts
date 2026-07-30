@@ -129,6 +129,8 @@ export interface ScheduleOptions {
   scheduleType: ScheduleType;
   scheduledTime: string;
   autoOffAfter: boolean;
+  /** Hold this job when the printer's last print failed (m116). */
+  requirePreviousSuccess: boolean;
 }
 
 /**
@@ -138,6 +140,8 @@ export const DEFAULT_SCHEDULE_OPTIONS: ScheduleOptions = {
   scheduleType: 'asap',
   scheduledTime: '',
   autoOffAfter: false,
+  // Off by default: a gate nobody asked for is a stalled farm.
+  requirePreviousSuccess: false,
 };
 
 /**

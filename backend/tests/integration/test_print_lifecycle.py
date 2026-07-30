@@ -667,6 +667,70 @@ class TestPlateClearGate:
             main_mod._active_prints.pop((printer_id, f"{subtask_name}.3mf"), None)
             main_mod._active_swap_config.pop(printer_id, None)
 
+    # ------------------------------------------------------------------
+    # Operator-reported: a swap printer goes silent forever.
+    #
+    # ``_plate_auto_cleared_by_swap`` only ever caused the arm block to be
+    # SKIPPED. It never released a gate that was already armed — and the gate
+    # is persisted to ``printers.awaiting_plate_clear`` and restored at
+    # startup, so one cancelled print (or one print started from the
+    # printer's own screen, where no swap config is registered) armed it for
+    # good. Every later swap print logged "plate auto-cleared", left the flag
+    # standing, and the queue silently refused to dispatch to that printer.
+    #
+    # Silently is the operative word: the auto-queue distributor logs its
+    # per-tick decisions at DEBUG, so an INFO-level support log shows nothing
+    # at all — which is exactly how three support bundles came back with no
+    # errors in them.
+    #
+    # Releasing here is safe, and provably so: ``_plate_auto_cleared_by_swap``
+    # is set in exactly two places, and both require a *successful* print —
+    # the swap_compatible branch is guarded by ``_swap_status_ok``, and the
+    # change_table branch sets it only under ``if _sw_ok`` after the macro
+    # returns success. A failed, aborted or cancelled print never reaches
+    # either, so the part-still-on-the-bed case keeps its manual gate.
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_swap_compatible_completion_releases_an_already_armed_gate(self):
+        """The regression: skipping the arm is not the same as clearing."""
+        mock_pm = MagicMock()
+        mock_pm.set_awaiting_plate_clear = MagicMock()
+
+        await self._drive_with_swap_compatible(printer_id=1, status="completed", mock_pm=mock_pm)
+
+        mock_pm.set_awaiting_plate_clear.assert_any_call(1, False)
+
+    @pytest.mark.asyncio
+    async def test_no_gate_means_no_release_call(self):
+        """The release is guarded on the gate actually being armed.
+
+        Without the guard every swap print would issue a redundant DB write and
+        a WebSocket status broadcast — ``set_awaiting_plate_clear`` does both —
+        for a flag that was already false. Cheap to skip, and it keeps the
+        "Released a stale gate" log line meaningful instead of once per print.
+        """
+        mock_pm = MagicMock()
+        mock_pm.set_awaiting_plate_clear = MagicMock()
+        mock_pm.is_awaiting_plate_clear = MagicMock(return_value=False)
+
+        await self._drive_with_swap_compatible(printer_id=1, status="completed", mock_pm=mock_pm)
+
+        mock_pm.set_awaiting_plate_clear.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["failed", "aborted", "cancelled"])
+    async def test_a_failed_swap_print_never_releases_the_gate(self, status: str):
+        """The other half of the rule. The part is still on the bed, so the
+        operator must clear it — the release must not fire here."""
+        mock_pm = MagicMock()
+        mock_pm.set_awaiting_plate_clear = MagicMock()
+
+        await self._drive_with_swap_compatible(printer_id=1, status=status, mock_pm=mock_pm)
+
+        for call in mock_pm.set_awaiting_plate_clear.call_args_list:
+            assert call.args != (1, False), f"status={status} left material on the plate; the gate must stay armed"
+
 
 class TestCallbackErrorHandling:
     """Test that callback errors are properly logged."""

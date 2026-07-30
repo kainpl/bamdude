@@ -57,7 +57,8 @@ ALL_NOTIFY_EVENTS = [
     "queue_job_failed",
     "queue_completed",
     "printer_queue_completed",
-    # Stock forecasting (upstream #1184; scaffold — toggles UI-only today)
+    # Stock forecasting (upstream #1184). Live since m118/m119 —
+    # ``stock_forecast_alerts`` fires both; see that service.
     "stock_reorder_alert",
     "stock_break_alert",
 ]

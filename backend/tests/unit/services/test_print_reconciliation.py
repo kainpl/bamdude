@@ -182,6 +182,11 @@ def test_slicer_estimates_scopes_the_parse_to_the_printed_plate(tmp_path, monkey
 
 
 async def _make_archive(db, **overrides):
+    # Aged by default: this factory exists to build *orphans*, and a real orphan
+    # is a print the app lost track of — minutes or hours old, never seconds.
+    # The sweep now skips rows created within _JUST_DISPATCHED_SECONDS, so a
+    # "just created" default would quietly make every orphan test a no-op.
+    created_at = overrides.get("created_at", datetime.now(timezone.utc) - timedelta(hours=2))
     archive = PrintArchive(
         printer_id=overrides.get("printer_id", 1),
         filename=overrides.get("filename", "widget.3mf"),
@@ -194,6 +199,7 @@ async def _make_archive(db, **overrides):
         filament_used_grams=overrides.get("filament_used_grams"),
         subtask_id=overrides.get("subtask_id"),
     )
+    archive.created_at = created_at.replace(tzinfo=None) if created_at.tzinfo else created_at
     db.add(archive)
     await db.flush()
     return archive
@@ -450,3 +456,113 @@ async def test_reconcile_h2x_generic_file_different_subtask_is_uncertain(db_sess
     )
     assert archive.status == "completed"
     assert archive.extra_data["recovered_outcome_uncertain"] is True
+
+
+# ---------- dispatch-in-flight guard (the operator's vanishing queue items) ----------
+
+
+class TestADispatchInFlightIsNotAnOrphan:
+    """The sweep re-arms on every MQTT client recreation (#1542) so a print that
+    ended during a disconnect still gets closed. On one operator's swap farm the
+    MQTT link went stale every ~45 minutes — almost exactly its print cycle — so
+    reconnects kept landing in the seconds between "archive created for the job
+    we just sent" and "printer starts printing it".
+
+    In that window the printer still reports the PREVIOUS job's FINISH, and
+    because the farm reprints one file the filename matches, so the sweep called
+    a job that had not begun "completed" and closed it, taking its queue item
+    with it. The printer then printed the file for its full 43 minutes. From the
+    outside the queue emptied itself without producing parts.
+    """
+
+    @staticmethod
+    def _hold(printer_id: int, age_seconds: float = 0.0):
+        """Put the printer in a post-dispatch hold, as the dispatcher does."""
+        import time
+
+        from backend.app.services.print_scheduler import scheduler
+
+        scheduler._dispatch_holds[printer_id] = (time.monotonic() - age_seconds, "FINISH", "sub-1")
+
+    @staticmethod
+    def _clear(printer_id: int):
+        from backend.app.services.print_scheduler import scheduler
+
+        scheduler._dispatch_holds.pop(printer_id, None)
+
+    @pytest.mark.asyncio
+    async def test_the_operators_timeline_no_hold_yet_just_a_fresh_archive(self, db_session):
+        """The real collision, reproduced.
+
+        The dispatch hold is only registered once the print command has landed
+        (``_mark_printer_dispatched`` runs after a successful dispatch), and the
+        sweep fires earlier than that: the dispatcher refreshes a stale MQTT
+        link *before* uploading, the reconnect re-arms this sweep, and the first
+        push arrives while FTP is still running. In the operator's log the
+        archive was closed 0.9 s after it was created and 1m44s before its print
+        began — with no hold in place at any point.
+        """
+        archive = await _make_archive(db_session, printer_id=11, filename="nose_110mm.3mf")
+        archive.created_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        await db_session.flush()
+        self._clear(11)  # no dispatch hold — exactly as it was
+
+        await _reconcile(db_session, 11, live_state="FINISH", live_file="nose_110mm.3mf")
+
+        assert archive.status == "printing", "a job created a second ago has not had time to be an orphan"
+
+    @pytest.mark.asyncio
+    async def test_an_archive_older_than_the_window_is_still_closed(self, db_session):
+        """The guard is a window, not an amnesty: a print interrupted by a
+        restart must still be reconciled."""
+        from backend.app.services.print_reconciliation import _JUST_DISPATCHED_SECONDS
+
+        archive = await _make_archive(db_session, printer_id=12, filename="nose_110mm.3mf")
+        archive.created_at = (datetime.now(timezone.utc) - timedelta(seconds=_JUST_DISPATCHED_SECONDS + 60)).replace(
+            tzinfo=None
+        )
+        await db_session.flush()
+        self._clear(12)
+
+        await _reconcile(db_session, 12, live_state="FINISH", live_file="nose_110mm.3mf")
+
+        assert archive.status == "completed"
+
+    @pytest.mark.asyncio
+    async def test_an_archive_from_an_in_flight_dispatch_survives(self, db_session):
+        archive = await _make_archive(db_session, printer_id=7, filename="nose_110mm.3mf")
+        self._hold(7)
+        try:
+            # Exactly the operator's situation: same file every cycle, so the name
+            # matches, and the printer is still FINISH from the print before.
+            await _reconcile(db_session, 7, live_state="FINISH", live_file="nose_110mm.3mf")
+        finally:
+            self._clear(7)
+
+        assert archive.status == "printing", "a job that has not started is not an orphan"
+
+    @pytest.mark.asyncio
+    async def test_a_genuine_orphan_is_still_closed(self, db_session):
+        """The guard must not disarm the sweep — that would strand every print
+        interrupted by a restart."""
+        archive = await _make_archive(db_session, printer_id=8, filename="nose_110mm.3mf")
+        self._clear(8)
+
+        await _reconcile(db_session, 8, live_state="FINISH", live_file="nose_110mm.3mf")
+
+        assert archive.status == "completed"
+
+    @pytest.mark.asyncio
+    async def test_a_stale_hold_does_not_protect_forever(self, db_session):
+        """A hold that outlived its window must not become a permanent excuse to
+        skip reconciliation for that printer."""
+        from backend.app.services.print_scheduler import scheduler
+
+        archive = await _make_archive(db_session, printer_id=9, filename="nose_110mm.3mf")
+        self._hold(9, age_seconds=scheduler._dispatch_max_hold + 60)
+        try:
+            await _reconcile(db_session, 9, live_state="FINISH", live_file="nose_110mm.3mf")
+        finally:
+            self._clear(9)
+
+        assert archive.status == "completed"

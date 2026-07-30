@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Calendar, Clock, Hand, Power } from 'lucide-react';
+import { Calendar, Clock, Hand, Power, ShieldCheck } from 'lucide-react';
 import type { ScheduleOptionsProps, ScheduleType } from './types';
 import {
   formatDateInput,
@@ -235,6 +235,25 @@ export function ScheduleOptionsPanel({
           <Power className="w-3.5 h-3.5" />
           {t('printModal.powerOffWhenDone')}
         </label>
+      </div>
+
+      {/* Hold the job when the printer's last print failed (m116) */}
+      <div className="flex items-start gap-2">
+        <input
+          type="checkbox"
+          id="requirePreviousSuccess"
+          checked={options.requirePreviousSuccess}
+          onChange={(e) => onChange({ ...options, requirePreviousSuccess: e.target.checked })}
+          disabled={!canControlPrinter}
+          className="mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green disabled:opacity-50"
+        />
+        <div className="min-w-0">
+          <label htmlFor="requirePreviousSuccess" className={`text-sm flex items-center gap-1 ${canControlPrinter ? 'text-bambu-gray' : 'text-bambu-gray/50'}`}>
+            <ShieldCheck className="w-3.5 h-3.5" />
+            {t('printModal.requirePreviousSuccess')}
+          </label>
+          <p className="text-xs text-bambu-gray/70">{t('printModal.requirePreviousSuccessHint')}</p>
+        </div>
       </div>
 
       {/* Help text */}

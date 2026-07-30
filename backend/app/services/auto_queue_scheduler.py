@@ -39,7 +39,9 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import async_session
+from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
+from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
@@ -71,8 +73,18 @@ class AutoQueueScheduler:
 
     _check_interval = 30  # seconds — same cadence as PrintScheduler
 
+    # A stalled queue re-logs itself this often even when nothing has changed, so
+    # a support bundle collected hours into the stall still contains the reason
+    # rather than one line from when it began.
+    _stall_reminder_seconds = 600
+
     def __init__(self) -> None:
         self._running = False
+        # Signature of the last logged stall (reasons + busy set). Kept so a
+        # queue that cannot move logs once per *change* instead of once per tick
+        # — at 30s a stuck queue would otherwise write 120 identical lines an
+        # hour and bury everything else in the support log.
+        self._last_stall: tuple[str, float] | None = None
 
     async def run(self) -> None:
         """Main loop. Started from ``main.py`` lifespan via asyncio.create_task."""
@@ -134,11 +146,25 @@ class AutoQueueScheduler:
             logger.debug("AutoQueueScheduler: %d pending items, busy_printers=%s", len(items), busy_printers)
 
             # 3. Iterate and assign
+            placed = 0
+            blocked: list[str] = []
+            # The first item that could not be placed, kept to name *something*
+            # concrete in the notification below — "4 jobs are waiting" is far
+            # less useful than the name of one of them plus the reason.
+            first_blocked: tuple[AutoQueueItem, str] | None = None
             for item in items:
                 printer, reason = await find_eligible_printer(db, item, busy_printers)
                 if printer is None:
+                    # The reason has always been computed and stored on the row;
+                    # it was never logged, which is why three support bundles
+                    # from a farm whose "queue stopped moving" contained no
+                    # evidence at all. INFO on change only — see _last_stall.
                     if reason and item.waiting_reason != reason:
+                        logger.info("Auto item %s not placed: %s", item.id, reason)
                         item.waiting_reason = reason
+                    blocked.append(reason or "no reason reported")
+                    if first_blocked is None:
+                        first_blocked = (item, reason or "no reason reported")
                     continue
 
                 try:
@@ -148,11 +174,102 @@ class AutoQueueScheduler:
                     continue
 
                 busy_printers.add(printer.id)
+                placed += 1
 
                 if sjf:
                     await self._mark_jumped_peers(db, item)
 
+            announce = self._log_stall(items, placed, blocked, busy_printers)
             await db.commit()
+
+            # After the commit: the notification is a side effect on the outside
+            # world, and it should never be sent describing a state that then
+            # failed to persist.
+            if announce and first_blocked is not None:
+                await self._notify_stall(db, *first_blocked)
+
+    def _log_stall(self, items: list, placed: int, blocked: list[str], busy_printers: set[int]) -> bool:
+        """Say once, at INFO, that a tick could place nothing — and why.
+
+        Without this the only trace of a stalled auto-queue was a DEBUG line
+        nobody has enabled, so an INFO-level support bundle showed a healthy
+        application and an idle farm with work waiting. Throttled on a signature
+        of (reasons, busy printers) and re-stated every
+        ``_stall_reminder_seconds`` so a long stall stays visible to whoever
+        collects the log later.
+
+        Returns True when this tick announced a *new* cause. The caller notifies
+        on that only: the periodic reminder exists for the log file, and firing a
+        Telegram message every ten minutes for a stall the operator already knows
+        about is how people turn notifications off.
+        """
+        if placed or not items:
+            self._last_stall = None
+            return False
+
+        signature = f"{sorted(set(blocked))}|{sorted(busy_printers)}"
+        now = asyncio.get_event_loop().time()
+        is_new = True
+        if self._last_stall is not None:
+            previous, when = self._last_stall
+            if previous == signature:
+                is_new = False
+                if now - when < self._stall_reminder_seconds:
+                    return False
+
+        logger.info(
+            "Auto-queue placed nothing this tick: %d item(s) waiting, busy printers=%s, reasons=%s",
+            len(items),
+            sorted(busy_printers) or "none",
+            sorted(set(blocked)),
+        )
+        self._last_stall = (signature, now)
+        return is_new
+
+    async def _notify_stall(self, db: AsyncSession, item: AutoQueueItem, reason: str) -> None:
+        """Tell the operator that auto-queue stopped placing work, and why.
+
+        ``on_queue_job_waiting`` has existed since the notification system was
+        built — a provider column defaulting to enabled, a per-chat Telegram
+        toggle, en+uk templates carrying ``{waiting_reason}`` — and nothing has
+        ever called it. The operator sees the switch on and receives nothing.
+
+        On an unattended farm that silence *is* the failure: one print that ends
+        badly arms the plate-clear gate, auto-queue stops routing to that
+        printer, and the machine leaves the rotation with nobody told. Fires once
+        per stall cause, and can never break the tick.
+        """
+        from backend.app.services.notification_service import notification_service
+
+        try:
+            await notification_service.on_queue_job_waiting(
+                job_name=await self._job_name(db, item),
+                target_model=item.target_model or "any model",
+                waiting_reason=reason,
+                db=db,
+            )
+        except Exception:
+            logger.exception("Failed to send the queue_job_waiting notification for auto item %s", item.id)
+
+    async def _job_name(self, db: AsyncSession, item: AutoQueueItem) -> str:
+        """Best-effort display name, resolved by id rather than by relationship.
+
+        ``_fetch_pending`` selects bare rows, so reaching for ``item.archive``
+        here would lazy-load under asyncio and raise MissingGreenlet.
+        """
+        if item.archive_id:
+            row = (
+                await db.execute(
+                    select(PrintArchive.print_name, PrintArchive.filename).where(PrintArchive.id == item.archive_id)
+                )
+            ).first()
+            if row:
+                return row[0] or row[1] or f"Auto item #{item.id}"
+        if item.library_file_id:
+            row = (await db.execute(select(LibraryFile.filename).where(LibraryFile.id == item.library_file_id))).first()
+            if row:
+                return row[0] or f"Auto item #{item.id}"
+        return f"Auto item #{item.id}"
 
     async def _fetch_pending(self, db: AsyncSession, sjf: bool):
         """Return pending auto items in scheduling order.
@@ -220,6 +337,10 @@ class AutoQueueScheduler:
             position=next_pos,
             scheduled_time=item.scheduled_time,
             manual_start=False,
+            # Carried onto the per-printer row so the gate is re-checked at
+            # dispatch: eligibility only proves the printer was clean at the
+            # moment of routing, and another print can fail in between.
+            require_previous_success=item.require_previous_success,
             auto_off_after=item.auto_off_after,
             ams_mapping=ams_mapping_json,
             plate_id=item.plate_id,
