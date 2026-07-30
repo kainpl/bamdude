@@ -25,6 +25,7 @@ import { Card, CardContent, CardHeader } from '../Card';
 import { Button } from '../Button';
 import { ConfirmModal } from '../ConfirmModal';
 import { useToast } from '../../contexts/ToastContext';
+import { usePairingProgress } from './usePairingProgress';
 
 type Transport = 'ethernet' | 'usb';
 
@@ -92,8 +93,12 @@ export function ZigbeeCoordinatorCard() {
     onError: (err: Error) => showToast(err.message, 'error'),
   });
 
+  const pairing = usePairingProgress();
   const permit = useMutation({
     mutationFn: () => api.permitZigbeeJoin(PAIRING_WINDOW_SECONDS),
+    // The countdown starts only once the window is actually open. Starting it
+    // optimistically would show a timer for a window that was refused.
+    onSuccess: (granted) => pairing.start(granted.seconds),
     onError: (err: Error) => showToast(err.message, 'error'),
   });
 
@@ -219,6 +224,35 @@ export function ZigbeeCoordinatorCard() {
             {t('settings.zigbee.pairDevice')}
           </Button>
         </div>
+
+        {pairing.phase === 'pairing' ? (
+          <div className="bg-bambu-dark rounded-lg p-3 space-y-1">
+            <p className="text-sm text-white">
+              {t('settings.zigbee.pairingCountdown', { seconds: pairing.secondsLeft })}
+            </p>
+            {pairing.events.map((event, index) => (
+              <p
+                key={`${event.kind}-${event.ieee}-${index}`}
+                className={`text-xs ${
+                  event.kind === 'rejected'
+                    ? 'text-red-600 dark:text-red-400'
+                    : event.kind === 'paired'
+                      ? 'text-bambu-green'
+                      : 'text-bambu-gray'
+                }`}
+              >
+                {event.kind === 'joining'
+                  ? t('settings.zigbee.pairingJoining')
+                  : // Rejection is spelled out rather than hidden: the backend
+                    // removed the device from the network, and an operator who
+                    // is not told that will wonder where their sensor went.
+                    t(`settings.zigbee.pairing${event.kind === 'paired' ? 'Paired' : 'Rejected'}`, {
+                      name: event.model || event.ieee,
+                    })}
+              </p>
+            ))}
+          </div>
+        ) : null}
 
         {/* Never the network key: it is deliberately absent from the response and
             must stay absent — losing it means re-pairing every device by hand. */}
