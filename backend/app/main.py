@@ -649,6 +649,28 @@ async def _default_queue_id_for_printer(db, printer_id: int) -> int | None:
     return (await db.execute(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))).scalar_one_or_none()
 
 
+async def _energy_plug_for_printer(printer_id: int, db) -> SmartPlug | None:
+    """The one plug a printer's energy is measured with.
+
+    Both ends of a per-print measurement go through here so they cannot pick
+    different rows. They used to run their own ``scalar_one_or_none()``, which
+    raises on two plugs and — worse — guarantees nothing about picking the same
+    one twice: a start read from one meter and an end read from another produce a
+    plausible, wrong delta instead of a missing one.
+
+    A printer legitimately has several plugs. ``controls_printer_power`` (#2629)
+    marks the mains feed as opposed to an accessory on the same machine, so it
+    wins; ``id`` breaks any remaining tie so the answer is stable.
+    """
+    result = await db.execute(
+        select(SmartPlug)
+        .where(SmartPlug.printer_id == printer_id)
+        .order_by(SmartPlug.controls_printer_power.desc(), SmartPlug.id.asc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 async def _record_energy_start(archive, printer_id: int, db, *, context: str = "") -> bool:
     """Capture the smart plug lifetime counter on the archive at print start.
 
@@ -659,8 +681,7 @@ async def _record_energy_start(archive, printer_id: int, db, *, context: str = "
     """
     _logger = logging.getLogger(__name__)
     try:
-        plug_result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
-        plug = plug_result.scalar_one_or_none()
+        plug = await _energy_plug_for_printer(printer_id, db)
         if not plug:
             _logger.info("[ENERGY] No smart plug for printer %s (archive %s)", printer_id, archive.id)
             return False
@@ -5479,8 +5500,7 @@ async def on_print_complete(printer_id: int, data: dict):
                     logger.info("[ENERGY-BG] No start kWh recorded for archive %s", archive_id)
                     return
 
-                plug_result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
-                plug = plug_result.scalar_one_or_none()
+                plug = await _energy_plug_for_printer(printer_id, db)
                 if plug is None:
                     logger.info("[ENERGY-BG] No smart plug for printer %s", printer_id)
                     return
