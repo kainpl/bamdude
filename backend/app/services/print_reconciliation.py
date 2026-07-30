@@ -339,6 +339,34 @@ async def _reconcile(
     if (live_state or "").upper() in ("", "UNKNOWN"):
         return
 
+    # A dispatch in flight is not an orphan.
+    #
+    # The sweep re-arms on every client recreation (#1542) so a print that ended
+    # during a disconnect still gets closed. That is right — but a stale-MQTT
+    # reconnect can land in the seconds between "archive created for the job we
+    # just sent" and "printer actually starts printing it". In that window the
+    # printer is still reporting the PREVIOUS job's FINISH, and on a farm that
+    # reprints one file the filename matches, so ``_classify`` calls a job that
+    # has not begun "completed" and closes it — taking its queue item with it.
+    #
+    # Seen on an operator's swap farm whose MQTT went stale every ~45 minutes,
+    # almost exactly its print cycle: every dispatch that collided with a
+    # reconnect lost its queue item seconds after dispatch, while the printer
+    # went on to print the file for the full 43 minutes. From the outside the
+    # queue emptied itself without producing parts.
+    #
+    # The re-arm's own justification — "re-running is idempotent, a print still
+    # RUNNING classifies as running and no-ops" — holds only once the print has
+    # *started*. This is the case it does not cover.
+    from backend.app.services.print_scheduler import scheduler as print_scheduler
+
+    if print_scheduler.has_dispatch_in_flight(printer_id):
+        logger.info(
+            "reconcile: printer %d was handed a job that has not started yet — leaving its archives alone",
+            printer_id,
+        )
+        return
+
     orphans = list(
         (
             await db.execute(

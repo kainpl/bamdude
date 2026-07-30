@@ -440,6 +440,28 @@ class PrintScheduler:
                     item.waiting_reason = None
                     await db.commit()
 
+                # The require_previous_success gate (m116). Checked here, at the
+                # last moment before the item is prepared, so it reads the most
+                # recent outcome on this printer rather than one from whenever
+                # the item was queued.
+                if item.require_previous_success and not await self.previous_print_succeeded(db, printer_id, item.id):
+                    item.status = "skipped"
+                    item.error_message = "Previous print failed"
+                    item.completed_at = datetime.now(timezone.utc)
+                    await db.commit()
+                    logger.info("Skipped queue item %s — the previous print on printer %s failed", item.id, printer_id)
+
+                    job_name = await self._get_job_name(db, item)
+                    printer_row = await self._get_printer(db, printer_id)
+                    await notification_service.on_queue_job_skipped(
+                        job_name=job_name,
+                        printer_id=printer_id,
+                        printer_name=printer_row.name if printer_row else "Unknown",
+                        reason="Previous print failed",
+                        db=db,
+                    )
+                    continue
+
                 # Resolve the AMS mapping when it's missing OR unresolved (all -1).
                 # A stored all-[-1] mapping is a bug artifact — a frontend
                 # status-load race can persist [-1] (#2589) — and must be
@@ -1329,6 +1351,19 @@ class PrintScheduler:
 
         return True
 
+    def has_dispatch_in_flight(self, printer_id: int) -> bool:
+        """Read-only: has this printer been handed a job we haven't seen start?
+
+        Same window as :meth:`_printer_in_dispatch_hold`, without its side
+        effects — that one *clears* the hold as part of answering, which is
+        correct for the dispatch loop that owns the hold and wrong for anyone
+        else merely asking a question.
+        """
+        entry = self._dispatch_holds.get(printer_id)
+        if not entry:
+            return False
+        return (time.monotonic() - entry[0]) < self._dispatch_max_hold
+
     def _is_printer_idle(self, printer_id: int, require_plate_clear: bool = True) -> bool:
         """Check if a printer is connected and idle."""
         if not printer_manager.is_connected(printer_id):
@@ -1358,6 +1393,47 @@ class PrintScheduler:
                 printer_manager.is_awaiting_plate_clear(printer_id),
             )
         return idle
+
+    async def previous_print_succeeded(
+        self, db: AsyncSession, printer_id: int, exclude_item_id: int | None = None
+    ) -> bool:
+        """Did the last finished print on this printer end well?
+
+        Backs the ``require_previous_success`` gate on both queue tiers (m116).
+        Ported from upstream's ``_check_previous_success`` with both of its
+        hard-won exclusions intact:
+
+        * ``cancelled`` is **neutral**. A person stopping a print is a decision,
+          not a failure, so work queued behind it still runs (upstream #1667).
+        * ``skipped`` is out of the lookback entirely. A skip was never a print
+          attempt; counting one as a failed predecessor is what let a single
+          cancellation block 18 items over three days for their reporter.
+
+        So only ``failed`` blocks — we have no ``aborted`` status, that is
+        upstream's vocabulary. ``gate_acknowledged`` rows are excluded too, which
+        is how an operator who has fixed the physical problem releases everything
+        queued behind the failure (see m116).
+
+        No finished print at all means nothing to gate on, so it passes: a gate
+        must never block the first job on a fresh printer.
+        """
+        from backend.app.models.print_queue import PrinterQueue
+
+        stmt = (
+            select(PrintQueueItem.status)
+            .join(PrinterQueue, PrintQueueItem.queue_id == PrinterQueue.id)
+            .where(PrinterQueue.printer_id == printer_id)
+            .where(PrintQueueItem.status.in_(["completed", "failed", "cancelled"]))
+            .where(PrintQueueItem.gate_acknowledged.is_(False))
+            .order_by(PrintQueueItem.completed_at.desc())
+            .limit(1)
+        )
+        if exclude_item_id is not None:
+            stmt = stmt.where(PrintQueueItem.id != exclude_item_id)
+        previous = (await db.execute(stmt)).scalar_one_or_none()
+        if previous is None:
+            return True
+        return previous != "failed"
 
     async def _get_setting_value(self, db: AsyncSession, key: str) -> str | None:
         """Read a raw setting value from the database."""

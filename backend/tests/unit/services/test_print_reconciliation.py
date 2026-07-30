@@ -450,3 +450,75 @@ async def test_reconcile_h2x_generic_file_different_subtask_is_uncertain(db_sess
     )
     assert archive.status == "completed"
     assert archive.extra_data["recovered_outcome_uncertain"] is True
+
+
+# ---------- dispatch-in-flight guard (the operator's vanishing queue items) ----------
+
+
+class TestADispatchInFlightIsNotAnOrphan:
+    """The sweep re-arms on every MQTT client recreation (#1542) so a print that
+    ended during a disconnect still gets closed. On one operator's swap farm the
+    MQTT link went stale every ~45 minutes — almost exactly its print cycle — so
+    reconnects kept landing in the seconds between "archive created for the job
+    we just sent" and "printer starts printing it".
+
+    In that window the printer still reports the PREVIOUS job's FINISH, and
+    because the farm reprints one file the filename matches, so the sweep called
+    a job that had not begun "completed" and closed it, taking its queue item
+    with it. The printer then printed the file for its full 43 minutes. From the
+    outside the queue emptied itself without producing parts.
+    """
+
+    @staticmethod
+    def _hold(printer_id: int, age_seconds: float = 0.0):
+        """Put the printer in a post-dispatch hold, as the dispatcher does."""
+        import time
+
+        from backend.app.services.print_scheduler import scheduler
+
+        scheduler._dispatch_holds[printer_id] = (time.monotonic() - age_seconds, "FINISH", "sub-1")
+
+    @staticmethod
+    def _clear(printer_id: int):
+        from backend.app.services.print_scheduler import scheduler
+
+        scheduler._dispatch_holds.pop(printer_id, None)
+
+    @pytest.mark.asyncio
+    async def test_an_archive_from_an_in_flight_dispatch_survives(self, db_session):
+        archive = await _make_archive(db_session, printer_id=7, filename="nose_110mm.3mf")
+        self._hold(7)
+        try:
+            # Exactly the operator's situation: same file every cycle, so the name
+            # matches, and the printer is still FINISH from the print before.
+            await _reconcile(db_session, 7, live_state="FINISH", live_file="nose_110mm.3mf")
+        finally:
+            self._clear(7)
+
+        assert archive.status == "printing", "a job that has not started is not an orphan"
+
+    @pytest.mark.asyncio
+    async def test_a_genuine_orphan_is_still_closed(self, db_session):
+        """The guard must not disarm the sweep — that would strand every print
+        interrupted by a restart."""
+        archive = await _make_archive(db_session, printer_id=8, filename="nose_110mm.3mf")
+        self._clear(8)
+
+        await _reconcile(db_session, 8, live_state="FINISH", live_file="nose_110mm.3mf")
+
+        assert archive.status == "completed"
+
+    @pytest.mark.asyncio
+    async def test_a_stale_hold_does_not_protect_forever(self, db_session):
+        """A hold that outlived its window must not become a permanent excuse to
+        skip reconciliation for that printer."""
+        from backend.app.services.print_scheduler import scheduler
+
+        archive = await _make_archive(db_session, printer_id=9, filename="nose_110mm.3mf")
+        self._hold(9, age_seconds=scheduler._dispatch_max_hold + 60)
+        try:
+            await _reconcile(db_session, 9, live_state="FINISH", live_file="nose_110mm.3mf")
+        finally:
+            self._clear(9)
+
+        assert archive.status == "completed"
