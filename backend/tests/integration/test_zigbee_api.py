@@ -519,3 +519,109 @@ class TestAttributeDump:
         power = body["attributes"]["ep1/0x0B04"]["active_power"]
         assert "33" in power["raw"]
         assert "0" in power["cached"]
+
+
+class TestRestart:
+    """Restarting the radio from the UI.
+
+    The step that must not be skipped is re-subscribing the plugs. After a restart
+    ``zigbee_coordinator.app`` is a new object with new cluster objects. The driver
+    resolves the device from the live app on every call, so commands and polling
+    keep working — but cached listeners are still attached to the OLD clusters, so
+    unsolicited reports quietly stop. Commands work, readings look current because
+    polling refreshes them: exactly the half-configured state that cost this
+    project a hardware session.
+
+    These tests do not use the `_up` helper the way the others do. It patches
+    `_status` directly, and this endpoint genuinely calls `stop()` then `start()`,
+    which overwrite it — so the state has to come from a patched `start`, not from
+    a patched attribute.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_disabled_answers_disabled_not_error(self, async_client: AsyncClient):
+        """Zigbee off is a correct configuration, not a failure. This endpoint is
+        also how the coordinator gets stopped after the box is unticked."""
+        resp = await async_client.post("/api/v1/zigbee/restart")
+
+        assert resp.status_code == 200
+        assert resp.json()["state"] == "disabled"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_stale_listeners_are_dropped(self, async_client: AsyncClient):
+        from backend.app.services.zigbee.driver import zigbee_smart_plug_service
+
+        zigbee_smart_plug_service._listeners[(1, 0x0006)] = object()
+
+        await async_client.post("/api/v1/zigbee/restart")
+
+        assert zigbee_smart_plug_service._listeners == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_failed_start_still_answers(self, async_client: AsyncClient, monkeypatch):
+        """The coordinator never raises into startup by contract, and this endpoint
+        keeps that promise: a dead dongle answers with a reason, not a 500."""
+        from backend.app.services.zigbee.coordinator import (
+            CoordinatorState,
+            CoordinatorStatus,
+            zigbee_coordinator as coord,
+        )
+
+        async def _fail(_settings):
+            coord._status = CoordinatorStatus(CoordinatorState.ERROR, "dongle unplugged")
+
+        monkeypatch.setattr(coord, "start", _fail)
+
+        resp = await async_client.post("/api/v1/zigbee/restart")
+
+        assert resp.status_code == 200
+        assert resp.json()["state"] == "error"
+        assert "dongle unplugged" in resp.json()["reason"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_plugs_are_resubscribed_once_the_radio_is_up(
+        self, async_client: AsyncClient, monkeypatch, smart_plug_factory
+    ):
+        """The whole reason this endpoint is more than stop-then-start."""
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from backend.app.services.zigbee import reporting
+        from backend.app.services.zigbee.coordinator import (
+            CoordinatorState,
+            CoordinatorStatus,
+            zigbee_coordinator as coord,
+        )
+
+        await smart_plug_factory(name="zb", plug_type="zigbee", ip_address=None, zigbee_ieee="a4:c1:38:0b:5a:9c:ff:ff")
+
+        # Real values, not an AsyncMock: the response serialises the radio
+        # identity, and FastAPI's encoder recurses forever into a Mock's
+        # auto-generated attributes.
+        fake_app = SimpleNamespace(
+            devices={},
+            state=SimpleNamespace(
+                node_info=SimpleNamespace(
+                    ieee="34:8d:13:ff:fe:11:e4:6f", nwk=0, model="EZSP", manufacturer="Silicon Labs", version="8.0.2"
+                ),
+                network_info=SimpleNamespace(channel=15, pan_id=6754),
+            ),
+        )
+
+        async def _succeed(_settings):
+            coord._status = CoordinatorStatus(CoordinatorState.UP)
+            coord._app = fake_app
+
+        monkeypatch.setattr(coord, "start", _succeed)
+        subscribe = AsyncMock(return_value=1)
+        monkeypatch.setattr(reporting, "subscribe_all", subscribe)
+
+        resp = await async_client.post("/api/v1/zigbee/restart")
+
+        assert resp.status_code == 200
+        subscribe.assert_awaited_once()
+        assert [p.plug_type for p in subscribe.await_args.args[1]] == ["zigbee"]

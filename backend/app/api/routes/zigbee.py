@@ -10,13 +10,17 @@ deliberately ships no migration, and inventing a permission it cannot seed would
 leave existing installs unable to use their own admin account for it.
 """
 
+import asyncio
 import logging
 from dataclasses import asdict
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import RequirePermission
+from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.user import User
 from backend.app.services.zigbee.coordinator import CoordinatorState, zigbee_coordinator
@@ -157,6 +161,60 @@ async def permit_join(
     await app.permit(time_s=body.seconds)
     logger.info("Zigbee join window open for %ss", body.seconds)
     return {"seconds": body.seconds}
+
+
+# One restart at a time. The radio lock is a *file* lock and only distinguishes
+# processes, so it cannot see a second call inside this one.
+_restart_lock = asyncio.Lock()
+
+
+@router.post("/restart")
+async def restart_coordinator(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_UPDATE),
+):
+    """Stop and start the coordinator with the settings as they stand now.
+
+    Without this, enabling Zigbee in Settings does nothing until the whole
+    application restarts — the coordinator is only started from the FastAPI
+    lifespan. Asking an operator to restart a print farm's server to switch a
+    feature on is not an acceptable first experience.
+
+    ``zigbee_enabled`` being false is **not** an error here: ``start`` is a no-op
+    and the answer is ``disabled``. Reporting a failure for a correctly-off
+    feature would be the wrong signal, and this endpoint is also how the
+    coordinator gets stopped after the box is unticked.
+    """
+    from backend.app.api.routes.settings import get_setting
+    from backend.app.models.smart_plug import SmartPlug
+    from backend.app.services.zigbee import reporting
+    from backend.app.services.zigbee.driver import zigbee_smart_plug_service
+
+    settings = {
+        key: (await get_setting(db, key) or "") for key in ("zigbee_enabled", "zigbee_transport", "zigbee_path")
+    }
+
+    async with _restart_lock:
+        await zigbee_coordinator.stop()
+
+        # Every cached listener belongs to a cluster object that stop() just
+        # orphaned. Keeping them would leave reports silently unwired while
+        # commands and polling carried on working — the shape of half-broken
+        # this subsystem keeps rediscovering.
+        zigbee_smart_plug_service._listeners.clear()
+
+        await zigbee_coordinator.start(settings)
+
+        if zigbee_coordinator.app is not None:
+            rows = (await db.execute(select(SmartPlug).where(SmartPlug.plug_type == "zigbee"))).scalars().all()
+            if rows:
+                # Resolved through the module so a test can patch it, and so the
+                # import cannot go stale against a reload.
+                wired = await reporting.subscribe_all(zigbee_smart_plug_service, rows)
+                logger.info("Zigbee reporting re-established for %s/%s plug(s)", wired, len(rows))
+
+    status = zigbee_coordinator.status
+    return {"state": status.state.value, "reason": status.reason, **_radio_identity()}
 
 
 @router.get("/devices")
