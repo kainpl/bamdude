@@ -8,6 +8,18 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.1.3] - 2026-07-30
+
+Image: `ghcr.io/kainpl/bamdude:0.5.1.3` / `kainpl/bamdude:0.5.1.3` (`:latest` tracks this).
+
+**If BamDude is already running, 0.5.1.2 did you no harm and this changes nothing for you.** It repairs one thing: a brand-new installation of 0.5.1.2 could not start at all. Anyone installing for the first time — or restoring onto an empty database — should take this release; everybody else can update at leisure.
+
+### Fixed
+
+- **A first-time installation of 0.5.1.2 failed to start.** The database setup steps run in order, and one of the earliest has to tell an old Bambuddy database apart from a brand-new one. It did that by looking for a column that only old databases had — until 0.5.1.2 added a column of that same name back for the "only run if the previous print succeeded" option. A new installation then looked old to that step, which tried to rearrange a table that was never in the old shape, and the application stopped with `no such column: vibration_cali` before it ever served a page. Existing installations were never affected: that step is marked done in their database and does not run again. The check now identifies an old database by something a current one cannot have.
+
+- **Nothing in the ordinary test run ever started BamDude on an empty database.** The one place it happened needed a PostgreSQL server attached, so it was skipped on every developer machine and in the main test job — which is how a release that no new user could install went out green. This is the second time it has happened (0.4.5b2 was cut for the same kind of break). A fresh install now boots as part of the normal test run, and every database step is checked to have actually run.
+
 ## [0.5.1.2] - 2026-07-30
 
 Image: `ghcr.io/kainpl/bamdude:0.5.1.2` / `kainpl/bamdude:0.5.1.2` (`:latest` tracks this).
