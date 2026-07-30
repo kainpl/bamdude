@@ -8,7 +8,19 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.1.2] - 2026-07-30
+
+Image: `ghcr.io/kainpl/bamdude:0.5.1.2` / `kainpl/bamdude:0.5.1.2` (`:latest` tracks this).
+
+**A second repair release from the same farm report, and this one found the cause the first release missed.** 0.5.1.1 fixed three real defects around swap mode; none of them explained why that operator's queue items kept disappearing while the printers went on printing. This does — it was a housekeeping sweep closing jobs that had been sent but had not started yet. Along the way four notification switches that had never worked in any release were connected, an option that had quietly done nothing since the queue was split in two was made real, and Auto-Queue stopped hiding the reason it was stuck.
+
+> Verified on a four-printer farm across 14 prints on both queue tiers: 5 collisions caught, none lost, and every queue row cleaned up after itself.
+
 ### Fixed
+
+- **The queue page now counts the work Auto-Queue is still holding.** A batch handed to Auto-Queue used to read *"Printing 4 / Pending 0"* while eight jobs waited to be routed — the counters only ever saw jobs already placed on a printer. **Awaiting routing** is now its own reading beside Pending, because the two are genuinely different states: one is queued on a machine, the other is waiting for a machine to be chosen. The sidebar badge, which has room for a single number, shows the total.
+
+- **"Est. remaining" now estimates when the farm will be free, not how much printing exists.** It used to add every queued duration together as if the printers took turns — reporting 88 minutes for work four machines finish in 22 — and it counted neither the jobs waiting in Auto-Queue nor the prints already running. It now works out when each printer frees up: what it owes today (the rest of the current print plus its own queue), then the unrouted jobs dealt out to whichever suitable printer is free soonest, longest job first. A job for one printer model can only shorten that model's day.
 
 - **"Only run if the previous print succeeded" now does something — and is finally reachable.** The option has been accepted, stored and handed back by the API since the queue was split in two, and read by nothing at all, so a farm that switched it on was never guarded. There was no way to switch it on either: it lived only in the API. It is now a checkbox in the print dialog, next to "Power off printer when done", and applies whether you queue to one printer or hand the job to Auto-Queue. Both tiers honour it now. On a printer's own queue a job that would follow a failure is **skipped** and you are told about it (the "Queue job skipped" notification, which had no sender either). Auto-Queue instead routes *around* the failure: a printer whose last print failed is simply not a candidate, so one bad machine no longer decides for the whole farm — and if every candidate has just failed, the job waits rather than being dropped, which the next success anywhere undoes on its own. A cancelled print stays neutral throughout: stopping a print yourself is a decision, not a failure. Putting a skipped job back in the queue clears the gate for everything behind it, so one fixed problem takes one action, not one per job.
 
