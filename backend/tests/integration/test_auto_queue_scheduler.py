@@ -159,6 +159,47 @@ class TestAutoQueueSchedulerTick:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_a_stalled_tick_says_so_at_info(self, db_session, scheduler, printer_factory, caplog) -> None:
+        """The visibility gap behind an unexplainable support bundle.
+
+        A farm reported "the queue stopped moving". Three support bundles came
+        back with no errors, because the only trace of a tick that placed
+        nothing was a DEBUG line — invisible at the INFO level those bundles are
+        collected at. The reason was computed and written to the row all along;
+        it simply never reached the log.
+        """
+        await _make_printer_with_queue(db_session, printer_factory, model="P1S")
+        db_session.add(AutoQueueItem(target_model="A1MINI", status="pending", position=1))
+        await db_session.commit()
+
+        p_elig, p_sched, p_ams = _patch_printer_manager(set())
+        with caplog.at_level("INFO"), p_elig, p_sched, p_ams:
+            await scheduler.tick()
+
+        assert "placed nothing this tick" in caplog.text
+        assert "A1MINI" in caplog.text, "the reason itself has to be in the log, not just the fact of a stall"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_persistent_stall_does_not_repeat_every_tick(
+        self, db_session, scheduler, printer_factory, caplog
+    ) -> None:
+        """At 30s a permanently stuck queue would write 120 identical lines an
+        hour and bury everything else in the support log."""
+        await _make_printer_with_queue(db_session, printer_factory, model="P1S")
+        db_session.add(AutoQueueItem(target_model="A1MINI", status="pending", position=1))
+        await db_session.commit()
+
+        p_elig, p_sched, p_ams = _patch_printer_manager(set())
+        with caplog.at_level("INFO"), p_elig, p_sched, p_ams:
+            await scheduler.tick()
+            await scheduler.tick()
+            await scheduler.tick()
+
+        assert caplog.text.count("placed nothing this tick") == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_busy_printer_excluded(self, db_session, scheduler, printer_factory) -> None:
         printer, pq = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
         # Mark queue as printing — should be in busy_printers

@@ -71,8 +71,18 @@ class AutoQueueScheduler:
 
     _check_interval = 30  # seconds — same cadence as PrintScheduler
 
+    # A stalled queue re-logs itself this often even when nothing has changed, so
+    # a support bundle collected hours into the stall still contains the reason
+    # rather than one line from when it began.
+    _stall_reminder_seconds = 600
+
     def __init__(self) -> None:
         self._running = False
+        # Signature of the last logged stall (reasons + busy set). Kept so a
+        # queue that cannot move logs once per *change* instead of once per tick
+        # — at 30s a stuck queue would otherwise write 120 identical lines an
+        # hour and bury everything else in the support log.
+        self._last_stall: tuple[str, float] | None = None
 
     async def run(self) -> None:
         """Main loop. Started from ``main.py`` lifespan via asyncio.create_task."""
@@ -134,11 +144,19 @@ class AutoQueueScheduler:
             logger.debug("AutoQueueScheduler: %d pending items, busy_printers=%s", len(items), busy_printers)
 
             # 3. Iterate and assign
+            placed = 0
+            blocked: list[str] = []
             for item in items:
                 printer, reason = await find_eligible_printer(db, item, busy_printers)
                 if printer is None:
+                    # The reason has always been computed and stored on the row;
+                    # it was never logged, which is why three support bundles
+                    # from a farm whose "queue stopped moving" contained no
+                    # evidence at all. INFO on change only — see _last_stall.
                     if reason and item.waiting_reason != reason:
+                        logger.info("Auto item %s not placed: %s", item.id, reason)
                         item.waiting_reason = reason
+                    blocked.append(reason or "no reason reported")
                     continue
 
                 try:
@@ -148,11 +166,42 @@ class AutoQueueScheduler:
                     continue
 
                 busy_printers.add(printer.id)
+                placed += 1
 
                 if sjf:
                     await self._mark_jumped_peers(db, item)
 
+            self._log_stall(items, placed, blocked, busy_printers)
             await db.commit()
+
+    def _log_stall(self, items: list, placed: int, blocked: list[str], busy_printers: set[int]) -> None:
+        """Say once, at INFO, that a tick could place nothing — and why.
+
+        Without this the only trace of a stalled auto-queue was a DEBUG line
+        nobody has enabled, so an INFO-level support bundle showed a healthy
+        application and an idle farm with work waiting. Throttled on a signature
+        of (reasons, busy printers) and re-stated every
+        ``_stall_reminder_seconds`` so a long stall stays visible to whoever
+        collects the log later.
+        """
+        if placed or not items:
+            self._last_stall = None
+            return
+
+        signature = f"{sorted(set(blocked))}|{sorted(busy_printers)}"
+        now = asyncio.get_event_loop().time()
+        if self._last_stall is not None:
+            previous, when = self._last_stall
+            if previous == signature and now - when < self._stall_reminder_seconds:
+                return
+
+        logger.info(
+            "Auto-queue placed nothing this tick: %d item(s) waiting, busy printers=%s, reasons=%s",
+            len(items),
+            sorted(busy_printers) or "none",
+            sorted(set(blocked)),
+        )
+        self._last_stall = (signature, now)
 
     async def _fetch_pending(self, db: AsyncSession, sjf: bool):
         """Return pending auto items in scheduling order.

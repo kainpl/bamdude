@@ -15,6 +15,12 @@ from backend.app.services.bambu_mqtt import BambuMQTTClient, MQTTLogEntry, Print
 
 logger = logging.getLogger(__name__)
 
+# How long a macro wait tolerates a dropped connection before giving up. These
+# links flap: one farm's support log shows 11 disconnects and 20 reconnects in
+# 9h24m, four of them ``rc=Unspecified error``. Long enough to ride that out,
+# short enough that a genuinely dead printer is not waited on for minutes.
+MACRO_DISCONNECT_GRACE_SECONDS = 30.0
+
 
 async def _sync_kprofiles_for_printer(printer_id: int) -> None:
     """Async coroutine wired into ``on_kprofiles_changed``: opens a fresh
@@ -978,6 +984,19 @@ class PrinterManager:
         status tracking handles errors/stalls.  A connectivity health-check
         every 0.5 s catches disconnects that wouldn't trigger a callback.
 
+        A disconnect is tolerated for :data:`MACRO_DISCONNECT_GRACE_SECONDS`.
+        It used to end the wait on the first offline poll, which turned an
+        ordinary MQTT blip into "Swap macro 'Start Sequence' failed: Printer
+        disconnected during macro execution" — reported from a farm whose log
+        carries 11 disconnects and 20 reconnects in 9h24m. A swap sequence runs
+        for tens of seconds, so the window was wide open, and the resulting
+        failed print armed the plate-clear gate and stalled the queue.
+
+        If contact never returns the wait still stops — proceeding without
+        knowing whether the bed was prepared is worse than a false failure — but
+        the message says the macro's state is *unknown*, not that it failed, so
+        the operator is pointed at the network rather than at their macro.
+
         Returns ``(success, message)``.
         """
         from backend.app.services.macro_executor import send_macro_and_await_ack
@@ -997,19 +1016,51 @@ class PrinterManager:
         result: dict = {"status": "pending", "message": ""}
         self._macro_waiters[printer_id] = (event, result)
 
+        offline_since: float | None = None
         try:
             while not event.is_set():
-                if not client.state.connected:
-                    logger.warning(
-                        "[MACRO-WAIT] Printer %s disconnected while waiting for macro '%s'",
-                        printer_id,
-                        macro_name,
-                    )
-                    return False, "Printer disconnected during macro execution"
+                if client.state.connected:
+                    if offline_since is not None:
+                        logger.info(
+                            "[MACRO-WAIT] Printer %s came back after %.1fs offline — still waiting for macro '%s'",
+                            printer_id,
+                            asyncio.get_running_loop().time() - offline_since,
+                            macro_name,
+                        )
+                        offline_since = None
+                else:
+                    now = asyncio.get_running_loop().time()
+                    if offline_since is None:
+                        offline_since = now
+                        logger.warning(
+                            "[MACRO-WAIT] Printer %s went offline while running macro '%s' — "
+                            "holding for up to %.0fs in case it reconnects",
+                            printer_id,
+                            macro_name,
+                            MACRO_DISCONNECT_GRACE_SECONDS,
+                        )
+                    elif now - offline_since >= MACRO_DISCONNECT_GRACE_SECONDS:
+                        logger.error(
+                            "[MACRO-WAIT] Printer %s stayed offline for %.0fs during macro '%s' — "
+                            "giving up; whether the macro ran is unknown",
+                            printer_id,
+                            now - offline_since,
+                            macro_name,
+                        )
+                        # Deliberately not "the macro failed": we do not know
+                        # that. The printer may well have run it. Naming the
+                        # cause sends the operator to the network instead of to
+                        # their macro definition.
+                        return False, (
+                            "Lost contact with the printer while the macro was running, and it did not come "
+                            f"back within {MACRO_DISCONNECT_GRACE_SECONDS:.0f}s — whether the macro ran is unknown"
+                        )
                 await asyncio.sleep(0.5)
         finally:
             self._macro_waiters.pop(printer_id, None)
 
+        # The completion event is the authority, not the socket: a printer that
+        # reports the macro done and drops immediately after has still done it.
         return result["status"] == "completed", result.get("message", "")
 
     def stop_print(self, printer_id: int) -> bool:

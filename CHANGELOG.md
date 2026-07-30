@@ -8,6 +8,15 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A swap-mode printer could stop taking queued prints, permanently and silently.** After a print that did not end cleanly — cancelled, failed, or simply started from the printer's own screen — BamDude asks for the manual **Clear Plate** confirmation, which is correct: the part is still on the bed. What was not correct is that a later successful swap print never took that request back. It skipped *asking again* but left the earlier request standing, and the request survives restarts, so the printer waited for a confirmation nobody knew was pending while its queue sat still. Reported from a farm of three swap A1 Minis where the queue "just stopped moving" and pressing Clear Plate started everything at once. A successful swap now clears the request, and a print that ends badly still keeps it.
+
+- **A brief loss of contact with a printer no longer fails the print.** While a swap macro ran, BamDude checked the connection twice a second and gave up the moment it saw a gap — so an ordinary Wi-Fi hiccup ended a print that the printer had very likely completed, with "Swap macro … failed: Printer disconnected during macro execution". One farm's log carries eleven drops and twenty reconnects across nine hours, so the odds of landing inside a macro were high. Short drops are now ridden out for thirty seconds, and if contact genuinely does not return the message says the macro's state is *unknown* rather than blaming the macro — the problem is the network, and that is where it now points.
+
+- **A stalled auto-queue explains itself in the log.** When Auto-Queue could not place any waiting job, the reason was worked out and stored but never written to the log, so support bundles from a stalled farm showed a healthy application with idle printers and work waiting, and nothing to explain it. The reason is now logged when it changes, and re-stated periodically so a bundle collected hours into a stall still contains it. Placements were already logged; this is the other half.
+
+
 ## [0.5.1] - 2026-07-29
 
 Image: `ghcr.io/kainpl/bamdude:0.5.1` / `kainpl/bamdude:0.5.1` (`:latest` tracks this).

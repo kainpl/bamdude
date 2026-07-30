@@ -5967,6 +5967,35 @@ async def on_print_complete(printer_id: int, data: dict):
                 logger.info("[PLATE] Armed awaiting_plate_clear gate for printer %s", printer_id)
         except Exception as e:
             logger.warning("[PLATE] Failed to arm awaiting_plate_clear: %s", e)
+    elif archive_id:
+        # The swap path cleared the plate for real — so RELEASE the gate, don't
+        # merely skip arming it. Skipping was the whole bug: the flag is
+        # persisted to ``printers.awaiting_plate_clear`` and restored at
+        # startup, so once anything armed it, a swap printer stayed gated
+        # forever. Every subsequent print logged "plate auto-cleared", left the
+        # flag standing, and the queue quietly refused to dispatch to that
+        # printer — quietly because the auto-queue distributor logs its
+        # per-tick decisions at DEBUG, so an INFO-level support bundle shows
+        # nothing wrong at all. Reported from a farm of three swap A1 Minis
+        # where the queue "just stopped moving" and clicking Clear Plate — the
+        # only other caller of this setter — started the prints.
+        #
+        # Two ways in: a print started from the printer's own screen (no
+        # dispatch, so no swap config is registered, so no auto-clear and the
+        # arm block above fires), or any cancelled / failed print.
+        #
+        # Safe to release, and provably: ``_plate_auto_cleared_by_swap`` is set
+        # in exactly two places and both require a successful print — the
+        # swap_compatible branch is guarded by ``_swap_status_ok``, and the
+        # change_table branch sets it only under ``if _sw_ok``, after the macro
+        # reports success. A failed, aborted or cancelled print reaches neither,
+        # so "the part is still on the bed" keeps its manual gate.
+        if printer_manager.is_awaiting_plate_clear(printer_id):
+            printer_manager.set_awaiting_plate_clear(printer_id, False)
+            logger.info(
+                "[PLATE] Released a stale awaiting_plate_clear gate for printer %s — the swap path cleared the plate",
+                printer_id,
+            )
 
     logger.info("[CALLBACK] on_print_complete finished for printer %s, archive %s", printer_id, archive_id)
 
