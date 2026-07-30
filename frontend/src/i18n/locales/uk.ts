@@ -1554,6 +1554,45 @@ export default {
 
   // Settings page
   settings: {
+    zigbee: {
+      title: 'Zigbee-координатор',
+      description:
+        'BamDude керує Zigbee-донглом самостійно — без Home Assistant і без Zigbee2MQTT.',
+      enabled: 'Увімкнути Zigbee-координатор',
+      transport: "З'єднання",
+      transport_ethernet: 'Ethernet',
+      transport_usb: 'USB',
+      path: 'Адреса',
+      pathEthernetHint: 'Хост і порт донгла, наприклад 192.168.1.50:6638.',
+      pathUsbHint: 'Виберіть послідовний порт, у який вставлений донгл.',
+      pickPort: 'Виберіть порт…',
+      noSerialPorts: 'На цій машині послідовних портів не знайдено.',
+      refreshPorts: 'Оновити список портів',
+      connect: 'Підключити',
+      reconnect: 'Перепідключити',
+      channel: 'канал',
+      pairDevice: 'Спарувати пристрій',
+      pairingCountdown: 'Готово до спарювання ще {{seconds}} с — натисніть і тримайте кнопку на розетці.',
+      pairingJoining: "Пристрій приєднується…",
+      pairingPaired: '{{name}} спаровано.',
+      pairingRejected:
+        '{{name}} відхилено й видалено з мережі: у нього немає кластера On/Off, тобто BamDude не зміг би ним перемикати.',
+      pairedDevices: 'Спаровані пристрої',
+      noPairedDevices: 'Поки нічого не спаровано.',
+      boundTo: "прив'язано до {{name}}",
+      capabilityEnergy: 'перемикання + енергія',
+      capabilitySwitchOnly: 'лише перемикання',
+      removeDevice: 'Видалити пристрій',
+      removeDeviceConfirm:
+        'Видалити {{name}} із Zigbee-мережі? Він перестане відповідати, доки ви не спаруєте його знову вручну.',
+      radioDownShort: 'Zigbee-радіо не працює',
+      state: {
+        disabled: 'Вимкнено',
+        starting: 'Запускається',
+        up: 'Підключено',
+        error: 'Проблема',
+      },
+    },
     title: 'Налаштування',
     general: 'Загальне',
     // Tab names

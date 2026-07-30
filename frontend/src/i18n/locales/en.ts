@@ -1546,6 +1546,45 @@ export default {
 
   // Settings page
   settings: {
+    zigbee: {
+      title: 'Zigbee coordinator',
+      description:
+        'BamDude drives the Zigbee dongle itself — no Home Assistant and no Zigbee2MQTT needed.',
+      enabled: 'Run the Zigbee coordinator',
+      transport: 'Connection',
+      transport_ethernet: 'Ethernet',
+      transport_usb: 'USB',
+      path: 'Address',
+      pathEthernetHint: 'Host and port of the dongle, for example 192.168.1.50:6638.',
+      pathUsbHint: 'Pick the serial port the dongle is plugged into.',
+      pickPort: 'Choose a port…',
+      noSerialPorts: 'No serial ports found on this machine.',
+      refreshPorts: 'Refresh the port list',
+      connect: 'Connect',
+      reconnect: 'Reconnect',
+      channel: 'channel',
+      pairDevice: 'Pair a device',
+      pairingCountdown: 'Ready to pair for {{seconds}}s — press and hold the button on the plug.',
+      pairingJoining: 'A device is joining…',
+      pairingPaired: '{{name}} paired.',
+      pairingRejected:
+        '{{name}} was rejected and removed from the network: it has no On/Off cluster, so BamDude could not switch it.',
+      pairedDevices: 'Paired devices',
+      noPairedDevices: 'Nothing paired yet.',
+      boundTo: 'bound to {{name}}',
+      capabilityEnergy: 'switching + energy',
+      capabilitySwitchOnly: 'switching only',
+      removeDevice: 'Remove device',
+      removeDeviceConfirm:
+        'Remove {{name}} from the Zigbee network? It will stop responding until you pair it again by hand.',
+      radioDownShort: 'The Zigbee radio is down',
+      state: {
+        disabled: 'Off',
+        starting: 'Starting',
+        up: 'Connected',
+        error: 'Problem',
+      },
+    },
     title: 'Settings',
     general: 'General',
     // Tab names

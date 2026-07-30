@@ -1412,6 +1412,12 @@ export interface AppSettings {
   default_filament_cost: number;
   currency: string;
   energy_cost_per_kwh: number;
+  // Zigbee coordinator. Declared here as well as on the backend schema because
+  // the settings PATCH is typed by this interface — an undeclared key would be
+  // dropped on the way out, exactly as Pydantic drops one on the way in.
+  zigbee_enabled: boolean;
+  zigbee_transport: string;
+  zigbee_path: string;
   energy_tracking_mode: 'print' | 'total';
   check_updates: boolean;
   check_printer_firmware: boolean;
@@ -2150,7 +2156,11 @@ export interface CloudDevice {
 export interface SmartPlug {
   id: number;
   name: string;
-  plug_type: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest';
+  plug_type: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest' | 'zigbee';
+  // Required for Zigbee, and addressed by IEEE rather than the short NWK
+  // address: NWK is reassigned when a device rejoins, so a stored one would
+  // eventually point at a different device.
+  zigbee_ieee: string | null;
   ip_address: string | null;  // Required for Tasmota
   ha_entity_id: string | null;  // Required for Home Assistant (e.g., "switch.printer_plug", "script.turn_on_printer")
   // Home Assistant energy sensor entities (optional)
@@ -2235,9 +2245,54 @@ export interface SmartPlug {
   updated_at: string;
 }
 
+// ---- Zigbee coordinator -----------------------------------------------------
+// BamDude drives the radio itself; there is no Home Assistant or Zigbee2MQTT in
+// this path. See backend/app/api/routes/zigbee.py.
+
+export interface ZigbeeCoordinatorInfo {
+  ieee: string;
+  nwk: number;
+  model: string | null;
+  manufacturer: string | null;
+  version: string | null;
+}
+
+export interface ZigbeeNetworkInfo {
+  channel: number | null;
+  pan_id: number | null;
+}
+
+export interface ZigbeeStatus {
+  state: 'disabled' | 'starting' | 'up' | 'error';
+  // The whole explanation of why the radio is not up ("port busy - Zigbee2MQTT
+  // or Home Assistant is the most likely owner"). Render it verbatim; mapping it
+  // to a friendlier string throws away the only thing that says what to do.
+  reason: string | null;
+  coordinator: ZigbeeCoordinatorInfo | null;
+  network: ZigbeeNetworkInfo | null;
+}
+
+export interface ZigbeeDevice {
+  ieee: string;
+  nwk: number | null;
+  manufacturer: string | null;
+  model: string | null;
+  is_coordinator: boolean;
+  is_plug: boolean;
+  has_metering: boolean;
+  has_electrical_measurement: boolean;
+}
+
+export interface ZigbeePort {
+  device: string;
+  description: string;
+  hwid: string;
+}
+
 export interface SmartPlugCreate {
   name: string;
-  plug_type?: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest';
+  plug_type?: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest' | 'zigbee';
+  zigbee_ieee?: string | null;  // Required for Zigbee
   ip_address?: string | null;  // Required for Tasmota
   ha_entity_id?: string | null;  // Required for Home Assistant
   // Home Assistant energy sensor entities (optional)
@@ -2313,7 +2368,8 @@ export interface SmartPlugCreate {
 
 export interface SmartPlugUpdate {
   name?: string;
-  plug_type?: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest';
+  plug_type?: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest' | 'zigbee';
+  zigbee_ieee?: string | null;
   ip_address?: string | null;
   ha_entity_id?: string | null;
   // Home Assistant energy sensor entities (optional)
@@ -5989,6 +6045,22 @@ export const api = {
     }),
   deleteSmartPlug: (id: number) =>
     request<void>(`/smart-plugs/${id}`, { method: 'DELETE' }),
+
+  // ---- Zigbee coordinator ---------------------------------------------------
+  // No client function for /zigbee/devices/{ieee}/attributes on purpose: it is a
+  // by-hand diagnostic (raw device value beside the post-quirk cached one) and
+  // an unused export is dead weight.
+  getZigbeeStatus: () => request<ZigbeeStatus>('/zigbee/status'),
+  getZigbeePorts: () => request<{ ports: ZigbeePort[] }>('/zigbee/ports'),
+  getZigbeeDevices: () => request<{ devices: ZigbeeDevice[] }>('/zigbee/devices'),
+  permitZigbeeJoin: (seconds: number) =>
+    request<{ seconds: number }>('/zigbee/permit', {
+      method: 'POST',
+      body: JSON.stringify({ seconds }),
+    }),
+  removeZigbeeDevice: (ieee: string) =>
+    request<{ removed: string }>(`/zigbee/devices/${encodeURIComponent(ieee)}`, { method: 'DELETE' }),
+  restartZigbeeCoordinator: () => request<ZigbeeStatus>('/zigbee/restart', { method: 'POST' }),
   controlSmartPlug: (id: number, action: 'on' | 'off' | 'toggle') =>
     request<{ success: boolean; action: string }>(`/smart-plugs/${id}/control`, {
       method: 'POST',

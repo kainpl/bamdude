@@ -11,6 +11,7 @@ import type { AppSettings, AppSettingsUpdate, APIKey, SmartPlug, SmartPlugStatus
 import { Card, CardContent, CardHeader } from '../components/Card';
 import { Button } from '../components/Button';
 import { LdapUserPicker } from '../components/LdapUserPicker';
+import { ZigbeeCoordinatorCard } from '../components/zigbee/ZigbeeCoordinatorCard';
 import { SmartPlugCard } from '../components/SmartPlugCard';
 import { AddSmartPlugModal } from '../components/AddSmartPlugModal';
 import { NotificationProviderCard } from '../components/NotificationProviderCard';
@@ -4124,6 +4125,11 @@ export function SettingsPage() {
               </Button>
             </div>
           </div>
+
+          {/* The coordinator lives here rather than in its own tab: it exists to
+              serve plugs, so this is where an operator looks for it, and the tab
+              strip is already eleven entries long. */}
+          <ZigbeeCoordinatorCard />
 
           {/* Energy Summary Card */}
           {smartPlugs && smartPlugs.length > 0 && (
