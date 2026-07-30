@@ -253,6 +253,7 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         "scheduled_time": item.scheduled_time,
         "auto_off_after": item.auto_off_after,
         "manual_start": item.manual_start,
+        "require_previous_success": item.require_previous_success,
         "ams_mapping": ams_mapping_parsed,
         "plate_id": item.plate_id,
         "bed_levelling": derive_mode(item.bed_levelling_mode, item.bed_levelling),
@@ -575,6 +576,7 @@ async def add_to_queue(
                 scheduled_time=data.scheduled_time,
                 auto_off_after=data.auto_off_after,
                 manual_start=data.manual_start,
+                require_previous_success=data.require_previous_success,
                 ams_mapping=ams_mapping_json,
                 plate_id=data.plate_id,
                 bed_levelling=mode_to_bool(data.bed_levelling),
@@ -1303,13 +1305,43 @@ async def skip_item(
     return {"status": "skipped", "item_id": item_id}
 
 
+async def _acknowledge_blocking_failure(db: AsyncSession, queue_id: int) -> None:
+    """Retire the failure that the ``require_previous_success`` gate is reading.
+
+    Deliberately mirrors ``PrintScheduler.previous_print_succeeded``: same
+    lookback, same ordering. It marks the newest finished row only when that row
+    is the failure — if a print has succeeded since, nothing is gating and there
+    is nothing to acknowledge.
+    """
+    blocking = (
+        await db.execute(
+            select(PrintQueueItem)
+            .where(PrintQueueItem.queue_id == queue_id)
+            .where(PrintQueueItem.status.in_(["completed", "failed", "cancelled"]))
+            .where(PrintQueueItem.gate_acknowledged.is_(False))
+            .order_by(PrintQueueItem.completed_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if blocking is not None and blocking.status == "failed":
+        blocking.gate_acknowledged = True
+
+
 @router.post("/{item_id}/unskip")
 async def unskip_item(
     item_id: int,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
 ):
-    """Revert a skipped item back to pending, appended to end of queue."""
+    """Revert a skipped item back to pending, appended to end of queue.
+
+    Doubles as the release for the ``require_previous_success`` gate (m116).
+    An item skipped because the previous print failed would be skipped again on
+    the very next tick — the failure it looked at is still the newest one — so
+    putting it back in the queue has to mean "I have dealt with that failure".
+    The blocking row is marked ``gate_acknowledged``, which drops it out of the
+    lookback for every item behind it too, not just this one.
+    """
     from backend.app.services.queue_counters import update_queue_counters
 
     item = (await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))).scalar_one_or_none()
@@ -1317,6 +1349,9 @@ async def unskip_item(
         raise HTTPException(404, "Queue item not found")
     if item.status != "skipped":
         raise HTTPException(400, f"Only skipped items can be unskipped, current status: '{item.status}'")
+
+    if item.require_previous_success:
+        await _acknowledge_blocking_failure(db, item.queue_id)
 
     max_pos = (
         await db.execute(

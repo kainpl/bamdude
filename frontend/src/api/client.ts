@@ -2466,6 +2466,7 @@ export interface PrintQueueItem {
   scheduled_time: string | null;
   auto_off_after: boolean;
   manual_start: boolean;
+  require_previous_success: boolean;
   ams_mapping: number[] | null;
   plate_id: number | null;
   // Print options — tri-state calibration (off/auto/on)
@@ -2540,6 +2541,7 @@ export interface PrintQueueItemCreate {
   scheduled_time?: string | null;
   auto_off_after?: boolean;
   manual_start?: boolean;
+  require_previous_success?: boolean;
   ams_mapping?: number[] | null;
   plate_id?: number | null;
   bed_levelling?: CalibrationMode;
@@ -2566,6 +2568,7 @@ export interface PrintQueueItemUpdate {
   scheduled_time?: string | null;
   auto_off_after?: boolean;
   manual_start?: boolean;
+  require_previous_success?: boolean;
   ams_mapping?: number[];
   plate_id?: number | null;
   bed_levelling?: CalibrationMode;
@@ -2609,6 +2612,7 @@ export interface PrintQueueBulkUpdate {
   scheduled_time?: string | null;
   auto_off_after?: boolean;
   manual_start?: boolean;
+  require_previous_success?: boolean;
   // Print options — tri-state calibration (off/auto/on)
   bed_levelling?: CalibrationMode;
   flow_cali?: CalibrationMode;

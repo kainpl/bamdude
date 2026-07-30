@@ -161,6 +161,9 @@ export function PrintModal({
         scheduleType,
         scheduledTime,
         autoOffAfter: queueItem.auto_off_after,
+        // ?? false: a response cached from before this field existed would make
+        // the checkbox uncontrolled for the rest of the modal's life.
+        requirePreviousSuccess: queueItem.require_previous_success ?? false,
       };
     }
     return DEFAULT_SCHEDULE_OPTIONS;
@@ -693,6 +696,7 @@ export function PrintModal({
               : undefined,
           manual_start: scheduleOptions.scheduleType === 'manual',
           auto_off_after: scheduleOptions.autoOffAfter,
+          require_previous_success: scheduleOptions.requirePreviousSuccess,
           quantity,
         };
         await api.addToAutoQueue(payload);
@@ -831,6 +835,7 @@ export function PrintModal({
       library_file_id: isLibraryFile ? libraryFileId : undefined,
       auto_off_after: scheduleOptions.autoOffAfter,
       manual_start: scheduleOptions.scheduleType === 'manual',
+      require_previous_success: scheduleOptions.requirePreviousSuccess,
       ams_mapping: getMappingForPrinter(printerId, plateId),
       plate_id: plateId,
       scheduled_time: scheduleOptions.scheduleType === 'scheduled' && scheduleOptions.scheduledTime
@@ -888,6 +893,7 @@ export function PrintModal({
               queue_id: printerId,  // queue_id == printer_id
               auto_off_after: scheduleOptions.autoOffAfter,
               manual_start: scheduleOptions.scheduleType === 'manual',
+              require_previous_success: scheduleOptions.requirePreviousSuccess,
               ams_mapping: printerMapping,
               plate_id: plateId,
               scheduled_time: scheduleOptions.scheduleType === 'scheduled' && scheduleOptions.scheduledTime

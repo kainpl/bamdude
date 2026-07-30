@@ -30,6 +30,7 @@ const createMockQueueItem = (overrides: Partial<PrintQueueItem> = {}): PrintQueu
   scheduled_time: null,
   auto_off_after: false,
   manual_start: false,
+  require_previous_success: false,
   ams_mapping: null,
   plate_id: null,
   bed_levelling: true,
@@ -438,6 +439,38 @@ describe('PrintModal', () => {
       );
 
       expect(screen.getByRole('button', { name: /cancel/i })).toBeInTheDocument();
+    });
+
+    it('reflects require_previous_success from the item being edited', () => {
+      const item = createMockQueueItem({ require_previous_success: true });
+
+      render(
+        <PrintModal
+          mode="edit-queue-item"
+          archiveId={1}
+          archiveName="Test Print"
+          queueItem={item}
+          onClose={mockOnClose}
+        />
+      );
+
+      expect(screen.getByLabelText(/only run if the previous print succeeded/i)).toBeChecked();
+    });
+
+    it('leaves the gate off for an item that never asked for it', () => {
+      const item = createMockQueueItem({ require_previous_success: false });
+
+      render(
+        <PrintModal
+          mode="edit-queue-item"
+          archiveId={1}
+          archiveName="Test Print"
+          queueItem={item}
+          onClose={mockOnClose}
+        />
+      );
+
+      expect(screen.getByLabelText(/only run if the previous print succeeded/i)).not.toBeChecked();
     });
 
     it('shows print options toggle', () => {

@@ -39,6 +39,15 @@ class PrintQueueItem(Base):
     # Power management
     auto_off_after: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Gate: refuse to dispatch when the last finished print on this printer
+    # failed or was aborted (m116). Lived only on AutoQueueItem between m002 and
+    # m116, where nothing read it — see that migration's docstring.
+    require_previous_success: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # Set on a *failed* item to drop it out of the gate's lookback, so one
+    # failure does not keep skipping everything queued behind it after the
+    # operator has dealt with it. Reached through ``unskip``.
+    gate_acknowledged: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+
     # AMS mapping: JSON array of global tray IDs per filament slot
     # Format: "[5, -1, 2, -1]" - position=slot_id-1, value=global tray ID, -1=unused
     ams_mapping: Mapped[str | None] = mapped_column(Text, nullable=True)
