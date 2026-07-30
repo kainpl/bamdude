@@ -4186,6 +4186,11 @@ export default {
 
   // System info
   system: {
+    zigbeeCoordinator: 'Zigbee Coordinator',
+    zigbeeState: 'State',
+    zigbeePairedDevices: 'Paired Devices',
+    zigbeeRadio: 'Radio',
+    zigbeeAddress: 'Address',
     title: 'System Information',
     subtitle: 'Monitor system resources and database statistics',
     failedToLoad: 'Failed to load system information',

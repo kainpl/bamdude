@@ -4194,6 +4194,11 @@ export default {
 
   // System info
   system: {
+    zigbeeCoordinator: 'Zigbee-координатор',
+    zigbeeState: 'Стан',
+    zigbeePairedDevices: 'Спаровані пристрої',
+    zigbeeRadio: 'Радіо',
+    zigbeeAddress: 'Адреса',
     title: 'Інформація про систему',
     subtitle: 'Моніторинг системних ресурсів та статистики бази даних',
     failedToLoad: 'Не вдалося завантажити інформацію про систему',

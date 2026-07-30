@@ -16,6 +16,15 @@ vi.mock('../../api/client', () => ({
     getSystemInfo: vi.fn(),
     getSettings: vi.fn().mockResolvedValue({}),
     updateSettings: vi.fn().mockResolvedValue({}),
+    // Defaults to disabled so the existing tests see the page they always saw:
+    // the Zigbee section is absent unless an install actually uses Zigbee.
+    getZigbeeStatus: vi.fn().mockResolvedValue({
+      state: 'disabled',
+      reason: null,
+      coordinator: null,
+      network: null,
+    }),
+    getZigbeeDevices: vi.fn().mockResolvedValue({ devices: [] }),
   },
   supportApi: {
     getDebugLoggingState: vi.fn().mockResolvedValue({ enabled: false, enabled_at: null, duration_seconds: null }),
@@ -325,5 +334,68 @@ describe('SystemInfoPage', () => {
     // The progress bar should have red color for >90% usage
     const progressBars = document.querySelectorAll('[class*="bg-red"]');
     expect(progressBars.length).toBeGreaterThan(0);
+  });
+});
+
+describe('SystemInfoPage Zigbee diagnostics', () => {
+  /**
+   * The coordinator belongs on a diagnostics page for the same reason the
+   * attribute dump exists: when readings look wrong, the first questions are
+   * which dongle is answering and on which network. Both were unreachable
+   * outside the settings tab.
+   */
+  beforeEach(() => {
+    vi.mocked(api.getSystemInfo).mockResolvedValue(mockSystemInfo as never);
+  });
+
+  it('shows the radio identity when the coordinator is up', async () => {
+    vi.mocked(api.getZigbeeStatus).mockResolvedValue({
+      state: 'up',
+      reason: null,
+      coordinator: {
+        ieee: '34:8d:13:ff:fe:11:e4:6f',
+        nwk: 0,
+        model: 'Dongle-M',
+        manufacturer: 'SONOFF',
+        version: '7.4.5.0',
+      },
+      network: { channel: 25, pan_id: 30710 },
+    });
+    vi.mocked(api.getZigbeeDevices).mockResolvedValue({ devices: [] });
+
+    render(<SystemInfoPage />);
+
+    expect(await screen.findByText('34:8d:13:ff:fe:11:e4:6f')).toBeInTheDocument();
+  });
+
+  it('shows the failure reason verbatim when it is down', async () => {
+    vi.mocked(api.getZigbeeStatus).mockResolvedValue({
+      state: 'error',
+      reason: 'TransientConnectionError',
+      coordinator: null,
+      network: null,
+    });
+    vi.mocked(api.getZigbeeDevices).mockResolvedValue({ devices: [] });
+
+    render(<SystemInfoPage />);
+
+    expect(await screen.findByText('TransientConnectionError')).toBeInTheDocument();
+  });
+
+  it('omits the whole section when Zigbee is disabled', async () => {
+    vi.mocked(api.getZigbeeStatus).mockResolvedValue({
+      state: 'disabled',
+      reason: null,
+      coordinator: null,
+      network: null,
+    });
+    vi.mocked(api.getZigbeeDevices).mockResolvedValue({ devices: [] });
+
+    render(<SystemInfoPage />);
+
+    // A diagnostics page should not carry a permanent entry about a feature the
+    // install does not use.
+    await screen.findByText(/0\.1\.5b/);
+    expect(screen.queryByText(/zigbee/i)).not.toBeInTheDocument();
   });
 });
