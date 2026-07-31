@@ -1,9 +1,10 @@
 from collections import defaultdict
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.timezones import day_bounds, server_timezone
 from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
 
@@ -29,6 +30,7 @@ class FailureAnalysisService:
         printer_id: int | None = None,
         project_id: int | None = None,
         created_by_id: int | None = None,
+        tz: tzinfo | None = None,
     ) -> dict:
         """Analyze failure patterns across archives.
 
@@ -50,12 +52,16 @@ class FailureAnalysisService:
         non_date_filter = [PrintArchive.status != "archived", PrintArchive.deleted_at.is_(None)]
         all_time = False
         if date_from or date_to:
-            if date_from:
-                dt_from = datetime.combine(date_from, time.min, tzinfo=timezone.utc)
+            # Caller's day boundaries. `tz` is the browser's timezone when the
+            # request came from the UI, the deployment's otherwise — a date
+            # picker is filled in against the clock on the wall, not UTC.
+            day_tz = tz or server_timezone()
+            dt_from = day_bounds(date_from, day_tz)[0] if date_from else None
+            dt_to = day_bounds(date_to, day_tz)[1] if date_to else None
+            if dt_from is not None:
                 base_filter.append(PrintArchive.created_at >= dt_from)
-            if date_to:
-                dt_to = datetime.combine(date_to, time.max, tzinfo=timezone.utc)
-                base_filter.append(PrintArchive.created_at <= dt_to)
+            if dt_to is not None:
+                base_filter.append(PrintArchive.created_at < dt_to)
             # Compute effective span for trend
             range_start = dt_from if date_from else datetime.now(timezone.utc) - timedelta(days=365)
             range_end = dt_to if date_to else datetime.now(timezone.utc)

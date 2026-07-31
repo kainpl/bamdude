@@ -326,6 +326,18 @@ function formatErrorDetail(detail: unknown, status: number): string {
   return `HTTP ${status}`;
 }
 
+// Resolved once: it cannot change without the page being reloaded, and calling
+// into Intl on every request would be noise. Empty string when the runtime has
+// no zone to report, in which case the header is omitted and the server answers
+// in its own timezone.
+const clientTimeZone: string = (() => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+  } catch {
+    return '';
+  }
+})();
+
 async function request<T>(
   endpoint: string,
   options: RequestInit = {},
@@ -346,6 +358,14 @@ async function request<T>(
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
+    // Whose "today" the server should answer with. Anything the server does on
+    // its own schedule keeps using the deployment's TZ; this only covers the
+    // question a person is asking right now, so "today's energy" on screen
+    // means the day the person reading it is having. Sent on every call rather
+    // than per-endpoint — the alternative is remembering to thread it through
+    // each new query, which is the kind of thing that gets remembered for the
+    // first three.
+    ...(clientTimeZone ? { 'X-Client-Timezone': clientTimeZone } : {}),
     ...options.headers as Record<string, string>,
   };
 

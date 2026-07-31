@@ -3,7 +3,7 @@ import json
 import logging
 import zipfile
 from collections import defaultdict
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
@@ -19,6 +19,7 @@ from backend.app.core.auth import (
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.timezones import client_timezone, day_bounds
 from backend.app.models.archive import PrintArchive
 from backend.app.models.spool_usage_history import SpoolUsageHistory
 from backend.app.models.user import User
@@ -379,6 +380,7 @@ async def get_archive_filter_options(
 
 @router.get("/slim", response_model=list[ArchiveSlim])
 async def list_archives_slim(
+    request: Request,
     date_from: date | None = Query(None),
     date_to: date | None = Query(None),
     limit: int = Query(default=10000, le=50000),
@@ -412,12 +414,12 @@ async def list_archives_slim(
     # has no created_by_id query param, so pin the owner filter directly.
     if current_user is not None and not can_read_all:
         filters.append(PrintArchive.created_by_id == current_user.id)
+    # Client's day boundaries — see get_archive_stats for why UTC was wrong.
+    _tz = client_timezone(request)
     if date_from:
-        dt_from = datetime.combine(date_from, time.min, tzinfo=timezone.utc)
-        filters.append(PrintArchive.created_at >= dt_from)
+        filters.append(PrintArchive.created_at >= day_bounds(date_from, _tz)[0])
     if date_to:
-        dt_to = datetime.combine(date_to, time.max, tzinfo=timezone.utc)
-        filters.append(PrintArchive.created_at <= dt_to)
+        filters.append(PrintArchive.created_at < day_bounds(date_to, _tz)[1])
 
     query = (
         select(
@@ -686,6 +688,7 @@ async def rebuild_search_index(
 
 @router.get("/analysis/failures")
 async def analyze_failures(
+    request: Request,
     days: int | None = None,
     date_from: date | None = Query(None),
     date_to: date | None = Query(None),
@@ -724,6 +727,7 @@ async def analyze_failures(
         printer_id=printer_id,
         project_id=project_id,
         created_by_id=scoped_user_id,
+        tz=client_timezone(request),
     )
 
 
@@ -931,6 +935,7 @@ async def no_3mf_warning(
 
 @router.get("/stats", response_model=ArchiveStats)
 async def get_archive_stats(
+    request: Request,
     date_from: date | None = Query(None, description="Start date (inclusive), YYYY-MM-DD"),
     date_to: date | None = Query(None, description="End date (inclusive), YYYY-MM-DD"),
     created_by_id: int | None = Query(None, description="Filter by user who created the print (-1 for no user)"),
@@ -952,12 +957,14 @@ async def get_archive_stats(
         PrintArchive.deleted_at.is_(None),
     ]
     _apply_user_filter(base_conditions, created_by_id)
+    # Client's day, not UTC's — the picker was filled in against their clock.
+    # This decides which prints land in the range at all, so a UTC boundary
+    # moved every print from the first hours of a local day into the one before.
+    _tz = client_timezone(request)
     if date_from:
-        dt_from = datetime.combine(date_from, time.min, tzinfo=timezone.utc)
-        base_conditions.append(PrintArchive.created_at >= dt_from)
+        base_conditions.append(PrintArchive.created_at >= day_bounds(date_from, _tz)[0])
     if date_to:
-        dt_to = datetime.combine(date_to, time.max, tzinfo=timezone.utc)
-        base_conditions.append(PrintArchive.created_at <= dt_to)
+        base_conditions.append(PrintArchive.created_at < day_bounds(date_to, _tz)[1])
 
     # Total counts
     total_result = await db.execute(select(func.count(PrintArchive.id)).where(*base_conditions))
@@ -1095,13 +1102,19 @@ async def get_archive_stats(
     elif energy_tracking_mode == "total":
         # Total consumption mode with a date filter (#941): use hourly snapshots
         # to compute per-plug (endpoint - baseline) deltas.
-        from datetime import time as _time
+        #
+        # Day boundaries are the CLIENT's, not UTC. The dates arrive as bare
+        # calendar days from a date picker someone filled in while looking at
+        # their own clock, so resolving them at UTC midnight put the first hours
+        # of every local day into the previous one — three hours' worth on a
+        # Europe/Kyiv farm, which is where this was noticed.
+        tz = client_timezone(request)
+        dt_from = day_bounds(date_from, tz)[0] if date_from else None
+        # Exclusive end from day_bounds: `time.max` would silently drop the last
+        # 999 microseconds of the range.
+        dt_to = day_bounds(date_to, tz)[1] if date_to else None
 
-        total_energy_kwh, energy_data_warming_up = await _sum_snapshot_deltas(
-            db,
-            dt_from=(datetime.combine(date_from, _time.min, tzinfo=timezone.utc) if date_from else None),
-            dt_to=(datetime.combine(date_to, _time.max, tzinfo=timezone.utc) if date_to else None),
-        )
+        total_energy_kwh, energy_data_warming_up = await _sum_snapshot_deltas(db, dt_from=dt_from, dt_to=dt_to)
         total_energy_cost = total_energy_kwh * energy_cost_per_kwh
     else:
         # Per-print mode: sum the per-print energy column directly.
