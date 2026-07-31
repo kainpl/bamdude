@@ -8,11 +8,23 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+> ### ⚠️ Before you update: let your printers finish
+>
+> **This update empties the print queue and the Auto-Queue.** Both are cleared once, on first start, and it happens without asking.
+>
+> **Finish or cancel everything before updating:** let running prints complete, and empty both queues. Anything still queued when you update is gone — you will need to queue it again.
+>
+> **Your print history is not affected.** Archives, statistics, energy figures and every finished print stay exactly as they are — the queue holds only work that has not happened yet. Printer settings, schedules and paused printers are also untouched.
+>
+> **Why.** Queue entries are supposed to disappear when their print finishes. When a print ended in a way BamDude did not see — a connection dropped at the wrong moment, a swap macro wrongly reported as failed — the entry stayed behind, still claiming to be printing. Those leftovers never clear on their own, and they make a queue show work that printed hours ago. The causes are fixed in this release; this clears what they already left behind. There is no way to tell a leftover entry from a real one after the fact, which is exactly why we ask you to empty the queues first rather than guessing on your behalf.
+
 ### Added
 
 - **Zigbee smart plugs, without Home Assistant or Zigbee2MQTT.** BamDude now drives a Zigbee dongle itself: plug it in over Ethernet or USB, open a pairing window, press the button on the plug, and bind it to a printer. From there it behaves like any other smart plug — turning on at print start, off afterwards, on a schedule, and from the plug card — and where the plug reports energy, each print records what it actually cost. On the Ukrainian market Zigbee plugs are what you can actually buy, so this is meant to be the main way plugs get connected rather than an alternative to the MQTT path, which stays exactly as it is. Verified end to end on a SONOFF Dongle-M and an S60ZBTPF; other Zigbee plugs should work if they expose a standard On/Off cluster, and BamDude refuses to pair anything that does not, since it could not switch it anyway.
 
 - **All of it from the interface, with no restart.** Settings → Smart plugs now has a Zigbee coordinator card: pick Ethernet or USB, choose a serial port from a list rather than typing a device name, and press Connect. Switching Zigbee on takes effect immediately — it no longer waits for the whole application to be restarted. Pairing runs in the same card: press Pair, walk to the plug, hold its button, and watch what the radio reports as it happens. A device that BamDude cannot switch is refused and removed from the network, and the card says so rather than leaving you wondering where it went. Adding the plug afterwards means choosing it from the paired devices, not typing an address, and devices already used by another plug are left out of the list.
+
+- **Queue entries left behind by prints that ended badly are cleared out.** A queue entry is removed when its print finishes. If the finish was never seen — the link dropped across the end of a print, or a swap macro was wrongly declared failed — the entry stayed, still marked as printing, and nothing ever went back for it. The result was a queue card showing work that had printed hours earlier, and a log filling with *"queue N has 2 printing rows"*. Both queues are emptied once during this update; see the warning at the top for what to do first.
 
 - **Turning the Zigbee radio off, and starting the network over.** Two separate actions, because they cost wildly different amounts to undo. **Disconnect** stops the radio and nothing else — the network, the paired devices and every plug you set up are kept, and Connect brings all of it back with nothing to reconfigure. **Forget network** is the other one: it erases the network key, and since your plugs go on believing they belong to a network BamDude can no longer speak to, each one has to be paired again in person, wherever it happens to be installed. The dialog says exactly that before you agree to it, and points out that a backup taken beforehand can put the network back, since backups have always included it. Your plugs and their settings survive either way — they are kept, shown as unreachable, and come back on their own once re-paired, so a printer keeps its power automation and its recorded energy history.
 
