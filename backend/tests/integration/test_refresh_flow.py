@@ -88,7 +88,12 @@ async def test_refresh_rotates_token_and_mints_new_access(async_client: AsyncCli
     assert new_row.family_id == old_row.family_id
 
 
-async def test_refresh_replay_revokes_whole_family(async_client: AsyncClient, db_session):
+async def test_refresh_replay_revokes_whole_family(async_client: AsyncClient, db_session, monkeypatch):
+    # Grace off, so the second presentation is a replay rather than a race. The
+    # window forgives a client colliding with itself in the same instant; a
+    # stolen cookie surfacing later must still collapse the family, and that is
+    # what this asserts.
+    monkeypatch.setattr("backend.app.core.auth.REFRESH_REUSE_GRACE_SECONDS", 0)
     _, old_cookie = await _login(async_client)
 
     async with AsyncClient(transport=async_client._transport, base_url="http://test") as browser:
@@ -116,6 +121,65 @@ async def test_refresh_replay_revokes_whole_family(async_client: AsyncClient, db
         .all()
     )
     assert remaining == [], f"family should have been revoked, got {len(remaining)} rows"
+
+
+async def test_two_tabs_racing_the_same_refresh_keep_the_session(async_client: AsyncClient, db_session):
+    """The bug users reported as "the token randomly expires".
+
+    The frontend races itself on a schedule, not by accident: the proactive
+    refresh timer is derived from the token's own ``exp``, so every open tab
+    holding that token reaches the same absolute deadline within milliseconds.
+    The per-tab coalescing guard cannot help — separate tabs are separate JS
+    contexts sharing one cookie.
+
+    Before the grace window the loser was called a replay, which revoked the
+    whole family and logged every tab out. Roughly hourly, with two tabs open.
+    """
+    _, cookie = await _login(async_client)
+
+    async with AsyncClient(transport=async_client._transport, base_url="http://test") as tabs:
+        winner = await tabs.post(
+            "/api/v1/auth/refresh",
+            headers={"Cookie": f"{REFRESH_TOKEN_COOKIE_NAME}={cookie}"},
+        )
+        loser = await tabs.post(
+            "/api/v1/auth/refresh",
+            headers={"Cookie": f"{REFRESH_TOKEN_COOKIE_NAME}={cookie}"},
+        )
+
+    assert winner.status_code == 200
+    # The loser is still refused — the grace declines to punish, it does not
+    # hand out a second session.
+    assert loser.status_code == 401
+    assert "replay" not in loser.json()["detail"].lower()
+
+    # ...and the session survives: the winner's rotated token is still usable.
+    remaining = (
+        (await db_session.execute(select(AuthEphemeralToken).where(AuthEphemeralToken.token_type == TokenType.REFRESH)))
+        .scalars()
+        .all()
+    )
+    assert remaining, "a client racing itself must not revoke its own family"
+
+
+async def test_the_loser_does_not_clear_the_winners_cookie(async_client: AsyncClient):
+    """The half of this that would have bitten even with reuse detection off.
+
+    The old code cleared the refresh cookie on every rejected refresh. A losing
+    tab's ``Set-Cookie`` would therefore delete the freshly rotated cookie the
+    winning tab had just installed — so the browser ends up with no refresh
+    token at all, and the next access-token expiry logs the user out anyway.
+    """
+    _, cookie = await _login(async_client)
+
+    async with AsyncClient(transport=async_client._transport, base_url="http://test") as tabs:
+        await tabs.post("/api/v1/auth/refresh", headers={"Cookie": f"{REFRESH_TOKEN_COOKIE_NAME}={cookie}"})
+        loser = await tabs.post("/api/v1/auth/refresh", headers={"Cookie": f"{REFRESH_TOKEN_COOKIE_NAME}={cookie}"})
+
+    assert loser.status_code == 401
+    assert REFRESH_TOKEN_COOKIE_NAME not in loser.headers.get("set-cookie", ""), (
+        "a raced refresh must not touch the cookie — clearing it deletes the winner's fresh token"
+    )
 
 
 async def test_refresh_without_cookie_returns_401(async_client: AsyncClient):

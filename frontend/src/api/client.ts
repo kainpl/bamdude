@@ -37,9 +37,11 @@ function decodeJwt(token: string): { exp?: number; iat?: number } | null {
   }
 }
 
-function tokenExpiryMs(): number | null {
-  if (!authToken) return null;
-  const decoded = decodeJwt(authToken);
+// Defaults to our own token; takes an explicit one so a sibling tab's stored
+// token can be checked for freshness before we adopt it.
+function tokenExpiryMs(token: string | null = authToken): number | null {
+  if (!token) return null;
+  const decoded = decodeJwt(token);
   if (!decoded?.exp) return null;
   return decoded.exp * 1000;
 }
@@ -76,7 +78,12 @@ function scheduleProactiveRefresh() {
   }
   const exp = tokenExpiryMs();
   if (exp === null) return;
-  const delay = Math.max(0, exp - Date.now() - REFRESH_SAFETY_MS);
+  // Jitter, because the deadline is derived from the token itself: every tab
+  // holding it computes the identical instant and they all fire together.
+  // Web Locks already serialises them, so this is only about not queueing the
+  // whole browser on one lock at the same millisecond — belt to that braces.
+  const jitter = Math.random() * 5000;
+  const delay = Math.max(0, exp - Date.now() - REFRESH_SAFETY_MS - jitter);
   proactiveRefreshTimer = window.setTimeout(() => {
     proactiveRefreshTimer = null;
     // Fire-and-forget: a successful refresh re-arms via setAuthToken; a
@@ -187,24 +194,74 @@ const NON_REFRESHABLE_401_MESSAGES = [
 ];
 let refreshAccessTokenPromise: Promise<boolean> | null = null;
 
+// The singleton above coalesces within ONE tab. It cannot coalesce across
+// tabs — each tab is a separate JS context holding its own module instance,
+// while they all share the single HttpOnly refresh cookie. Two tabs therefore
+// send the same cookie to /auth/refresh and the backend, quite correctly, sees
+// the second as a replay.
+//
+// And they do not collide by chance: `scheduleProactiveRefresh` derives its
+// delay from the token's own `exp`, so every tab holding that token reaches the
+// same absolute deadline within milliseconds. Two tabs open meant a revoked
+// session roughly once an hour, which users reported as "the token randomly
+// expires".
+//
+// Web Locks serialises them. Unsupported (older Safari) falls through to the
+// old behaviour, which the backend's grace window now tolerates anyway — the
+// lock removes the collision, the grace survives the ones it cannot.
+const REFRESH_LOCK = 'bamdude:auth-refresh';
+
+/** A sibling tab's token from localStorage, when it is newer than ours. */
+function adoptSiblingToken(): boolean {
+  try {
+    const stored = localStorage.getItem('auth_token');
+    if (!stored || stored === authToken) return false;
+    // Only adopt something that actually outlives what we hold — a stale value
+    // left by a logged-out tab must not resurrect a dead session.
+    const storedExp = tokenExpiryMs(stored);
+    if (storedExp === null || storedExp <= Date.now()) return false;
+    setAuthToken(stored);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function doRefresh(): Promise<boolean> {
+  // Another tab may have rotated while we queued on the lock; taking its token
+  // is both cheaper and safer than spending our cookie on a second rotation.
+  if (adoptSiblingToken()) return true;
+  try {
+    const response = await fetch(`${API_BASE}/auth/refresh`, {
+      method: 'POST',
+      cache: 'no-store',
+      credentials: 'include',
+    });
+    if (!response.ok) {
+      // A lost race still 401s. The winner has already stored its token, so
+      // check once more before reporting failure — this is what keeps a tab
+      // that raced (or a browser with no Web Locks) from bouncing to /login.
+      return adoptSiblingToken();
+    }
+    const body = await response.json().catch(() => null);
+    if (body?.access_token) {
+      setAuthToken(body.access_token);
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 async function refreshAccessToken(): Promise<boolean> {
   if (refreshAccessTokenPromise) return refreshAccessTokenPromise;
   refreshAccessTokenPromise = (async () => {
     try {
-      const response = await fetch(`${API_BASE}/auth/refresh`, {
-        method: 'POST',
-        cache: 'no-store',
-        credentials: 'include',
-      });
-      if (!response.ok) return false;
-      const body = await response.json().catch(() => null);
-      if (body?.access_token) {
-        setAuthToken(body.access_token);
-        return true;
+      if (typeof navigator !== 'undefined' && navigator.locks?.request) {
+        return await navigator.locks.request(REFRESH_LOCK, doRefresh);
       }
-      return false;
-    } catch {
-      return false;
+      return await doRefresh();
     } finally {
       // Null-out only after the awaiting callers resolve so every queued
       // consumer sees the same outcome. Next 401 wave starts fresh.

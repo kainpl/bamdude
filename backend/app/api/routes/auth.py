@@ -657,6 +657,25 @@ async def refresh_access_token(
 
     username, family_id, result_status = await verify_and_consume_refresh_token(db, raw_refresh)
 
+    if result_status == "race":
+        # One client racing itself — another tab consumed this token moments
+        # ago. Refuse, but touch NOTHING: the family is intact and the winner
+        # has already set a fresh cookie on its own response.
+        #
+        # Clearing the cookie here would be actively destructive, and that is
+        # not hypothetical: the loser's Set-Cookie would delete the rotated
+        # cookie the winner just installed, so the session would die even with
+        # reuse detection disarmed. The old code cleared unconditionally.
+        import logging
+
+        logging.getLogger(__name__).info(
+            "Refresh raced by a sibling request for %s — declining without touching the family", username
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh already rotated by a concurrent request",
+        )
+
     if result_status == "reuse":
         # Belt-and-braces: even though verify_and_consume_refresh_token
         # already revoked the family, clear the cookie so the client stops
