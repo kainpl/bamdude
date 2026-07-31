@@ -442,15 +442,20 @@ class ThreeMFParser:
                 elif isinstance(val, (int, float, str)):
                     self.metadata["nozzle_diameter"] = float(val)
 
-            # Bed temperature - first layer or regular
-            for key in ["bed_temperature_initial_layer", "bed_temperature"]:
-                if key in data:
-                    val = data[key]
-                    if isinstance(val, list) and val:
-                        self.metadata["bed_temperature"] = int(float(val[0]))
-                    elif isinstance(val, (int, float, str)):
-                        self.metadata["bed_temperature"] = int(float(val))
-                    break
+            # Bed temperature — the plate's key, not a generic one.
+            #
+            # ``bed_temperature`` exists in BambuStudio's config *definitions*
+            # but is never written into an exported 3MF: the bed temperature is
+            # stored per plate type, and which one applies is decided by
+            # ``curr_bed_type``. Checked against real archived 3MFs — they carry
+            # cool_plate_temp / eng_plate_temp / hot_plate_temp /
+            # textured_plate_temp / supertack_plate_temp and no
+            # ``bed_temperature`` at all, which is why this field was NULL on
+            # every archive ever recorded while nozzle temperature (a key that
+            # does exist) filled in fine.
+            bed_temp = self._bed_temperature_from(data)
+            if bed_temp is not None:
+                self.metadata["bed_temperature"] = bed_temp
 
             # Nozzle temperature
             for key in ["nozzle_temperature_initial_layer", "nozzle_temperature"]:
@@ -477,6 +482,68 @@ class ThreeMFParser:
                     self.metadata["bed_type"] = val.strip()
         except Exception:
             pass  # Print settings are optional; missing values are left unset
+
+    # Bed type → the config key holding that plate's temperature. Mirrors
+    # BambuStudio's ``get_bed_temp_key`` (``PrintConfig.hpp``) and the
+    # ``curr_bed_type`` enum values (``PrintConfig.cpp``) one for one — copied
+    # from the source rather than inferred from the names, because the label
+    # and the enum value differ ("Smooth PEI Plate / High Temp Plate" is shown
+    # for the value "High Temp Plate").
+    _BED_TEMP_KEY_BY_TYPE = {
+        "cool plate": "cool_plate_temp",
+        "engineering plate": "eng_plate_temp",
+        "high temp plate": "hot_plate_temp",
+        "textured pei plate": "textured_plate_temp",
+        "supertack plate": "supertack_plate_temp",
+        # Present in exported files but not in our BambuStudio snapshot's enum —
+        # newer plate, same shape. Mapped so a file that uses it is not silently
+        # left without a temperature.
+        "textured cool plate": "textured_cool_plate_temp",
+    }
+
+    @staticmethod
+    def _as_int(val) -> int | None:
+        """First element of a slicer value, as an int. Bambu writes these as
+        one-element string arrays (``['75']``), one per extruder."""
+        if isinstance(val, list):
+            val = val[0] if val else None
+        if val is None or isinstance(val, bool):
+            return None
+        try:
+            return int(float(val))
+        except (TypeError, ValueError):
+            return None
+
+    def _bed_temperature_from(self, data: dict) -> int | None:
+        """The bed temperature for the plate this file was sliced for.
+
+        Prefers the first-layer value: it is what the operator sees the printer
+        do, it is the higher of the two on every stock profile, and it is what
+        the archive comparison is useful for.
+
+        Falls back to the highest plate temperature present when the bed type is
+        missing or unknown. That is deliberately a guess and only reached when
+        the alternative is NULL — a number from the wrong plate is still in the
+        right ballpark, whereas nothing at all is what this whole change exists
+        to fix. An unknown *and* empty file still yields None.
+        """
+        bed_type = (data.get("curr_bed_type") or "").strip().lower()
+        key = self._BED_TEMP_KEY_BY_TYPE.get(bed_type)
+
+        if key:
+            for candidate in (f"{key}_initial_layer", key):
+                value = self._as_int(data.get(candidate))
+                if value:  # 0 means "this plate is not heated" — keep looking
+                    return value
+
+        # Unknown or missing bed type: take the warmest plate the file defines.
+        temps = [
+            t
+            for k in self._BED_TEMP_KEY_BY_TYPE.values()
+            for t in (self._as_int(data.get(f"{k}_initial_layer")), self._as_int(data.get(k)))
+            if t
+        ]
+        return max(temps) if temps else None
 
     def _extract_settings_from_content(self, content: str):
         """Extract print settings from config content."""
