@@ -1017,9 +1017,42 @@ class PrinterManager:
         self._macro_waiters[printer_id] = (event, result)
 
         offline_since: float | None = None
+        watched = client  # identity, so a swap can be named rather than guessed at
         try:
             while not event.is_set():
-                if client.state.connected:
+                # Re-read every poll instead of watching the captured `client`.
+                # ``connect_printer`` does not mutate a client, it REPLACES the
+                # entry in ``self._clients`` — so a reference captured before the
+                # loop is orphaned by any reconnect and reports disconnected for
+                # ever, whatever the real printer is doing.
+                #
+                # That made this grace period unsatisfiable rather than generous:
+                # measured on a farm's log, five macro waits went offline, five
+                # gave up at the limit, and not one ever recovered. All five began
+                # within half a second of BamDude's own staleness reconnect —
+                # ``ensure_fresh_connection_for_printer``, called from dispatch and
+                # the scheduler, which recycles a link older than
+                # ``mqtt_connection_timeout``. So the dispatcher, placing the next
+                # job, was killing the macro still running on that same printer,
+                # and no length of grace could have helped: the object being
+                # watched was already dead.
+                #
+                # The completion side was always reconnect-safe — the waiter is
+                # keyed by printer_id and ``on_macro_complete`` is re-bound to the
+                # new client — so this poll was the only thing holding a stale
+                # reference.
+                live = self._clients.get(printer_id)
+
+                if live is not None and live is not watched:
+                    logger.info(
+                        "[MACRO-WAIT] Printer %s reconnected while macro '%s' was running — following the new "
+                        "connection",
+                        printer_id,
+                        macro_name,
+                    )
+                    watched = live
+
+                if live is not None and live.state.connected:
                     if offline_since is not None:
                         logger.info(
                             "[MACRO-WAIT] Printer %s came back after %.1fs offline — still waiting for macro '%s'",
