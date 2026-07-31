@@ -3,7 +3,7 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -744,6 +744,7 @@ async def trigger_associated_scripts(printer_id: int, plug_state: str, db: Async
 @router.get("/{plug_id}/status", response_model=SmartPlugStatus)
 async def get_plug_status(
     plug_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
 ):
@@ -805,6 +806,8 @@ async def get_plug_status(
     if status["reachable"]:
         energy = await service.get_energy(plug)
         if energy:
+            if energy.get("today") is None:
+                energy = {**energy, "today": await _today_from_snapshots(db, plug.id, energy.get("total"), request)}
             energy_data = SmartPlugEnergy(**energy)
 
             # Check power alerts
@@ -816,6 +819,58 @@ async def get_plug_status(
         device_name=status.get("device_name"),
         energy=energy_data,
     )
+
+
+async def _today_from_snapshots(
+    db: AsyncSession, plug_id: int, total_now: float | None, request: Request
+) -> float | None:
+    """Energy used today, derived for plugs whose protocol has no such figure.
+
+    Tasmota, REST, MQTT and Home Assistant all report ``today`` from the device.
+    Zigbee cannot: the Metering cluster exposes only the cumulative
+    ``current_summ_delivered``, so "since midnight" does not exist to be read.
+    The card showed 0, which is not a small thing — it reads as "the plug used
+    nothing", not as "this plug cannot answer that".
+
+    Derived the same way the range report works: today's consumption is the
+    current counter minus its value at midnight, taken from
+    ``smart_plug_energy_snapshots``. Snapshots are written hourly and at both
+    ends of every print, so the midnight baseline is at most an hour stale and
+    usually much fresher.
+
+    Midnight is the *client's*, from the request header — "today" on someone's
+    screen means the day they are having. Scheduled work keeps using the
+    server's own timezone; see ``core/timezones``.
+
+    Returns None rather than 0 when there is no baseline yet. A fresh install has
+    no snapshot before midnight, and answering 0 there would state that nothing
+    was used rather than that nothing is known — the exact confusion this
+    function exists to remove.
+    """
+    from backend.app.core.timezones import client_timezone, start_of_today
+    from backend.app.models.smart_plug_energy_snapshot import SmartPlugEnergySnapshot
+
+    if total_now is None:
+        return None
+
+    midnight_utc = start_of_today(client_timezone(request))
+    baseline = (
+        await db.execute(
+            select(SmartPlugEnergySnapshot.lifetime_kwh)
+            .where(
+                SmartPlugEnergySnapshot.plug_id == plug_id,
+                SmartPlugEnergySnapshot.recorded_at <= midnight_utc,
+            )
+            .order_by(SmartPlugEnergySnapshot.recorded_at.desc())
+            .limit(1)
+        )
+    ).scalar()
+
+    if baseline is None:
+        return None
+    # Clamped: a plug whose counter was reset today would otherwise report a
+    # negative figure, which is worse than admitting to zero.
+    return round(max(0.0, float(total_now) - float(baseline)), 3)
 
 
 async def check_power_alerts(plug: SmartPlug, current_power: float | None, db: AsyncSession):

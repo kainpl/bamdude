@@ -4202,7 +4202,7 @@ export function SettingsPage() {
                         {t('settings.total')}
                       </div>
                       <div className="text-xl font-bold text-white">
-                        {plugEnergySummary.totalLifetime.toFixed(1)}
+                        {plugEnergySummary.totalLifetime.toFixed(3)}
                         <span className="text-sm font-normal text-bambu-gray ml-1">kWh</span>
                       </div>
                       {(localSettings?.energy_cost_per_kwh ?? 0) > 0 && (
