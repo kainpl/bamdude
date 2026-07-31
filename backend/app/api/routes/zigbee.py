@@ -54,6 +54,7 @@ def _comports() -> list:
 
 @router.get("/status")
 async def get_zigbee_status(
+    db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
 ):
     """Whether the coordinator is up, and why not when it is not.
@@ -62,11 +63,46 @@ async def get_zigbee_status(
     returned verbatim rather than mapped to a code.
     """
     status = zigbee_coordinator.status
+    identity = _radio_identity()
     return {
         "state": status.state.value,
         "reason": status.reason,
-        **_radio_identity(),
+        **identity,
+        "radio_changed": await _radio_changed(db, identity),
     }
+
+
+async def _radio_changed(db: AsyncSession, identity: dict) -> str | None:
+    """The IEEE we used to run on, when the dongle answering now is a different one.
+
+    A dongle carries its network with it. Point the path at a second physical
+    stick and everything still reports healthy — the radio comes up, the channel
+    is fine, the state is ``up`` — but the paired devices are simply not there,
+    because they were never on THIS one's network. Every plug reads unreachable
+    at once, which looks exactly like a failure of BamDude rather than a swap the
+    operator performed deliberately.
+
+    So the previous identity is remembered and compared. Read-only when it
+    matches; the first successful connection writes it, which is also how an
+    install that predates this gets adopted rather than warned at.
+
+    Returns the OLD address so the UI can name it. ``None`` means nothing to say.
+    """
+    coordinator = identity.get("coordinator")
+    if not coordinator or not coordinator.get("ieee"):
+        return None
+
+    from backend.app.api.routes.settings import get_setting, set_setting
+
+    current = str(coordinator["ieee"]).strip().lower()
+    known = (await get_setting(db, "zigbee_radio_ieee") or "").strip().lower()
+
+    if not known:
+        await set_setting(db, "zigbee_radio_ieee", current)
+        await db.commit()
+        return None
+
+    return None if known == current else known
 
 
 def _radio_identity() -> dict:
@@ -149,6 +185,118 @@ def _require_up():
             detail=status.reason or f"The Zigbee coordinator is {status.state.value}.",
         )
     return app
+
+
+async def _stop_radio() -> None:
+    """Stop the coordinator and drop the listeners tied to its cluster objects.
+
+    Shared by disconnect and forget so neither can acquire the half-stopped
+    shape ``/restart`` had to be taught about: a stopped application leaves every
+    cached listener pointing at orphaned clusters, and a later start would carry
+    on switching plugs while reports silently never arrived.
+    """
+    from backend.app.services.zigbee.driver import zigbee_smart_plug_service
+
+    await zigbee_coordinator.stop()
+    zigbee_smart_plug_service._listeners.clear()  # noqa: SLF001 — see docstring
+
+
+@router.post("/disconnect")
+async def disconnect_coordinator(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_UPDATE),
+):
+    """Put the radio down and leave everything else alone. Fully reversible.
+
+    The counterpart of Connect, and deliberately NOT the counterpart of pairing:
+    the network database, the paired devices and every ``SmartPlug`` row survive
+    untouched. Connecting again brings all of it back with nothing to
+    reconfigure — which is exactly why this must be a separate action from
+    forgetting the network, whose cost is a walk to every plug in the building.
+
+    ``zigbee_enabled`` is cleared as well as the radio stopped. Stopping without
+    clearing it would last until the next application start, and the operator
+    who switched Zigbee off would find it back on after a restart with no
+    explanation.
+    """
+    from backend.app.api.routes.settings import set_setting
+
+    async with _restart_lock:
+        await _stop_radio()
+        await set_setting(db, "zigbee_enabled", "false")
+        await db.commit()
+
+    logger.info("Zigbee coordinator disconnected by request")
+    status = zigbee_coordinator.status
+    return {"state": status.state.value, "reason": status.reason, **_radio_identity()}
+
+
+@router.delete("/network")
+async def forget_network(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_DELETE),
+):
+    """Erase the Zigbee network. **Irreversible without a backup.**
+
+    ``zigbee.db`` holds the network key. Deleting it does not un-pair anything at
+    the devices' end — it destroys our half of the relationship, so every plug
+    keeps believing it belongs to a network we can no longer speak to. The only
+    way back is to press the button on each one in turn, physically, wherever it
+    happens to be installed.
+
+    The one real escape hatch is a backup: ``_stage_zigbee_db`` has carried this
+    file since phase 1, precisely so this mistake is survivable. Said in the
+    dialog rather than only here.
+
+    ``SmartPlug`` rows are deliberately kept. They read as unreachable, exactly
+    as an unplugged dongle already makes them read, and they hold the printer
+    binding, the schedules and the link to archived per-print energy. Re-pairing
+    a plug reuses its IEEE, so those rows come back to life on their own with
+    nothing to set up again — the same soft-retire reasoning as archived
+    printers. The count is returned so the dialog can say how many are waiting.
+
+    Sidecars go too. zigpy runs SQLite in WAL, so a freshly formed network lives
+    in ``zigbee.db-wal`` while the main file is still an empty header — that is
+    measured, not assumed (it is why backups snapshot rather than copy). Deleting
+    only the main file would leave the network half-alive and the next start
+    reading a database nobody meant to keep.
+    """
+    from backend.app.models.smart_plug import SmartPlug
+
+    async with _restart_lock:
+        await _stop_radio()
+
+        db_path = zigbee_coordinator.database_path
+        removed = []
+        for path in (db_path, db_path.with_name(db_path.name + "-wal"), db_path.with_name(db_path.name + "-shm")):
+            try:
+                if path.exists():
+                    path.unlink()
+                    removed.append(path.name)
+            except OSError as exc:
+                logger.warning("Could not remove %s: %s", path.name, exc)
+                raise HTTPException(500, f"Could not remove {path.name}: {exc}") from exc
+
+        orphaned = (await db.execute(select(SmartPlug).where(SmartPlug.plug_type == "zigbee"))).scalars().all()
+
+        # The radio identity is the network's, not the dongle's alone — keeping
+        # it would make the next connection to a rebuilt network look like a
+        # swapped dongle.
+        from backend.app.api.routes.settings import set_setting
+
+        await set_setting(db, "zigbee_radio_ieee", "")
+        await db.commit()
+
+    logger.warning(
+        "Zigbee network erased (%s); %s plug row(s) kept and now unreachable",
+        ", ".join(removed) or "nothing to remove",
+        len(orphaned),
+    )
+    return {
+        "removed": removed,
+        "plugs_kept": len(orphaned),
+        "state": zigbee_coordinator.status.state.value,
+    }
 
 
 @router.post("/permit")

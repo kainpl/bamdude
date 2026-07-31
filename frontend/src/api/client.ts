@@ -2270,6 +2270,11 @@ export interface ZigbeeStatus {
   reason: string | null;
   coordinator: ZigbeeCoordinatorInfo | null;
   network: ZigbeeNetworkInfo | null;
+  // The address we used to run on, when the dongle answering now is a different
+  // one. A dongle carries its network with it, so a swapped stick comes up
+  // perfectly healthy with none of the paired devices on it — indistinguishable
+  // from a BamDude fault unless we name it. `null` means nothing to say.
+  radio_changed: string | null;
 }
 
 export interface ZigbeeDevice {
@@ -6065,6 +6070,14 @@ export const api = {
   removeZigbeeDevice: (ieee: string) =>
     request<{ removed: string }>(`/zigbee/devices/${encodeURIComponent(ieee)}`, { method: 'DELETE' }),
   restartZigbeeCoordinator: () => request<ZigbeeStatus>('/zigbee/restart', { method: 'POST' }),
+  // Reversible: stops the radio and clears the setting, keeping the network,
+  // the paired devices and every plug row. Connect brings it all back.
+  disconnectZigbeeCoordinator: () => request<ZigbeeStatus>('/zigbee/disconnect', { method: 'POST' }),
+  // NOT reversible without a backup: erases the network key, so every plug has
+  // to be re-paired by hand, at the plug. `plugs_kept` is how many rows are
+  // waiting for those devices to come back.
+  forgetZigbeeNetwork: () =>
+    request<{ removed: string[]; plugs_kept: number; state: string }>('/zigbee/network', { method: 'DELETE' }),
   controlSmartPlug: (id: number, action: 'on' | 'off' | 'toggle') =>
     request<{ success: boolean; action: string }>(`/smart-plugs/${id}/control`, {
       method: 'POST',

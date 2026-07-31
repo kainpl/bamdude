@@ -1579,6 +1579,18 @@ export default {
       removeDeviceConfirm:
         'Remove {{name}} from the Zigbee network? It will stop responding until you pair it again by hand.',
       radioDownShort: 'The Zigbee radio is down',
+      disconnect: 'Disconnect',
+      radioChangedTitle: 'This is a different Zigbee dongle',
+      radioChangedBody:
+        'A dongle carries its network with it, so the devices paired to the previous one ({{previous}}) are not on this one and will show as unreachable. Plug the old dongle back in to get them, or restore a backup taken while it was in use — backups include the Zigbee network.',
+      forgetTitle: 'Forget the Zigbee network',
+      forgetHint:
+        'Erases the network key. Every plug then has to be paired again by hand, at the plug. Disconnect above just stops the radio and costs nothing.',
+      forgetAction: 'Forget network',
+      forgetConfirm:
+        'Erase this Zigbee network? The devices keep believing they belong to it, so each plug must be re-paired in person, wherever it is installed. Your plugs and their settings are kept and come back on their own once re-paired. A backup taken before now can restore the network.',
+      forgetDone_one: 'Zigbee network erased. {{count}} plug is kept and will work again once re-paired.',
+      forgetDone_other: 'Zigbee network erased. {{count}} plugs are kept and will work again once re-paired.',
       state: {
         disabled: 'Off',
         starting: 'Starting',

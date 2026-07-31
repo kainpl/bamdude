@@ -17,7 +17,7 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Loader2, Plug, RefreshCw, Trash2, Usb, Wifi } from 'lucide-react';
+import { Loader2, Plug, PowerOff, RefreshCw, Trash2, Usb, Wifi } from 'lucide-react';
 
 import { api } from '../../api/client';
 import type { ZigbeeDevice } from '../../api/client';
@@ -55,6 +55,7 @@ export function ZigbeeCoordinatorCard() {
   const [transport, setTransport] = useState<Transport>('ethernet');
   const [path, setPath] = useState('');
   const [removing, setRemoving] = useState<ZigbeeDevice | null>(null);
+  const [forgetting, setForgetting] = useState(false);
 
   // Seed the editable copy once the saved settings arrive. Without the guard a
   // refetch would overwrite what the operator is in the middle of typing.
@@ -107,6 +108,33 @@ export function ZigbeeCoordinatorCard() {
     onSuccess: () => {
       setRemoving(null);
       queryClient.invalidateQueries({ queryKey: ['zigbee-devices'] });
+    },
+    onError: (err: Error) => showToast(err.message, 'error'),
+  });
+
+  // Reversible. Kept well away from Forget below, which is not: the two look
+  // similar in a menu and cost wildly different amounts to undo.
+  const disconnect = useMutation({
+    mutationFn: api.disconnectZigbeeCoordinator,
+    onSuccess: () => {
+      setEnabled(false);
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.invalidateQueries({ queryKey: ['zigbee-status'] });
+      queryClient.invalidateQueries({ queryKey: ['zigbee-devices'] });
+    },
+    onError: (err: Error) => showToast(err.message, 'error'),
+  });
+
+  const forget = useMutation({
+    mutationFn: api.forgetZigbeeNetwork,
+    onSuccess: (result) => {
+      setForgetting(false);
+      setEnabled(false);
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.invalidateQueries({ queryKey: ['zigbee-status'] });
+      queryClient.invalidateQueries({ queryKey: ['zigbee-devices'] });
+      queryClient.invalidateQueries({ queryKey: ['smart-plugs'] });
+      showToast(t('settings.zigbee.forgetDone', { count: result.plugs_kept }), 'success');
     },
     onError: (err: Error) => showToast(err.message, 'error'),
   });
@@ -223,7 +251,29 @@ export function ZigbeeCoordinatorCard() {
             {permit.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plug className="w-4 h-4" />}
             {t('settings.zigbee.pairDevice')}
           </Button>
+          {/* Only offered while there is something to disconnect. A button that
+              stops an already-stopped radio is noise. */}
+          {state === 'up' || state === 'starting' ? (
+            <Button variant="secondary" onClick={() => disconnect.mutate()} disabled={disconnect.isPending}>
+              {disconnect.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <PowerOff className="w-4 h-4" />}
+              {t('settings.zigbee.disconnect')}
+            </Button>
+          ) : null}
         </div>
+
+        {/* A swapped dongle brings up a perfectly healthy radio with none of the
+            paired devices on it, because they were never on this one's network.
+            Without naming it, that reads as BamDude losing every plug at once. */}
+        {status?.radio_changed ? (
+          <div className="rounded-lg border border-yellow-500/40 bg-yellow-100 dark:bg-yellow-500/10 p-3 space-y-1">
+            <p className="text-sm font-medium text-yellow-800 dark:text-yellow-300">
+              {t('settings.zigbee.radioChangedTitle')}
+            </p>
+            <p className="text-sm text-yellow-800/90 dark:text-yellow-200/90">
+              {t('settings.zigbee.radioChangedBody', { previous: status.radio_changed })}
+            </p>
+          </div>
+        ) : null}
 
         {pairing.phase === 'pairing' ? (
           <div className="bg-bambu-dark rounded-lg p-3 space-y-1">
@@ -320,7 +370,37 @@ export function ZigbeeCoordinatorCard() {
             </ul>
           )}
         </div>
+
+        {/* Last, separated, and worded as loss rather than as an action. This is
+            the only control here that cannot be undone by pressing something
+            else: Disconnect above stops the same radio and costs nothing. */}
+        <div className="pt-4 border-t border-bambu-dark-tertiary">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-white">{t('settings.zigbee.forgetTitle')}</p>
+              <p className="text-sm text-bambu-gray">{t('settings.zigbee.forgetHint')}</p>
+            </div>
+            <Button variant="danger" onClick={() => setForgetting(true)} disabled={forget.isPending}>
+              {forget.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+              {t('settings.zigbee.forgetAction')}
+            </Button>
+          </div>
+        </div>
       </CardContent>
+
+      {forgetting ? (
+        <ConfirmModal
+          title={t('settings.zigbee.forgetTitle')}
+          // Names the real cost — a walk to every plug — and the one escape
+          // hatch, because backups have carried zigbee.db since phase 1
+          // precisely so this mistake is survivable.
+          message={t('settings.zigbee.forgetConfirm')}
+          confirmText={t('settings.zigbee.forgetAction')}
+          onConfirm={() => forget.mutate()}
+          onCancel={() => setForgetting(false)}
+          variant="danger"
+        />
+      ) : null}
 
       {removing ? (
         <ConfirmModal

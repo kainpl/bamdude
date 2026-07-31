@@ -625,3 +625,186 @@ class TestRestart:
         assert resp.status_code == 200
         subscribe.assert_awaited_once()
         assert [p.plug_type for p in subscribe.await_args.args[1]] == ["zigbee"]
+
+
+class TestDisconnect:
+    """Putting the radio down without losing anything.
+
+    The reversible half of the pair. Everything it does must be undone by
+    pressing Connect again — no re-pairing, no reconfiguring, no lost rows.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_it_stops_the_radio_and_clears_the_setting(self, async_client: AsyncClient, monkeypatch):
+        """Stopping without clearing ``zigbee_enabled`` would last only until the
+        next application start, and the operator who switched Zigbee off would
+        find it back on after a restart with nothing to explain it."""
+        from unittest.mock import AsyncMock
+
+        _up(monkeypatch, AsyncMock())
+        await async_client.patch("/api/v1/settings", json={"zigbee_enabled": True})
+
+        resp = await async_client.post("/api/v1/zigbee/disconnect")
+
+        assert resp.status_code == 200
+        assert resp.json()["state"] == "disabled"
+        assert (await async_client.get("/api/v1/settings")).json()["zigbee_enabled"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_network_database_is_untouched(self, async_client: AsyncClient, monkeypatch, tmp_path):
+        """The whole point of a separate action: disconnect must never cost a
+        walk to every plug in the building."""
+        from unittest.mock import AsyncMock
+
+        from backend.app.api.routes import zigbee as zigbee_routes
+
+        db_file = tmp_path / "zigbee" / "zigbee.db"
+        db_file.parent.mkdir(parents=True)
+        db_file.write_bytes(b"network key lives here")
+        monkeypatch.setattr(type(zigbee_routes.zigbee_coordinator), "database_path", property(lambda _: db_file))
+        _up(monkeypatch, AsyncMock())
+
+        await async_client.post("/api/v1/zigbee/disconnect")
+
+        assert db_file.exists(), "disconnect must not erase the network"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_disconnecting_a_radio_that_is_already_down_is_not_an_error(self, async_client: AsyncClient):
+        resp = await async_client.post("/api/v1/zigbee/disconnect")
+
+        assert resp.status_code == 200
+        assert resp.json()["state"] == "disabled"
+
+
+class TestForgetNetwork:
+    """The irreversible half.
+
+    Erasing ``zigbee.db`` destroys our end of every pairing while the devices
+    keep believing they belong to a network we can no longer speak to. Without a
+    backup the only way back is the button on each plug, in person.
+    """
+
+    @staticmethod
+    def _network_at(monkeypatch, tmp_path):
+        from backend.app.api.routes import zigbee as zigbee_routes
+
+        db_file = tmp_path / "zigbee" / "zigbee.db"
+        db_file.parent.mkdir(parents=True)
+        for suffix in ("", "-wal", "-shm"):
+            db_file.with_name(db_file.name + suffix).write_bytes(b"x")
+        monkeypatch.setattr(type(zigbee_routes.zigbee_coordinator), "database_path", property(lambda _: db_file))
+        return db_file
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_it_removes_the_wal_sidecars_too(self, async_client: AsyncClient, monkeypatch, tmp_path):
+        """zigpy runs SQLite in WAL, so a freshly formed network lives in
+        ``zigbee.db-wal`` while the main file is still an empty header — measured
+        in phase 1, which is why backups snapshot rather than copy. Removing only
+        the main file would leave the network half-alive."""
+        db_file = self._network_at(monkeypatch, tmp_path)
+
+        resp = await async_client.delete("/api/v1/zigbee/network")
+
+        assert resp.status_code == 200
+        assert set(resp.json()["removed"]) == {"zigbee.db", "zigbee.db-wal", "zigbee.db-shm"}
+        for suffix in ("", "-wal", "-shm"):
+            assert not db_file.with_name(db_file.name + suffix).exists()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_plug_rows_survive_and_are_counted(
+        self, async_client: AsyncClient, monkeypatch, tmp_path, db_session
+    ):
+        """Kept on purpose, like an archived printer: the row holds the printer
+        binding, the schedules and the link to archived per-print energy, and
+        re-pairing reuses the same IEEE so it comes back on its own."""
+        from sqlalchemy import select
+
+        from backend.app.models.smart_plug import SmartPlug
+
+        self._network_at(monkeypatch, tmp_path)
+        db_session.add(SmartPlug(name="bench", plug_type="zigbee", zigbee_ieee="a4:c1:38:00:00:00:00:01"))
+        await db_session.commit()
+
+        resp = await async_client.delete("/api/v1/zigbee/network")
+
+        assert resp.status_code == 200
+        assert resp.json()["plugs_kept"] == 1
+        rows = (await db_session.execute(select(SmartPlug).where(SmartPlug.plug_type == "zigbee"))).scalars().all()
+        assert len(rows) == 1, "forgetting the network must not delete the plug rows"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_forgetting_when_there_is_nothing_to_forget_is_not_an_error(
+        self, async_client: AsyncClient, monkeypatch, tmp_path
+    ):
+        from backend.app.api.routes import zigbee as zigbee_routes
+
+        missing = tmp_path / "zigbee" / "zigbee.db"
+        monkeypatch.setattr(type(zigbee_routes.zigbee_coordinator), "database_path", property(lambda _: missing))
+
+        resp = await async_client.delete("/api/v1/zigbee/network")
+
+        assert resp.status_code == 200
+        assert resp.json()["removed"] == []
+
+
+class TestSwappedDongle:
+    """A different stick is a different network, and everything still looks fine.
+
+    The radio comes up, the channel is sane, the state is up — and not one paired
+    device is there, because they were never on this one\'s network. That reads
+    as a BamDude failure unless we say otherwise.
+    """
+
+    @staticmethod
+    def _radio(monkeypatch, ieee: str):
+        from backend.app.api.routes import zigbee as zigbee_routes
+
+        monkeypatch.setattr(
+            zigbee_routes,
+            "_radio_identity",
+            lambda: {
+                "coordinator": {"ieee": ieee, "nwk": 0, "model": "Dongle-M", "manufacturer": "ITead", "version": "7"},
+                "network": {"channel": 15, "pan_id": 4660},
+            },
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_first_connection_is_adopted_not_warned_about(self, async_client: AsyncClient, monkeypatch):
+        """An install that predates this has no stored identity, and it did not
+        swap anything."""
+        self._radio(monkeypatch, "aa:bb:cc:dd:ee:ff:00:01")
+
+        assert (await async_client.get("/api/v1/zigbee/status")).json()["radio_changed"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_same_dongle_stays_quiet(self, async_client: AsyncClient, monkeypatch):
+        self._radio(monkeypatch, "aa:bb:cc:dd:ee:ff:00:01")
+        await async_client.get("/api/v1/zigbee/status")  # adopt
+
+        assert (await async_client.get("/api/v1/zigbee/status")).json()["radio_changed"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_different_dongle_names_the_old_one(self, async_client: AsyncClient, monkeypatch):
+        self._radio(monkeypatch, "aa:bb:cc:dd:ee:ff:00:01")
+        await async_client.get("/api/v1/zigbee/status")  # adopt
+
+        self._radio(monkeypatch, "11:22:33:44:55:66:77:88")
+        body = (await async_client.get("/api/v1/zigbee/status")).json()
+
+        assert body["radio_changed"] == "aa:bb:cc:dd:ee:ff:00:01"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_radio_that_is_down_says_nothing(self, async_client: AsyncClient):
+        """No identity to compare, and "your dongle changed" would be a lie on a
+        radio that is simply off."""
+        assert (await async_client.get("/api/v1/zigbee/status")).json()["radio_changed"] is None
