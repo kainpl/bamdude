@@ -9,11 +9,12 @@ scaling attributes present.
 
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from zigpy.zcl import foundation
 
+from backend.app.services.zigbee.coordinator import CoordinatorState, CoordinatorStatus
 from backend.app.services.zigbee.devices import ELECTRICAL_MEASUREMENT, METERING, ON_OFF
 from backend.app.services.zigbee.driver import ZigbeeSmartPlugService
 
@@ -90,8 +91,18 @@ def service():
     return ZigbeeSmartPlugService()
 
 
-def _with_app(app):
-    return patch("backend.app.services.zigbee.driver.zigbee_coordinator", SimpleNamespace(app=app))
+def _with_app(app, state=CoordinatorState.UP):
+    """Stand in for the coordinator singleton.
+
+    Carries a ``status`` as well as an ``app`` because the driver now asks both:
+    a lost radio leaves ``app`` in place and only moves the status, so "there is
+    an app" stopped being a usable proxy for "the radio works". Pass ``state`` to
+    simulate a radio that is down.
+    """
+    return patch(
+        "backend.app.services.zigbee.driver.zigbee_coordinator",
+        SimpleNamespace(app=app, status=CoordinatorStatus(state)),
+    )
 
 
 class TestSwitching:
@@ -467,3 +478,73 @@ class TestPowerWhileTheSocketIsOff:
             energy = await service.get_energy(_plug())
 
         assert energy["power"] == pytest.approx(35.0)
+
+
+class TestRadioDownCascadesToEveryPlug:
+    """A dead coordinator means no plug is reachable — say so at once.
+
+    ``connection_lost`` moves the status to ERROR but does NOT clear ``app``:
+    the application object and its device table outlive the transport. The
+    driver read "there is an app" as "the radio works", so after the dongle went
+    away every plug kept reporting healthy for the whole staleness window — the
+    cache was recent, so nothing asked the radio anything, and the card went on
+    saying the plug was fine.
+
+    Reported from the bench: a plug pulled out of the wall produced no visible
+    change in the UI at all.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_lost_radio_makes_a_plug_unreachable_immediately(self, service):
+        device = _device({ON_OFF: AsyncMock()})
+        # Fresh cache — without the status check nothing would even try to read.
+        service.update(1, state="ON", power=42.0)
+
+        with _with_app(_app(device)):
+            assert (await service.get_status(_plug()))["reachable"] is True
+
+        with _with_app(_app(device), CoordinatorState.ERROR):
+            status = await service.get_status(_plug())
+
+        assert status["reachable"] is False
+        assert status["state"] is None, "an unreachable plug must not keep asserting its last state"
+
+    @pytest.mark.asyncio
+    async def test_it_sends_nothing_to_the_hardware(self, service):
+        """Marking, not commanding. The devices cannot receive anything anyway,
+        and a queued command would land whenever the radio returned — long after
+        the operator stopped expecting it."""
+        onoff = AsyncMock()
+        device = _device({ON_OFF: onoff})
+        service.update(1, state="ON")
+
+        with _with_app(_app(device), CoordinatorState.ERROR):
+            await service.get_status(_plug())
+
+        onoff.command.assert_not_awaited()
+        onoff.read_attributes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("state", [CoordinatorState.ERROR, CoordinatorState.DISABLED, CoordinatorState.STARTING])
+    async def test_only_up_counts_as_usable(self, service, state):
+        """STARTING included deliberately: a radio part-way through connecting
+        cannot answer for a device either."""
+        device = _device({ON_OFF: AsyncMock()})
+        service.update(1, state="ON")
+
+        with _with_app(_app(device), state):
+            assert (await service.get_status(_plug()))["reachable"] is False
+
+
+def test_the_stale_window_covers_two_poll_cycles():
+    """Pinned because it is a judgement call, not a derivation. 90 s is exactly
+    two of the poller's worst-case 45 s cycles — enough that a plug polled on
+    schedule is never called unreachable, and short enough that one pulled from
+    the wall stops claiming to be online within a minute and a half rather than
+    two.
+    """
+    from backend.app.services.zigbee.driver import _STALE_AFTER_SECONDS
+    from backend.app.services.zigbee.poller import _POLL_INTERVAL_SECONDS
+
+    assert _STALE_AFTER_SECONDS == 90
+    assert _POLL_INTERVAL_SECONDS[1] * 2 <= _STALE_AFTER_SECONDS

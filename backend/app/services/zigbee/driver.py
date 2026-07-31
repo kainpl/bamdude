@@ -34,7 +34,7 @@ from typing import Any
 
 from zigpy.zcl import foundation
 
-from backend.app.services.zigbee.coordinator import zigbee_coordinator
+from backend.app.services.zigbee.coordinator import CoordinatorState, zigbee_coordinator
 from backend.app.services.zigbee.devices import ELECTRICAL_MEASUREMENT, METERING, ON_OFF
 
 logger = logging.getLogger(__name__)
@@ -44,16 +44,25 @@ logger = logging.getLogger(__name__)
 _CMD_OFF = 0x00
 _CMD_ON = 0x01
 
-# How long a cached reading may be trusted — roughly three missed polls at the
-# poller's 30–45 s cadence. Past it the driver reads the device instead of
-# answering from cache, and reports unreachable if that read fails.
+# How long a cached reading may be trusted. Past it the driver reads the device
+# instead of answering from cache, and reports unreachable if that read fails.
 #
-# Found the hard way: without this the driver answered "power: 32" for a plug
-# that had been switched OFF, from a value read once at bind time. ``reachable``
-# only asked whether the cache held *anything*, so a twenty-minute-old number
-# was presented as current. A stale reading is worse than none — it reads as a
-# measurement.
-_STALE_AFTER_SECONDS = 120
+# Found the hard way: without any window the driver answered "power: 32" for a
+# plug that had been switched OFF, from a value read once at bind time.
+# ``reachable`` only asked whether the cache held *anything*, so a twenty-minute
+# old number was presented as current. A stale reading is worse than none — it
+# reads as a measurement.
+#
+# 90 s is two poll cycles plus headroom at the poller's 30–45 s cadence: one
+# missed read does not condemn a healthy plug, and it stops short of the two
+# full minutes this used to be. To someone who has just pulled a plug out of the
+# wall and is watching the card, two minutes of "online" reads as the interface
+# being stuck rather than as caution.
+#
+# It is the backstop, not the mechanism. A radio that goes down is reported at
+# once through the coordinator's own status (see ``_device_for``); this window
+# only covers one device going quiet while the mesh is otherwise fine.
+_STALE_AFTER_SECONDS = 90
 
 
 def _command_succeeded(result) -> bool:
@@ -126,6 +135,20 @@ class ZigbeeSmartPlugService:
         ieee = getattr(plug, "zigbee_ieee", None)
         app = zigbee_coordinator.app
         if not ieee or app is None:
+            return None
+        # A lost radio does NOT clear ``app`` — ``connection_lost`` only moves
+        # the status to ERROR, so the application object and its device table
+        # outlive the transport. Reading "there is an app" as "the radio works"
+        # therefore left every plug looking healthy for the whole staleness
+        # window after the dongle went away: the cache was recent, so nothing
+        # asked the radio anything, and the card kept saying the plug was fine.
+        #
+        # Checking the status makes the answer immediate and, being here rather
+        # than in each caller, it cascades to every plug at once — which is the
+        # honest reading, since one dead coordinator means none of them are
+        # reachable. Nothing is sent to the devices: this returns before any
+        # I/O, so no command goes out to hardware that cannot receive it.
+        if zigbee_coordinator.status.state is not CoordinatorState.UP:
             return None
         wanted = str(ieee).strip().lower()
         return next((d for k, d in app.devices.items() if str(k).lower() == wanted), None)
