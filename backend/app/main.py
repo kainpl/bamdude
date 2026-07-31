@@ -691,6 +691,10 @@ async def _record_energy_start(archive, printer_id: int, db, *, context: str = "
             _logger.warning("[ENERGY] No 'total' in energy response for archive %s", archive.id)
             return False
         archive.energy_start_kwh = float(energy["total"])
+        # Same reading, also kept as a snapshot: it marks the true start of this
+        # print in the range report instead of leaving the nearest boundary on
+        # whichever hour the snapshot loop last fired.
+        await smart_plug_manager.record_energy_snapshot(db, plug.id, energy["total"])
         await db.commit()
         _logger.info(
             "[ENERGY] Recorded starting energy%s for archive %s: %s kWh",
@@ -5512,6 +5516,12 @@ async def on_print_complete(printer_id: int, data: dict):
                     logger.warning("[ENERGY-BG] No 'total' in energy response")
                     return
 
+                # Recorded before the sanity check below, not after: a counter
+                # that went backwards is precisely when the range report most
+                # needs a fresh baseline, and the reading itself is true even
+                # though the per-print delta derived from it is not.
+                await smart_plug_manager.record_energy_snapshot(db, plug.id, energy["total"])
+
                 energy_used = round(energy["total"] - starting_kwh, 4)
                 logger.info("[ENERGY-BG] Per-print energy: %s kWh", energy_used)
                 if energy_used < 0:
@@ -5521,6 +5531,10 @@ async def on_print_complete(printer_id: int, data: dict):
                         starting_kwh,
                         energy["total"],
                     )
+                    # Commit the snapshot even though no per-print figure is
+                    # written — otherwise the session unwinds and the one
+                    # reading that could re-baseline the report is thrown away.
+                    await db.commit()
                     return
 
                 from backend.app.api.routes.settings import get_setting

@@ -194,6 +194,39 @@ class SmartPlugManager:
                 await db.commit()
                 logger.info("Captured %d energy snapshot(s)", captured)
 
+    @staticmethod
+    async def record_energy_snapshot(db, plug_id: int, lifetime_kwh: float | None) -> bool:
+        """Store one lifetime-counter reading, outside the hourly loop.
+
+        Called at print start and print end, where the counter has just been
+        read anyway to compute per-print energy. Free to record, and it makes
+        the range report land on real boundaries instead of on whichever hour
+        the loop last happened to fire: a "today" total asked for right after a
+        print finished used to answer with a counter up to an hour stale.
+
+        Safe to add rows at any density. ``_sum_snapshot_deltas`` takes
+        ``endpoint - baseline`` per plug — the last snapshot at or before each
+        end of the range — rather than summing consecutive pairs, so extra
+        points can only move those two nearer the range edges. Nothing
+        double-counts.
+
+        Does not commit: the callers are already inside a transaction that owns
+        the archive row this reading belongs to, and a snapshot that survived
+        while the energy figure beside it rolled back would be worse than none.
+        """
+        from backend.app.models.smart_plug_energy_snapshot import SmartPlugEnergySnapshot
+
+        if lifetime_kwh is None:
+            return False
+        db.add(
+            SmartPlugEnergySnapshot(
+                plug_id=plug_id,
+                recorded_at=datetime.now(timezone.utc),
+                lifetime_kwh=float(lifetime_kwh),
+            )
+        )
+        return True
+
     async def _check_schedules(self):
         """Check all plugs for scheduled on/off times."""
         from backend.app.core.database import async_session
