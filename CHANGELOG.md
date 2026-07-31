@@ -30,6 +30,14 @@ All notable changes to BamDude will be documented in this file.
 
 - **Per-print energy could have been read from the wrong smart plug driver.** The two places that record what a print cost each worked out how to reach a plug on their own instead of asking the one component that knows. Any plug type they did not explicitly list would have fallen through to Tasmota's HTTP polling in one case, or been dropped from the totals entirely in the other. No shipping plug type was affected — every one of them was listed — but the shape meant the next plug type added would have been silently wrong rather than visibly missing.
 
+- **A Zigbee dongle that went away mid-startup reported nonsense instead of saying so.** If the radio was unplugged, reset, or grabbed by another program while BamDude was connecting to it, the Zigbee card showed `object NoneType can't be used in 'await' expression` — a message about BamDude's insides that tells an operator nothing about their dongle. The real reason was being thrown away twice over inside the Zigbee library while it cleaned up. BamDude now recognises that specific case and says what actually happened. Genuine faults are untouched and still report themselves: a refused connection still reads as a refused connection, a silent radio still reads as a timeout.
+
+- **A failed Zigbee start left threads running, and enough of them stopped BamDude from shutting down.** When connecting to the radio failed, part of the Zigbee stack had already started and nothing could stop it again — the library hands back the half-built connection only on success, so on failure there was nothing left to switch off. Every retry added another set, and the leftovers kept the application alive after it was asked to exit. Reproduced here on all three ways a connection can fail; in each, the process now exits on its own where before it hung indefinitely.
+
+- **An unrecognised smart plug type quietly behaved like a Tasmota plug.** The one place that turns a plug type into a driver ended with "otherwise, Tasmota" — so a type it had not been taught about did not fail, it silently got Tasmota's answer: an HTTP request to an address such a plug does not have, with the result fed into per-print energy. Every plug type BamDude ships was listed, so nothing was affected in practice, but that was luck rather than design. An unknown type is now a clear error at the one place that has to know.
+
+- **One misconfigured plug could cancel the whole farm's power schedule.** The scheduled on/off pass walked every plug without protecting itself, so a single plug it could not reach or resolve ended the pass — and every plug after it silently missed its schedule, which could leave a printer powered overnight because of an unrelated plug. Each plug is now handled on its own, and one failure is logged and stepped over.
+
 ## [0.5.1.3] - 2026-07-30
 
 Image: `ghcr.io/kainpl/bamdude:0.5.1.3` / `kainpl/bamdude:0.5.1.3` (`:latest` tracks this).

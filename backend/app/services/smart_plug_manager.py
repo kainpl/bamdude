@@ -21,6 +21,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class UnknownPlugTypeError(ValueError):
+    """A plug type no driver claims.
+
+    Raised rather than defaulted. A default here is not a fallback, it is a wrong
+    answer delivered confidently: the old ``return tasmota_service`` sent an
+    HTTP poll to an ``ip_address`` the plug does not have, and fed the result
+    into per-print energy.
+    """
+
+    def __init__(self, plug_type: str | None):
+        super().__init__(f"No smart-plug driver for plug_type {plug_type!r} — add it to get_service_for_plug()")
+        self.plug_type = plug_type
+
+
 class SmartPlugManager:
     """Manages smart plug automation and delayed turn-off."""
 
@@ -32,10 +46,25 @@ class SmartPlugManager:
         self._last_schedule_check: dict[int, str] = {}  # plug_id -> "HH:MM" last executed
 
     async def get_service_for_plug(self, plug: "SmartPlug", db: AsyncSession | None = None):
-        """Get the appropriate service for the plug type.
+        """The single place a plug type becomes a driver.
 
         For HA plugs, configures the service with current settings from DB.
+
+        Every type is named explicitly and an unknown one raises. It used to end
+        in a bare ``return tasmota_service``, which meant a type this chain had
+        not been taught about did not fail — it quietly got Tasmota's answer, an
+        HTTP poll against an ``ip_address`` that such a plug does not have. Since
+        this feeds per-print energy, that is a WRONG number rather than a missing
+        one, and nothing anywhere looks broken.
+
+        It was harmless only by luck: every shipping type happened to be listed.
+        The mqtt branch had to be added by m113 for exactly this reason, and the
+        zigbee one would have been the next instance. A total mapping means the
+        next type added is a loud error at the one site that has to know, instead
+        of silent Tasmota everywhere downstream.
         """
+        if plug.plug_type == "tasmota":
+            return tasmota_service
         if plug.plug_type == "homeassistant":
             # Configure HA service with current settings
             await self._configure_ha_service(db)
@@ -51,7 +80,7 @@ class SmartPlugManager:
             from backend.app.services.zigbee.driver import zigbee_smart_plug_service
 
             return zigbee_smart_plug_service
-        return tasmota_service
+        raise UnknownPlugTypeError(plug.plug_type)
 
     async def _configure_ha_service(self, db: AsyncSession | None = None):
         """Configure the HA service with URL and token from settings."""
@@ -182,7 +211,18 @@ class SmartPlugManager:
             plugs = result.scalars().all()
 
             for plug in plugs:
-                service = await self.get_service_for_plug(plug, db)
+                # Per-plug, deliberately: this loop drives scheduled power for
+                # the whole farm, and it had no guard at all. One plug that
+                # cannot be resolved or reached would abort the pass, so every
+                # plug after it silently missed its schedule — a printer left on
+                # overnight because an unrelated plug was misconfigured. The
+                # monitor loop above already isolates per plug; this one now
+                # does too.
+                try:
+                    service = await self.get_service_for_plug(plug, db)
+                except Exception:
+                    logger.exception("Schedule: no driver for plug '%s', skipping it this pass", plug.name)
+                    continue
 
                 # Check if we should turn on
                 if plug.schedule_on_time == current_time:

@@ -18,6 +18,7 @@ is why the lifecycle is testable without hardware.
 from __future__ import annotations
 
 import logging
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
@@ -66,8 +67,56 @@ def _describe_exception(exc: BaseException | None) -> str:
     """
     if exc is None:
         return "the connection closed without an error"
+    if _is_closed_loop_artefact(exc):
+        return _CLOSED_LOOP_REASON
     message = str(exc).strip()
     return message or type(exc).__name__
+
+
+# What bellows raises once its I/O thread's loop is gone, and what to say instead.
+#
+# ``bellows.thread.ThreadsafeProxy`` wraps the Gateway so calls hop onto the
+# reader thread's loop. When that loop is closed it logs "Attempted to use a
+# closed event loop" and takes a bare ``return`` — handing back ``None`` where
+# the caller expects a coroutine. Every ``await`` on it then dies with this
+# TypeError.
+#
+# The loop is closed by ``bellows.uart.connect``, which registers
+# ``connection_done.add_done_callback(lambda _: thread.force_stop())``. So this
+# fires precisely when the link to the radio ENDED — dropped mid-startup, or
+# never completed — and the message describes none of that.
+#
+# Worse, it masks twice. Reproduced against a server that accepts then resets:
+# ``EZSP._startup_reset`` awaits the proxy and gets this TypeError; its own
+# handler calls ``disconnect()``, which awaits the proxy again and raises the
+# SAME TypeError; that second one is what reaches us. The real cause is gone
+# before it ever had a name, which is why the operator saw
+# "object NoneType can't be used in 'await' expression" for a dongle that had
+# simply gone away.
+#
+# Matched on the message rather than the type: a bare ``TypeError`` from the
+# radio stack could be anything, but this exact sentence is CPython's wording
+# for awaiting None, and inside a bellows failure it has only this one source.
+_AWAIT_NONE_MESSAGE = "object NoneType can't be used in 'await' expression"
+_CLOSED_LOOP_REASON = (
+    "the connection to the radio ended during startup (the radio was unplugged, reset, or taken by another program)"
+)
+
+
+def _is_closed_loop_artefact(exc: BaseException) -> bool:
+    """True when this is bellows' closed-loop artefact rather than a real cause.
+
+    Walks the ``__cause__``/``__context__`` chain: the escaping exception is the
+    second one raised, so the marker can sit at any depth.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, TypeError) and _AWAIT_NONE_MESSAGE in str(current):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 class ZigbeeCoordinator:
@@ -260,6 +309,23 @@ class ZigbeeCoordinator:
         zeroes those readings on switch-off and blocks further updates until the
         socket is on again. Home Assistant's ZHA passes the same resolver
         (``zha/application/gateway.py``: ``device_resolver=DEVICE_REGISTRY.resolve``).
+
+        Built step by step instead of via ``ControllerApplication.new()``, and the
+        reason is teardown. ``new()`` holds the application in a local: it calls
+        ``_load_db()`` (which starts ``PersistingListener._worker``) and then
+        ``startup()``, and if ``startup()`` raises, the object is dropped on the
+        floor. Nobody can shut down what was never returned, so bellows' reader
+        thread and zigpy's DB worker outlive the failure — the process stops
+        exiting, and every retry leaks another set. Observed as "Task was
+        destroyed but it is pending" and, in a repro here, an interpreter that
+        printed its last line and then hung.
+
+        zigpy's own ``startup()`` does call ``shutdown(db=False)`` on failure, but
+        ``db=False`` is exactly the half that leaves the database worker running.
+
+        Keeping the reference lets the ``except`` below run a real ``shutdown()``.
+        The sequence mirrors ``new()`` one for one; ``test_open_radio_mirrors_zigpy_new``
+        fails if zigpy changes it.
         """
         from bellows.zigbee.application import ControllerApplication
 
@@ -273,15 +339,27 @@ class ZigbeeCoordinator:
         # because ``cv_ota_provider`` expects the dict form it already
         # converted. The error names OTA and mentions neither config nor the
         # radio, which is what made it look like a dongle fault.
-        return await ControllerApplication.new(
+        app = ControllerApplication(
             {
                 "database_path": str(self.database_path),
                 "device": {"path": device},
-            },
-            auto_form=True,
-            start_radio=True,
-            device_resolver=resolver,
+            }
         )
+        if resolver is not None:
+            app.register_device_resolver(resolver)
+
+        try:
+            await app._load_db()  # noqa: SLF001 — mirrors ControllerApplication.new()
+            await app.startup(auto_form=True)
+        except BaseException:
+            # Best-effort and total: db=True here on purpose, unlike zigpy's own
+            # failure path. A teardown that raises must not replace the reason we
+            # are here — that masking is the very bug above.
+            with suppress(Exception):
+                await app.shutdown()
+            raise
+
+        return app
 
 
 def _quirk_resolver():

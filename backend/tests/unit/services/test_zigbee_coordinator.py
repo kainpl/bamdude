@@ -184,29 +184,38 @@ async def test_open_radio_hands_zigpy_an_unvalidated_config(tmp_path):
     failed connect and the pytest process then never exited — every full-suite
     run left a hung shell. The guarantee was worth keeping; the mechanism was
     not.
+
+    Now patches the CONSTRUCTOR rather than ``new()``: ``_open_radio`` stopped
+    calling ``new()`` so that a failed start leaves us holding the application
+    and able to shut it down. The config still reaches zigpy raw, and that is
+    still what this asserts.
     """
     coord = ZigbeeCoordinator(data_dir=tmp_path)
     captured = {}
 
-    async def _fake_new(config, **kwargs):
+    def _fake_ctor(config):
         captured["config"] = config
-        captured["kwargs"] = kwargs
-        return AsyncMock()
+        app = MagicMock()
+        app._load_db = AsyncMock()
+        app.startup = AsyncMock()
+        app.shutdown = AsyncMock()
+        captured["app"] = app
+        return app
 
-    with patch("bellows.zigbee.application.ControllerApplication.new", _fake_new):
+    with patch("bellows.zigbee.application.ControllerApplication", _fake_ctor):
         await coord._open_radio("socket://127.0.0.1:1")
 
     assert set(captured["config"]) == {"database_path", "device"}, (
-        "config was pre-validated before new() — that is the double-validation bug"
+        "config was pre-validated before zigpy got it — that is the double-validation bug"
     )
-    assert captured["kwargs"]["auto_form"] is True
-    assert captured["kwargs"]["start_radio"] is True
+    captured["app"].startup.assert_awaited_once_with(auto_form=True)
     # Without a resolver zigpy applies NO quirks at all — ``_resolve_device``
     # returns the bare device — and per-model fixes are not cosmetic here: the
     # plug this was built against keeps reporting the last measured power after
     # its socket is switched off, so BamDude read 33 W from a socket with nothing
     # running. ZHA passes the same resolver.
-    assert captured["kwargs"]["device_resolver"] is not None
+    captured["app"].register_device_resolver.assert_called_once()
+    assert captured["app"].register_device_resolver.call_args.args[0] is not None
 
 
 class TestTheReasonIsNeverEmpty:
@@ -244,3 +253,156 @@ class TestTheReasonIsNeverEmpty:
         from backend.app.services.zigbee.coordinator import _describe_exception
 
         assert _describe_exception(None) == "the connection closed without an error"
+
+
+class TestClosedLoopArtefact:
+    """bellows' ``await None`` must never reach the operator as the reason.
+
+    ``ThreadsafeProxy`` hands back ``None`` instead of a coroutine once its
+    thread's loop is closed, so every ``await`` on the Gateway dies with a
+    TypeError that names nothing. The loop is closed by ``uart.connect``'s
+    ``connection_done`` callback, i.e. precisely when the link to the radio
+    ended — and it masks twice: ``EZSP._startup_reset`` hits it, its handler
+    calls ``disconnect()``, which hits it again, and the second one escapes.
+
+    Reproduced against a TCP server that accepts and then resets: before the
+    fix the coordinator reported "object NoneType can't be used in 'await'
+    expression" and the interpreter would not exit.
+    """
+
+    def test_the_artefact_is_translated(self):
+        from backend.app.services.zigbee.coordinator import _describe_exception
+
+        reason = _describe_exception(TypeError("object NoneType can't be used in 'await' expression"))
+
+        assert "NoneType" not in reason
+        assert "radio" in reason
+
+    def test_it_is_found_through_the_exception_chain(self):
+        """The escaping exception is the SECOND one raised, so the marker is
+        usually not the outermost."""
+        from backend.app.services.zigbee.coordinator import _describe_exception
+
+        try:
+            try:
+                raise TypeError("object NoneType can't be used in 'await' expression")
+            except TypeError as inner:
+                raise RuntimeError("cleanup failed") from inner
+        except RuntimeError as outer:
+            assert "NoneType" not in _describe_exception(outer)
+
+    def test_a_real_cause_is_left_alone(self):
+        """Only the artefact is rewritten. A genuine failure keeps its own
+        words — measured: refused connect still reads TransientConnectionError,
+        a silent radio still reads TimeoutError."""
+        from backend.app.services.zigbee.coordinator import _describe_exception
+
+        assert _describe_exception(TimeoutError()) == "TimeoutError"
+        assert _describe_exception(OSError("no such device")) == "no such device"
+
+    def test_an_unrelated_typeerror_is_left_alone(self):
+        from backend.app.services.zigbee.coordinator import _describe_exception
+
+        assert _describe_exception(TypeError("unsupported operand type(s)")) == "unsupported operand type(s)"
+
+    def test_a_self_referential_chain_terminates(self):
+        """``__context__`` can point back at an exception already seen."""
+        from backend.app.services.zigbee.coordinator import _is_closed_loop_artefact
+
+        a = ValueError("a")
+        b = ValueError("b")
+        a.__context__ = b
+        b.__context__ = a
+
+        assert _is_closed_loop_artefact(a) is False
+
+
+class TestPartialStartupIsTornDown:
+    """A failed start must not leave bellows' reader thread and zigpy's DB
+    worker running.
+
+    ``ControllerApplication.new()`` keeps the application in a local, so when
+    ``startup()`` raises the object is unreachable and nothing can shut it down.
+    The threads outlived the failure: "Task was destroyed but it is pending",
+    a process that would not exit, and another set leaked on every retry.
+    """
+
+    @pytest.mark.asyncio
+    async def test_shutdown_runs_when_startup_fails(self, tmp_path):
+        from backend.app.services.zigbee import coordinator as mod
+
+        app = MagicMock()
+        app._load_db = AsyncMock()
+        app.startup = AsyncMock(side_effect=OSError("radio went away"))
+        app.shutdown = AsyncMock()
+
+        coord = ZigbeeCoordinator(data_dir=tmp_path)
+        with (
+            patch.object(mod, "_quirk_resolver", return_value=None),
+            patch("bellows.zigbee.application.ControllerApplication", return_value=app),
+            pytest.raises(OSError, match="radio went away"),
+        ):
+            await coord._open_radio("socket://127.0.0.1:6638")
+
+        app.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_raising_teardown_does_not_replace_the_reason(self, tmp_path):
+        """The masking bug in miniature: if cleanup throws, the operator must
+        still be told why the radio did not come up."""
+        from backend.app.services.zigbee import coordinator as mod
+
+        app = MagicMock()
+        app._load_db = AsyncMock()
+        app.startup = AsyncMock(side_effect=OSError("radio went away"))
+        app.shutdown = AsyncMock(side_effect=RuntimeError("teardown also broke"))
+
+        coord = ZigbeeCoordinator(data_dir=tmp_path)
+        with (
+            patch.object(mod, "_quirk_resolver", return_value=None),
+            patch("bellows.zigbee.application.ControllerApplication", return_value=app),
+            pytest.raises(OSError, match="radio went away"),
+        ):
+            await coord._open_radio("socket://127.0.0.1:6638")
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_torn_down_on_success(self, tmp_path):
+        from backend.app.services.zigbee import coordinator as mod
+
+        app = MagicMock()
+        app._load_db = AsyncMock()
+        app.startup = AsyncMock()
+        app.shutdown = AsyncMock()
+
+        coord = ZigbeeCoordinator(data_dir=tmp_path)
+        with (
+            patch.object(mod, "_quirk_resolver", return_value=None),
+            patch("bellows.zigbee.application.ControllerApplication", return_value=app),
+        ):
+            assert await coord._open_radio("socket://127.0.0.1:6638") is app
+
+        app.shutdown.assert_not_awaited()
+
+
+def test_open_radio_mirrors_zigpy_new():
+    """``_open_radio`` hand-rolls what ``ControllerApplication.new()`` does, so
+    that a failed start leaves us holding the application. That only stays
+    correct while ``new()`` does the same steps.
+
+    Guards the drift: if zigpy adds a step to ``new()``, this fails and someone
+    decides whether ``_open_radio`` needs it too, instead of silently skipping
+    it forever.
+    """
+    import inspect
+    import re
+
+    from zigpy.application import ControllerApplication
+
+    calls = set(re.findall(r"\bapp\.(\w+)\(", inspect.getsource(ControllerApplication.new)))
+
+    assert calls == {
+        "register_device_resolver",  # mirrored
+        "register_uninitialized_packet_handler",  # deliberately unused — we pass no handler
+        "_load_db",  # mirrored
+        "startup",  # mirrored
+    }, f"ControllerApplication.new() changed shape: {sorted(calls)}"

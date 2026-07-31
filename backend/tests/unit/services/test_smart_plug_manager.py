@@ -497,6 +497,7 @@ class TestAutoOffPersistent:
     async def test_mark_auto_off_executed_one_shot_disables_auto_off(self, manager):
         """Default one-shot: auto_off should be set to False after execution."""
         mock_plug = MagicMock()
+        mock_plug.plug_type = "tasmota"
         mock_plug.id = 1
         mock_plug.auto_off = True
         mock_plug.auto_off_persistent = False
@@ -525,6 +526,7 @@ class TestAutoOffPersistent:
     async def test_mark_auto_off_executed_persistent_keeps_auto_off_enabled(self, manager):
         """Persistent mode: auto_off should remain True after execution."""
         mock_plug = MagicMock()
+        mock_plug.plug_type = "tasmota"
         mock_plug.id = 2
         mock_plug.auto_off = True
         mock_plug.auto_off_persistent = True
@@ -557,6 +559,7 @@ class TestAutoOffPersistent:
         auto_off should remain True throughout for persistent plugs.
         """
         mock_plug = MagicMock()
+        mock_plug.plug_type = "tasmota"
         mock_plug.id = 3
         mock_plug.name = "HA BentoBox Filter"
         mock_plug.plug_type = "homeassistant"
@@ -636,6 +639,7 @@ class TestScheduleLoop:
     async def test_check_schedules_turns_on_at_scheduled_time(self, manager):
         """Verify scheduled on-time turns plug on."""
         mock_plug = MagicMock()
+        mock_plug.plug_type = "tasmota"
         mock_plug.id = 1
         mock_plug.name = "Test Plug"
         mock_plug.enabled = True
@@ -676,6 +680,7 @@ class TestScheduleLoop:
     async def test_check_schedules_turns_off_at_scheduled_time(self, manager):
         """Verify scheduled off-time turns plug off."""
         mock_plug = MagicMock()
+        mock_plug.plug_type = "tasmota"
         mock_plug.id = 1
         mock_plug.name = "Test Plug"
         mock_plug.enabled = True
@@ -718,6 +723,7 @@ class TestScheduleLoop:
     async def test_check_schedules_skipped_when_disabled(self, manager):
         """Verify schedule is skipped when schedule_enabled is False."""
         mock_plug = MagicMock()
+        mock_plug.plug_type = "tasmota"
         mock_plug.id = 1
         mock_plug.enabled = True
         mock_plug.schedule_enabled = False  # Disabled
@@ -759,6 +765,7 @@ class TestPendingAutoOffPersistence:
     async def test_resume_pending_auto_offs_temperature_mode(self, manager):
         """Verify temperature-based pending auto-offs are resumed on startup."""
         mock_plug = MagicMock()
+        mock_plug.plug_type = "tasmota"
         mock_plug.id = 1
         mock_plug.name = "Test Plug"
         mock_plug.ip_address = "192.168.1.100"
@@ -790,6 +797,7 @@ class TestPendingAutoOffPersistence:
     async def test_resume_pending_auto_offs_time_mode_immediate_off(self, manager):
         """Verify time-based pending auto-offs turn off immediately on resume."""
         mock_plug = MagicMock()
+        mock_plug.plug_type = "tasmota"
         mock_plug.id = 1
         mock_plug.name = "Test Plug"
         mock_plug.ip_address = "192.168.1.100"
@@ -827,6 +835,7 @@ class TestPendingAutoOffPersistence:
         """#1890: on restart, a stale pending off must NOT power off a live print;
         the pending flag is cleared instead."""
         mock_plug = MagicMock()
+        mock_plug.plug_type = "tasmota"
         mock_plug.id = 1
         mock_plug.name = "Test Plug"
         mock_plug.printer_id = 1
