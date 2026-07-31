@@ -536,15 +536,24 @@ class TestRadioDownCascadesToEveryPlug:
             assert (await service.get_status(_plug()))["reachable"] is False
 
 
-def test_the_stale_window_covers_two_poll_cycles():
-    """Pinned because it is a judgement call, not a derivation. 90 s is exactly
-    two of the poller's worst-case 45 s cycles — enough that a plug polled on
-    schedule is never called unreachable, and short enough that one pulled from
-    the wall stops claiming to be online within a minute and a half rather than
-    two.
+def test_the_stale_window_keeps_headroom_above_two_poll_cycles():
+    """Pinned because it is a judgement call, and because the tempting value is
+    wrong.
+
+    120 s is about three of the poller's 30-45 s cycles. 90 was tried and
+    reverted: it equals exactly two worst-case cycles, so two consecutive polls
+    at the top of the jitter range leave a healthy plug on the edge of being
+    called unreachable. A false "offline" is worse than slow detection - the
+    operator acts on offline.
+
+    Latency is not this constant's job any more. A radio that goes down is
+    reported immediately via the coordinator's status; this only covers a single
+    device going quiet on a working mesh.
     """
     from backend.app.services.zigbee.driver import _STALE_AFTER_SECONDS
     from backend.app.services.zigbee.poller import _POLL_INTERVAL_SECONDS
 
-    assert _STALE_AFTER_SECONDS == 90
-    assert _POLL_INTERVAL_SECONDS[1] * 2 <= _STALE_AFTER_SECONDS
+    assert _STALE_AFTER_SECONDS == 120
+    assert _POLL_INTERVAL_SECONDS[1] * 2 < _STALE_AFTER_SECONDS, (
+        "must leave room above two worst-case polls, or jitter alone can fake an offline plug"
+    )

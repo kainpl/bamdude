@@ -53,16 +53,21 @@ _CMD_ON = 0x01
 # old number was presented as current. A stale reading is worse than none — it
 # reads as a measurement.
 #
-# 90 s is two poll cycles plus headroom at the poller's 30–45 s cadence: one
-# missed read does not condemn a healthy plug, and it stops short of the two
-# full minutes this used to be. To someone who has just pulled a plug out of the
-# wall and is watching the card, two minutes of "online" reads as the interface
-# being stuck rather than as caution.
+# 120 s, i.e. roughly three of the poller's 30–45 s cycles.
 #
-# It is the backstop, not the mechanism. A radio that goes down is reported at
-# once through the coordinator's own status (see ``_device_for``); this window
-# only covers one device going quiet while the mesh is otherwise fine.
-_STALE_AFTER_SECONDS = 90
+# Briefly tried at 90 to make an unplugged device disappear sooner. Reverted:
+# 90 is *exactly* two worst-case cycles, so two consecutive polls landing at the
+# top of the jitter range put a perfectly healthy plug on the edge of being
+# declared unreachable. Trading a false "offline" on a working plug for slightly
+# faster detection is the wrong way round — the operator acts on offline.
+#
+# The latency this was meant to buy is not needed here anyway: this window is
+# the **backstop**, not the mechanism. A radio that goes down is reported at once
+# through the coordinator's own status (see ``_device_for``), which covers the
+# case people actually notice. What is left for this constant is one device
+# going quiet while the mesh is otherwise fine — rare, and worth being sure
+# about rather than quick about.
+_STALE_AFTER_SECONDS = 120
 
 
 def _command_succeeded(result) -> bool:
