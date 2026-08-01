@@ -16,6 +16,7 @@ class ArchiveBase(BaseModel):
     # editable twin of the short ``failure_reason`` cause code.
     error_message: str | None = None
     quantity: int | None = None  # Number of items printed
+    defective_count: int | None = None  # How many of them were scrap
     # User-defined link (Printables, Thingiverse, etc.)
     external_url: str | None = None
 
@@ -113,6 +114,9 @@ class ArchiveResponse(BaseModel):
     photos: list | None
     failure_reason: str | None
     quantity: int = 1  # Number of items printed
+    # Scrap out of that plate. Shown beside ``object_count`` in the archive card
+    # and list; never subtracted from any total (see models/archive.py).
+    defective_count: int = 0
 
     # Energy tracking
     energy_kwh: float | None = None

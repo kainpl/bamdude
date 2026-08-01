@@ -406,6 +406,64 @@ def find_ams_unit(raw_data: dict | None, ams_id: int) -> dict | None:
     return None
 
 
+async def _record_skipped_as_defective(printer_id: int, skipped: list) -> None:
+    """Async coroutine wired into ``on_skipped_objects_changed``: raise the
+    running print's defective-part counter to the number of skipped objects.
+
+    A skipped object is a part the operator gave up on, which is what the
+    counter means. The value is set to ``max(current, len(skipped))`` rather
+    than incremented, for two reasons: the callback carries the whole list (so a
+    re-send of the same list must not add anything), and an operator who typed a
+    higher number by hand — parts that printed but came out unusable — must not
+    have it pulled back down by a later skip.
+
+    Targets the printer's running archive the same way the skip-objects endpoint
+    does (newest row at ``status='printing'``). No archive means nothing to
+    record: skips only happen mid-print, so this is a lost race, not a state to
+    repair.
+    """
+    if not skipped:
+        return
+
+    from backend.app.core.database import async_session
+    from backend.app.models.archive import PrintArchive
+
+    try:
+        async with async_session() as db:
+            archive = (
+                (
+                    await db.execute(
+                        select(PrintArchive)
+                        .where(PrintArchive.printer_id == printer_id)
+                        .where(PrintArchive.status == "printing")
+                        .order_by(PrintArchive.id.desc())
+                        .limit(1)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if archive is None:
+                logger.debug("No running archive for printer %s — skipped objects not recorded", printer_id)
+                return
+
+            new_count = max(archive.defective_count or 0, len(skipped))
+            if new_count == archive.defective_count:
+                return
+
+            archive.defective_count = new_count
+            await db.commit()
+            logger.info(
+                "Archive %s: defective parts raised to %d from %d skipped object(s) on printer %s",
+                archive.id,
+                new_count,
+                len(skipped),
+                printer_id,
+            )
+    except Exception as e:  # noqa: BLE001 — a counter must never break the MQTT path
+        logger.warning("Failed to record skipped objects as defective for printer %s: %s", printer_id, e)
+
+
 class PrinterInfo:
     """Basic printer info for callbacks."""
 
@@ -697,6 +755,9 @@ class PrinterManager:
             # list actually changed (connect / set / edit / delete / save).
             self._schedule_async(_sync_kprofiles_for_printer(printer_id))
 
+        def on_skipped_objects_changed(skipped: list):
+            self._schedule_async(_record_skipped_as_defective(printer_id, skipped))
+
         def on_first_status(live_state: str, live_file: str, live_subtask_id: str = "", live_subtask_name: str = ""):
             # First full status after each fresh connect — run the reconcile
             # sweep so a print that finished while BamDude was stopped or
@@ -725,6 +786,7 @@ class PrinterManager:
             on_print_running_observed=on_print_running_observed,
             on_finish_photo_moment=on_finish_photo_moment,
             on_assignment_verified=on_assignment_verified,
+            on_skipped_objects_changed=on_skipped_objects_changed,
         )
 
         # Carry print-tracking state across the client recreation so a

@@ -13,6 +13,7 @@ import {
   Filter,
   Image,
   Box,
+  PackageX,
   Printer,
   Upload,
   ExternalLink,
@@ -1117,24 +1118,43 @@ function ArchiveCard({
               {archive.layer_height && <span>{archive.layer_height}mm</span>}
             </div>
           )}
-          {archive.object_count != null && archive.object_count > 0 && (
+          {/* Either number alone is enough to render the line: an archive with no
+              object metadata (older rows, no printable_objects in the 3MF) can
+              still carry a hand-typed defective count, and it must not vanish. */}
+          {((archive.object_count ?? 0) > 0 || archive.defective_count > 0) && (
             <div className="flex items-center gap-1.5">
-              {/* The count itself opens the preview — no extra icon button to
-                  crowd the card. stopPropagation is load-bearing: the card
-                  navigates to the archive on click. */}
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); setShowPlateObjects(true); }}
-                className="flex items-center gap-1.5 text-bambu-gray hover:text-bambu-green transition-colors"
-                title={t('library.plateObjects.open')}
-              >
-                <Box className="w-3 h-3" />
-                {archive.object_count === 1 ? t('archives.card.object', { count: archive.object_count }) : t('archives.card.objects', { count: archive.object_count })}
-              </button>
-              {/* Icon-only: most sliced files support skipping, so a text badge
-                  on every row would be noise. Absence is the signal. */}
-              {archive.skip_objects_supported && (
-                <SkipObjectsIcon className="w-3 h-3 text-bambu-green/70" />
+              {archive.object_count != null && archive.object_count > 0 && (
+                <>
+                  {/* The count itself opens the preview — no extra icon button to
+                      crowd the card. stopPropagation is load-bearing: the card
+                      navigates to the archive on click. */}
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setShowPlateObjects(true); }}
+                    className="flex items-center gap-1.5 text-bambu-gray hover:text-bambu-green transition-colors"
+                    title={t('library.plateObjects.open')}
+                  >
+                    <Box className="w-3 h-3" />
+                    {archive.object_count === 1 ? t('archives.card.object', { count: archive.object_count }) : t('archives.card.objects', { count: archive.object_count })}
+                  </button>
+                  {/* Icon-only: most sliced files support skipping, so a text badge
+                      on every row would be noise. Absence is the signal. */}
+                  {archive.skip_objects_supported && (
+                    <SkipObjectsIcon className="w-3 h-3 text-bambu-green/70" />
+                  )}
+                </>
+              )}
+              {/* Scrap out of that same object count, so it belongs on the same
+                  line rather than in a badge of its own. Amber, not red: this is
+                  a fact about the plate, not a failure of the print. */}
+              {archive.defective_count > 0 && (
+                <span
+                  className="flex items-center gap-1 text-amber-400"
+                  title={t('archives.card.defectiveTitle', { count: archive.defective_count })}
+                >
+                  <PackageX className="w-3 h-3" />
+                  {archive.defective_count}
+                </span>
               )}
             </div>
           )}
@@ -2316,21 +2336,36 @@ function ArchiveListRow({
                 </span>,
               );
             }
-            if (archive.object_count != null && archive.object_count > 0) {
+            // Either number alone renders the fact — see the card for why.
+            if ((archive.object_count ?? 0) > 0 || archive.defective_count > 0) {
               facts.push(
                 <span key="objects" className="flex items-center gap-1">
-                  {/* stopPropagation: the row opens the archive on click. */}
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); setShowPlateObjects(true); }}
-                    className="flex items-center gap-1 hover:text-bambu-green transition-colors"
-                    title={t('library.plateObjects.open')}
-                  >
-                    <Box className="w-2.5 h-2.5" />
-                    {archive.object_count}
-                  </button>
-                  {archive.skip_objects_supported && (
-                    <SkipObjectsIcon className="w-2.5 h-2.5 text-bambu-green/70" />
+                  {archive.object_count != null && archive.object_count > 0 && (
+                    <>
+                      {/* stopPropagation: the row opens the archive on click. */}
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setShowPlateObjects(true); }}
+                        className="flex items-center gap-1 hover:text-bambu-green transition-colors"
+                        title={t('library.plateObjects.open')}
+                      >
+                        <Box className="w-2.5 h-2.5" />
+                        {archive.object_count}
+                      </button>
+                      {archive.skip_objects_supported && (
+                        <SkipObjectsIcon className="w-2.5 h-2.5 text-bambu-green/70" />
+                      )}
+                    </>
+                  )}
+                  {/* Same line as the object count it is a share of. */}
+                  {archive.defective_count > 0 && (
+                    <span
+                      className="flex items-center gap-1 text-amber-400"
+                      title={t('archives.card.defectiveTitle', { count: archive.defective_count })}
+                    >
+                      <PackageX className="w-2.5 h-2.5" />
+                      {archive.defective_count}
+                    </span>
                   )}
                 </span>,
               );

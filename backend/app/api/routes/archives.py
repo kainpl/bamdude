@@ -166,6 +166,7 @@ def archive_to_response(
         "photos": archive.photos,
         "failure_reason": archive.failure_reason,
         "quantity": archive.quantity,
+        "defective_count": archive.defective_count,
         "energy_kwh": archive.energy_kwh,
         "energy_cost": archive.energy_cost,
         # Queue attribution (m019) + verbose error_message twin for failures.

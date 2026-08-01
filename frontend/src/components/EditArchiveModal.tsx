@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X, Save, Tag, Camera, Trash2, Loader2, Plus, FolderKanban, Hash, Link } from 'lucide-react';
+import { X, Save, Tag, Camera, Trash2, Loader2, Plus, FolderKanban, Hash, Link, PackageX } from 'lucide-react';
 import { api } from '../api/client';
 import type { Archive } from '../api/client';
 import { Button } from './Button';
@@ -65,6 +65,7 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
   const [errorMessage, setErrorMessage] = useState(archive.error_message || '');
   const [status, setStatus] = useState(archive.status);
   const [quantity, setQuantity] = useState(archive.quantity ?? 1);
+  const [defectiveCount, setDefectiveCount] = useState(archive.defective_count ?? 0);
   const [photos, setPhotos] = useState<string[]>(archive.photos || []);
   const [externalUrl, setExternalUrl] = useState(archive.external_url || '');
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
@@ -190,6 +191,7 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
       notes: notes || undefined,
       tags: tags || undefined,
       quantity: quantity,
+      defective_count: defectiveCount,
       external_url: externalUrl || null,
     };
 
@@ -298,6 +300,29 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
             />
             <p className="text-xs text-bambu-gray mt-1">
               {t('editArchive.itemsPrintedHelp')}
+            </p>
+          </div>
+
+          {/* Defective parts — scrap out of the plate above. Capped at the
+              quantity: a defective part has to be one of the parts printed. */}
+          <div>
+            <label className="block text-sm text-bambu-gray mb-1">
+              <PackageX className="w-4 h-4 inline mr-1" />
+              {t('editArchive.defectiveParts')}
+            </label>
+            <input
+              type="number"
+              min={0}
+              max={quantity}
+              value={defectiveCount}
+              onChange={(e) =>
+                setDefectiveCount(Math.min(quantity, Math.max(0, parseInt(e.target.value) || 0)))
+              }
+              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+              placeholder="0"
+            />
+            <p className="text-xs text-bambu-gray mt-1">
+              {t('editArchive.defectivePartsHelp')}
             </p>
           </div>
 

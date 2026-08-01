@@ -857,6 +857,7 @@ class BambuMQTTClient:
         on_print_running_observed: Callable[[dict], None] | None = None,
         on_finish_photo_moment: Callable[[dict], None] | None = None,
         on_assignment_verified: Callable[[int, int, bool, dict], None] | None = None,
+        on_skipped_objects_changed: Callable[[list], None] | None = None,
     ):
         self.ip_address = ip_address
         self.serial_number = serial_number
@@ -868,6 +869,13 @@ class BambuMQTTClient:
         self.on_ams_change = on_ams_change
         self.on_layer_change = on_layer_change
         self.on_macro_complete = on_macro_complete
+        # Fires with the full skipped-object list whenever it grows, from either
+        # source: the printer's own ``s_obj`` report (which covers skips made on
+        # its screen or from Handy) or our ``skip_objects`` command. The list,
+        # not a delta — the consumer records a count, and re-sending the same
+        # list must not inflate it. printer_manager wires this to the archive's
+        # defective-part counter.
+        self.on_skipped_objects_changed = on_skipped_objects_changed
         # #1349: fired when an AMS unit's ``dry_time`` falls from >0 to 0
         # — i.e. the drying cycle just finished (queue-triggered, ambient,
         # or manual). Receives the AMS id of the unit that finished drying.
@@ -4246,6 +4254,7 @@ class BambuMQTTClient:
                 if new_skipped != self.state.skipped_objects:
                     logger.debug("[%s] skipped_objects updated from printer: %s", self.serial_number, new_skipped)
                     self.state.skipped_objects = new_skipped
+                    self._notify_skipped_objects_changed()
 
         # Parse chamber light status from lights_report
         if "lights_report" in data:
@@ -6496,11 +6505,36 @@ class BambuMQTTClient:
         logger.info("[%s] Sent skip_objects command: %s", self.serial_number, obj_list)
 
         # Track skipped objects in state
+        grew = False
         for oid in obj_list:
             if oid not in self.state.skipped_objects:
                 self.state.skipped_objects.append(oid)
+                grew = True
+
+        # Fire here as well as from the ``s_obj`` branch. Recording our own
+        # command into state first means the printer's echo arrives *equal* to
+        # what we already hold, so that branch's diff sees no change and stays
+        # silent — a consumer listening only there would never hear about a skip
+        # BamDude itself made. Both paths pass the whole list, so the double
+        # notification is harmless.
+        if grew:
+            self._notify_skipped_objects_changed()
 
         return True
+
+    def _notify_skipped_objects_changed(self) -> None:
+        """Hand the current skipped-object list to the callback, if one is set.
+
+        Never let a consumer's failure reach the MQTT parse loop: this runs on
+        the paho network thread, where an exception would take the callback
+        chain down mid-status and leave the rest of the payload unparsed.
+        """
+        if not self.on_skipped_objects_changed:
+            return
+        try:
+            self.on_skipped_objects_changed(list(self.state.skipped_objects))
+        except Exception as e:  # noqa: BLE001 — see the docstring
+            logger.warning("[%s] on_skipped_objects_changed callback failed: %s", self.serial_number, e)
 
     def send_gcode(self, gcode: str) -> bool:
         """Send G-code command(s) to the printer.

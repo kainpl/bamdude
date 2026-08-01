@@ -842,6 +842,10 @@ export interface Archive {
   photos: string[] | null;
   failure_reason: string | null;
   quantity: number;
+  /** Scrap out of this plate. Raised automatically when objects are skipped
+   *  (the printer's own s_obj list, so screen-initiated skips count too) and
+   *  editable by hand. Never subtracted from quantity or any total. */
+  defective_count: number;
   energy_kwh: number | null;
   energy_cost: number | null;
   swap_compatible: boolean;
@@ -5380,6 +5384,7 @@ export const api = {
     error_message?: string | null;
     status?: string;
     quantity?: number;
+    defective_count?: number;
     external_url?: string | null;
   }) =>
     request<Archive>(`/archives/${id}`, {
