@@ -79,6 +79,12 @@ class AutoQueueItem(Base):
 
     # Lifecycle
     # status: pending | assigned | cancelled
+    #
+    # ``cancelled`` only ever appears on a row that was already routed, whose
+    # per-printer item outlives the cancel so the operator can retry it.
+    # Cancelling a row that never reached a printer deletes it instead: nothing
+    # links to such a row and nothing reads it back, so parked as ``cancelled``
+    # it was invisible and permanent at once.
     status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
     waiting_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     assigned_to_item_id: Mapped[int | None] = mapped_column(
