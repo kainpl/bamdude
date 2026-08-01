@@ -26,6 +26,7 @@ from pathlib import Path
 from backend.app.core.tasks import spawn_background_task
 from backend.app.core.websocket import ws_manager
 from backend.app.services.zigbee.devices import describe_device
+from backend.app.services.zigbee.errors import describe_exception
 from backend.app.services.zigbee.radio_lock import RadioLock
 from backend.app.services.zigbee.transport import TransportConfigError, resolve_transport
 
@@ -47,76 +48,6 @@ class CoordinatorState(str, Enum):
 class CoordinatorStatus:
     state: CoordinatorState
     reason: str = ""
-
-
-def _describe_exception(exc: BaseException | None) -> str:
-    """A reason that always says something.
-
-    ``reason`` is the whole explanation of why the radio is not up — the settings
-    card renders it verbatim, the status badge falls back to a generic label
-    without it, and the toast has nothing else to show. So an empty one defeats
-    every consumer at once.
-
-    Measured on hardware: pointing the coordinator at a closed port produced
-    ``state: error`` with ``reason: ""``, because what bellows raised stringifies
-    to nothing. And ``connection_lost`` was called with ``None``, which rendered
-    as "Connection to the Zigbee radio was lost: None".
-
-    An exception class name is a poor explanation. It is still far better than a
-    blank, which reads as "no idea, and we are not saying".
-    """
-    if exc is None:
-        return "the connection closed without an error"
-    if _is_closed_loop_artefact(exc):
-        return _CLOSED_LOOP_REASON
-    message = str(exc).strip()
-    return message or type(exc).__name__
-
-
-# What bellows raises once its I/O thread's loop is gone, and what to say instead.
-#
-# ``bellows.thread.ThreadsafeProxy`` wraps the Gateway so calls hop onto the
-# reader thread's loop. When that loop is closed it logs "Attempted to use a
-# closed event loop" and takes a bare ``return`` — handing back ``None`` where
-# the caller expects a coroutine. Every ``await`` on it then dies with this
-# TypeError.
-#
-# The loop is closed by ``bellows.uart.connect``, which registers
-# ``connection_done.add_done_callback(lambda _: thread.force_stop())``. So this
-# fires precisely when the link to the radio ENDED — dropped mid-startup, or
-# never completed — and the message describes none of that.
-#
-# Worse, it masks twice. Reproduced against a server that accepts then resets:
-# ``EZSP._startup_reset`` awaits the proxy and gets this TypeError; its own
-# handler calls ``disconnect()``, which awaits the proxy again and raises the
-# SAME TypeError; that second one is what reaches us. The real cause is gone
-# before it ever had a name, which is why the operator saw
-# "object NoneType can't be used in 'await' expression" for a dongle that had
-# simply gone away.
-#
-# Matched on the message rather than the type: a bare ``TypeError`` from the
-# radio stack could be anything, but this exact sentence is CPython's wording
-# for awaiting None, and inside a bellows failure it has only this one source.
-_AWAIT_NONE_MESSAGE = "object NoneType can't be used in 'await' expression"
-_CLOSED_LOOP_REASON = (
-    "the connection to the radio ended during startup (the radio was unplugged, reset, or taken by another program)"
-)
-
-
-def _is_closed_loop_artefact(exc: BaseException) -> bool:
-    """True when this is bellows' closed-loop artefact rather than a real cause.
-
-    Walks the ``__cause__``/``__context__`` chain: the escaping exception is the
-    second one raised, so the marker can sit at any depth.
-    """
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if isinstance(current, TypeError) and _AWAIT_NONE_MESSAGE in str(current):
-            return True
-        current = current.__cause__ or current.__context__
-    return False
 
 
 class ZigbeeCoordinator:
@@ -170,8 +101,8 @@ class ZigbeeCoordinator:
         except TransportConfigError as exc:
             # Before the lock on purpose: a misconfigured install must not leave
             # a lock file implying it ever owned the radio.
-            self._status = CoordinatorStatus(CoordinatorState.ERROR, _describe_exception(exc))
-            logger.warning("Zigbee coordinator not started: %s", exc)
+            self._status = CoordinatorStatus(CoordinatorState.ERROR, describe_exception(exc))
+            logger.warning("Zigbee coordinator not started: %s", describe_exception(exc))
             return
 
         if not self._lock.acquire():
@@ -184,8 +115,8 @@ class ZigbeeCoordinator:
         except Exception as exc:  # noqa: BLE001 — the contract is that nothing escapes
             self._lock.release()
             self._app = None
-            self._status = CoordinatorStatus(CoordinatorState.ERROR, _describe_exception(exc))
-            logger.warning("Zigbee coordinator failed to start on %s: %s", device, _describe_exception(exc))
+            self._status = CoordinatorStatus(CoordinatorState.ERROR, describe_exception(exc))
+            logger.warning("Zigbee coordinator failed to start on %s: %s", device, describe_exception(exc))
             return
 
         # Registered here rather than inside _open_radio so that seam stays
@@ -207,7 +138,7 @@ class ZigbeeCoordinator:
             try:
                 await app.shutdown()
             except Exception as exc:  # noqa: BLE001 — teardown must complete
-                logger.warning("Zigbee shutdown raised, continuing: %s", exc)
+                logger.warning("Zigbee shutdown raised, continuing: %s", describe_exception(exc))
         self._lock.release()
         self._status = CoordinatorStatus(CoordinatorState.DISABLED)
 
@@ -230,7 +161,7 @@ class ZigbeeCoordinator:
         try:
             spawn_background_task(ws_manager.broadcast(message), name=f"zigbee-{message['type']}")
         except Exception as exc:  # noqa: BLE001 — see the block comment above
-            logger.warning("Zigbee event %s not broadcast: %s", message.get("type"), exc)
+            logger.warning("Zigbee event %s not broadcast: %s", message.get("type"), describe_exception(exc))
 
     def device_joined(self, device) -> None:
         """A device announced itself; the interview has not run yet.
@@ -242,7 +173,7 @@ class ZigbeeCoordinator:
         try:
             self._emit({"type": "zigbee_device_joining", "ieee": str(device.ieee)})
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Zigbee device_joined handler failed: %s", exc)
+            logger.warning("Zigbee device_joined handler failed: %s", describe_exception(exc))
 
     def device_initialized(self, device) -> None:
         """Interview complete — accept it, or remove it and say why."""
@@ -261,13 +192,13 @@ class ZigbeeCoordinator:
             if self._app is not None:
                 spawn_background_task(self._app.remove(device.ieee), name="zigbee-remove-non-plug")
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Zigbee device_initialized handler failed: %s", exc)
+            logger.warning("Zigbee device_initialized handler failed: %s", describe_exception(exc))
 
     def device_left(self, device) -> None:
         try:
             self._emit({"type": "zigbee_device_left", "ieee": str(device.ieee)})
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Zigbee device_left handler failed: %s", exc)
+            logger.warning("Zigbee device_left handler failed: %s", describe_exception(exc))
 
     def connection_lost(self, exc: Exception) -> None:
         """The radio is gone.
@@ -280,9 +211,9 @@ class ZigbeeCoordinator:
         try:
             self._status = CoordinatorStatus(
                 CoordinatorState.ERROR,
-                f"Connection to the Zigbee radio was lost: {_describe_exception(exc)}",
+                f"Connection to the Zigbee radio was lost: {describe_exception(exc)}",
             )
-            logger.warning("Zigbee radio connection lost: %s", _describe_exception(exc))
+            logger.warning("Zigbee radio connection lost: %s", describe_exception(exc))
             self._emit(
                 {
                     "type": "zigbee_status_changed",
@@ -381,7 +312,7 @@ def _quirk_resolver():
         zhaquirks.setup()
         return zhaquirks.ZHA_DEVICE_REGISTRY.resolve
     except Exception as exc:  # noqa: BLE001 — see the docstring
-        logger.warning("Zigbee device quirks unavailable, readings may be uncorrected: %s", exc)
+        logger.warning("Zigbee device quirks unavailable, readings may be uncorrected: %s", describe_exception(exc))
         return None
 
 

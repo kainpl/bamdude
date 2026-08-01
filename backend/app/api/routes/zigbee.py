@@ -198,6 +198,7 @@ async def _stop_radio() -> None:
     from backend.app.services.zigbee.driver import zigbee_smart_plug_service
 
     await zigbee_coordinator.stop()
+    await zigbee_smart_plug_service.cancel_refreshes()
     zigbee_smart_plug_service._listeners.clear()  # noqa: SLF001 — see docstring
 
 
@@ -348,7 +349,9 @@ async def restart_coordinator(
         # Every cached listener belongs to a cluster object that stop() just
         # orphaned. Keeping them would leave reports silently unwired while
         # commands and polling carried on working — the shape of half-broken
-        # this subsystem keeps rediscovering.
+        # this subsystem keeps rediscovering. A read still in flight holds those
+        # same orphaned clusters, so it goes with them.
+        await zigbee_smart_plug_service.cancel_refreshes()
         zigbee_smart_plug_service._listeners.clear()
 
         await zigbee_coordinator.start(settings)

@@ -27,6 +27,8 @@ printer on unexpectedly is an annoyance, turning it off mid-print is not:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -36,6 +38,7 @@ from zigpy.zcl import foundation
 
 from backend.app.services.zigbee.coordinator import CoordinatorState, zigbee_coordinator
 from backend.app.services.zigbee.devices import ELECTRICAL_MEASUREMENT, METERING, ON_OFF
+from backend.app.services.zigbee.errors import describe_exception
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +71,24 @@ _CMD_ON = 0x01
 # going quiet while the mesh is otherwise fine — rare, and worth being sure
 # about rather than quick about.
 _STALE_AFTER_SECONDS = 120
+
+# How long each kind of caller may wait for a read, and why they differ.
+#
+# The poller exists to absorb the slow case: three clusters, each read costing
+# up to zigpy's own ~8 s before it gives up on a silent device. Nobody is
+# watching it, so it gets room to finish.
+#
+# An HTTP handler has no such licence. Measured on hardware with a plug pulled
+# out of the wall: individual status requests sat in these reads for 28–74 s.
+# The API process itself stayed healthy throughout — ``/health`` answered in
+# 0.21 s the whole time — but a browser allows only ~6 connections per origin,
+# so six such requests consume every socket the tab has and it can no longer
+# issue anything, including its own reload. The page looked frozen and the
+# server was fine. A request must therefore be bounded well under the point
+# where sockets start piling up; three seconds is far longer than a healthy
+# device has ever taken to answer, and short enough that the pile cannot form.
+_REQUEST_REFRESH_BUDGET_SECONDS = 3.0
+_POLLER_REFRESH_BUDGET_SECONDS = 60.0
 
 
 def _command_succeeded(result) -> bool:
@@ -108,6 +129,9 @@ class ZigbeeSmartPlugService:
         # which are device constants — re-reading them per refresh would put two
         # mesh round-trips behind a number that never changes.
         self._listeners: dict[tuple[int, int], Any] = {}
+        # One read per plug at a time, shared by everyone who asks while it runs.
+        # See ``refresh`` for why this is not merely an optimisation.
+        self._refreshing: dict[int, asyncio.Task] = {}
 
     # ---- cache, written by the reporting listener ---------------------------
 
@@ -185,7 +209,7 @@ class ZigbeeSmartPlugService:
             # The cache is deliberately untouched. Writing the state we hoped
             # for is how automation comes to believe a printer is powered when
             # it is not.
-            logger.warning("Zigbee plug %s: %s failed: %s", plug.id, what, exc)
+            logger.warning("Zigbee plug %s: %s failed: %s", plug.id, what, describe_exception(exc))
             return False
 
         if not _command_succeeded(result):
@@ -268,18 +292,80 @@ class ZigbeeSmartPlugService:
             return True
         return (datetime.now(timezone.utc) - last_seen).total_seconds() > _STALE_AFTER_SECONDS
 
-    async def refresh(self, plug: Any) -> bool:
+    def _forget_refresh(self, task: asyncio.Task) -> None:
+        """Drop a finished read, and take its exception with it.
+
+        The second half is not tidiness. Because callers time out independently
+        of the read, the last one can walk away *before* it finishes — and a task
+        that then raises with nobody left to await it surfaces at garbage
+        collection as a bare "Task exception was never retrieved", detached from
+        the plug it belonged to. Retrieving it here means it is always attributed.
+        """
+        for plug_id, running in list(self._refreshing.items()):
+            if running is task:
+                del self._refreshing[plug_id]
+                break
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning("Zigbee: a plug read failed: %s", describe_exception(task.exception()))
+
+    async def cancel_refreshes(self) -> None:
+        """Stop every read in flight. For when the radio is going away.
+
+        The tasks hold zigpy cluster objects belonging to the application being
+        torn down, so leaving them running means reads against a dead radio —
+        the same orphaned-cluster shape the listener cache is cleared to avoid.
+        """
+        tasks = list(self._refreshing.values())
+        self._refreshing.clear()
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+
+    async def refresh(self, plug: Any, timeout: float = _POLLER_REFRESH_BUDGET_SECONDS) -> bool:
         """Read every subscribed attribute from the device, now.
 
         Both the background poller and the staleness path below go through here,
-        so there is one way a reading enters the cache from a read.
+        so there is one way a reading enters the cache from a read. What differs
+        between them is how long each may wait, and that difference is the whole
+        point of this method's shape.
+
+        **A caller's timeout never cancels the read.** The in-flight task is
+        shared and shielded: a caller that runs out of patience walks away, the
+        read carries on, and whoever asks next gets the answer it lands in the
+        cache. Cancelling it instead would mean the impatient caller had made
+        the situation worse for everybody — and the poller, whose entire job is
+        to absorb the slow case, would keep losing its work to a page refresh.
+
+        **One read per plug, however many ask.** Measured on hardware: with a
+        plug pulled out of the wall, four overlapping status requests each
+        started their own three reads of the same device. They then queued on
+        the single radio and dragged each other out from 28 s to 74 s — the
+        pile-up was self-inflicted, and it grew with the number of viewers.
         """
         from backend.app.services.zigbee.reporting import refresh_plug
 
         device = self._device_for(plug)
         if device is None:
             return False
-        return await refresh_plug(self, plug, device)
+
+        task = self._refreshing.get(plug.id)
+        if task is None or task.done():
+            task = asyncio.create_task(refresh_plug(self, plug, device), name=f"zigbee_refresh_{plug.id}")
+            self._refreshing[plug.id] = task
+            task.add_done_callback(self._forget_refresh)
+
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), timeout)
+        except TimeoutError:
+            logger.debug(
+                "Zigbee plug %s: read still running after %.1fs, answering from what we have", plug.id, timeout
+            )
+            return False
+        except Exception as exc:  # noqa: BLE001 — a read that failed is not a reading
+            logger.warning("Zigbee plug %s: refresh failed: %s", plug.id, describe_exception(exc))
+            return False
 
     async def get_status(self, plug: Any) -> dict:
         """Current state, refreshed by a direct read if the cache has aged out.
@@ -294,7 +380,7 @@ class ZigbeeSmartPlugService:
 
         data = self.get_plug_data(plug.id)
         if data is None or self._is_stale(data):
-            if not await self.refresh(plug):
+            if not await self.refresh(plug, timeout=_REQUEST_REFRESH_BUDGET_SECONDS):
                 return unknown
             data = self.get_plug_data(plug.id)
             if data is None:
@@ -316,7 +402,7 @@ class ZigbeeSmartPlugService:
             # Refresh rather than hand back an aged reading. If the refresh
             # fails, report nothing: a stale wattage is indistinguishable from a
             # live one to every consumer downstream.
-            if await self.refresh(plug):
+            if await self.refresh(plug, timeout=_REQUEST_REFRESH_BUDGET_SECONDS):
                 data = self.get_plug_data(plug.id)
             else:
                 return None

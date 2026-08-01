@@ -24,6 +24,7 @@ from zigpy.zcl import foundation
 from zigpy.zdo import types as zdo_types
 
 from backend.app.services.zigbee.devices import ELECTRICAL_MEASUREMENT, METERING, ON_OFF
+from backend.app.services.zigbee.errors import describe_exception
 from backend.app.services.zigbee.metering import (
     ENERGY_SCALING_ATTRS,
     POWER_SCALING_ATTRS,
@@ -311,7 +312,7 @@ async def _read_into_cache(cluster, listener: ClusterReportListener, attr: int) 
     try:
         await cluster.read_attributes([attr], allow_cache=False, only_cache=False)
     except Exception as exc:  # noqa: BLE001 — a sleeping or absent device is not a failure
-        logger.info("Zigbee: read of 0x%04X failed, waiting for a report instead: %s", attr, exc)
+        logger.info("Zigbee: read of 0x%04X failed, waiting for a report instead: %s", attr, describe_exception(exc))
         return False
 
     value = cluster.get(attr)
