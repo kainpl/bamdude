@@ -33,7 +33,7 @@ class PrinterBase(BaseModel):
     location: str | None = None  # Group/location name
     auto_archive: bool = True
     cleanup_after_print: bool = True
-    mqtt_connection_timeout: int = 300  # seconds; 0 = disabled
+    mqtt_connection_timeout: int = 0  # seconds; 0 = disabled — see models/printer.py for why that is the default
     external_camera_url: str | None = None
     external_camera_type: str | None = None  # "mjpeg", "rtsp", "snapshot", "usb"
     external_camera_enabled: bool = False

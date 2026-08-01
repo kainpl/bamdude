@@ -48,6 +48,24 @@ than the one being fixed here.
 ``is_paused`` and ``auto_distribute_eligible`` are deliberately untouched: those
 are the operator's configuration, not run state, and resetting them would
 silently re-enable a printer someone had set aside.
+
+**And the connection recycling that produced half of them is switched off.**
+``Printer.mqtt_connection_timeout`` makes ``ensure_fresh_connection`` throw away
+a printer's MQTT client once the link is older than N seconds and build a new
+one. It is called from dispatch and from the scheduler, so on a working farm it
+fires constantly — and every one of those swaps is a fresh client with empty
+state. That is not a background detail: it is what made a swap-macro wait watch
+a connection that had already been discarded and declare the macro failed
+(stopping a print that was fine), what left ``print_reconciliation`` re-arming
+mid-dispatch, and what blanked the skip-objects list every few minutes
+mid-print. Each of those has its own fix in this release; this removes the
+thing that kept triggering them.
+
+Zero means disabled — ``ensure_fresh_connection_for_printer`` returns early
+without touching the client. Nothing else changes: a link that genuinely drops
+still reconnects through the normal connect loop, which is what actually keeps
+printers online. The value is per-printer and editable, so an operator who wants
+the old behaviour on a particular machine can set it back.
 """
 
 from __future__ import annotations
@@ -80,8 +98,16 @@ async def upgrade(conn):
         text("UPDATE printer_queues SET status = 'idle', current_item_id = NULL, pending_count = 0, skipped_count = 0")
     )
 
+    # Every printer, not only those left with a stale row: the recycling is
+    # unconditional, so a farm that happened to escape the symptom this time is
+    # not any safer from it. See the docstring for what it was breaking.
+    recycling = (await conn.execute(text("SELECT COUNT(*) FROM printers WHERE mqtt_connection_timeout > 0"))).scalar()
+    await conn.execute(text("UPDATE printers SET mqtt_connection_timeout = 0"))
+
     logger.info(
-        "m120: cleared %d queue item(s) and %d auto-queue item(s); reset every printer queue to idle",
+        "m120: cleared %d queue item(s) and %d auto-queue item(s); reset every printer queue to idle; "
+        "disabled MQTT connection recycling on %d printer(s)",
         queued,
         auto,
+        recycling or 0,
     )

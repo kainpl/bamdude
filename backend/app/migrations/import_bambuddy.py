@@ -49,7 +49,9 @@ _COPY_WITH_DEFAULTS: dict[str, dict[str, Any]] = {
         "require_plate_clear": 1,
         "plate_detection_enabled": 0,
         "cleanup_after_print": 1,
-        "mqtt_connection_timeout": 300,
+        # Disabled, matching the model default: an imported farm should not
+        # arrive with connection recycling switched on. See models/printer.py.
+        "mqtt_connection_timeout": 0,
     },
     "print_archives": {
         "swap_compatible": 0,

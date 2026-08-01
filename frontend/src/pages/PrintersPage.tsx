@@ -6308,7 +6308,9 @@ export function AddPrinterModal({
     location: '',
     auto_archive: true,
     cleanup_after_print: false,
-    mqtt_connection_timeout: 900,
+    // 0 = disabled, matching the backend default. Recycling a live MQTT link
+    // on a timer is what broke swap-macro waits and blanked skip-objects state.
+    mqtt_connection_timeout: 0,
     stagger_interval_minutes: 0,
     swap_mode_enabled: false,
     swap_profile: null,
@@ -7227,7 +7229,7 @@ function EditPrinterModal({
     auto_archive: printer.auto_archive,
     is_active: printer.is_active,
     cleanup_after_print: printer.cleanup_after_print ?? false,
-    mqtt_connection_timeout: printer.mqtt_connection_timeout ?? 900,
+    mqtt_connection_timeout: printer.mqtt_connection_timeout ?? 0,
     stagger_interval_minutes: printer.stagger_interval_minutes ?? 0,
     swap_mode_enabled: printer.swap_mode_enabled ?? false,
     swap_profile: (printer.swap_profile ?? null) as string | null,

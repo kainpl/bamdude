@@ -25,9 +25,15 @@ class Printer(Base):
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     auto_archive: Mapped[bool] = mapped_column(Boolean, default=True)
     cleanup_after_print: Mapped[bool] = mapped_column(Boolean, default=False)  # Delete files from SD after print
-    mqtt_connection_timeout: Mapped[int] = mapped_column(
-        default=900
-    )  # How long MQTT connection is considered valid (seconds); 0 = disabled
+    # How long an MQTT connection is considered valid (seconds); 0 = disabled,
+    # and disabled is the default. Above zero, ``ensure_fresh_connection``
+    # discards the printer's client once the link is that old and builds a new
+    # one with empty state — which is what let a swap-macro wait watch a
+    # discarded connection and declare the macro failed, and what blanked the
+    # skip-objects list mid-print. A link that genuinely drops still reconnects
+    # through the normal connect loop; this only governs recycling a live one.
+    # m120 zeroes the column on existing installations for the same reason.
+    mqtt_connection_timeout: Mapped[int] = mapped_column(default=0)
     print_hours_offset: Mapped[float] = mapped_column(Float, default=0.0)  # Baseline hours to add
     runtime_seconds: Mapped[int] = mapped_column(default=0)  # Accumulated active runtime (RUNNING state only; #1521)
     last_runtime_update: Mapped[datetime | None] = mapped_column(

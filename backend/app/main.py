@@ -2886,10 +2886,12 @@ async def on_print_start(printer_id: int, data: dict):
         #
         # **Side effect we DO need to repeat**: re-load printable_objects +
         # skip_objects_supported into the freshly-created MQTT client state.
-        # ``ensure_fresh_connection`` (default mqtt_connection_timeout=300s
-        # for legacy printers) periodically swaps the BambuMQTTClient for a
-        # new one with empty state, so without this re-load the skip-objects
-        # button goes dark roughly every 5 minutes mid-print. Server-restart
+        # Any reconnect swaps the BambuMQTTClient for a new one with empty
+        # state, so without this re-load the skip-objects button goes dark
+        # mid-print. That used to happen on a timer — ``ensure_fresh_connection``
+        # recycled a live link older than ``mqtt_connection_timeout``, which
+        # defaulted to minutes — and m120 turned that off, but a link that
+        # genuinely drops still reconnects and still lands here. Server-restart
         # papers over the symptom (it wipes _active_prints, so the next
         # on_print_start takes the full path and loads objects), but the
         # underlying state was being silently lost.

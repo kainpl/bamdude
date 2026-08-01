@@ -14,7 +14,7 @@ from backend.app.migrations import m120_clear_queues
 
 
 async def _db(tmp_path, name: str):
-    """A miniature of the three tables m120 touches."""
+    """A miniature of the four tables m120 touches."""
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/{name}")
     async with engine.begin() as conn:
         await conn.exec_driver_sql("CREATE TABLE print_queue (id INTEGER PRIMARY KEY, queue_id INTEGER, status TEXT)")
@@ -22,6 +22,9 @@ async def _db(tmp_path, name: str):
         await conn.exec_driver_sql(
             "CREATE TABLE printer_queues (id INTEGER PRIMARY KEY, status TEXT, current_item_id INTEGER, "
             "pending_count INTEGER, skipped_count INTEGER, is_paused BOOLEAN, auto_distribute_eligible BOOLEAN)"
+        )
+        await conn.exec_driver_sql(
+            "CREATE TABLE printers (id INTEGER PRIMARY KEY, name TEXT, mqtt_connection_timeout INTEGER)"
         )
     return engine
 
@@ -85,6 +88,30 @@ async def test_operator_configuration_survives(tmp_path):
         ).fetchone()
 
     assert row == (1, 0), "a paused, non-distributable queue must stay paused and non-distributable"
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_mqtt_connection_recycling_is_disabled_on_every_printer(tmp_path):
+    """Every printer, not only the ones that showed the symptom.
+
+    ``ensure_fresh_connection`` discards a printer's MQTT client once the link
+    is older than this value, and the recycling is unconditional — a farm that
+    happened not to lose a swap macro to it this week is not any safer from it.
+    Zero is the disabled sentinel the manager checks (``timeout <= 0`` returns
+    early without touching the client).
+    """
+    engine = await _db(tmp_path, "e.db")
+    async with engine.begin() as conn:
+        await conn.exec_driver_sql(
+            "INSERT INTO printers (id, name, mqtt_connection_timeout) VALUES (1, 'X1C', 900), (2, 'P1S', 300), "
+            "(3, 'A1', 0)"
+        )
+        await m120_clear_queues.upgrade(conn)
+
+        rows = (await conn.exec_driver_sql("SELECT mqtt_connection_timeout FROM printers ORDER BY id")).fetchall()
+
+    assert [row[0] for row in rows] == [0, 0, 0]
     await engine.dispose()
 
 
