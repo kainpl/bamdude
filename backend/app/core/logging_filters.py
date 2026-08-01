@@ -78,14 +78,19 @@ class CancelledPoolNoiseFilter(logging.Filter):
 class WriteRequestsOnlyFilter(logging.Filter):
     """Pass only state-changing HTTP verbs through uvicorn's access log.
 
-    Attach to ``logging.getLogger("uvicorn.access")`` when piping the
-    access log to a rotating file. The frontend polls status endpoints
-    aggressively (printer status, queue, archives) — including every
-    GET would churn the rotation window faster than it's useful for
-    incident triage. POST / PUT / PATCH / DELETE are the verbs that
-    actually mutate server state, so those are the records worth
+    **Attach to the file handler, not to the logger.** The frontend polls
+    status endpoints aggressively (printer status, queue, archives) —
+    including every GET would churn the rotation window faster than it's
+    useful for incident triage. POST / PUT / PATCH / DELETE are the verbs
+    that actually mutate server state, so those are the records worth
     keeping on disk for the "who triggered this 6 ms before that MQTT
     publish?" forensics use case.
+
+    Rotation is a property of the *file*, which is why this belongs to the
+    file handler. It used to sit on ``logging.getLogger("uvicorn.access")``,
+    where a filter runs before any handler is reached — so it also silenced
+    GETs on the console, where nothing rotates and where a developer
+    watching the server wants to see them. Scope wider than the reason.
 
     Uvicorn's access record format is::
 
@@ -96,15 +101,29 @@ class WriteRequestsOnlyFilter(logging.Filter):
     so the check stays cheap (no string formatting on every record)
     and robust against URL substrings that happen to contain a verb
     name (e.g. ``/api/v1/get-something``).
+
+    Which makes the logger-name guard below load-bearing rather than
+    defensive. On a shared handler this sees **every** record the file
+    takes, and plenty of ours are ``("%s: %s failed: %s", id, what, exc)``
+    — second argument a string, and not a write verb. Measured against a
+    real line from ``zigbee/driver.py``: ``Zigbee plug 1: turn on failed``
+    was dropped. Silently deleting application logs while claiming to trim
+    access noise is the same failure mode as audit A.28, and just as
+    invisible.
     """
 
+    _ACCESS_LOGGER = "uvicorn.access"
     _WRITE_VERBS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
     def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
-        # uvicorn's access logger emits records with args populated; if
-        # something else is logging through this logger and the args
-        # shape doesn't match, fall through (let it pass) rather than
-        # silently dropping unrelated records.
+        # Only uvicorn's access records are ours to judge. Everything else
+        # reaching this handler passes untouched — see the class docstring
+        # for what happens when this guard is missing.
+        if record.name != self._ACCESS_LOGGER:
+            return True
+        # Even within the access logger, a record whose args don't have the
+        # documented shape falls through rather than being dropped on a
+        # guess.
         args = record.args
         if not isinstance(args, tuple) or len(args) < 2:
             return True

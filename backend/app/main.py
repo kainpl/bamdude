@@ -317,11 +317,20 @@ if app_settings.log_to_file:
     # across separate streams. Filtered to write methods only
     # (POST/PUT/PATCH/DELETE) so the high-volume status-poll GETs from the
     # frontend don't churn the rotation window faster than it's useful.
+    #
+    # The filter goes on the FILE HANDLER, not on the access logger. A
+    # logger-level filter runs before any handler, so on the logger it also
+    # stripped GETs from the console — which does not rotate, and where
+    # someone watching the server wants to see them. It cost real diagnostic
+    # time once: an empty stretch of access lines read as "the server served
+    # nothing", when the GET polling behind it was simply invisible by
+    # design. On the handler the file stays trimmed and the console stays
+    # complete.
     from backend.app.core.logging_filters import WriteRequestsOnlyFilter  # noqa: E402
 
     uvicorn_access_logger = logging.getLogger("uvicorn.access")
     uvicorn_access_logger.addHandler(file_handler)
-    uvicorn_access_logger.addFilter(WriteRequestsOnlyFilter())
+    file_handler.addFilter(WriteRequestsOnlyFilter())
     # Uvicorn's access logger has propagate=False (its own default), so
     # the root-attached TraceIDFilter never sees these records. Attach a
     # second filter instance directly to the access logger so HTTP access
