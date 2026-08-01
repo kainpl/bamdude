@@ -2289,6 +2289,22 @@ function ArchiveListRow({
             if (archive.cost != null) {
               facts.push(<span key="cost">{rowCurrency}{archive.cost.toFixed(2)}</span>);
             }
+            // Energy sits beside filament cost, as it does on the card. The
+            // bolt is what keeps them apart: the filament figure carries no
+            // icon, so two bare amounts in a row would read as one number split
+            // in half.
+            if (archive.energy_cost != null) {
+              facts.push(
+                <span
+                  key="energy"
+                  className="flex items-center gap-1"
+                  title={`${t('stats.energyUsed')}: ${archive.energy_kwh?.toFixed(3) ?? 'N/A'} kWh`}
+                >
+                  <Zap className="w-2.5 h-2.5" />
+                  {rowCurrency}{archive.energy_cost.toFixed(2)}
+                </span>,
+              );
+            }
             if (archive.total_layers) {
               const label = archive.total_layers === 1
                 ? t('archives.card.layer', { count: archive.total_layers })
