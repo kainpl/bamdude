@@ -704,11 +704,11 @@ export function ProjectDetailPage() {
       </div>
 
       {/* Progress bars (if targets set) */}
-      {(project.target_count || project.target_parts_count) && (
+      {((project.target_count ?? 0) > 0 || (project.target_parts_count ?? 0) > 0) && (
         <Card>
           <CardContent className="p-4 space-y-4">
             {/* Plates progress */}
-            {project.target_count && (
+            {(project.target_count ?? 0) > 0 && (
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm text-bambu-gray">{t('projectDetail.progress.platesProgress')}</span>
@@ -738,7 +738,7 @@ export function ProjectDetailPage() {
               </div>
             )}
             {/* Parts progress */}
-            {project.target_parts_count && (
+            {(project.target_parts_count ?? 0) > 0 && (
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm text-bambu-gray">{t('projectDetail.progress.partsProgress')}</span>

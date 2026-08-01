@@ -756,10 +756,10 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
 
         {/* Progress section - show for all projects */}
         <div className="mb-4">
-          {(project.target_count || project.target_parts_count) ? (
+          {((project.target_count ?? 0) > 0 || (project.target_parts_count ?? 0) > 0) ? (
             <div className="space-y-3">
               {/* Plates progress */}
-              {project.target_count && (
+              {(project.target_count ?? 0) > 0 && (
                 <div>
                   <div className="flex items-center justify-between text-xs mb-1">
                     <span className="text-bambu-gray">{t('projects.plates')}</span>
@@ -782,7 +782,7 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
                 </div>
               )}
               {/* Parts progress */}
-              {project.target_parts_count && (
+              {(project.target_parts_count ?? 0) > 0 && (
                 <div>
                   <div className="flex items-center justify-between text-xs mb-1">
                     <span className="text-bambu-gray">{t('projects.parts')}</span>

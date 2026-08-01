@@ -9,6 +9,7 @@ import { render } from '../utils';
 import { ProjectsPage, ProjectModal } from '../../pages/ProjectsPage';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
+import { strayZeroTextNodes as strayZeroes } from '../domHelpers';
 
 const mockProjects = [
   {
@@ -99,6 +100,46 @@ describe('ProjectsPage', () => {
         expect(functionalParts).toBeInTheDocument();
         // Color is applied as style
       });
+    });
+  });
+
+  describe('zero targets (#project-progress)', () => {
+    // `0 && <jsx>` evaluates to 0, and React renders the NUMBER — so a target
+    // legitimately set to 0 painted a bare "0" where the progress block used to
+    // be. Both directions, because the two branches are separate sites.
+    const withTargets = (targetCount: number, targetPartsCount: number) => [
+      {
+        ...mockProjects[0],
+        name: 'Zero Target Project',
+        target_count: targetCount,
+        target_parts_count: targetPartsCount,
+        completed_count: 3,
+        archive_count: 2,
+      },
+    ];
+
+    it('measuring by parts only does not paint a stray zero', async () => {
+      server.use(http.get('/api/v1/projects/', () => HttpResponse.json(withTargets(0, 20))));
+      render(<ProjectsPage />);
+
+      await waitFor(() => expect(screen.getByText('Zero Target Project')).toBeInTheDocument());
+      expect(strayZeroes()).toHaveLength(0);
+    });
+
+    it('measuring by plates only does not paint a stray zero', async () => {
+      server.use(http.get('/api/v1/projects/', () => HttpResponse.json(withTargets(5, 0))));
+      render(<ProjectsPage />);
+
+      await waitFor(() => expect(screen.getByText('Zero Target Project')).toBeInTheDocument());
+      expect(strayZeroes()).toHaveLength(0);
+    });
+
+    it('no targets at all does not paint a stray zero', async () => {
+      server.use(http.get('/api/v1/projects/', () => HttpResponse.json(withTargets(0, 0))));
+      render(<ProjectsPage />);
+
+      await waitFor(() => expect(screen.getByText('Zero Target Project')).toBeInTheDocument());
+      expect(strayZeroes()).toHaveLength(0);
     });
   });
 

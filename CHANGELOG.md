@@ -58,6 +58,8 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **A lone "0" appeared where a project's progress bar should have disappeared.** Setting a target to zero correctly hid the bar, and left the digit behind — on the project page and on the project cards, in both directions (plates zeroed, parts zeroed, and both).
+
 - **A project's activity history now shows the prints that are actually running.** It read "print started" from the queue, so a job sent straight to a printer — or started from the printer's own screen — appeared nowhere at all: no queue entry to read, and a running print the history ignored. Cancelled prints were never shown either, on any route. History is now built from the prints themselves, so running, finished, failed and cancelled all appear, whichever way the job was sent; work still waiting is listed from both queues, and nothing is listed twice. It no longer cuts off at ten entries with no way to see the rest, and the entries are in your language rather than always English. One more thing that quietly hid history: entries were counted before their type was checked, so a project whose recent prints were all cancelled showed an empty timeline — it now counts only what it will actually display.
 
 - **"In progress" on a project counted queue entries, so a printer visibly running that project's job could sit beside a "0 in progress".** Counted from the prints now, like everything else on that card.
