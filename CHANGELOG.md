@@ -52,6 +52,12 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **A Zigbee plug that had gone away could make the whole interface stop responding.** Unplug one, and its status requests kept waiting on the radio — measured at 28 to 74 seconds each, several at once. Nothing was wrong with BamDude itself: it went on answering other callers in a fifth of a second throughout, and printing was never affected. But a browser only allows about six connections to a site at a time, and those requests took all of them, so the tab could no longer send anything at all — including a reload. It looked exactly like the server had died, and it recovered the moment the plug came back. Status requests are now bounded to a few seconds and answered from the last known reading if the device does not respond in time, and several viewers of the same plug share one read instead of each starting their own and queueing on the one radio.
+
+- **The energy cost of a print was missing from the archive list.** Card view showed it beside the filament cost; the list view showed only filament, so the same print appeared to have cost less depending on which view you were in. It now appears in both, marked with a bolt so it cannot be mistaken for the filament figure, with the kilowatt-hours in its tooltip.
+
+- **Zigbee log messages that broke off where the reason should be.** A plug that stops answering — unplugged, out of range, asleep — produced lines ending in a colon and nothing after it, because the timeout behind them carries no text of its own. Ten different messages could do this, including the one about a dead radio. They now name what happened, and a timeout says so in words rather than as an error class.
+
 - **An MQTT plug could not be linked to a printer.** The field simply was not shown for that plug type, left over from when MQTT plugs could only be read from. They have been able to switch power since 0.5.1, so the automation was available and the way to enable it was not.
 
 - **Editing a plug was hidden inside "automation settings".** Changing a plug's name, or which printer it feeds, meant expanding a panel about automation and scrolling past every toggle in it. Editing and deleting are now on the plug itself, next to its name. Nothing about automation moved.
