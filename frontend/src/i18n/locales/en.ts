@@ -4103,6 +4103,7 @@ export default {
       inProgress: '{{count}} in progress',
       failed: '{{count}} failed',
       partsPrinted: '{{count}} parts printed',
+      defective: '{{count}} defective',
       printTime: 'Print Time',
       filamentUsed: 'Filament Used'
     },
@@ -4174,7 +4175,18 @@ export default {
     },
     timeline: {
       title: 'Activity Timeline',
-      empty: 'No activity yet.'
+      empty: 'No activity yet.',
+      showMore: 'Show {{count}} more',
+      showLess: 'Show less',
+      events: {
+        print_started: 'Print started',
+        print_completed: 'Print completed',
+        print_failed: 'Print failed',
+        print_cancelled: 'Print cancelled',
+        queued: 'Added to queue',
+        auto_queued: 'Added to auto-queue',
+        project_created: 'Project created'
+      }
     },
     template: {
       saveAsTemplate: 'Save as Template',

@@ -39,6 +39,8 @@ import {
   ArrowDown,
   Minus,
   Unlink,
+  Ban,
+  Shuffle,
 } from 'lucide-react';
 import { api, withStreamToken } from '../api/client';
 import { parseUTCDate, formatDateOnly, formatDateTime, formatDuration, formatDurationFromHours, formatETA, type TimeFormat, type DateFormat } from '../utils/date';
@@ -206,14 +208,18 @@ function getDueDateStatus(dateString: string | null, t: TFunction): { color: str
   return { color: 'text-bambu-gray', label: t('projectDetail.dueDate.daysLeft', { count: diffDays }) };
 }
 
+const TIMELINE_COLLAPSED = 10;
+
 export function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const { hasPermission } = useAuth();
   const [showEditModal, setShowEditModal] = useState(false);
+  // The timeline arrives whole; the card shows a readable slice until asked.
+  const [timelineExpanded, setTimelineExpanded] = useState(false);
   const [editingNotes, setEditingNotes] = useState(false);
   const [notesContent, setNotesContent] = useState('');
   const [printFile, setPrintFile] = useState<LibraryFileListItem | null>(null);
@@ -241,7 +247,10 @@ export function ProjectDetailPage() {
 
   const { data: timeline, isLoading: timelineLoading } = useQuery({
     queryKey: ['project-timeline', projectId],
-    queryFn: () => api.getProjectTimeline(projectId, 20),
+    // Ask for the client default (50) rather than 20: the card collapses to
+    // TIMELINE_COLLAPSED and "show more" reveals the rest, so anything not
+    // fetched is simply unreachable.
+    queryFn: () => api.getProjectTimeline(projectId),
     enabled: projectId > 0,
   });
 
@@ -817,6 +826,11 @@ export function ProjectDetailPage() {
                       <p className="text-sm text-status-error">{t('projectDetail.stats.failed', { count: stats.failed_prints })}</p>
                     )}
                     <p className="text-sm text-bambu-gray">{t('projectDetail.stats.partsPrinted', { count: stats.completed_prints })}</p>
+                    {/* Says why the parts figure above is lower than what came
+                        off the plates — it is net of scrap. */}
+                    {stats.defective_parts > 0 && (
+                      <p className="text-sm text-amber-400">{t('projectDetail.stats.defective', { count: stats.defective_parts })}</p>
+                    )}
                     {hasPlan && remainingLine(t('projectDetail.files.remainingValue', { value: remainingJobs }))}
                   </div>
                 </div>
@@ -1685,22 +1699,32 @@ export function ProjectDetailPage() {
             </div>
           ) : timeline && timeline.length > 0 ? (
             <div className="space-y-3">
-              {timeline.slice(0, 10).map((event, index) => (
+              {(timelineExpanded ? timeline : timeline.slice(0, TIMELINE_COLLAPSED)).map((event, index) => (
                 <div key={index} className="flex gap-3">
                   <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
                     event.event_type === 'print_completed' ? 'bg-status-ok/20 text-status-ok' :
                     event.event_type === 'print_failed' ? 'bg-status-error/20 text-status-error' :
+                    event.event_type === 'print_cancelled' ? 'bg-bambu-dark-tertiary text-status-error/70' :
                     event.event_type === 'print_started' ? 'bg-yellow-100 dark:bg-yellow-500/20 text-yellow-700 dark:text-yellow-400' :
                     'bg-bambu-dark-tertiary text-bambu-gray'
                   }`}>
                     {event.event_type === 'print_completed' && <CheckCircle className="w-4 h-4" />}
                     {event.event_type === 'print_failed' && <XCircle className="w-4 h-4" />}
+                    {event.event_type === 'print_cancelled' && <Ban className="w-4 h-4" />}
                     {event.event_type === 'print_started' && <Printer className="w-4 h-4" />}
                     {event.event_type === 'queued' && <ListTodo className="w-4 h-4" />}
+                    {event.event_type === 'auto_queued' && <Shuffle className="w-4 h-4" />}
                     {event.event_type === 'project_created' && <Plus className="w-4 h-4" />}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm text-white">{event.title}</p>
+                    {/* Translated from event_type; the server's own ``title`` is
+                        English and only serves API callers, so it is the
+                        fallback for an event type this build doesn't know. */}
+                    <p className="text-sm text-white">
+                      {i18n.exists(`projectDetail.timeline.events.${event.event_type}`)
+                        ? t(`projectDetail.timeline.events.${event.event_type}`)
+                        : event.title}
+                    </p>
                     {event.description && (
                       <p className="text-xs text-bambu-gray truncate">{event.description}</p>
                     )}
@@ -1708,6 +1732,17 @@ export function ProjectDetailPage() {
                   </div>
                 </div>
               ))}
+              {timeline.length > TIMELINE_COLLAPSED && (
+                <button
+                  type="button"
+                  onClick={() => setTimelineExpanded((v) => !v)}
+                  className="text-xs text-bambu-green hover:underline"
+                >
+                  {timelineExpanded
+                    ? t('projectDetail.timeline.showLess')
+                    : t('projectDetail.timeline.showMore', { count: timeline.length - TIMELINE_COLLAPSED })}
+                </button>
+              )}
             </div>
           ) : (
             <p className="text-bambu-gray/70 text-sm italic">

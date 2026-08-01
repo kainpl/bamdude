@@ -218,6 +218,100 @@ class TestProjectPartsTracking:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_defective_parts_are_not_counted_as_produced(
+        self, async_client: AsyncClient, project_factory, archive_factory, db_session
+    ):
+        """A project needing N usable parts is not finished because N came off
+        the plate and some went in the bin. The archive keeps saying what it
+        printed; only the project's tally nets the scrap out."""
+        project = await project_factory(target_parts_count=20)
+        await archive_factory(project_id=project.id, quantity=8, defective_count=3, status="completed")
+        await archive_factory(project_id=project.id, quantity=4, status="completed")
+
+        data = (await async_client.get(f"/api/v1/projects/{project.id}")).json()
+
+        assert data["stats"]["completed_prints"] == 9  # 12 printed, 3 scrap
+        assert data["stats"]["defective_parts"] == 3
+        assert data["stats"]["parts_progress_percent"] == 45.0
+        assert data["stats"]["remaining_parts"] == 11
+
+        listed = (await async_client.get("/api/v1/projects/")).json()
+        row = next(p for p in listed if p["id"] == project.id)
+        assert row["completed_count"] == 9, "the list page must agree with the project page"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_zero_target_reports_no_progress(
+        self, async_client: AsyncClient, project_factory, archive_factory, db_session
+    ):
+        """0 means "do not measure this project that way" — the bar is hidden
+        rather than sitting at an impossible percentage. Both directions: parts
+        only, and plates only."""
+        parts_only = await project_factory(target_count=0, target_parts_count=20)
+        await archive_factory(project_id=parts_only.id, quantity=5, status="completed")
+
+        data = (await async_client.get(f"/api/v1/projects/{parts_only.id}")).json()
+        assert data["stats"]["progress_percent"] is None
+        assert data["stats"]["parts_progress_percent"] == 25.0
+
+        plates_only = await project_factory(target_count=4, target_parts_count=0)
+        await archive_factory(project_id=plates_only.id, quantity=5, status="completed")
+
+        data = (await async_client.get(f"/api/v1/projects/{plates_only.id}")).json()
+        assert data["stats"]["parts_progress_percent"] is None
+        assert data["stats"]["progress_percent"] == 25.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_target_can_be_cleared_back_to_zero(self, async_client: AsyncClient, project_factory, db_session):
+        project = await project_factory(target_count=10, target_parts_count=10)
+
+        response = await async_client.patch(
+            f"/api/v1/projects/{project.id}",
+            json={"target_count": 0, "target_parts_count": None},
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["target_count"] == 0
+        assert response.json()["target_parts_count"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_print_running_without_a_queue_counts_as_in_progress(
+        self, async_client: AsyncClient, project_factory, archive_factory, db_session
+    ):
+        """Direct / printer-started prints have no queue row to count."""
+        project = await project_factory()
+        await archive_factory(project_id=project.id, status="printing")
+
+        data = (await async_client.get(f"/api/v1/projects/{project.id}")).json()
+
+        assert data["stats"]["in_progress_prints"] == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_print_time_prefers_the_real_duration(
+        self, async_client: AsyncClient, project_factory, archive_factory, db_session
+    ):
+        """The card reported what the slicer predicted, not what the farm spent."""
+        project = await project_factory()
+        # actual_time_seconds is derived from the timestamps by a session event,
+        # so it has to be given the timestamps rather than the value.
+        await archive_factory(
+            project_id=project.id,
+            status="completed",
+            print_time_seconds=3600,
+            started_at=datetime(2026, 8, 1, 10, 0, 0),
+            completed_at=datetime(2026, 8, 1, 11, 30, 0),
+        )
+        await archive_factory(project_id=project.id, status="printing", print_time_seconds=1800)
+
+        data = (await async_client.get(f"/api/v1/projects/{project.id}")).json()
+
+        assert data["stats"]["total_print_time_hours"] == 2.0  # 1.5 actual + 0.5 estimated
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_project_list_shows_parts_count(
         self, async_client: AsyncClient, project_factory, archive_factory, db_session
     ):

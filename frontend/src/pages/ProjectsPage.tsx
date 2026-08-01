@@ -162,8 +162,8 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
       name: name.trim(),
       description: description.trim() || undefined,
       color,
-      target_count: targetCount ? parseInt(targetCount, 10) : undefined,
-      target_parts_count: targetPartsCount ? parseInt(targetPartsCount, 10) : undefined,
+      target_count: targetCount !== '' ? parseInt(targetCount, 10) : (project ? null : undefined),
+      target_parts_count: targetPartsCount !== '' ? parseInt(targetPartsCount, 10) : (project ? null : undefined),
       // Explicit null clears on edit (the backend keys off model_fields_set);
       // undefined on create so the column keeps its default. Sending undefined
       // on edit made an emptied field silently revert (#2536).
@@ -324,7 +324,7 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
                 onChange={(e) => setTargetCount(e.target.value)}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
                 placeholder={hasPlanData && planPlates > 0 ? planPlates.toString() : t('projects.targetPlatesPlaceholder')}
-                min="1"
+                min="0"
               />
               <p className="text-xs text-bambu-gray mt-1 flex items-center gap-2 flex-wrap">
                 <span>{t('projects.targetPlatesHelp')}</span>
@@ -350,7 +350,7 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
                 onChange={(e) => setTargetPartsCount(e.target.value)}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
                 placeholder={hasPlanData && planParts > 0 ? planParts.toString() : t('projects.targetPartsPlaceholder')}
-                min="1"
+                min="0"
               />
               <p className="text-xs text-bambu-gray mt-1 flex items-center gap-2 flex-wrap">
                 <span>{t('projects.targetPartsHelp')}</span>

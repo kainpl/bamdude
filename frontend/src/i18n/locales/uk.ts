@@ -4113,6 +4113,7 @@ export default {
       inProgress: '{{count}} в процесі',
       failed: '{{count}} невдалих',
       partsPrinted: '{{count}} деталей надруковано',
+      defective: '{{count}} бракованих',
       printTime: 'Час друку',
       filamentUsed: 'Використано філаменту'
     },
@@ -4184,7 +4185,18 @@ export default {
     },
     timeline: {
       title: 'Хронологія активності',
-      empty: 'Активності ще немає.'
+      empty: 'Активності ще немає.',
+      showMore: 'Показати ще {{count}}',
+      showLess: 'Згорнути',
+      events: {
+        print_started: 'Друк почався',
+        print_completed: 'Друк завершено',
+        print_failed: 'Друк провалився',
+        print_cancelled: 'Друк скасовано',
+        queued: 'Додано в чергу',
+        auto_queued: 'Додано в авточергу',
+        project_created: 'Проєкт створено'
+      }
     },
     template: {
       saveAsTemplate: 'Зберегти як шаблон',

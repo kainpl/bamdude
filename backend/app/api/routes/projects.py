@@ -19,6 +19,7 @@ from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
+from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.project import Project
@@ -59,12 +60,18 @@ async def compute_project_stats(
 ) -> ProjectStats:
     """Compute statistics for a project."""
     # Count total archives (distinct print jobs)
-    total_result = await db.execute(select(func.count(PrintArchive.id)).where(PrintArchive.project_id == project_id))
+    total_result = await db.execute(
+        select(func.count(PrintArchive.id)).where(
+            PrintArchive.project_id == project_id, PrintArchive.deleted_at.is_(None)
+        )
+    )
     total_archives = total_result.scalar() or 0
 
     # Sum total items (using quantity field)
     total_items_result = await db.execute(
-        select(func.coalesce(func.sum(PrintArchive.quantity), 0)).where(PrintArchive.project_id == project_id)
+        select(func.coalesce(func.sum(PrintArchive.quantity), 0)).where(
+            PrintArchive.project_id == project_id, PrintArchive.deleted_at.is_(None)
+        )
     )
     total_items = total_items_result.scalar() or 0
 
@@ -72,6 +79,7 @@ async def compute_project_stats(
     failed_result = await db.execute(
         select(func.count(PrintArchive.id)).where(
             PrintArchive.project_id == project_id,
+            PrintArchive.deleted_at.is_(None),
             PrintArchive.status.in_(["failed", "aborted", "cancelled", "stopped"]),
         )
     )
@@ -80,12 +88,19 @@ async def compute_project_stats(
     # Sum print time, filament, and energy
     sums_result = await db.execute(
         select(
-            func.coalesce(func.sum(PrintArchive.print_time_seconds), 0).label("total_time"),
+            # Real time where it is known, the slicer's estimate otherwise.
+            # ``actual_time_seconds`` is filled for completed prints (m107); a
+            # running or failed one has only the estimate. Summing the estimate
+            # throughout meant the card reported what the slicer predicted, not
+            # what the farm spent.
+            func.coalesce(
+                func.sum(func.coalesce(PrintArchive.actual_time_seconds, PrintArchive.print_time_seconds)), 0
+            ).label("total_time"),
             func.coalesce(func.sum(PrintArchive.filament_used_grams), 0).label("total_filament"),
             func.coalesce(func.sum(PrintArchive.cost), 0).label("total_filament_cost"),
             func.coalesce(func.sum(PrintArchive.energy_kwh), 0).label("total_energy"),
             func.coalesce(func.sum(PrintArchive.energy_cost), 0).label("total_energy_cost"),
-        ).where(PrintArchive.project_id == project_id)
+        ).where(PrintArchive.project_id == project_id, PrintArchive.deleted_at.is_(None))
     )
     sums = sums_result.first()
 
@@ -97,22 +112,39 @@ async def compute_project_stats(
     )
     queued_prints = queued_result.scalar() or 0
 
-    # Count in-progress items
+    # Count in-progress prints from the ARCHIVE, not from the queue. Every
+    # physical print has an archive stamped with the project; a queue row exists
+    # only for work that went through a queue, so counting those missed prints
+    # dispatched straight to a printer or started from its screen — the tile read
+    # "0 in progress" with a machine visibly running the project's job.
     in_progress_result = await db.execute(
-        select(func.count(PrintQueueItem.id)).where(
-            PrintQueueItem.project_id == project_id, PrintQueueItem.status == "printing"
+        select(func.count(PrintArchive.id)).where(
+            PrintArchive.project_id == project_id,
+            PrintArchive.deleted_at.is_(None),
+            PrintArchive.status == "printing",
         )
     )
     in_progress_prints = in_progress_result.scalar() or 0
 
-    # Sum completed items (parts) - sum of quantities for actually printed jobs
+    # Parts actually produced: quantities of completed prints, less the ones
+    # recorded as scrap. This is the figure the parts target is measured
+    # against, and a project that needs 40 usable parts is not finished because
+    # 40 came off the plate and three went in the bin. Only here — the archive's
+    # own ``quantity`` and the global statistics keep meaning "what was
+    # printed"; this is the project's question, not theirs.
     completed_items_result = await db.execute(
-        select(func.coalesce(func.sum(PrintArchive.quantity), 0)).where(
+        select(
+            func.coalesce(func.sum(PrintArchive.quantity), 0).label("printed"),
+            func.coalesce(func.sum(PrintArchive.defective_count), 0).label("defective"),
+        ).where(
             PrintArchive.project_id == project_id,
+            PrintArchive.deleted_at.is_(None),
             PrintArchive.status == "completed",
         )
     )
-    completed_items = int(completed_items_result.scalar() or 0)
+    completed_row = completed_items_result.first()
+    defective_items = int(completed_row.defective or 0)
+    completed_items = max(0, int(completed_row.printed or 0) - defective_items)
 
     # Calculate progress for plates (target_count vs total_archives)
     progress_percent = None
@@ -143,7 +175,8 @@ async def compute_project_stats(
     return ProjectStats(
         total_archives=total_archives,
         total_items=int(total_items),
-        completed_prints=completed_items,  # Now reflects sum of quantities for completed prints
+        completed_prints=completed_items,  # usable parts: completed quantities less scrap
+        defective_parts=defective_items,
         failed_prints=int(failed_prints),
         queued_prints=queued_prints,
         in_progress_prints=in_progress_prints,
@@ -187,13 +220,17 @@ async def list_projects(
     for project in projects:
         # Get archive count (number of print jobs)
         archive_count_result = await db.execute(
-            select(func.count(PrintArchive.id)).where(PrintArchive.project_id == project.id)
+            select(func.count(PrintArchive.id)).where(
+                PrintArchive.project_id == project.id, PrintArchive.deleted_at.is_(None)
+            )
         )
         archive_count = archive_count_result.scalar() or 0
 
         # Get total items (sum of quantities)
         total_items_result = await db.execute(
-            select(func.coalesce(func.sum(PrintArchive.quantity), 0)).where(PrintArchive.project_id == project.id)
+            select(func.coalesce(func.sum(PrintArchive.quantity), 0)).where(
+                PrintArchive.project_id == project.id, PrintArchive.deleted_at.is_(None)
+            )
         )
         total_items = int(total_items_result.scalar() or 0)
 
@@ -206,19 +243,26 @@ async def list_projects(
         )
         queue_count = queue_count_result.scalar() or 0
 
-        # Sum completed parts (quantities) - only actually printed jobs
+        # Usable parts from completed prints — scrap subtracted, matching the
+        # project page. See compute_project_stats for why only here.
         completed_result = await db.execute(
-            select(func.coalesce(func.sum(PrintArchive.quantity), 0)).where(
+            select(
+                func.coalesce(func.sum(PrintArchive.quantity), 0).label("printed"),
+                func.coalesce(func.sum(PrintArchive.defective_count), 0).label("defective"),
+            ).where(
                 PrintArchive.project_id == project.id,
+                PrintArchive.deleted_at.is_(None),
                 PrintArchive.status == "completed",
             )
         )
-        completed_count = int(completed_result.scalar() or 0)
+        completed_row = completed_result.first()
+        completed_count = max(0, int(completed_row.printed or 0) - int(completed_row.defective or 0))
 
         # Sum failed parts (quantities) - includes all failure states
         failed_result = await db.execute(
             select(func.coalesce(func.sum(PrintArchive.quantity), 0)).where(
                 PrintArchive.project_id == project.id,
+                PrintArchive.deleted_at.is_(None),
                 PrintArchive.status.in_(["failed", "aborted", "cancelled", "stopped"]),
             )
         )
@@ -232,7 +276,7 @@ async def list_projects(
         # Get archive previews (up to 6 most recent)
         archives_result = await db.execute(
             select(PrintArchive)
-            .where(PrintArchive.project_id == project.id)
+            .where(PrintArchive.project_id == project.id, PrintArchive.deleted_at.is_(None))
             .order_by(PrintArchive.created_at.desc())
             .limit(6)
         )
@@ -582,9 +626,14 @@ async def update_project(
         if data.status not in ["active", "completed", "archived"]:
             raise HTTPException(status_code=400, detail="Invalid status")
         project.status = data.status
-    if data.target_count is not None:
+    # Keyed off model_fields_set, like tags / budget / url below: an explicit
+    # null has to clear the target, and ``is not None`` made emptying the field
+    # a no-op that silently kept the old number. Zero is a real value here — it
+    # means "don't measure this project in plates (or parts)", and that progress
+    # bar is then hidden rather than pinned at an impossible percentage.
+    if "target_count" in data.model_fields_set:
         project.target_count = data.target_count
-    if data.target_parts_count is not None:
+    if "target_parts_count" in data.model_fields_set:
         project.target_parts_count = data.target_parts_count
     if data.notes is not None:
         project.notes = data.notes
@@ -1456,6 +1505,66 @@ async def create_template_from_project(
 # ============ Phase 9: Timeline Endpoint ============
 
 
+# An archive exists for every physical print — queue-driven, auto-queued, direct
+# and printer-started alike (see the archive-is-print-history invariant), and the
+# dispatcher stamps ``project_id`` onto it on every path. So the archive is the
+# timeline's source for anything that reached a printer, and the two queue tables
+# are asked only about work that has NOT reached one yet.
+#
+# The previous version took "print started" from ``PrintQueueItem`` instead, and
+# turned archives into events only for ``completed`` / ``failed``. A print
+# dispatched straight to a printer therefore appeared nowhere at all — no queue
+# row to read, and a ``printing`` archive it ignored — while cancelled prints
+# were invisible in every case.
+_ARCHIVE_EVENT_BY_STATUS = {
+    "printing": "print_started",
+    "completed": "print_completed",
+    "failed": "print_failed",
+    "aborted": "print_cancelled",
+    "cancelled": "print_cancelled",
+    "stopped": "print_cancelled",
+}
+
+# English, and deliberately so: ``title`` is the API's own wording for callers
+# that are not our frontend, which renders each event from ``event_type`` in the
+# user's language and never shows these.
+_EVENT_TITLES = {
+    "print_started": "Print started",
+    "print_completed": "Print completed",
+    "print_failed": "Print failed",
+    "print_cancelled": "Print cancelled",
+    "queued": "Added to queue",
+    "auto_queued": "Added to auto-queue",
+    "project_created": "Project created",
+}
+
+
+def _archive_event_timestamp(archive: PrintArchive) -> datetime:
+    """When the event being described actually happened.
+
+    A finished print is placed at its end, a running one at its start. Falls back
+    to ``created_at``, which every row has.
+    """
+    if _ARCHIVE_EVENT_BY_STATUS.get(archive.status) == "print_started":
+        return archive.started_at or archive.created_at
+    return archive.completed_at or archive.started_at or archive.created_at
+
+
+def _queue_display_name(item) -> str:
+    """Best-effort name for a queue row, which has no name of its own.
+
+    Works for both queue tables: each references an archive and/or a library
+    file, and neither carries a ``print_name`` column — reading one off the row
+    itself is what used to 500 this endpoint.
+    """
+    return (
+        (item.archive.print_name if item.archive else None)
+        or (item.archive.filename if item.archive else None)
+        or (item.library_file.filename if item.library_file else None)
+        or "(unnamed queue item)"
+    )
+
+
 @router.get("/{project_id}/timeline", response_model=list[TimelineEvent])
 async def get_project_timeline(
     project_id: int,
@@ -1463,102 +1572,139 @@ async def get_project_timeline(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PROJECTS_READ),
 ):
-    """Get timeline of events for a project."""
-    # Verify project exists
+    """Everything that happened to a project, newest first.
+
+    Prints come from archives (running, finished, failed and cancelled alike);
+    the two queue tables contribute only work still waiting, so nothing appears
+    twice — a queue item that has been dispatched is no longer ``pending`` and
+    its archive speaks for it from then on.
+
+    Statuses are filtered **in SQL** rather than after the fetch. Filtering
+    afterwards spent the limit on rows that were then discarded, so a project
+    whose twenty most recent archives were all cancelled showed an empty
+    timeline. Each source is ordered by the same value used as the event's
+    timestamp, so taking the newest ``limit`` from each and cutting the merged
+    list to ``limit`` yields exactly the newest ``limit`` overall.
+    """
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    events = []
+    events: list[TimelineEvent] = []
 
-    # Project creation event
+    # Prints, in every state that says something happened.
+    archive_order = func.coalesce(PrintArchive.completed_at, PrintArchive.started_at, PrintArchive.created_at)
+    archives = (
+        (
+            await db.execute(
+                select(PrintArchive)
+                .where(PrintArchive.project_id == project_id)
+                .where(PrintArchive.deleted_at.is_(None))
+                .where(PrintArchive.status.in_(list(_ARCHIVE_EVENT_BY_STATUS)))
+                .order_by(archive_order.desc())
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    archive_ids = {archive.id for archive in archives}
+
+    for archive in archives:
+        metadata: dict = {"archive_id": archive.id, "status": archive.status}
+        if archive.print_time_seconds:
+            metadata["print_time_hours"] = round(archive.print_time_seconds / 3600, 2)
+        if archive.filament_used_grams:
+            metadata["filament_grams"] = round(archive.filament_used_grams, 1)
+        if archive.failure_reason:
+            metadata["failure_reason"] = archive.failure_reason
+        events.append(
+            TimelineEvent(
+                event_type=_ARCHIVE_EVENT_BY_STATUS[archive.status],
+                timestamp=_archive_event_timestamp(archive),
+                title=_EVENT_TITLES[_ARCHIVE_EVENT_BY_STATUS[archive.status]],
+                description=archive.print_name or archive.filename,
+                metadata=metadata,
+            )
+        )
+
+    # Per-printer queue: only what is still waiting. A dispatched item has left
+    # 'pending', and ``archive_id`` guards the overlap the status cannot — a
+    # pending row that already points at one of the archives above (a reprint
+    # queued from it) would otherwise be listed twice, once as work and once as
+    # the print it produced.
+    queued_items = (
+        (
+            await db.execute(
+                select(PrintQueueItem)
+                .options(selectinload(PrintQueueItem.archive), selectinload(PrintQueueItem.library_file))
+                .where(PrintQueueItem.project_id == project_id)
+                .where(PrintQueueItem.status == "pending")
+                .order_by(PrintQueueItem.created_at.desc())
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    for item in queued_items:
+        if item.archive_id and item.archive_id in archive_ids:
+            continue
+        events.append(
+            TimelineEvent(
+                event_type="queued",
+                timestamp=item.created_at,
+                title=_EVENT_TITLES["queued"],
+                description=_queue_display_name(item),
+                metadata={"queue_item_id": item.id},
+            )
+        )
+
+    # Auto-queue: work not yet routed to any printer. Once routed the row turns
+    # 'assigned' and a per-printer item takes over, so the two tables cannot both
+    # claim the same job; ``assigned_to_item_id`` is belt and braces for a row
+    # routed between the two queries.
+    auto_items = (
+        (
+            await db.execute(
+                select(AutoQueueItem)
+                .options(selectinload(AutoQueueItem.archive), selectinload(AutoQueueItem.library_file))
+                .where(AutoQueueItem.project_id == project_id)
+                .where(AutoQueueItem.status == "pending")
+                .where(AutoQueueItem.assigned_to_item_id.is_(None))
+                .order_by(AutoQueueItem.created_at.desc())
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    for item in auto_items:
+        if item.archive_id and item.archive_id in archive_ids:
+            continue
+        events.append(
+            TimelineEvent(
+                event_type="auto_queued",
+                timestamp=item.created_at,
+                title=_EVENT_TITLES["auto_queued"],
+                description=_queue_display_name(item),
+                metadata={"auto_queue_item_id": item.id, "target_model": item.target_model},
+            )
+        )
+
     events.append(
         TimelineEvent(
             event_type="project_created",
             timestamp=project.created_at,
-            title="Project created",
-            description=f"Project '{project.name}' was created",
+            title=_EVENT_TITLES["project_created"],
+            description=project.name,
         )
     )
 
-    # Get archives and add events
-    archives_result = await db.execute(
-        select(PrintArchive)
-        .where(PrintArchive.project_id == project_id)
-        .order_by(PrintArchive.created_at.desc())
-        .limit(limit)
-    )
-    archives = archives_result.scalars().all()
-
-    for archive in archives:
-        if archive.status == "completed":
-            events.append(
-                TimelineEvent(
-                    event_type="print_completed",
-                    timestamp=archive.completed_at or archive.created_at,
-                    title="Print completed",
-                    description=archive.print_name,
-                    metadata={
-                        "archive_id": archive.id,
-                        "print_time_hours": round((archive.print_time_seconds or 0) / 3600, 2),
-                        "filament_grams": round(archive.filament_used_grams or 0, 1),
-                    },
-                )
-            )
-        elif archive.status == "failed":
-            events.append(
-                TimelineEvent(
-                    event_type="print_failed",
-                    timestamp=archive.completed_at or archive.created_at,
-                    title="Print failed",
-                    description=archive.print_name,
-                    metadata={"archive_id": archive.id},
-                )
-            )
-
-    # Get queue items. Eager-load archive + library_file so the description
-    # resolution below doesn't trip a lazy-load under the async session —
-    # PrintQueueItem has no ``print_name`` of its own, the display name
-    # comes from whichever source the item references.
-    queue_result = await db.execute(
-        select(PrintQueueItem)
-        .options(selectinload(PrintQueueItem.archive), selectinload(PrintQueueItem.library_file))
-        .where(PrintQueueItem.project_id == project_id)
-        .order_by(PrintQueueItem.created_at.desc())
-        .limit(limit)
-    )
-    queue_items = queue_result.scalars().all()
-
-    for item in queue_items:
-        display_name = (
-            (item.archive.print_name if item.archive else None)
-            or (item.archive.filename if item.archive else None)
-            or (item.library_file.filename if item.library_file else None)
-            or "(unnamed queue item)"
-        )
-        if item.status == "printing":
-            events.append(
-                TimelineEvent(
-                    event_type="print_started",
-                    timestamp=item.started_at or item.created_at,
-                    title="Print started",
-                    description=display_name,
-                    metadata={"queue_item_id": item.id},
-                )
-            )
-        elif item.status == "pending":
-            events.append(
-                TimelineEvent(
-                    event_type="queued",
-                    timestamp=item.created_at,
-                    title="Added to queue",
-                    description=display_name,
-                    metadata={"queue_item_id": item.id},
-                )
-            )
-
-    # Sort by timestamp descending
     events.sort(key=lambda e: e.timestamp, reverse=True)
 
     return events[:limit]

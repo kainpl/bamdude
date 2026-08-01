@@ -1032,7 +1032,9 @@ export interface SimilarArchive {
 export interface ProjectStats {
   total_archives: number;
   total_items: number;  // Sum of quantities (total items printed)
-  completed_prints: number;  // Sum of quantities for completed prints (parts)
+  completed_prints: number;  // Usable parts: completed quantities less defective_parts
+  /** Scrap among completed prints, already subtracted from completed_prints. */
+  defective_parts: number;
   failed_prints: number;
   queued_prints: number;
   in_progress_prints: number;
@@ -1175,8 +1177,10 @@ export interface ProjectUpdate {
   description?: string;
   color?: string;
   status?: string;
-  target_count?: number;
-  target_parts_count?: number;
+  // 0 = "don't measure this project in plates/parts" (that progress bar is
+  // hidden); null clears the target entirely.
+  target_count?: number | null;
+  target_parts_count?: number | null;
   notes?: string;
   // null clears (the backend keys off model_fields_set), like budget/url.
   tags?: string | null;
