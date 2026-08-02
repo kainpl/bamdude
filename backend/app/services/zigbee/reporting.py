@@ -31,8 +31,10 @@ from backend.app.services.zigbee.errors import describe_exception
 from backend.app.services.zigbee.metering import (
     ENERGY_SCALING_ATTRS,
     POWER_SCALING_ATTRS,
+    demand_to_watts,
     scale,
 )
+from backend.app.services.zigbee.reporting_targets import ATTR_INSTANTANEOUS_DEMAND
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +182,17 @@ class ClusterReportListener:
                 self._service.update(self._plug_id, energy_total=total)
                 return
 
+            if self._cluster_id == METERING and attrid == ATTR_INSTANTANEOUS_DEMAND:
+                # Metering's own live figure, for plugs that have no
+                # ElectricalMeasurement cluster. Same multiplier pair as the
+                # summation above — ZCL Metering carries one for the whole
+                # cluster — but the unit at base is kW rather than kWh, so it
+                # goes through its own conversion.
+                power = demand_to_watts(value, self._multiplier, self._divisor)
+                if power is not None:
+                    self._service.update(self._plug_id, power=power)
+                return
+
             if self._cluster_id == ELECTRICAL_MEASUREMENT and attrid == ATTR_ACTIVE_POWER:
                 power = scale(value, self._multiplier, self._divisor)
                 if power is not None:
@@ -188,6 +201,30 @@ class ClusterReportListener:
             # Anything else is noise: devices report far more than we asked for.
         except Exception as exc:  # noqa: BLE001 — see the docstring
             logger.warning("Zigbee plug %s: report for 0x%04X ignored: %s", self._plug_id, attrid, exc)
+
+
+def _attrs_for(service, device, cluster_id: int, attr: int) -> tuple[int, ...]:
+    """The attributes to read on this cluster for this particular plug.
+
+    Only Metering varies, and only for plugs that have no ElectricalMeasurement
+    to ask instead — see ``metering_attrs_for``.
+    """
+    if cluster_id != METERING:
+        return (attr,)
+    return metering_attrs_for(has_electrical_measurement=service._cluster(device, ELECTRICAL_MEASUREMENT) is not None)
+
+
+def metering_attrs_for(*, has_electrical_measurement: bool) -> tuple[int, ...]:
+    """Which Metering attributes to read for this plug.
+
+    Demand is read ONLY when there is no ElectricalMeasurement cluster to ask
+    instead. An extra attribute costs a round trip on the shared radio for every
+    plug on every cycle, and nearly every plug has the other cluster — so the
+    fallback must not be paid for by the devices that do not need it.
+    """
+    if has_electrical_measurement:
+        return (ATTR_SUMMATION,)
+    return (ATTR_SUMMATION, ATTR_INSTANTANEOUS_DEMAND)
 
 
 async def _scaling_pair(cluster, attrs: tuple[str, ...]):
@@ -275,7 +312,14 @@ async def bind_plug(service, plug, device) -> dict[int, bool]:
         # to change or the max interval elapses — which on hardware looked
         # exactly like a broken driver: "reporting set up for 1/1 plug(s)" in the
         # log, and status still {state: null, reachable: false}.
-        await _read_into_cache(cluster, listener, attr)
+        for one in _attrs_for(service, device, cluster_id, attr):
+            await _read_into_cache(cluster, listener, one)
+
+    if not wired.get(ELECTRICAL_MEASUREMENT) and not wired.get(METERING):
+        logger.info(
+            "Zigbee plug %s reports no power — it can be switched, but live wattage will stay empty",
+            plug.id,
+        )
 
     if not wired.get(METERING):
         logger.info(
@@ -439,8 +483,9 @@ async def refresh_plug(service, plug, device) -> bool:
             service._listeners[(plug.id, cluster_id)] = listener
             cluster.add_listener(listener)
 
-        if await _read_into_cache(cluster, listener, attr):
-            ok = True
+        for one in _attrs_for(service, device, cluster_id, attr):
+            if await _read_into_cache(cluster, listener, one):
+                ok = True
     return ok
 
 

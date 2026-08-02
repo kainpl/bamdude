@@ -36,6 +36,31 @@ POWER_SCALING_ATTRS = (POWER_MULTIPLIER, POWER_DIVISOR, "power_multiplier", "pow
 ENERGY_SCALING_ATTRS = (ENERGY_MULTIPLIER, ENERGY_DIVISOR)
 
 
+# ZCL Metering states its unit in ``unit_of_measure``; for electricity the base
+# is kW and kWh. Summation is wanted in kWh and needs no conversion; demand is
+# wanted in watts and needs this one.
+_WATTS_PER_KILOWATT = 1000.0
+
+
+def demand_to_watts(raw: int | float | None, multiplier: int | None, divisor: int | None) -> float | None:
+    """``Metering.instantaneous_demand`` in watts, or None when it would be a guess.
+
+    This is the Metering cluster's own answer to "how much is flowing right
+    now" — the counterpart of ``ElectricalMeasurement.active_power``, which some
+    plugs simply do not have. ZHA builds its power sensor from exactly this
+    attribute for such devices.
+
+    The x1000 is not cosmetic: without it a printer drawing 200 W reads as 0.2,
+    which is a plausible number and therefore the worst kind of wrong. The same
+    multiplier/divisor pair scales both summation and demand — ZCL Metering
+    carries one pair for the whole cluster.
+    """
+    scaled = scale(raw, multiplier, divisor)
+    if scaled is None:
+        return None
+    return scaled * _WATTS_PER_KILOWATT
+
+
 def scale(raw: int | float | None, multiplier: int | None, divisor: int | None) -> float | None:
     """``raw × multiplier ÷ divisor``, or None when the answer would be a guess.
 

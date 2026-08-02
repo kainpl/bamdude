@@ -978,3 +978,58 @@ class TestReportingStateIsHonest:
             assert calls == ["retry", "retry"], "an unanswered attribute must be tried again"
         finally:
             zigbee_coordinator.forget_reporting("retry")
+
+
+class TestPowerFromMeteringDemand:
+    """Configuring reporting on the right attribute is only half of it.
+
+    A plug with no ElectricalMeasurement now has its ``power`` target pointed at
+    ``Metering.instantaneous_demand`` — but unless the listener files that
+    attribute as power and the poll actually reads it, the subscription is set
+    up and the value never reaches the cache. That is the exact shape of
+    half-configuration this subsystem keeps rediscovering: everything looks
+    wired, half the job is not done.
+
+    No hardware with this profile exists here. Covered by tests only.
+    """
+
+    def test_a_demand_report_lands_as_power_in_watts(self):
+        from backend.app.services.zigbee.reporting_targets import ATTR_INSTANTANEOUS_DEMAND
+
+        service = ZigbeeSmartPlugService()
+        # divisor 1000 means the device counts watt-hours and kilowatts; 200
+        # raw is 0.2 kW, which is 200 W.
+        _listener(service, METERING, multiplier=1, divisor=1000).attribute_updated(ATTR_INSTANTANEOUS_DEMAND, 200, None)
+
+        assert service.get_plug_data(1).power == pytest.approx(200.0)
+
+    def test_demand_and_summation_do_not_overwrite_each_other(self):
+        """Both live on the same cluster with the same multiplier pair, and the
+        listener dispatches on the attribute alone."""
+        from backend.app.services.zigbee.reporting_targets import ATTR_INSTANTANEOUS_DEMAND
+
+        service = ZigbeeSmartPlugService()
+        listener = _listener(service, METERING, multiplier=1, divisor=1000)
+        listener.attribute_updated(ATTR_SUMMATION, 5000, None)
+        listener.attribute_updated(ATTR_INSTANTANEOUS_DEMAND, 200, None)
+
+        data = service.get_plug_data(1)
+        assert data.energy_total == pytest.approx(5.0)
+        assert data.power == pytest.approx(200.0)
+
+    def test_an_unusable_demand_is_not_filed_as_zero_watts(self):
+        from backend.app.services.zigbee.reporting_targets import ATTR_INSTANTANEOUS_DEMAND
+
+        service = ZigbeeSmartPlugService()
+        _listener(service, METERING, multiplier=1, divisor=None).attribute_updated(ATTR_INSTANTANEOUS_DEMAND, 200, None)
+
+        assert service.get_plug_data(1) is None or service.get_plug_data(1).power is None
+
+    def test_demand_is_polled_only_when_there_is_no_electrical_measurement(self):
+        """An extra attribute read costs a round trip on the shared radio for
+        every plug on every cycle. The plugs that have ElectricalMeasurement —
+        which is nearly all of them — must not pay for this fallback."""
+        from backend.app.services.zigbee.reporting import metering_attrs_for
+
+        assert metering_attrs_for(has_electrical_measurement=True) == (ATTR_SUMMATION,)
+        assert len(metering_attrs_for(has_electrical_measurement=False)) == 2

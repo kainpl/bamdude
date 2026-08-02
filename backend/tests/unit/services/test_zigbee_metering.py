@@ -57,3 +57,28 @@ def test_large_counters_keep_their_precision():
     """Lifetime counters grow; the delta between two reads is what matters, so
     losing the low digits would quietly zero out short prints."""
     assert scale(987_654_321, multiplier=1, divisor=1000) == pytest.approx(987654.321)
+
+
+class TestDemandIsKilowattsAtBase:
+    """ZCL Metering carries demand in the cluster's own unit, and for electricity
+    that unit is kW — while every consumer of ours reads watts. The x1000 is the
+    whole difference between a plug reading 0.2 W and 200 W."""
+
+    def test_demand_scales_and_converts_to_watts(self):
+        from backend.app.services.zigbee.metering import demand_to_watts
+
+        assert demand_to_watts(200, 1, 1) == pytest.approx(200_000.0)
+        assert demand_to_watts(200, 1, 1000) == pytest.approx(200.0)
+
+    def test_a_missing_divisor_yields_nothing_rather_than_a_guess(self):
+        """Same rule as ``scale``: the device has not said what its counter
+        means, and inventing one produces something that reads as a measurement
+        to everyone downstream."""
+        from backend.app.services.zigbee.metering import demand_to_watts
+
+        assert demand_to_watts(200, 1, None) is None
+
+    def test_no_reading_is_not_zero_watts(self):
+        from backend.app.services.zigbee.metering import demand_to_watts
+
+        assert demand_to_watts(None, 1, 1000) is None

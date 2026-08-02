@@ -159,3 +159,38 @@ def test_a_measurement_the_registry_does_not_know_is_skipped():
     now carries a different model."""
     assert targets_for(_info(DeviceKind.SENSOR, ("temperature", "radiation"))) != ()
     assert {t.key for t in targets_for(_info(DeviceKind.SENSOR, ("temperature", "radiation")))} == {"temperature"}
+
+
+class TestAPlugWithOnlyMetering:
+    """A plug without ElectricalMeasurement used to yield energy and NEVER
+    watts, in silence — the only warning in the log was about a missing Metering
+    cluster, which is a different thing entirely.
+
+    No hardware with this profile exists here. Covered by tests only.
+    """
+
+    def test_power_falls_back_to_metering_demand(self):
+        from backend.app.services.zigbee.reporting_targets import ATTR_INSTANTANEOUS_DEMAND
+
+        power = next(t for t in targets_for(_info(DeviceKind.PLUG, has_em=False)) if t.key == "power")
+
+        assert power.cluster == METERING
+        assert power.attribute == ATTR_INSTANTANEOUS_DEMAND
+
+    def test_electrical_measurement_still_wins_when_present(self):
+        from backend.app.services.zigbee.reporting_targets import ATTR_ACTIVE_POWER
+
+        power = next(t for t in targets_for(_info(DeviceKind.PLUG, has_em=True)) if t.key == "power")
+
+        assert power.cluster == ELECTRICAL_MEASUREMENT
+        assert power.attribute == ATTR_ACTIVE_POWER
+
+    def test_a_plug_with_neither_source_has_no_power_target(self):
+        targets = targets_for(_info(DeviceKind.PLUG, has_em=False, has_metering=False))
+
+        assert {t.key for t in targets} == {"state"}
+
+    def test_a_plug_without_metering_still_reports_power_and_no_energy(self):
+        targets = targets_for(_info(DeviceKind.PLUG, has_em=True, has_metering=False))
+
+        assert {t.key for t in targets} == {"state", "power"}

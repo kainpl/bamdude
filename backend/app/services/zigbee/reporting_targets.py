@@ -32,6 +32,10 @@ from backend.app.services.zigbee.measurements import BY_KEY, to_raw_change
 ATTR_ON_OFF = 0x0000
 ATTR_SUMMATION = 0x0000
 ATTR_ACTIVE_POWER = 0x050B
+# Metering's own "how much is flowing right now". Some plugs carry this and no
+# ElectricalMeasurement cluster at all, and reading only the latter left them
+# with energy counted and wattage permanently blank.
+ATTR_INSTANTANEOUS_DEMAND = 0x0400
 
 FULLY_EDITABLE = ("min_interval", "max_interval", "reportable_change")
 
@@ -125,16 +129,31 @@ _ENERGY_TARGET = ReportingTarget(
     to_raw=_device_scaled_to_raw,
 )
 
-_POWER_TARGET = ReportingTarget(
-    key="power",
-    cluster=ELECTRICAL_MEASUREMENT,
-    attribute=ATTR_ACTIVE_POWER,
-    min_interval=5,
-    max_interval=900,
-    reportable_change=1,
-    editable=FULLY_EDITABLE,
-    to_raw=_device_scaled_to_raw,
-)
+
+def _power_target(info: DeviceInfo) -> ReportingTarget | None:
+    """Whichever source this plug actually has, under one key.
+
+    ElectricalMeasurement wins when present: it is what the great majority of
+    plugs carry and what our scaling was built around. Metering's demand is the
+    fallback, and the difference never reaches the API — a consumer asking about
+    "power" should not have to know which cluster answered.
+    """
+    if info.has_electrical_measurement:
+        cluster, attribute = ELECTRICAL_MEASUREMENT, ATTR_ACTIVE_POWER
+    elif info.has_metering:
+        cluster, attribute = METERING, ATTR_INSTANTANEOUS_DEMAND
+    else:
+        return None
+    return ReportingTarget(
+        key="power",
+        cluster=cluster,
+        attribute=attribute,
+        min_interval=5,
+        max_interval=900,
+        reportable_change=1,
+        editable=FULLY_EDITABLE,
+        to_raw=_device_scaled_to_raw,
+    )
 
 
 def targets_for(info: DeviceInfo) -> tuple[ReportingTarget, ...]:
@@ -155,5 +174,6 @@ def targets_for(info: DeviceInfo) -> tuple[ReportingTarget, ...]:
             if key in BY_KEY
         )
     if info.kind is DeviceKind.PLUG:
-        return (_STATE_TARGET, _POWER_TARGET, _ENERGY_TARGET)
+        power = _power_target(info)
+        return tuple(t for t in (_STATE_TARGET, power, _ENERGY_TARGET if info.has_metering else None) if t is not None)
     return ()
