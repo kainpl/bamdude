@@ -1,10 +1,14 @@
 """Migration helpers - idempotent DDL operations for SQLite and PostgreSQL."""
 
+import logging
 import re
+import sqlite3
 
 from sqlalchemy import text
 
 from backend.app.core.db_dialect import is_postgres
+
+logger = logging.getLogger(__name__)
 
 
 async def table_exists(conn, table: str) -> bool:
@@ -120,3 +124,42 @@ async def get_table_columns(conn, table: str) -> list[str]:
     else:
         result = await conn.execute(text(f"PRAGMA table_info({table})"))
         return [row[1] for row in result.fetchall()]
+
+
+# SQLite gained ALTER TABLE ... DROP COLUMN in 3.35.0 (2021). Below that the only
+# route is rewriting the table from a hand-written CREATE TABLE — which for a
+# core table is how NOT NULL, DEFAULT, FK and UNIQUE get silently lost, with no
+# way to tell afterwards and no way to repair it.
+_SQLITE_DROP_COLUMN_SINCE = (3, 35, 0)
+
+
+async def drop_column(conn, table: str, column: str) -> bool:
+    """Remove a column. True when it is gone afterwards.
+
+    Idempotent: a column that is not there is already dropped, and ``DEBUG=true``
+    re-runs the newest migration on every start.
+
+    On an SQLite too old for this, the column is LEFT IN PLACE and a warning says
+    so. That is deliberate — a vestigial column nothing reads is harmless, while
+    a rewritten core table with a lost constraint is not repairable.
+    """
+    if column not in await get_table_columns(conn, table):
+        return True
+
+    if is_postgres():
+        await conn.execute(text(f"ALTER TABLE {table} DROP COLUMN IF EXISTS {column}"))
+        return True
+
+    version = tuple(int(part) for part in sqlite3.sqlite_version.split("."))
+    if version < _SQLITE_DROP_COLUMN_SINCE:
+        logger.warning(
+            "SQLite %s cannot drop a column; leaving %s.%s in place, unused. "
+            "Nothing reads it — upgrade SQLite to remove it.",
+            sqlite3.sqlite_version,
+            table,
+            column,
+        )
+        return False
+
+    await conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {column}"))
+    return True
