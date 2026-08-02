@@ -1,0 +1,161 @@
+"""One vocabulary for both device classes.
+
+The registry these project from does not change: ``measurements.py`` keeps
+answering its own question (what a sensor measures and how to read it) and keeps
+its pinning test. This module only lifts out the third thing it happened to
+carry — how reporting is configured — because that is the part plugs share.
+"""
+
+import pytest
+
+from backend.app.services.zigbee.devices import (
+    ELECTRICAL_MEASUREMENT,
+    METERING,
+    ON_OFF,
+    DeviceInfo,
+    DeviceKind,
+)
+from backend.app.services.zigbee.reporting_targets import targets_for
+
+
+def _info(kind, measurements=(), has_em=True, has_metering=True):
+    return DeviceInfo(
+        ieee="aa:bb",
+        nwk=1,
+        manufacturer="X",
+        model="Y",
+        kind=kind,
+        measurements=measurements,
+        has_metering=has_metering,
+        has_electrical_measurement=has_em,
+        reject_reason=None,
+    )
+
+
+def test_a_sensor_gets_one_target_per_measurement():
+    targets = targets_for(_info(DeviceKind.SENSOR, ("temperature", "humidity")))
+
+    assert {t.key for t in targets} == {"temperature", "humidity"}
+
+
+def test_sensor_defaults_come_from_the_measurement_registry():
+    """Projected, not copied. Changing a default in measurements.py must move
+    this without anyone editing two places."""
+    from backend.app.services.zigbee.measurements import BY_KEY
+
+    target = next(iter(targets_for(_info(DeviceKind.SENSOR, ("temperature",)))))
+    m = BY_KEY["temperature"]
+
+    assert (target.min_interval, target.max_interval, target.reportable_change) == (
+        m.default_min_interval,
+        m.default_max_interval,
+        m.default_reportable_change,
+    )
+    assert (target.cluster, target.attribute) == (m.cluster, m.attribute)
+
+
+def test_a_sensor_attribute_stays_the_name_the_registry_uses():
+    """zigpy accepts either a name or an id, and the registry speaks names.
+    Converting here would move the resolution away from the cluster that owns
+    it — and the cluster is the only thing that can do it correctly."""
+    target = next(iter(targets_for(_info(DeviceKind.SENSOR, ("temperature",)))))
+
+    assert target.attribute == "measured_value"
+
+
+def test_a_plug_gets_state_power_and_energy():
+    targets = targets_for(_info(DeviceKind.PLUG))
+
+    assert {t.key for t in targets} == {"state", "power", "energy"}
+
+
+def test_plug_bounds_are_the_ones_zha_uses():
+    by_key = {t.key: t for t in targets_for(_info(DeviceKind.PLUG))}
+
+    assert (by_key["state"].min_interval, by_key["state"].max_interval) == (0, 900)
+    assert (by_key["energy"].min_interval, by_key["energy"].max_interval) == (30, 900)
+    assert (by_key["power"].min_interval, by_key["power"].max_interval) == (5, 900)
+
+
+def test_plug_targets_point_at_the_clusters_that_carry_them():
+    by_key = {t.key: t for t in targets_for(_info(DeviceKind.PLUG))}
+
+    assert by_key["state"].cluster == ON_OFF
+    assert by_key["energy"].cluster == METERING
+    assert by_key["power"].cluster == ELECTRICAL_MEASUREMENT
+
+
+def test_only_max_interval_is_editable_on_a_relay():
+    """reportable_change is meaningless for a relay, and a min_interval above
+    zero can only delay the confirmation of a command we sent ourselves."""
+    state = next(t for t in targets_for(_info(DeviceKind.PLUG)) if t.key == "state")
+
+    assert state.editable == ("max_interval",)
+
+
+def test_every_other_target_is_fully_editable():
+    for info in (_info(DeviceKind.SENSOR, ("temperature",)), _info(DeviceKind.PLUG)):
+        for target in targets_for(info):
+            if target.key == "state":
+                continue
+            assert target.editable == ("min_interval", "max_interval", "reportable_change"), target.key
+
+
+def test_a_sensor_change_converts_without_needing_the_device():
+    target = next(iter(targets_for(_info(DeviceKind.SENSOR, ("temperature",)))))
+
+    assert target.to_raw(0.1) == 10
+
+
+def test_a_float_valued_sensor_change_keeps_its_precision():
+    """The registry's rule, reached through the target: 1 ppm of CO2 is
+    0.000001 raw, and flooring that to 1 asks for a report every million ppm."""
+    target = next(iter(targets_for(_info(DeviceKind.SENSOR, ("co2",)))))
+
+    assert target.to_raw(1.0) == pytest.approx(0.000001)
+
+
+def test_a_plug_change_needs_the_device_scaling():
+    """A plug's raw unit is whatever its multiplier/divisor say, so the same
+    5 W means different numbers on different plugs. This is why to_raw takes
+    the scaling rather than closing over a constant."""
+    power = next(t for t in targets_for(_info(DeviceKind.PLUG)) if t.key == "power")
+
+    assert power.to_raw(5.0, (1, 1)) == 5
+    assert power.to_raw(5.0, (1, 10)) == 50
+
+
+def test_a_plug_change_without_scaling_stays_raw():
+    """Before the device has told us its scaling there is nothing to convert
+    with, and inventing one would ask for reports at a rate nobody chose."""
+    power = next(t for t in targets_for(_info(DeviceKind.PLUG)) if t.key == "power")
+
+    assert power.to_raw(5.0, None) == 5
+
+
+def test_a_plug_change_never_converts_to_zero():
+    """A reportable change of zero asks the device to report on every sample."""
+    power = next(t for t in targets_for(_info(DeviceKind.PLUG)) if t.key == "power")
+
+    assert power.to_raw(0.4, (1, 1)) == 1
+
+
+def test_a_relay_change_is_always_one():
+    state = next(t for t in targets_for(_info(DeviceKind.PLUG)) if t.key == "state")
+
+    assert state.to_raw(99.0, (1, 1000)) == 1
+
+
+def test_a_coordinator_has_no_targets():
+    assert targets_for(_info(DeviceKind.COORDINATOR)) == ()
+
+
+def test_an_unsupported_device_has_no_targets():
+    assert targets_for(_info(DeviceKind.UNSUPPORTED)) == ()
+
+
+def test_a_measurement_the_registry_does_not_know_is_skipped():
+    """A device classified before a registry row was removed, or an IEEE that
+    now carries a different model."""
+    assert targets_for(_info(DeviceKind.SENSOR, ("temperature", "radiation"))) != ()
+    assert {t.key for t in targets_for(_info(DeviceKind.SENSOR, ("temperature", "radiation")))} == {"temperature"}
