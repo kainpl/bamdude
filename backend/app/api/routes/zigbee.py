@@ -715,7 +715,7 @@ async def update_device_settings(
     ordinary course of events for a battery sensor as a broken feature.
     """
     from backend.app.services.zigbee.device_settings import save_overrides
-    from backend.app.services.zigbee.reporting import bind_sensor
+    from backend.app.services.zigbee.reporting import bind_sensor, push_plug_reporting
     from backend.app.services.zigbee.reporting_apply import fully_applied
     from backend.app.services.zigbee.sensors import PowerClass, power_class
 
@@ -744,13 +744,20 @@ async def update_device_settings(
         stale_after_seconds=update.stale_after_seconds,
     )
 
+    # Reporting parameters live IN the device, so saving alone changes nothing
+    # until configure_reporting is re-issued. Both classes are pushed here: a
+    # plug is awake and takes it immediately, a sleeper answers nothing and is
+    # retried at its next contact. Storing without pushing would be the exact
+    # setting-that-did-nothing this cycle exists to remove.
+    desired = await resolve_reporting(db, info)
     if info.kind is DeviceKind.SENSOR:
-        # Reporting parameters live IN the device, so saving alone changes
-        # nothing until configure_reporting is re-issued. A sleeper answers
-        # nothing and is retried at its next contact.
-        desired = await resolve_reporting(db, info)
         applied = await bind_sensor(device, info.ieee, desired)
-        zigbee_coordinator.record_reporting(info.ieee, desired if fully_applied(applied) else {}, applied)
+    else:
+        plug = (
+            await db.execute(select(SmartPlug).where(func.lower(SmartPlug.zigbee_ieee) == info.ieee.lower()))
+        ).scalar_one_or_none()
+        applied = await push_plug_reporting(device, info, desired, plug_id=plug.id if plug else None)
+    zigbee_coordinator.record_reporting(info.ieee, desired if fully_applied(applied) else {}, applied)
 
     device, info, row = await _load_for_settings(db, ieee)
     return await _settings_payload(db, device, info, row)

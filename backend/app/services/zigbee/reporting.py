@@ -254,7 +254,7 @@ async def _scaling_pair(cluster, attrs: tuple[str, ...]):
     return None, None
 
 
-async def bind_plug(service, plug, device) -> dict[int, bool]:
+async def bind_plug(service, plug, device, parameters: dict[str, dict] | None = None) -> dict[int, bool]:
     """Bind and subscribe every cluster this plug actually has.
 
     Best-effort per cluster: a plug whose Metering refuses to bind should still
@@ -262,17 +262,25 @@ async def bind_plug(service, plug, device) -> dict[int, bool]:
     will never report energy, instead of leaving it to be discovered as a
     permanent absence of readings.
     """
-    wired: dict[int, bool] = {}
+    from backend.app.services.zigbee.devices import describe_device
+    from backend.app.services.zigbee.reporting_apply import apply_reporting
+    from backend.app.services.zigbee.reporting_targets import targets_for
 
-    for cluster_id, scaling_attrs, attr, bounds in _POLLED_CLUSTERS:
+    wired: dict[int, bool] = {}
+    clusters: dict[int, object] = {}
+    scaling: dict[int, tuple] = {}
+
+    for cluster_id, scaling_attrs, attr, _bounds in _POLLED_CLUSTERS:
         cluster = service._cluster(device, cluster_id)
         if cluster is None:
             wired[cluster_id] = False
             continue
 
+        clusters[cluster_id] = cluster
         multiplier = divisor = None
         if scaling_attrs:
             multiplier, divisor = await _scaling_pair(cluster, scaling_attrs)
+        scaling[cluster_id] = (multiplier, divisor)
 
         # Re-binding reuses the listener that is already subscribed rather than
         # adding a second one. Multiplier and divisor are device constants, so
@@ -295,12 +303,6 @@ async def bind_plug(service, plug, device) -> dict[int, bool]:
             if not already:
                 _subscribe_cluster(cluster, listener, f"plug {plug.id}")
                 _attached_clusters.add((str(getattr(device, "ieee", plug.id)).strip().lower(), cluster_id))
-            bind_result = await cluster.bind()
-            _warn_if_bind_refused(plug.id, cluster_id, bind_result)
-            result = await cluster.configure_reporting(
-                attr, bounds.min_interval, bounds.max_interval, bounds.reportable_change
-            )
-            _warn_if_reporting_refused(plug.id, cluster_id, result)
             wired[cluster_id] = True
         except Exception as exc:  # noqa: BLE001 — one cluster failing must not lose the others
             logger.warning("Zigbee plug %s: could not subscribe cluster 0x%04X: %s", plug.id, cluster_id, exc)
@@ -315,6 +317,18 @@ async def bind_plug(service, plug, device) -> dict[int, bool]:
         for one in _attrs_for(service, device, cluster_id, attr):
             await _read_into_cache(cluster, listener, one)
 
+    # The radio half, through the SAME loop sensors use. Doing it here rather
+    # than inside the cluster walk above is what lets a plug's own settings
+    # reach it at all: the walk knows about clusters, and the operator's
+    # parameters are keyed by target.
+    await apply_reporting(
+        clusters.get,
+        str(getattr(device, "ieee", plug.id)),
+        targets_for(describe_device(device)),
+        parameters or {},
+        scaling_for=scaling.get,
+    )
+
     if not wired.get(ELECTRICAL_MEASUREMENT) and not wired.get(METERING):
         logger.info(
             "Zigbee plug %s reports no power — it can be switched, but live wattage will stay empty",
@@ -327,6 +341,49 @@ async def bind_plug(service, plug, device) -> dict[int, bool]:
             plug.id,
         )
     return wired
+
+
+def _cluster_on(device, cluster_id: int):
+    """One cluster off a device, without going through the driver.
+
+    The driver's own ``_cluster`` takes a plug row and resolves the device from
+    it; this path already has the device and may run for one that has no plug
+    row yet — a Zigbee plug is paired before anybody adds it.
+    """
+    for endpoint in (getattr(device, "endpoints", None) or {}).values():
+        cluster = (getattr(endpoint, "in_clusters", None) or {}).get(cluster_id)
+        if cluster is not None:
+            return cluster
+    return None
+
+
+async def push_plug_reporting(device, info, parameters: dict[str, dict], plug_id: int | None = None) -> dict[str, dict]:
+    """Re-issue a plug's reporting configuration, now.
+
+    A plug is mains-powered and awake, so an operator's change takes effect
+    while they are still looking at it — unlike a sleeper, which has to be
+    caught. Listeners and scaling are untouched: this is the radio half only,
+    which is what makes it safe to call from a request.
+    """
+    from backend.app.services.zigbee.reporting_apply import apply_reporting
+    from backend.app.services.zigbee.reporting_targets import targets_for
+
+    clusters: dict[int, object] = {}
+    scaling: dict[int, tuple] = {}
+    for cluster_id, scaling_attrs, _attr, _bounds in _POLLED_CLUSTERS:
+        cluster = _cluster_on(device, cluster_id)
+        if cluster is None:
+            continue
+        clusters[cluster_id] = cluster
+        scaling[cluster_id] = await _scaling_pair(cluster, scaling_attrs) if scaling_attrs else (None, None)
+
+    return await apply_reporting(
+        clusters.get,
+        str(getattr(device, "ieee", plug_id)),
+        targets_for(info),
+        parameters,
+        scaling_for=scaling.get,
+    )
 
 
 async def subscribe_all(service, plugs) -> int:
@@ -343,7 +400,8 @@ async def subscribe_all(service, plugs) -> int:
     so the caller can log it rather than leave a silent partial result.
     """
     from backend.app.core.database import async_session
-    from backend.app.services.zigbee.device_settings import load_device_row
+    from backend.app.services.zigbee.device_settings import load_device_row, resolve_reporting
+    from backend.app.services.zigbee.devices import describe_device
 
     wired = 0
     for plug in plugs:
@@ -352,13 +410,16 @@ async def subscribe_all(service, plugs) -> int:
             logger.info("Zigbee plug %s: device not on the mesh, no reporting set up", plug.id)
             continue
         try:
-            await bind_plug(service, plug, device)
-            wired += 1
-            # After binding, deliberately. Anything that goes wrong reading a
-            # setting must cost this plug its threshold, not its reporting —
-            # and reporting is the thing whose absence is invisible.
+            # Resolved before binding because bind_plug needs them, and total by
+            # construction: a settings problem yields the farm defaults rather
+            # than an exception, so it can never cost this plug its reporting.
             async with async_session() as db:
+                info = describe_device(device)
+                parameters = await resolve_reporting(db, info)
                 row = await load_device_row(db, getattr(device, "ieee", "") or "")
+
+            await bind_plug(service, plug, device, parameters)
+            wired += 1
             service.set_stale_after(plug.id, row.stale_after_seconds if row else None)
         except Exception as exc:  # noqa: BLE001 — one plug must not lose the rest
             logger.warning("Zigbee plug %s: could not set up reporting: %s", plug.id, exc)

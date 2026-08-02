@@ -252,7 +252,7 @@ async def test_the_scaling_is_handed_to_the_target_conversion():
         to_raw=to_raw,
     )
     cluster = _Cluster(read_back=_rsp(5, 900, 7, attrid=0x050B))
-    await apply_reporting(lambda _c: cluster, "aa:bb", (target,), {}, scaling=(1, 1000))
+    await apply_reporting(lambda _c: cluster, "aa:bb", (target,), {}, scaling_for={0x0B04: (1, 1000)}.get)
 
     assert seen["scaling"] == (1, 1000)
     assert cluster.configured == [(0x050B, 5, 900, 7)]
@@ -315,3 +315,49 @@ class TestOnlyACompleteApplyCounts:
         from backend.app.services.zigbee.reporting_apply import fully_applied
 
         assert fully_applied({}) is False
+
+
+@pytest.mark.asyncio
+async def test_each_cluster_gets_its_own_scaling():
+    """A plug's power and its energy counter are scaled by two different
+    multiplier/divisor pairs. One pair for both converts one of them wrongly,
+    and does it quietly — the number keeps its plausible shape."""
+    from backend.app.services.zigbee.reporting_apply import apply_reporting
+
+    seen = {}
+
+    def to_raw_for(key):
+        def convert(change, scaling=None):
+            seen[key] = scaling
+            return 1
+
+        return convert
+
+    targets = (
+        ReportingTarget(
+            key="power",
+            cluster=0x0B04,
+            attribute=0x050B,
+            min_interval=5,
+            max_interval=900,
+            reportable_change=1,
+            editable=(),
+            to_raw=to_raw_for("power"),
+        ),
+        ReportingTarget(
+            key="energy",
+            cluster=0x0702,
+            attribute=0x0000,
+            min_interval=30,
+            max_interval=900,
+            reportable_change=1,
+            editable=(),
+            to_raw=to_raw_for("energy"),
+        ),
+    )
+    cluster = _Cluster(read_back=None)
+    pairs = {0x0B04: (1, 10), 0x0702: (1, 1000)}
+
+    await apply_reporting(lambda _c: cluster, "aa:bb", targets, {}, scaling_for=pairs.get)
+
+    assert seen == {"power": (1, 10), "energy": (1, 1000)}

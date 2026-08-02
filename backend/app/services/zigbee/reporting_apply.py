@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 
 from zigpy.zcl import foundation
+from zigpy.zdo import types as zdo_types
 
 from backend.app.services.zigbee.errors import describe_exception
 from backend.app.services.zigbee.verification import MISMATCH, NOT_CHECKED, compare, read_reporting_back
@@ -69,12 +70,38 @@ def _accepted(ieee: str, key: str, result) -> bool:
     return not refused
 
 
-async def apply_reporting(cluster_for, ieee: str, targets, desired: dict[str, dict], scaling=None) -> dict[str, dict]:
+def _binding_accepted(ieee: str, cluster_id: int, result) -> bool:
+    """``bind()`` does not raise on a ZDO refusal either — it returns the status.
+
+    Same shape as ``configure_reporting``: the call returns cleanly, the log
+    says reporting is set up, and no report ever arrives. Without the device
+    accepting the binding it has nowhere to send them, so this is the first
+    thing to look at when a cache only ever moves on a restart.
+    """
+    status = result[0] if isinstance(result, (list, tuple)) and result else result
+    if status in (None, zdo_types.Status.SUCCESS):
+        return True
+    logger.warning(
+        "Zigbee %s: device refused the binding for cluster 0x%04X (status=%r). "
+        "It will not send reports; readings will only update when we read it.",
+        ieee,
+        cluster_id,
+        status,
+    )
+    return False
+
+
+async def apply_reporting(cluster_for, ieee: str, targets, desired: dict[str, dict], scaling_for=None):
     """Ask this device to report each target, then check what it stored.
 
     ``cluster_for(cluster_id)`` resolves a cluster or None. Passing it in rather
     than the device keeps this loop free of the two different ways plugs and
     sensors reach their clusters, which is what lets one loop serve both.
+
+    ``scaling_for(cluster_id)`` gives that cluster's multiplier/divisor pair, or
+    None. Per cluster rather than per device, because a plug's power and its
+    energy counter are scaled by two different pairs — one pair for both would
+    convert one of them wrongly, and quietly.
 
     Best-effort per target: one refusing or absent cluster must not cost the
     others.
@@ -84,6 +111,7 @@ async def apply_reporting(cluster_for, ieee: str, targets, desired: dict[str, di
         wanted = desired.get(target.key) or {}
         minimum = int(wanted.get("min_interval", target.min_interval))
         maximum = int(wanted.get("max_interval", target.max_interval))
+        scaling = scaling_for(target.cluster) if scaling_for else None
         raw_change = target.to_raw(float(wanted.get("reportable_change", target.reportable_change)), scaling)
 
         cluster = cluster_for(target.cluster)
@@ -92,7 +120,7 @@ async def apply_reporting(cluster_for, ieee: str, targets, desired: dict[str, di
             continue
 
         try:
-            await cluster.bind()
+            _binding_accepted(ieee, target.cluster, await cluster.bind())
             result = await cluster.configure_reporting(target.attribute, minimum, maximum, raw_change)
         except Exception as exc:  # noqa: BLE001 — one target failing must not lose the others
             # "unanswered", not "refused": a sleeping device that dozed off

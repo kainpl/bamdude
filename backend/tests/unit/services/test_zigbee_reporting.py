@@ -229,7 +229,13 @@ class TestInitialRead:
             # returned — that is where quirks have had their say.
             get=lambda attr, default=None: {ATTR_ON_OFF: 1}.get(attr, default),
         )
-        device = SimpleNamespace(endpoints={1: SimpleNamespace(in_clusters={ON_OFF: onoff})})
+        device = SimpleNamespace(
+            ieee="aa:bb",
+            nwk=0x1234,
+            manufacturer="SONOFF",
+            model="S60ZBTPF",
+            endpoints={1: SimpleNamespace(in_clusters={ON_OFF: onoff})},
+        )
 
         await bind_plug(service, SimpleNamespace(id=1), device)
 
@@ -252,7 +258,13 @@ class TestInitialRead:
             read_attributes=AsyncMock(side_effect=OSError("device asleep")),
             get=lambda attr, default=None: default,
         )
-        device = SimpleNamespace(endpoints={1: SimpleNamespace(in_clusters={ON_OFF: onoff})})
+        device = SimpleNamespace(
+            ieee="aa:bb",
+            nwk=0x1234,
+            manufacturer="SONOFF",
+            model="S60ZBTPF",
+            endpoints={1: SimpleNamespace(in_clusters={ON_OFF: onoff})},
+        )
 
         wired = await bind_plug(service, SimpleNamespace(id=1), device)
 
@@ -292,7 +304,13 @@ class TestEachClusterGetsItsOwnReportingBounds:
             )
 
         clusters = {ON_OFF: cluster(), METERING: cluster(), ELECTRICAL_MEASUREMENT: cluster()}
-        device = SimpleNamespace(endpoints={1: SimpleNamespace(in_clusters=clusters)})
+        device = SimpleNamespace(
+            ieee="aa:bb",
+            nwk=0x1234,
+            manufacturer="SONOFF",
+            model="S60ZBTPF",
+            endpoints={1: SimpleNamespace(in_clusters=clusters)},
+        )
 
         await bind_plug(ZigbeeSmartPlugService(), SimpleNamespace(id=1), device)
 
@@ -422,7 +440,13 @@ class TestScalingIsReadOnce:
             read_attributes=AsyncMock(return_value=({ENERGY_MULTIPLIER: 1, ENERGY_DIVISOR: 1000}, {})),
             get=lambda attr, default=None: {ATTR_SUMMATION: 5000}.get(attr, default),
         )
-        device = SimpleNamespace(endpoints={1: SimpleNamespace(in_clusters={METERING: metering})})
+        device = SimpleNamespace(
+            ieee="aa:bb",
+            nwk=0x1234,
+            manufacturer="SONOFF",
+            model="S60ZBTPF",
+            endpoints={1: SimpleNamespace(in_clusters={METERING: metering})},
+        )
         plug = SimpleNamespace(id=1)
 
         await bind_plug(service, plug, device)
@@ -478,7 +502,13 @@ class TestQuirksAreNotBypassed:
             # What the quirk left in the cache: zero, because the socket is off.
             get=lambda attr, default=None: {ATTR_ACTIVE_POWER: 0}.get(attr, default),
         )
-        device = SimpleNamespace(endpoints={1: SimpleNamespace(in_clusters={ELECTRICAL_MEASUREMENT: em})})
+        device = SimpleNamespace(
+            ieee="aa:bb",
+            nwk=0x1234,
+            manufacturer="SONOFF",
+            model="S60ZBTPF",
+            endpoints={1: SimpleNamespace(in_clusters={ELECTRICAL_MEASUREMENT: em})},
+        )
 
         await bind_plug(service, SimpleNamespace(id=1), device)
 

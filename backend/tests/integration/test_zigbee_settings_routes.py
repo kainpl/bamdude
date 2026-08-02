@@ -259,3 +259,47 @@ class TestEditableIsDeclared:
         body = (await async_client.get(f"/api/v1/zigbee/devices/{SENSOR}/settings")).json()
 
         assert body["poll_supported"] is False
+
+
+class TestAPlugsSettingsActuallyReachIt:
+    """Storing without pushing is the failure this whole cycle exists to remove.
+
+    A plug is mains-powered and awake, so there is no excuse for a saved value
+    to sit in the database until the next restart while the device runs the
+    defaults — and nothing on screen would say so.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_saving_re_issues_the_configuration_to_the_device(
+        self, async_client: AsyncClient, paired, db_session
+    ):
+        await _pair(db_session, PLUG, "plug")
+        em = paired.plug.endpoints[1].in_clusters[0x0B04]
+        em.configured.clear()
+
+        rsp = await async_client.put(
+            f"/api/v1/zigbee/devices/{PLUG}/settings",
+            json={"reporting": {"power": {"min_interval": 20, "max_interval": 600}}},
+        )
+
+        assert rsp.status_code == 200
+        assert em.configured, "the device was never told"
+        attribute, minimum, maximum, _change = em.configured[-1]
+        assert (attribute, minimum, maximum) == (0x050B, 20, 600)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_answer_reports_what_the_plug_made_of_it(self, async_client: AsyncClient, paired, db_session):
+        """An awake device answers, so "unanswered" here would mean the push
+        never happened."""
+        await _pair(db_session, PLUG, "plug")
+
+        body = (
+            await async_client.put(
+                f"/api/v1/zigbee/devices/{PLUG}/settings",
+                json={"reporting": {"power": {"max_interval": 600}}},
+            )
+        ).json()
+
+        assert body["applied"]["power"]["state"] == "ok"
