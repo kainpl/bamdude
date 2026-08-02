@@ -1075,6 +1075,9 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     Permission.INVENTORY_VIEW_ASSIGNMENTS: "can_read_status",
     Permission.INVENTORY_FORECAST_READ: "can_read_status",
     Permission.SMART_PLUGS_READ: "can_read_status",
+    # A sensor reading is status, exactly as a plug reading is — so it rides
+    # the scope a key already has rather than growing a column of its own.
+    Permission.SMART_SENSORS_READ: "can_read_status",
     Permission.CAMERA_VIEW: "can_read_status",
     Permission.MAINTENANCE_READ: "can_read_status",
     Permission.PIPELINES_READ: "can_read_status",
@@ -1244,6 +1247,9 @@ _APIKEY_DENIED_PERMISSIONS: frozenset[Permission] = frozenset(
         Permission.SMART_PLUGS_CREATE,
         Permission.SMART_PLUGS_UPDATE,
         Permission.SMART_PLUGS_DELETE,
+        Permission.SMART_SENSORS_CREATE,
+        Permission.SMART_SENSORS_UPDATE,
+        Permission.SMART_SENSORS_DELETE,
         # Network scanning — operator only (no API-key scope for this).
         Permission.DISCOVERY_SCAN,
     }
