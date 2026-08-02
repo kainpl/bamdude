@@ -46,6 +46,47 @@ def node_descriptor(mac_capability_flags: int, logical_type: int = 2) -> zdo_typ
     )
 
 
+_MEASURED_VALUE_DEFS = (SimpleNamespace(name="measured_value", id=0x0000),)
+_POWER_CONFIGURATION_DEFS = (
+    SimpleNamespace(name="battery_percentage_remaining", id=0x0021),
+    SimpleNamespace(name="battery_voltage", id=0x0020),
+)
+
+
+class StubCluster:
+    """A cluster that accepts everything and records what it was asked.
+
+    Faithful enough to be lied to by: it carries ``AttributeDefs`` and
+    ``add_listener`` because production code reads both, and a bare ``object()``
+    in their place makes attachment fail silently while the assertion under test
+    still passes for the wrong reason.
+    """
+
+    def __init__(self, cluster_id: int):
+        self.cluster_id = cluster_id
+        self.listeners: list = []
+        self.configured: list = []
+        self.bound = False
+        self.AttributeDefs = _POWER_CONFIGURATION_DEFS if cluster_id == 0x0001 else _MEASURED_VALUE_DEFS
+
+    def add_listener(self, listener):
+        self.listeners.append(listener)
+
+    async def bind(self):
+        self.bound = True
+        return [0]
+
+    async def configure_reporting(self, attribute, min_interval, max_interval, change):
+        self.configured.append((attribute, min_interval, max_interval, change))
+        return [SimpleNamespace(status=0)]
+
+    async def read_attributes(self, attrs, **kwargs):
+        return ({}, {})
+
+    def get(self, attr, default=None):
+        return default
+
+
 def fake_device(
     ieee: str,
     *cluster_ids: int,
@@ -66,7 +107,7 @@ def fake_device(
         model=model,
         endpoints={
             0: SimpleNamespace(in_clusters={}),
-            1: SimpleNamespace(in_clusters={cid: object() for cid in cluster_ids}),
+            1: SimpleNamespace(in_clusters={cid: StubCluster(cid) for cid in cluster_ids}),
         },
         node_desc=node_descriptor(mac_capability_flags),
     )

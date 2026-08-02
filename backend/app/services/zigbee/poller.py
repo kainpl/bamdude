@@ -29,6 +29,7 @@ from backend.app.models.smart_plug import SmartPlug
 from backend.app.services.zigbee.coordinator import zigbee_coordinator
 from backend.app.services.zigbee.devices import DeviceKind, describe_device
 from backend.app.services.zigbee.measurements import BY_KEY
+from backend.app.services.zigbee.reporting import reapply_if_settings_changed
 from backend.app.services.zigbee.sensor_settings import (
     load_poll_seconds,
     load_reporting_parameters,
@@ -202,30 +203,11 @@ class ZigbeePoller:
 
             if await read_sensor_once(device, info.ieee, tuple(due)):
                 sensor_store.note_success(info.ieee)
-                await self._reapply_reporting_if_changed(device, info, parameters)
+                # It answered, so it is awake — the other moment an operator's
+                # edit can reach it. Same function the report listener uses.
+                await reapply_if_settings_changed(device, info.ieee, keys)
             else:
                 sensor_store.note_attempt(info.ieee)
-
-    async def _reapply_reporting_if_changed(self, device, info, parameters: dict[str, dict]) -> None:
-        """Push changed settings to a device that has just proved it is awake.
-
-        Reporting parameters live IN the device: changing a setting does nothing
-        until ``configure_reporting`` is re-issued. For a mains sensor that
-        could happen at once; for a sleeping one the only safe moment is when it
-        has just answered. The call is idempotent, so re-issuing when in doubt
-        is cheap — which is what makes "applied is unknown after a restart" a
-        non-problem rather than a gap.
-        """
-        from backend.app.services.zigbee import reporting
-
-        desired = {key: parameters.get(key, {}) for key in info.measurements}
-        if zigbee_coordinator.desired_reporting(info.ieee) == desired:
-            return
-        try:
-            applied = await reporting.bind_sensor(device, info.ieee, parameters)
-            zigbee_coordinator.record_reporting(info.ieee, desired, applied)
-        except Exception as exc:  # noqa: BLE001 — a failed re-apply must not end the cycle
-            logger.debug("Zigbee sensor %s: could not re-apply reporting: %s", info.ieee, exc)
 
 
 zigbee_poller = ZigbeePoller()

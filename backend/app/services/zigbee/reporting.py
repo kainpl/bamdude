@@ -23,6 +23,7 @@ import logging
 from zigpy.zcl import foundation
 from zigpy.zdo import types as zdo_types
 
+from backend.app.core.tasks import spawn_background_task
 from backend.app.services.zigbee.devices import ELECTRICAL_MEASUREMENT, METERING, ON_OFF
 from backend.app.services.zigbee.errors import describe_exception
 from backend.app.services.zigbee.metering import (
@@ -379,12 +380,17 @@ class SensorReportListener:
     percentage (0x0021) and the battery voltage (0x0020). Dispatching on the
     cluster alone would file a voltage as a percentage — the same shape of bug
     as the shared 0x0000 on plugs, documented at the top of this module.
+
+    It also holds the device, because **a report is the proof that a sleeper is
+    awake** — the one moment changed reporting parameters can be pushed to it.
     """
 
-    def __init__(self, store, ieee: str, cluster_id: int):
+    def __init__(self, store, ieee: str, cluster_id: int, device=None, keys: tuple[str, ...] = ()):
         self._store = store
         self._ieee = ieee
         self._cluster_id = cluster_id
+        self._device = device
+        self._keys = keys
         self._by_attribute_id: dict[int, str] = {}
 
     def bind_attribute(self, attribute_id: int, key: str) -> None:
@@ -405,6 +411,16 @@ class SensorReportListener:
             if key is None:
                 return  # devices report far more than they were asked for
             self._store.record(self._ieee, key, value)
+            if self._device is not None:
+                # The device is demonstrably awake right now. Hanging the
+                # re-apply on the watchdog alone would defer an operator's edit
+                # by a whole silence window — and the watchdog only runs once
+                # the device has gone quiet, which is exactly when it cannot
+                # hear us.
+                spawn_background_task(
+                    reapply_if_settings_changed(self._device, self._ieee, self._keys),
+                    name=f"zigbee-reapply-{self._ieee}",
+                )
         except Exception as exc:  # noqa: BLE001 — see the docstring
             logger.warning("Zigbee sensor %s: report for 0x%04X ignored: %s", self._ieee, attrid, exc)
 
@@ -445,13 +461,81 @@ def _attribute_ids(cluster) -> dict[str, int]:
     return ids
 
 
-async def bind_sensor(device, ieee: str, parameters: dict[str, dict]) -> dict[str, str]:
-    """Bind and configure reporting for every registered quantity this device has.
+def _sensor_clusters(device) -> dict[int, object]:
+    """Every cluster on the device that carries a registered quantity."""
+    from backend.app.services.zigbee.measurements import measurements_on
 
-    Called at pairing time, while the device is provably awake, and again when
-    a settings change is owed and the device has just answered. Doing it blindly
-    at every startup instead would, for a sleeping device, be spent radio and an
-    empty log.
+    found: dict[int, object] = {}
+    for endpoint in (getattr(device, "endpoints", None) or {}).values():
+        for cluster_id, cluster in (getattr(endpoint, "in_clusters", None) or {}).items():
+            if measurements_on(cluster_id):
+                found.setdefault(cluster_id, cluster)
+    return found
+
+
+def attach_sensor_listeners(device, ieee: str, keys: tuple[str, ...] = (), store=None) -> int:
+    """Route this device's reports into the store. **Local — no radio.**
+
+    Split out of :func:`bind_sensor` because the two halves have different
+    requirements, and conflating them cost a working sensor. Binding and
+    configuring need the device awake; attaching a listener is a local object
+    operation that works whether it is asleep, unreachable or flat. Attaching
+    only at pairing meant that after a restart the device's reports reached
+    zigpy and were dropped — it looked perfectly paired and stayed blank for
+    ever. Found on hardware, not by the suite.
+    """
+    from backend.app.services.zigbee.measurements import measurements_on
+    from backend.app.services.zigbee.sensors import sensor_store
+
+    attached = 0
+    for cluster_id, cluster in _sensor_clusters(device).items():
+        wanted = measurements_on(cluster_id)
+        listener = SensorReportListener(
+            store=sensor_store if store is None else store,
+            ieee=ieee,
+            cluster_id=cluster_id,
+            device=device,
+            keys=keys or tuple(m.key for m in wanted),
+        )
+        attribute_ids = _attribute_ids(cluster)
+        for measurement in wanted:
+            attribute_id = attribute_ids.get(measurement.attribute)
+            if attribute_id is not None:
+                listener.bind_attribute(attribute_id, measurement.key)
+        try:
+            cluster.add_listener(listener)
+            attached += 1
+        except Exception as exc:  # noqa: BLE001 — one cluster must not cost the others
+            logger.warning("Zigbee sensor %s: could not listen on 0x%04X: %s", ieee, cluster_id, exc)
+    return attached
+
+
+def attach_all_sensors(app) -> int:
+    """Attach listeners for every paired sensor. Called once at startup.
+
+    The counterpart of :func:`subscribe_all` for plugs, needed for the same
+    reason — except this one asks nothing of the devices, so a sleeping sensor
+    is served as well as a waking one.
+    """
+    from backend.app.services.zigbee.devices import DeviceKind, describe_device
+
+    attached = 0
+    for device in list(getattr(app, "devices", {}).values()):
+        info = describe_device(device)
+        if info.kind is not DeviceKind.SENSOR:
+            continue
+        if attach_sensor_listeners(device, info.ieee, info.measurements):
+            attached += 1
+    return attached
+
+
+async def bind_sensor(device, ieee: str, parameters: dict[str, dict]) -> dict[str, str]:
+    """Attach listeners AND ask the device to report. Needs it awake.
+
+    Called at pairing, while the device is provably awake, and again when a
+    settings change is owed and the device has just spoken. The listener half is
+    delegated to :func:`attach_sensor_listeners`, which the startup path calls
+    on its own — that much needs no radio.
 
     ``parameters`` is the operator's desired settings keyed by measurement; any
     missing field falls back to the registry default. Returns per-measurement
@@ -460,28 +544,13 @@ async def bind_sensor(device, ieee: str, parameters: dict[str, dict]) -> dict[st
     the plugs' reporting was believed to work for a whole phase.
     """
     from backend.app.services.zigbee.measurements import measurements_on, to_raw_change
-    from backend.app.services.zigbee.sensors import sensor_store
 
     applied: dict[str, str] = {}
-    clusters: dict[int, object] = {}
-    for endpoint in (getattr(device, "endpoints", None) or {}).values():
-        for cluster_id, cluster in (getattr(endpoint, "in_clusters", None) or {}).items():
-            clusters.setdefault(cluster_id, cluster)
+    clusters = _sensor_clusters(device)
+    attach_sensor_listeners(device, ieee)
 
     for cluster_id, cluster in clusters.items():
-        wanted = measurements_on(cluster_id)
-        if not wanted:
-            continue
-
-        listener = SensorReportListener(store=sensor_store, ieee=ieee, cluster_id=cluster_id)
-        attribute_ids = _attribute_ids(cluster)
-        for measurement in wanted:
-            attribute_id = attribute_ids.get(measurement.attribute)
-            if attribute_id is not None:
-                listener.bind_attribute(attribute_id, measurement.key)
-        cluster.add_listener(listener)
-
-        for measurement in wanted:
+        for measurement in measurements_on(cluster_id):
             settings = parameters.get(measurement.key, {})
             min_interval = int(settings.get("min_interval", measurement.default_min_interval))
             max_interval = int(settings.get("max_interval", measurement.default_max_interval))
@@ -504,3 +573,39 @@ async def bind_sensor(device, ieee: str, parameters: dict[str, dict]) -> dict[st
                 applied[measurement.key] = "refused"
 
     return applied
+
+
+# One re-apply in flight per device. A sensor reports several quantities within
+# the same second, and without this each report would start its own bind.
+_reapplying: set[str] = set()
+
+
+async def reapply_if_settings_changed(device, ieee: str, keys: tuple[str, ...]) -> None:
+    """Push changed reporting parameters to a device that is awake right now.
+
+    Reporting parameters live IN the device: editing a setting does nothing
+    until ``configure_reporting`` is re-issued. The call is idempotent, so
+    re-issuing when in doubt is cheap — which is what makes "applied is unknown
+    after a restart" a non-problem rather than a gap.
+    """
+    from backend.app.core.database import async_session
+    from backend.app.services.zigbee.coordinator import zigbee_coordinator
+    from backend.app.services.zigbee.sensor_settings import load_reporting_parameters
+
+    marker = str(ieee).strip().lower()
+    if marker in _reapplying:
+        return
+    _reapplying.add(marker)
+    try:
+        async with async_session() as db:
+            parameters = await load_reporting_parameters(db)
+        desired = {key: parameters.get(key, {}) for key in keys}
+        if not desired or zigbee_coordinator.desired_reporting(ieee) == desired:
+            return
+        applied = await bind_sensor(device, ieee, parameters)
+        zigbee_coordinator.record_reporting(ieee, desired, applied)
+        logger.info("Zigbee sensor %s: reporting re-applied from settings: %s", ieee, applied)
+    except Exception as exc:  # noqa: BLE001 — a failed re-apply must not break the report path
+        logger.debug("Zigbee sensor %s: could not re-apply reporting: %s", ieee, describe_exception(exc))
+    finally:
+        _reapplying.discard(marker)

@@ -594,3 +594,121 @@ def test_the_plug_listener_still_routes_state_energy_and_power():
     assert data.state == "ON"
     assert data.energy_total == pytest.approx(5.0)
     assert data.power == pytest.approx(23.1)
+
+
+@pytest.mark.asyncio
+async def test_a_report_from_a_sensor_with_stale_settings_triggers_a_re_apply():
+    """A report IS the proof that a sleeper is awake.
+
+    Reporting parameters live in the device, so a settings change reaches it
+    only when it can hear us. Hanging the re-apply on the watchdog alone means
+    waiting out a whole silence window — an hour at the defaults — before an
+    edit takes effect, and the watchdog only runs when the device has ALREADY
+    gone quiet. The moment it speaks is the moment to answer.
+    """
+    from backend.app.services.zigbee import reporting as module
+    from backend.app.services.zigbee.coordinator import zigbee_coordinator
+    from backend.app.services.zigbee.sensors import SensorStore
+
+    rebinds: list[str] = []
+
+    async def fake_reapply(device, ieee, keys):
+        rebinds.append(ieee)
+
+    monkey = module.reapply_if_settings_changed
+    module.reapply_if_settings_changed = fake_reapply
+    try:
+        zigbee_coordinator.forget_reporting("aa:bb")
+        device = _sensor_device(0x0402)
+        listener = module.SensorReportListener(
+            store=SensorStore(), ieee="aa:bb", cluster_id=0x0402, device=device, keys=("temperature",)
+        )
+        listener.bind_attribute(0x0000, "temperature")
+
+        listener.attribute_updated(0x0000, 2341)
+        await asyncio.sleep(0)
+
+        assert rebinds == ["aa:bb"]
+    finally:
+        module.reapply_if_settings_changed = monkey
+        zigbee_coordinator.forget_reporting("aa:bb")
+
+
+@pytest.mark.asyncio
+async def test_a_report_does_nothing_when_the_settings_already_match(monkeypatch):
+    """Otherwise every report would re-issue configure_reporting, which on a
+    battery device is radio traffic for nothing."""
+    from contextlib import asynccontextmanager
+
+    from backend.app.services.zigbee import reporting as module
+    from backend.app.services.zigbee.coordinator import zigbee_coordinator
+
+    settings = {"temperature": {"min_interval": 30, "max_interval": 1800, "reportable_change": 0.5}}
+    binds: list[str] = []
+
+    async def fake_bind(device, ieee, parameters):
+        binds.append(ieee)
+        return {"temperature": "ok"}
+
+    async def fake_parameters(db):
+        return settings
+
+    @asynccontextmanager
+    async def fake_session():
+        yield SimpleNamespace()
+
+    monkeypatch.setattr(module, "bind_sensor", fake_bind)
+    monkeypatch.setattr("backend.app.services.zigbee.sensor_settings.load_reporting_parameters", fake_parameters)
+    monkeypatch.setattr("backend.app.core.database.async_session", fake_session)
+
+    zigbee_coordinator.record_reporting("aa:bb", {"temperature": settings["temperature"]}, {"temperature": "ok"})
+    try:
+        await module.reapply_if_settings_changed(_sensor_device(0x0402), "aa:bb", ("temperature",))
+        assert binds == [], "the device already has these parameters"
+
+        # And the mirror: a changed setting IS pushed.
+        settings["temperature"] = {"min_interval": 30, "max_interval": 60, "reportable_change": 0.5}
+        await module.reapply_if_settings_changed(_sensor_device(0x0402), "aa:bb", ("temperature",))
+        assert binds == ["aa:bb"]
+    finally:
+        zigbee_coordinator.forget_reporting("aa:bb")
+
+
+@pytest.mark.asyncio
+async def test_attaching_listeners_touches_no_radio():
+    """Found on hardware: after a restart the sensor's reports arrived at zigpy
+    and were dropped, because listeners were only ever attached at pairing. The
+    device would stay blank for ever while looking perfectly paired.
+
+    Attaching is LOCAL — no bind, no configure_reporting — which is what makes
+    it safe to do for every sensor at startup, asleep or not.
+    """
+    from backend.app.services.zigbee.reporting import attach_sensor_listeners
+    from backend.app.services.zigbee.sensors import SensorStore
+
+    device = _sensor_device(0x0402, 0x0405)
+    store = SensorStore()
+
+    attach_sensor_listeners(device, "aa:bb", ("temperature", "humidity"), store=store)
+
+    for cluster in device.endpoints[1].in_clusters.values():
+        assert cluster.bound is False, "attaching must not talk to the device"
+        assert cluster.configured == []
+
+    listener = device.endpoints[1].in_clusters[0x0402].listeners[0]
+    listener.attribute_updated(0x0000, 2341)
+    assert store.reading("aa:bb", "temperature").value == pytest.approx(23.41)
+
+
+@pytest.mark.asyncio
+async def test_startup_attaches_every_paired_sensor_and_skips_plugs():
+    from backend.app.services.zigbee.reporting import attach_all_sensors
+    from backend.tests.zigbee_fixtures import BATTERY_SENSOR_FLAGS, MAINS_DEVICE_FLAGS, fake_device
+
+    sensor = fake_device("s1", 0x0402, mac_capability_flags=BATTERY_SENSOR_FLAGS)
+    plug = fake_device("p1", 0x0006, mac_capability_flags=MAINS_DEVICE_FLAGS, model="S60ZBTPF")
+    app = SimpleNamespace(devices={"s1": sensor, "p1": plug})
+
+    attached = attach_all_sensors(app)
+
+    assert attached == 1

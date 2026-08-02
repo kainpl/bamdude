@@ -6726,6 +6726,17 @@ async def lifespan(app: FastAPI):
                 _zb_wired = await _zb_subscribe(_zb_driver, _zb_rows)
                 logging.getLogger(__name__).info("Zigbee reporting set up for %s/%s plug(s)", _zb_wired, len(_zb_rows))
 
+            # Sensor listeners, for every sensor already on the mesh. Purely
+            # local — no bind, no configure_reporting — which is what lets it
+            # run for a sleeping battery device too. Without it a sensor's
+            # reports reach zigpy after a restart and are dropped: the device
+            # looks perfectly paired and its readings stay blank for ever.
+            from backend.app.services.zigbee.reporting import attach_all_sensors as _zb_attach_sensors
+
+            _zb_sensors = _zb_attach_sensors(zigbee_coordinator.app)
+            if _zb_sensors:
+                logging.getLogger(__name__).info("Zigbee reporting attached for %s sensor(s)", _zb_sensors)
+
             # Polling, started whether or not any plug is configured yet: the
             # loop re-queries each cycle, so a plug added later joins without a
             # restart. Reporting alone does not keep readings current — ZHA
