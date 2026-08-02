@@ -46,6 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.printer import Printer
+from backend.app.models.printer_location import PrinterLocation
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services.auto_queue_ams import _normalize_color_for_compare
 from backend.app.services.print_scheduler import _canonical_filament_type, scheduler
@@ -169,13 +170,22 @@ async def find_eligible_printer(
         # An operator-paused queue refuses new work — auto-queue included.
         .where(PrinterQueue.is_paused.is_(False))
     )
-    if item.target_location:
-        query = query.where(Printer.location == item.target_location)
+    if item.target_location_id:
+        # By id, not by name. The string comparison this replaces made "Цех 2"
+        # and "цех 2" two different places, so an item aimed at a mistyped one
+        # matched nothing — silently and for ever, because "no printer matches"
+        # is a legitimate state for the dispatcher to be in.
+        query = query.where(Printer.location_id == item.target_location_id)
 
     result = await db.execute(query)
     printers = list(result.scalars().all())
 
-    location_suffix = f" in {item.target_location}" if item.target_location else ""
+    # Resolved for the message only. An operator reading "why did nothing move"
+    # is not helped by a row id.
+    location_suffix = ""
+    if item.target_location_id:
+        place = await db.get(PrinterLocation, item.target_location_id)
+        location_suffix = f" in {place.name}" if place else ""
     if not printers:
         return None, f"No active {normalized_model} printers{location_suffix} eligible"
 
