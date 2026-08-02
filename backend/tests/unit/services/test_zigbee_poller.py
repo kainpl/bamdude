@@ -20,6 +20,7 @@ import pytest
 
 from backend.app.services.zigbee import poller as poller_module
 from backend.app.services.zigbee.poller import ZigbeePoller
+from backend.tests.zigbee_fixtures import BATTERY_SENSOR_FLAGS, MAINS_DEVICE_FLAGS, fake_device
 
 
 def _session_factory(plugs):
@@ -150,14 +151,16 @@ def test_the_interval_matches_the_reference_implementation():
 
 
 def _sensor_device(ieee, rx_on_when_idle):
-    endpoint = SimpleNamespace(in_clusters={0x0402: object()})
-    return SimpleNamespace(
-        ieee=ieee,
-        nwk=0x1234,
-        manufacturer="SONOFF",
-        model="SNZB-02D",
-        endpoints={0: SimpleNamespace(in_clusters={}), 1: endpoint},
-        node_desc=SimpleNamespace(mac_capability_flags=SimpleNamespace(RxOnWhenIdle=rx_on_when_idle)),
+    """Built from the library's own node descriptor.
+
+    The earlier hand-rolled stub made RxOnWhenIdle a boolean attribute, which
+    the real IntFlag is not — so these two tests passed while the code called
+    every device mains-powered. See backend/tests/zigbee_fixtures.py.
+    """
+    return fake_device(
+        ieee,
+        0x0402,
+        mac_capability_flags=MAINS_DEVICE_FLAGS if rx_on_when_idle else BATTERY_SENSOR_FLAGS,
     )
 
 

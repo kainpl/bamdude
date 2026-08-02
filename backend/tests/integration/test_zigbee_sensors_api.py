@@ -11,19 +11,17 @@ import pytest
 from httpx import AsyncClient
 
 from backend.app.services.zigbee.sensors import sensor_store
+from backend.tests.zigbee_fixtures import BATTERY_SENSOR_FLAGS, MAINS_DEVICE_FLAGS, fake_device
 
 IEEE = "aa:bb:cc:dd:ee:ff:00:11"
 
 
 def _sensor_device(ieee=IEEE, rx_on_when_idle=False):
-    endpoint = SimpleNamespace(in_clusters={0x0402: object(), 0x0405: object()})
-    return SimpleNamespace(
-        ieee=ieee,
-        nwk=0x1234,
-        manufacturer="SONOFF",
-        model="SNZB-02D",
-        endpoints={0: SimpleNamespace(in_clusters={}), 1: endpoint},
-        node_desc=SimpleNamespace(mac_capability_flags=SimpleNamespace(RxOnWhenIdle=rx_on_when_idle)),
+    return fake_device(
+        ieee,
+        0x0402,
+        0x0405,
+        mac_capability_flags=MAINS_DEVICE_FLAGS if rx_on_when_idle else BATTERY_SENSOR_FLAGS,
     )
 
 

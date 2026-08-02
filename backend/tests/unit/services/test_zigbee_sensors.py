@@ -11,28 +11,35 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from backend.app.services.zigbee.sensors import PowerClass, SensorStore, power_class
+from backend.tests.zigbee_fixtures import BATTERY_SENSOR_FLAGS, MAINS_DEVICE_FLAGS, node_descriptor
 
 T0 = datetime(2026, 8, 2, 12, 0, 0, tzinfo=timezone.utc)
 
 
-def _node(rx_on_when_idle: bool):
-    return SimpleNamespace(
-        node_desc=SimpleNamespace(mac_capability_flags=SimpleNamespace(RxOnWhenIdle=rx_on_when_idle))
-    )
+def _node(mac_capability_flags: int):
+    """A device carrying a REAL zigpy node descriptor — see zigbee_fixtures."""
+    return SimpleNamespace(node_desc=node_descriptor(mac_capability_flags))
 
 
 def test_a_device_that_listens_when_idle_is_mains_powered():
-    assert power_class(_node(True)) is PowerClass.MAINS
+    assert power_class(_node(MAINS_DEVICE_FLAGS)) is PowerClass.MAINS
 
 
-def test_a_device_that_sleeps_is_battery_powered():
-    assert power_class(_node(False)) is PowerClass.BATTERY
+def test_the_real_snzb_02dr2_descriptor_reads_as_battery():
+    """The regression this file exists for. Read wrongly, this device was called
+    mains-powered and would have been polled every 30 s until the cell died."""
+    assert power_class(_node(BATTERY_SENSOR_FLAGS)) is PowerClass.BATTERY
 
 
 def test_an_unknown_node_descriptor_is_assumed_to_sleep():
     """The safe assumption: polling a sleeper wastes radio and battery, while
     not polling a mains device only costs some freshness."""
     assert power_class(SimpleNamespace()) is PowerClass.BATTERY
+
+
+def test_a_descriptor_that_is_not_a_zigpy_type_is_assumed_to_sleep():
+    """Anything we cannot read properly errs toward not poking the device."""
+    assert power_class(SimpleNamespace(node_desc=SimpleNamespace())) is PowerClass.BATTERY
 
 
 def test_a_recorded_report_becomes_a_reading():

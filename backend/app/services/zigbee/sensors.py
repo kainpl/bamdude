@@ -41,16 +41,24 @@ class PowerClass(str, Enum):
 def power_class(device) -> PowerClass:
     """Mains or battery, from the node descriptor's RxOnWhenIdle bit.
 
-    An unknown descriptor is treated as battery. That is the safe way round:
-    polling a sleeper wastes radio and battery for nothing, while declining to
-    poll a mains device only costs some freshness that its reports will supply.
+    An unknown or unreadable descriptor is treated as battery. That is the safe
+    way round: polling a sleeper wastes radio and battery for nothing, while
+    declining to poll a mains device only costs some freshness that its reports
+    will supply.
+
+    **Ask zigpy, do not read the flag by attribute.** ``mac_capability_flags``
+    is an ``IntFlag``, so ``flags.RxOnWhenIdle`` returns the flag MEMBER — a
+    truthy constant — rather than whether that bit is set in this device's
+    value. Written that way, every device read as mains-powered, and the unit
+    tests agreed because their stub made the attribute a real boolean. Caught on
+    hardware: a SONOFF SNZB-02DR2 (flags 0x80, only AllocateAddress) came back
+    "mains" and would have been polled every 30 s until the coin cell died.
     """
     node_desc = getattr(device, "node_desc", None)
-    flags = getattr(node_desc, "mac_capability_flags", None)
-    rx_on = getattr(flags, "RxOnWhenIdle", None)
-    if rx_on is None:
+    rx_on = getattr(node_desc, "is_receiver_on_when_idle", None)
+    if not isinstance(rx_on, bool):
         return PowerClass.BATTERY
-    return PowerClass.MAINS if bool(rx_on) else PowerClass.BATTERY
+    return PowerClass.MAINS if rx_on else PowerClass.BATTERY
 
 
 @dataclass(frozen=True)
