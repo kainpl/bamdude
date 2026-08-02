@@ -11,6 +11,7 @@ from backend.app.services.zigbee.devices import (
     ELECTRICAL_MEASUREMENT,
     METERING,
     ON_OFF,
+    DeviceKind,
     describe_device,
 )
 
@@ -117,3 +118,59 @@ def test_a_real_plug_is_not_mistaken_for_the_coordinator():
 
     assert info.is_coordinator is False
     assert info.is_plug is True
+
+
+# --- classification (cycle S) ------------------------------------------------
+#
+# The gate stops meaning "plugs only" and starts meaning "which class". The set
+# stays closed: plug, sensor, and everything else is still removed.
+
+TEMPERATURE = 0x0402
+HUMIDITY = 0x0405
+
+
+def test_a_temperature_sensor_is_a_sensor_not_a_reject():
+    info = describe_device(_device([TEMPERATURE, HUMIDITY], model="SNZB-02D"))
+
+    assert info.kind is DeviceKind.SENSOR
+    assert info.is_plug is False
+    assert info.reject_reason is None
+    assert set(info.measurements) == {"temperature", "humidity"}
+
+
+def test_a_device_with_on_off_and_a_sensor_cluster_is_a_plug():
+    """A metering plug that also reports temperature is a plug. This cycle does
+    not turn plugs into ambient sensors, and the tie has to break somewhere."""
+    info = describe_device(_device([ON_OFF, TEMPERATURE]))
+
+    assert info.kind is DeviceKind.PLUG
+    assert info.is_plug is True
+
+
+def test_the_coordinator_is_still_checked_first():
+    """The Dongle-M advertises On/Off; cluster presence alone would make our own
+    radio a plug and let it be removed."""
+    device = _device([ON_OFF])
+    device.nwk = 0x0000
+
+    info = describe_device(device)
+
+    assert info.kind is DeviceKind.COORDINATOR
+    assert info.is_coordinator is True
+    assert info.is_plug is False
+
+
+def test_a_device_we_can_neither_switch_nor_read_is_unsupported():
+    info = describe_device(_device([0x0500]))  # IAS Zone — a door sensor
+
+    assert info.kind is DeviceKind.UNSUPPORTED
+    assert info.measurements == ()
+    assert "cannot be switched" in info.reject_reason
+
+
+def test_a_plug_carries_no_measurements():
+    """Measurements are the sensor surface. A plug's energy is not one of them —
+    it has its own scaling and its own path."""
+    info = describe_device(_device([ON_OFF, METERING]))
+
+    assert info.measurements == ()

@@ -1,9 +1,14 @@
 """What a Zigbee device is, and whether we want it.
 
-The whole project scope lives in one predicate here: a device without an On/Off
-cluster is not a plug, and BamDude does not take it. Sensors, buttons and
-thermostats are out of scope by decision — this is where that decision stops
-being an agreement and becomes behaviour.
+The whole project scope lives here, and it is a classification rather than a
+predicate: a device is the coordinator, a plug, a sensor, or something BamDude
+cannot use. **The set is closed.** Buttons, thermostats and door sensors stay
+out by decision, and anything unsupported is removed from the network rather
+than kept — this is where that decision stops being an agreement and becomes
+behaviour, which is what keeps the project from becoming Zigbee2MQTT.
+
+What does grow is the *measurement registry* (``measurements.py``): a new
+quantity is a row in a table, never a new class here.
 
 Pure inspection, no I/O: everything below runs against a stub device, which is
 why the gate is fully tested without a radio.
@@ -12,6 +17,9 @@ why the gate is fully tested without a radio.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
+
+from backend.app.services.zigbee.measurements import measurement_keys_for
 
 # Zigbee Cluster Library ids. Named rather than inlined because a bare 0x0006 in
 # a conditional is exactly the sort of thing that gets "tidied" into the wrong
@@ -25,23 +33,49 @@ METERING = 0x0702
 ELECTRICAL_MEASUREMENT = 0x0B04
 
 
+class DeviceKind(str, Enum):
+    """What BamDude can do with a device.
+
+    The set is closed: plugs and sensors, and nothing else will be added —
+    extensibility lives in the measurement registry, not here.
+    """
+
+    COORDINATOR = "coordinator"
+    PLUG = "plug"
+    SENSOR = "sensor"
+    UNSUPPORTED = "unsupported"
+
+
 @dataclass(frozen=True)
 class DeviceInfo:
     ieee: str
     nwk: int | None
     manufacturer: str | None
     model: str | None
-    # The radio itself lives in zigpy's device table alongside real devices,
-    # and the Dongle-M reports an On/Off cluster — so this has to be answered
-    # explicitly or the coordinator reads as a switchable plug.
-    is_coordinator: bool
-    is_plug: bool
+    kind: DeviceKind
+    # Which registry quantities this device carries. Empty for plugs and for
+    # anything unsupported: a plug's energy has its own scaling and its own
+    # path, and is deliberately not a "measurement" in this sense.
+    measurements: tuple[str, ...]
     # Recorded even though nothing reads them yet: phase 3 needs to know a plug
     # will never report energy *before* it starts treating an absent reading as
     # a measurement of zero.
     has_metering: bool
     has_electrical_measurement: bool
     reject_reason: str | None
+
+    # Kept as properties so every existing call site — the pairing route, the
+    # device list, the coordinator — keeps reading the same way it always did.
+    @property
+    def is_coordinator(self) -> bool:
+        """The radio itself lives in zigpy's device table alongside real
+        devices, and the Dongle-M reports an On/Off cluster — so this has to be
+        answered explicitly or the coordinator reads as a switchable plug."""
+        return self.kind is DeviceKind.COORDINATOR
+
+    @property
+    def is_plug(self) -> bool:
+        return self.kind is DeviceKind.PLUG
 
 
 def _cluster_ids(device) -> set[int]:
@@ -68,24 +102,37 @@ def describe_device(device) -> DeviceInfo:
     # as pairable, which would have let phase 3 bind it to a printer and let
     # DELETE call remove() on the radio running the network.
     is_coordinator = nwk == COORDINATOR_NWK
-    is_plug = (not is_coordinator) and ON_OFF in clusters
+    measurements = () if is_coordinator else measurement_keys_for(clusters)
+
+    if is_coordinator:
+        kind = DeviceKind.COORDINATOR
+    elif ON_OFF in clusters:
+        # A metering plug may also carry a temperature cluster. On/Off wins:
+        # switching is what BamDude does with it, and the tie has to break
+        # somewhere explicit rather than by dict ordering.
+        kind = DeviceKind.PLUG
+    elif measurements:
+        kind = DeviceKind.SENSOR
+    else:
+        kind = DeviceKind.UNSUPPORTED
 
     return DeviceInfo(
         ieee=str(device.ieee),
         nwk=nwk,
         manufacturer=getattr(device, "manufacturer", None),
         model=getattr(device, "model", None),
-        is_coordinator=is_coordinator,
-        is_plug=is_plug,
+        kind=kind,
+        measurements=() if kind is DeviceKind.PLUG else measurements,
         has_metering=METERING in clusters,
         has_electrical_measurement=ELECTRICAL_MEASUREMENT in clusters,
         reject_reason=(
             None
-            if is_plug
+            if kind in (DeviceKind.PLUG, DeviceKind.SENSOR)
             else (
                 "This is the Zigbee coordinator itself, not a device on the network."
                 if is_coordinator
-                else "This device has no On/Off cluster, so it cannot be switched. BamDude pairs smart plugs only."
+                else "This device has no On/Off cluster, so it cannot be switched, and it reports nothing "
+                "BamDude reads. BamDude pairs smart plugs and sensors only."
             )
         ),
     )

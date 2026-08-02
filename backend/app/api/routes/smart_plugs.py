@@ -91,7 +91,7 @@ async def create_smart_plug(
     # would be left diagnosing a broken plug instead of reading a refusal.
     if data.plug_type == "zigbee":
         from backend.app.services.zigbee.coordinator import zigbee_coordinator
-        from backend.app.services.zigbee.devices import describe_device
+        from backend.app.services.zigbee.devices import DeviceKind, describe_device
 
         zb_app = zigbee_coordinator.app
         if zb_app is None:
@@ -105,6 +105,11 @@ async def create_smart_plug(
         info = describe_device(device)
         if info.is_coordinator:
             raise HTTPException(400, "That address is the Zigbee coordinator itself, not a plug.")
+        if info.kind is DeviceKind.SENSOR:
+            # Named for what it is. "cannot be switched" is true of a sensor and
+            # tells the operator nothing: they paired a working device and want
+            # to know why it is not offered here.
+            raise HTTPException(400, "That Zigbee device is a sensor, not a plug. Sensors are not bound to printers.")
         if not info.is_plug:
             raise HTTPException(400, info.reject_reason or "That Zigbee device cannot be switched.")
 
