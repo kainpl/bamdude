@@ -9,6 +9,7 @@ All of these run without hardware: the single seam that touches zigpy is
 ``_open_radio``, and it is patched throughout.
 """
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -307,3 +308,81 @@ def test_open_radio_mirrors_zigpy_new():
         "_load_db",  # mirrored
         "startup",  # mirrored
     }, f"ControllerApplication.new() changed shape: {sorted(calls)}"
+
+
+# --- pairing: which classes are kept (cycle S) -------------------------------
+#
+# The gate used to mean "plugs only", and anything else was REMOVED from the
+# network rather than ignored — which is how a temperature sensor paired and
+# vanished. Sensors are now kept; everything we can neither switch nor read is
+# still removed, because a device that occupies an address and can never be
+# acted on is worse than none.
+
+from types import SimpleNamespace  # noqa: E402
+
+
+def _device_with(*cluster_ids, ieee="aa:bb:cc:dd:ee:ff:00:11", model="X"):
+    return SimpleNamespace(
+        ieee=ieee,
+        nwk=0x1234,
+        manufacturer="SONOFF",
+        model=model,
+        endpoints={
+            0: SimpleNamespace(in_clusters={}),
+            1: SimpleNamespace(in_clusters={cid: object() for cid in cluster_ids}),
+        },
+    )
+
+
+@pytest.fixture
+def paired(tmp_path, monkeypatch):
+    """A coordinator whose broadcasts and removals are captured, not sent."""
+    coord = ZigbeeCoordinator(data_dir=tmp_path)
+    events: list[dict] = []
+    removed: list[str] = []
+
+    async def _remove(ieee):
+        removed.append(str(ieee))
+
+    coord._app = SimpleNamespace(remove=_remove)
+    monkeypatch.setattr(coord, "_emit", events.append)
+    # Binding needs a database and a radio; that it is ASKED for is the
+    # behaviour under test here, not what it does.
+    bound: list[str] = []
+
+    async def _bind(device, ieee):
+        bound.append(ieee)
+
+    monkeypatch.setattr(coord, "_bind_sensor", _bind)
+    return SimpleNamespace(coord=coord, events=events, removed=removed, bound=bound)
+
+
+@pytest.mark.asyncio
+async def test_a_sensor_is_kept_and_its_reporting_configured(paired):
+    paired.coord.device_initialized(_device_with(0x0402, 0x0405, model="SNZB-02D"))
+    await asyncio.sleep(0)  # let the scheduled bind run
+
+    assert paired.removed == [], "a sensor must not be taken off the network the moment it joins"
+    assert paired.events[-1]["type"] == "zigbee_device_paired"
+    assert paired.events[-1]["device"]["kind"] == "sensor"
+    assert paired.bound == ["aa:bb:cc:dd:ee:ff:00:11"], "pairing is the one moment a sleeper is provably awake"
+
+
+@pytest.mark.asyncio
+async def test_a_plug_is_kept_and_not_bound_as_a_sensor(paired):
+    paired.coord.device_initialized(_device_with(0x0006, model="S60ZBTPF"))
+    await asyncio.sleep(0)
+
+    assert paired.removed == []
+    assert paired.events[-1]["device"]["kind"] == "plug"
+    assert paired.bound == [], "plug reporting is bound when it is attached to a printer, not here"
+
+
+@pytest.mark.asyncio
+async def test_an_unsupported_device_is_still_removed(paired):
+    """A device we can neither switch nor read must not keep a network address."""
+    paired.coord.device_initialized(_device_with(0x0500, model="SNZB-04"))
+    await asyncio.sleep(0)
+
+    assert paired.removed == ["aa:bb:cc:dd:ee:ff:00:11"]
+    assert paired.events[-1]["type"] == "zigbee_device_rejected"

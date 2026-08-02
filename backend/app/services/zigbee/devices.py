@@ -136,3 +136,26 @@ def describe_device(device) -> DeviceInfo:
             )
         ),
     )
+
+
+def describe_for_ui(info: DeviceInfo) -> dict:
+    """A DeviceInfo as a plain JSON-safe dict.
+
+    One place rather than ``asdict`` at each call site: ``kind`` must reach the
+    WebSocket and the API as a plain string. It is a ``str`` enum, so it would
+    survive JSON today by accident — this makes it deliberate, and keeps the
+    payload shape in one reviewed place now that three consumers read it.
+    """
+    return {
+        "ieee": info.ieee,
+        "nwk": info.nwk,
+        "manufacturer": info.manufacturer,
+        "model": info.model,
+        "kind": info.kind.value,
+        "measurements": list(info.measurements),
+        "is_plug": info.is_plug,
+        "is_coordinator": info.is_coordinator,
+        "has_metering": info.has_metering,
+        "has_electrical_measurement": info.has_electrical_measurement,
+        "reject_reason": info.reject_reason,
+    }

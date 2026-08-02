@@ -19,13 +19,13 @@ from __future__ import annotations
 
 import logging
 from contextlib import suppress
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
 from backend.app.core.tasks import spawn_background_task
 from backend.app.core.websocket import ws_manager
-from backend.app.services.zigbee.devices import describe_device
+from backend.app.services.zigbee.devices import DeviceKind, describe_device, describe_for_ui
 from backend.app.services.zigbee.errors import describe_exception
 from backend.app.services.zigbee.radio_lock import RadioLock
 from backend.app.services.zigbee.transport import TransportConfigError, resolve_transport
@@ -56,6 +56,12 @@ class ZigbeeCoordinator:
         self._lock = RadioLock(self._data_dir / "zigbee" / "radio.lock")
         self._app = None
         self._status = CoordinatorStatus(CoordinatorState.DISABLED)
+        # What each sensor was last configured with, and what it accepted. Held
+        # in memory: after a restart the applied state is unknown, which the
+        # next contact repairs — configure_reporting is idempotent, so
+        # re-issuing when in doubt is cheap and correct.
+        self._desired_reporting: dict[str, dict[str, dict]] = {}
+        self._applied_reporting: dict[str, dict[str, str]] = {}
 
     @property
     def status(self) -> CoordinatorStatus:
@@ -163,6 +169,52 @@ class ZigbeeCoordinator:
         except Exception as exc:  # noqa: BLE001 — see the block comment above
             logger.warning("Zigbee event %s not broadcast: %s", message.get("type"), describe_exception(exc))
 
+    async def _bind_sensor(self, device, ieee: str) -> None:
+        """Configure a freshly paired sensor's reporting, with the operator's
+        parameters if any are set.
+
+        Never raises into pairing: a device that joined but could not be
+        configured is still paired, and the API says its reporting is refused
+        rather than pretending it works.
+        """
+        from backend.app.core.database import async_session
+        from backend.app.services.zigbee.reporting import bind_sensor
+        from backend.app.services.zigbee.sensor_settings import load_reporting_parameters
+
+        try:
+            async with async_session() as db:
+                parameters = await load_reporting_parameters(db)
+            applied = await bind_sensor(device, ieee, parameters)
+            info = describe_device(device)
+            self.record_reporting(ieee, {key: parameters.get(key, {}) for key in info.measurements}, applied)
+            logger.info("Zigbee sensor %s reporting: %s", ieee, applied)
+        except Exception as exc:  # noqa: BLE001 — see the docstring
+            logger.warning("Zigbee sensor %s: binding failed: %s", ieee, describe_exception(exc))
+
+    def applied_reporting(self, ieee: str) -> dict[str, str]:
+        """What a sensor actually accepted, per measurement.
+
+        Empty after a restart, which readers render as "pending" rather than as
+        failure — we genuinely do not know until the device is next contacted.
+        """
+        return self._applied_reporting.get(str(ieee).strip().lower(), {})
+
+    def desired_reporting(self, ieee: str) -> dict[str, dict]:
+        """The parameters the last successful configure was made with — what a
+        settings change is compared against to decide a re-apply is owed."""
+        return self._desired_reporting.get(str(ieee).strip().lower(), {})
+
+    def record_reporting(self, ieee: str, desired: dict[str, dict], applied: dict[str, str]) -> None:
+        key = str(ieee).strip().lower()
+        self._desired_reporting[key] = desired
+        self._applied_reporting[key] = applied
+
+    def forget_reporting(self, ieee: str) -> None:
+        """Drop what we knew about an unpaired sensor's reporting."""
+        key = str(ieee).strip().lower()
+        self._desired_reporting.pop(key, None)
+        self._applied_reporting.pop(key, None)
+
     def device_joined(self, device) -> None:
         """A device announced itself; the interview has not run yet.
 
@@ -179,16 +231,22 @@ class ZigbeeCoordinator:
         """Interview complete — accept it, or remove it and say why."""
         try:
             info = describe_device(device)
-            if info.is_plug:
-                logger.info("Paired Zigbee plug %s (%s)", info.ieee, info.model)
-                self._emit({"type": "zigbee_device_paired", "device": asdict(info)})
+            if info.kind in (DeviceKind.PLUG, DeviceKind.SENSOR):
+                logger.info("Paired Zigbee %s %s (%s)", info.kind.value, info.ieee, info.model)
+                self._emit({"type": "zigbee_device_paired", "device": describe_for_ui(info)})
+                if info.kind is DeviceKind.SENSOR:
+                    # Bound here and nowhere else: this is the one moment a
+                    # battery sensor is provably awake. Binding it blindly at
+                    # every startup instead would be spent radio and an empty
+                    # log, because by then it is asleep again.
+                    spawn_background_task(self._bind_sensor(device, info.ieee), name=f"zigbee-bind-{info.ieee}")
                 return
 
             # Removed, not merely ignored: a device left joined but unusable
             # occupies a network address and reappears in every device list,
             # indistinguishable from a plug that failed for another reason.
-            logger.info("Rejecting non-plug Zigbee device %s (%s)", info.ieee, info.model)
-            self._emit({"type": "zigbee_device_rejected", "device": asdict(info)})
+            logger.info("Rejecting unsupported Zigbee device %s (%s)", info.ieee, info.model)
+            self._emit({"type": "zigbee_device_rejected", "device": describe_for_ui(info)})
             if self._app is not None:
                 spawn_background_task(self._app.remove(device.ieee), name="zigbee-remove-non-plug")
         except Exception as exc:  # noqa: BLE001
