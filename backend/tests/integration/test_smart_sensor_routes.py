@@ -184,3 +184,25 @@ class TestRenaming:
     @pytest.mark.integration
     async def test_renaming_one_that_does_not_exist_is_a_404(self, async_client: AsyncClient, known):
         assert (await async_client.patch("/api/v1/zigbee/sensors/999", json={"name": "x"})).status_code == 404
+
+
+class TestTheDeviceListSaysWhatIsAdopted:
+    """Without it the pairing screen cannot tell a device already in use from a
+    new one, and offers to add the same sensor twice."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_paired_device_is_listed_as_not_adopted(self, async_client: AsyncClient, known):
+        entry = (await async_client.get("/api/v1/zigbee/devices")).json()["devices"][0]
+
+        assert entry["adopted"] is False
+        assert entry["name"] == "SONOFF SNZB-02D", "the hardware name, from the row"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_adopting_it_flips_that(self, async_client: AsyncClient, known):
+        await async_client.post("/api/v1/zigbee/sensors", json={"zigbee_ieee": IEEE, "name": "Workshop"})
+
+        entry = (await async_client.get("/api/v1/zigbee/devices")).json()["devices"][0]
+
+        assert entry["adopted"] is True

@@ -11,6 +11,7 @@ leave existing installs unable to use their own admin account for it.
 """
 
 import asyncio
+import contextlib
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -374,6 +375,7 @@ async def restart_coordinator(
 
 @router.get("/devices")
 async def list_devices(
+    db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
 ):
     """Devices on the network.
@@ -394,8 +396,38 @@ async def list_devices(
     # radio shows up as a pairable plug. Filtered here rather than only marked
     # is_plug=false: an entry the operator cannot act on is noise, and phase 4
     # would have to special-case it in the UI instead.
+    from backend.app.models.smart_sensor import SmartSensor
+    from backend.app.models.zigbee_device import ZigbeeDevice
+
+    # Adopted is computed from the entity tables, never stored beside them —
+    # one question, one answer, nothing that can disagree with the rows.
+    adopted = {
+        str(ieee).lower()
+        for (ieee,) in (
+            (await db.execute(select(SmartPlug.zigbee_ieee).where(SmartPlug.zigbee_ieee.isnot(None)))).all()
+            + (await db.execute(select(SmartSensor.zigbee_ieee))).all()
+        )
+        if ieee
+    }
+    # The hardware name as it was recorded when the device paired. Read from the
+    # row rather than from the live device so a radio that has just come up, and
+    # has not finished interviewing, still names what it knows.
+    names = {
+        str(ieee).lower(): name for ieee, name in (await db.execute(select(ZigbeeDevice.ieee, ZigbeeDevice.name))).all()
+    }
+
     described = (describe_device(d) for d in app.devices.values())
-    return {"devices": [describe_for_ui(info) for info in described if not info.is_coordinator]}
+    return {
+        "devices": [
+            {
+                **describe_for_ui(info),
+                "name": names.get(info.ieee.lower()),
+                "adopted": info.ieee.lower() in adopted,
+            }
+            for info in described
+            if not info.is_coordinator
+        ]
+    }
 
 
 @router.get("/sensors")
@@ -701,6 +733,44 @@ def _validate(update, info, resolved) -> None:
             )
 
 
+# What a request may spend waiting for a device. An awake plug answers in well
+# under a second; a sleeper never answers at all, and four measurements times
+# zigpy's own timeout is over a minute of a held connection. Six of those
+# exhaust a browser's per-origin pool and freeze the tab -- measured on hardware
+# once already, which is why no handler here waits on a device without a budget.
+_APPLY_BUDGET_SECONDS = 5.0
+
+
+async def _push_within_budget(coro, info, desired) -> None:
+    """Re-issue the configuration, but do not hold the request for it.
+
+    Shielded: the caller's budget expiring must not cancel the work. The device
+    may well take the configuration a moment later, and cancelling would leave
+    it half-applied for no gain. Whatever lands is recorded when it lands.
+
+    Nothing is lost by giving up early. The desired state is already stored, so
+    a device that was not reached is retried at its next contact -- which for a
+    battery sensor is the normal path anyway.
+    """
+    task = asyncio.create_task(coro, name=f"zigbee-apply-{info.ieee}")
+
+    def _record(finished: asyncio.Task) -> None:
+        if finished.cancelled():
+            return
+        exc = finished.exception()
+        if exc is not None:
+            logger.warning("Zigbee %s: applying settings failed: %s", info.ieee, exc)
+            return
+        from backend.app.services.zigbee.reporting_apply import fully_applied
+
+        applied = finished.result()
+        zigbee_coordinator.record_reporting(info.ieee, desired if fully_applied(applied) else {}, applied)
+
+    task.add_done_callback(_record)
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(asyncio.shield(task), _APPLY_BUDGET_SECONDS)
+
+
 @router.put("/devices/{ieee}/settings")
 async def update_device_settings(
     ieee: str,
@@ -716,7 +786,6 @@ async def update_device_settings(
     """
     from backend.app.services.zigbee.device_settings import save_overrides
     from backend.app.services.zigbee.reporting import bind_sensor, push_plug_reporting
-    from backend.app.services.zigbee.reporting_apply import fully_applied
     from backend.app.services.zigbee.sensors import PowerClass, power_class
 
     device, info, row = await _load_for_settings(db, ieee)
@@ -751,13 +820,14 @@ async def update_device_settings(
     # setting-that-did-nothing this cycle exists to remove.
     desired = await resolve_reporting(db, info)
     if info.kind is DeviceKind.SENSOR:
-        applied = await bind_sensor(device, info.ieee, desired)
+        push = bind_sensor(device, info.ieee, desired)
     else:
         plug = (
             await db.execute(select(SmartPlug).where(func.lower(SmartPlug.zigbee_ieee) == info.ieee.lower()))
         ).scalar_one_or_none()
-        applied = await push_plug_reporting(device, info, desired, plug_id=plug.id if plug else None)
-    zigbee_coordinator.record_reporting(info.ieee, desired if fully_applied(applied) else {}, applied)
+        push = push_plug_reporting(device, info, desired, plug_id=plug.id if plug else None)
+
+    await _push_within_budget(push, info, desired)
 
     device, info, row = await _load_for_settings(db, ieee)
     return await _settings_payload(db, device, info, row)

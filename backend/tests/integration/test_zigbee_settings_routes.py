@@ -303,3 +303,45 @@ class TestAPlugsSettingsActuallyReachIt:
         ).json()
 
         assert body["applied"]["power"]["state"] == "ok"
+
+
+class TestARequestNeverWaitsOnADevice:
+    """A sleeping sensor answers nothing, and four measurements times zigpy's
+    own timeout is over a minute of a held connection. Six of those exhaust a
+    browser's per-origin pool and freeze the tab — measured on hardware once
+    already, which is why no handler here waits on a device without a budget.
+
+    Nothing is lost by giving up: the desired state is stored before the push,
+    so a device that was not reached is retried at its next contact.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_sleeping_sensor_does_not_hold_the_request(
+        self, async_client: AsyncClient, paired, db_session, monkeypatch
+    ):
+        import asyncio
+
+        from backend.app.api.routes import zigbee as routes
+
+        await _pair(db_session, SENSOR, "sensor")
+        monkeypatch.setattr(routes, "_APPLY_BUDGET_SECONDS", 0.2)
+
+        async def never_answers(*_args, **_kwargs):
+            await asyncio.sleep(30)
+            return {}
+
+        # Patched where it is looked up: the route imports it inside the
+        # function, so patching the route module would do nothing at all.
+        monkeypatch.setattr("backend.app.services.zigbee.reporting.bind_sensor", never_answers)
+
+        rsp = await asyncio.wait_for(
+            async_client.put(
+                f"/api/v1/zigbee/devices/{SENSOR}/settings",
+                json={"reporting": {"temperature": {"max_interval": 600}}},
+            ),
+            timeout=5,
+        )
+
+        assert rsp.status_code == 200
+        assert rsp.json()["desired"]["temperature"]["max_interval"] == 600, "saved regardless"
