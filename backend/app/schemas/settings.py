@@ -194,6 +194,27 @@ class AppSettings(BaseModel):
             "Empty = fall back to ams_humidity_fair for all types."
         ),
     )
+    zigbee_sensor_reporting: str = Field(
+        default="",
+        description=(
+            "JSON blob of Zigbee sensor reporting parameters per measurement. "
+            'Shape: {"temperature": {"min_interval": int, "max_interval": int, "reportable_change": float}, ...}. '
+            "reportable_change is in the measurement's display unit (°C, %, ppm, µg/m³). "
+            "Empty, or any missing field, falls back to the registry defaults."
+        ),
+    )
+    zigbee_sensor_stale_multiplier: str = Field(
+        default="2",
+        description="A Zigbee sensor reading older than this multiple of its reporting max_interval is stale.",
+    )
+    zigbee_sensor_poll_seconds: str = Field(
+        default="30",
+        description=(
+            "Poll cadence for MAINS-powered Zigbee sensors, jittered like the plug poller. "
+            "Battery sensors are never polled on a timer: they are asleep, and each attempt would "
+            "hold the shared radio until it timed out."
+        ),
+    )
 
     # Scheduled local backup (upstream #884)
     local_backup_enabled: bool = Field(default=False, description="Enable scheduled local backups")
@@ -513,6 +534,9 @@ class AppSettingsUpdate(BaseModel):
     print_drying_enabled: bool | None = None
     drying_presets: str | None = None
     ams_humidity_thresholds: str | None = None
+    zigbee_sensor_reporting: str | None = None
+    zigbee_sensor_stale_multiplier: str | None = None
+    zigbee_sensor_poll_seconds: str | None = None
     stagger_enabled: bool | None = None
     stagger_concurrent: int | None = None
     stagger_interval_minutes: int | None = None
