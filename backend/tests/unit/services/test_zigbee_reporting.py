@@ -410,3 +410,187 @@ class TestQuirksAreNotBypassed:
         await bind_plug(service, SimpleNamespace(id=1), device)
 
         assert service.get_plug_data(1).power == 0
+
+
+# --- sensors (cycle S) -------------------------------------------------------
+#
+# Sensors reuse this module rather than copying it: bind, configure and listen
+# are the part of the subsystem where a mistake is invisible -- not "the plug
+# will not switch" but "the number looks right and is not". One implementation,
+# two routes.
+
+
+class _RecordingCluster:
+    """A cluster that accepts everything and remembers what it was asked."""
+
+    def __init__(self, cluster_id, attribute_defs=()):
+        self.cluster_id = cluster_id
+        self.listeners = []
+        self.configured = []
+        self.bound = False
+        self.AttributeDefs = attribute_defs
+
+    def add_listener(self, listener):
+        self.listeners.append(listener)
+
+    async def bind(self):
+        self.bound = True
+        return [0]
+
+    async def configure_reporting(self, attribute, min_interval, max_interval, change):
+        self.configured.append((attribute, min_interval, max_interval, change))
+        return [SimpleNamespace(status=0)]
+
+    def get(self, attr, default=None):
+        return default
+
+
+def _attr(name, attr_id):
+    return SimpleNamespace(name=name, id=attr_id)
+
+
+_MEASURED_VALUE = (_attr("measured_value", 0x0000),)
+_BATTERY_ATTRS = (_attr("battery_percentage_remaining", 0x0021), _attr("battery_voltage", 0x0020))
+
+
+def _sensor_device(*cluster_ids):
+    clusters = {}
+    for cluster_id in cluster_ids:
+        defs = _BATTERY_ATTRS if cluster_id == 0x0001 else _MEASURED_VALUE
+        clusters[cluster_id] = _RecordingCluster(cluster_id, defs)
+    return SimpleNamespace(endpoints={1: SimpleNamespace(in_clusters=clusters)}, ieee="aa:bb")
+
+
+@pytest.mark.asyncio
+async def test_binding_a_sensor_configures_every_registered_cluster_it_has():
+    from backend.app.services.zigbee.reporting import bind_sensor
+
+    device = _sensor_device(0x0402, 0x0405, 0x0001)
+
+    result = await bind_sensor(device, "aa:bb", parameters={})
+
+    assert result["temperature"] == "ok"
+    assert result["humidity"] == "ok"
+    assert result["battery"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_the_reportable_change_reaches_the_device_in_raw_units():
+    """0.5 degrees must arrive as 50. Sending 0.5 asks for a report on every
+    flicker, which on a coin cell is a week of battery."""
+    from backend.app.services.zigbee.reporting import bind_sensor
+
+    device = _sensor_device(0x0402)
+
+    await bind_sensor(device, "aa:bb", parameters={"temperature": {"reportable_change": 0.5}})
+
+    assert device.endpoints[1].in_clusters[0x0402].configured == [("measured_value", 30, 1800, 50)]
+
+
+@pytest.mark.asyncio
+async def test_operator_intervals_override_the_registry_defaults():
+    from backend.app.services.zigbee.reporting import bind_sensor
+
+    device = _sensor_device(0x0402)
+
+    await bind_sensor(
+        device,
+        "aa:bb",
+        parameters={"temperature": {"min_interval": 60, "max_interval": 600, "reportable_change": 1.0}},
+    )
+
+    assert device.endpoints[1].in_clusters[0x0402].configured == [("measured_value", 60, 600, 100)]
+
+
+@pytest.mark.asyncio
+async def test_a_cluster_that_refuses_does_not_cost_the_others():
+    from backend.app.services.zigbee.reporting import bind_sensor
+
+    device = _sensor_device(0x0402, 0x0405)
+
+    async def refuse(*args, **kwargs):
+        raise RuntimeError("device said no")
+
+    device.endpoints[1].in_clusters[0x0402].configure_reporting = refuse
+
+    result = await bind_sensor(device, "aa:bb", parameters={})
+
+    assert result["temperature"] == "refused"
+    assert result["humidity"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_battery_and_voltage_share_a_cluster_and_are_told_apart_by_attribute():
+    """0x0001 carries both. Dispatching on the cluster alone would file a
+    voltage as a percentage -- the same shape of bug as 0x0000 on plugs."""
+    from backend.app.services.zigbee.reporting import bind_sensor
+    from backend.app.services.zigbee.sensors import sensor_store
+
+    device = _sensor_device(0x0001)
+    sensor_store.forget("aa:bb")
+
+    await bind_sensor(device, "aa:bb", parameters={})
+    listener = device.endpoints[1].in_clusters[0x0001].listeners[0]
+    listener.attribute_updated(0x0021, 200)
+    listener.attribute_updated(0x0020, 30)
+
+    assert sensor_store.reading("aa:bb", "battery").value == pytest.approx(100.0)
+    assert sensor_store.reading("aa:bb", "battery_voltage").value == pytest.approx(3.0)
+    sensor_store.forget("aa:bb")
+
+
+def test_a_sensor_report_lands_in_the_store_scaled():
+    from backend.app.services.zigbee.reporting import SensorReportListener
+    from backend.app.services.zigbee.sensors import SensorStore
+
+    store = SensorStore()
+    listener = SensorReportListener(store=store, ieee="aa:bb", cluster_id=0x0402)
+    listener.bind_attribute(0x0000, "temperature")
+
+    listener.attribute_updated(0x0000, 2341)
+
+    assert store.reading("aa:bb", "temperature").value == pytest.approx(23.41)
+
+
+def test_an_unasked_attribute_is_ignored():
+    """Devices report far more than they were asked for."""
+    from backend.app.services.zigbee.reporting import SensorReportListener
+    from backend.app.services.zigbee.sensors import SensorStore
+
+    store = SensorStore()
+    listener = SensorReportListener(store=store, ieee="aa:bb", cluster_id=0x0402)
+    listener.bind_attribute(0x0000, "temperature")
+
+    listener.attribute_updated(0x0055, 1)
+
+    assert store.known_ieees() == ()
+
+
+def test_a_sensor_listener_never_raises_into_zigpy():
+    """zigpy calls listeners synchronously and logs their exceptions at DEBUG,
+    so a raising listener disappears instead of failing loudly."""
+    from backend.app.services.zigbee.reporting import SensorReportListener
+
+    class _Exploding:
+        def record(self, *args, **kwargs):
+            raise RuntimeError("store is broken")
+
+    listener = SensorReportListener(store=_Exploding(), ieee="aa:bb", cluster_id=0x0402)
+    listener.bind_attribute(0x0000, "temperature")
+
+    listener.attribute_updated(0x0000, 2341)  # must not raise
+
+
+def test_the_plug_listener_still_routes_state_energy_and_power():
+    """Regression: the plug path is what pays for this subsystem. Generalising
+    the module must not move a single plug reading."""
+    service = ZigbeeSmartPlugService()
+
+    _listener(service, ON_OFF).attribute_updated(ATTR_ON_OFF, 1)
+    _listener(service, METERING, multiplier=1, divisor=1000).attribute_updated(ATTR_SUMMATION, 5000)
+    _listener(service, ELECTRICAL_MEASUREMENT, multiplier=1, divisor=10).attribute_updated(ATTR_ACTIVE_POWER, 231)
+
+    data = service.get_plug_data(1)
+    assert data.state == "ON"
+    assert data.energy_total == pytest.approx(5.0)
+    assert data.power == pytest.approx(23.1)

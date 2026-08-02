@@ -358,3 +358,149 @@ async def refresh_plug(service, plug, device) -> bool:
         if await _read_into_cache(cluster, listener, attr):
             ok = True
     return ok
+
+
+# --- sensors -----------------------------------------------------------------
+#
+# Sensors reuse this module rather than getting a copy of it. Bind, configure
+# and listen are the part of the subsystem where a mistake is invisible: not
+# "the plug will not switch" but "the number looks right and is not". Two
+# copies would mean fixing the next quirk bug twice and forgetting the second.
+#
+# The plug path above is untouched. Its multiplier/divisor scaling is a metering
+# concern and has no place in a registry of ambient quantities.
+
+
+class SensorReportListener:
+    """Routes one sensor cluster's attribute reports into the sensor store.
+
+    One listener per cluster, and the attribute id is what distinguishes the
+    quantities on it: Power Configuration 0x0001 carries both the battery
+    percentage (0x0021) and the battery voltage (0x0020). Dispatching on the
+    cluster alone would file a voltage as a percentage — the same shape of bug
+    as the shared 0x0000 on plugs, documented at the top of this module.
+    """
+
+    def __init__(self, store, ieee: str, cluster_id: int):
+        self._store = store
+        self._ieee = ieee
+        self._cluster_id = cluster_id
+        self._by_attribute_id: dict[int, str] = {}
+
+    def bind_attribute(self, attribute_id: int, key: str) -> None:
+        """Learn which quantity an attribute id carries.
+
+        Resolved once at bind time from the cluster's own definitions rather
+        than hardcoded, so a quirk that redefines an attribute is followed
+        instead of contradicted.
+        """
+        self._by_attribute_id[attribute_id] = key
+
+    def attribute_updated(self, attrid, value, timestamp=None) -> None:
+        """zigpy calls this synchronously — plain ``def``, never ``async def``,
+        and it must not raise: zigpy logs listener exceptions at DEBUG, so a
+        failure here would vanish rather than break."""
+        try:
+            key = self._by_attribute_id.get(attrid)
+            if key is None:
+                return  # devices report far more than they were asked for
+            self._store.record(self._ieee, key, value)
+        except Exception as exc:  # noqa: BLE001 — see the docstring
+            logger.warning("Zigbee sensor %s: report for 0x%04X ignored: %s", self._ieee, attrid, exc)
+
+
+def _warn_if_sensor_reporting_refused(ieee: str, cluster_id: int, result) -> None:
+    """The plug version of this takes a plug id; a sensor has no row and no id.
+
+    Worth its own function rather than passing 0: "Zigbee plug 0 refused
+    reporting" in the log would name a device that does not exist, in exactly
+    the place the log is being read to find out what happened.
+    """
+    if not isinstance(result, dict):
+        logger.debug(
+            "Zigbee sensor %s: unexpected configure_reporting result for cluster 0x%04X: %r", ieee, cluster_id, result
+        )
+        return
+    for attr, status in result.items():
+        if status == foundation.Status.SUCCESS:
+            continue
+        logger.warning(
+            "Zigbee sensor %s: device refused reporting for %s on cluster 0x%04X (status=%s). "
+            "Its readings will only update when something else reads it.",
+            ieee,
+            getattr(attr, "name", attr),
+            cluster_id,
+            status,
+        )
+
+
+def _attribute_ids(cluster) -> dict[str, int]:
+    """Map attribute name to id from the cluster's own definitions."""
+    ids: dict[str, int] = {}
+    for definition in getattr(cluster, "AttributeDefs", ()) or ():
+        name = getattr(definition, "name", None)
+        attribute_id = getattr(definition, "id", None)
+        if name is not None and attribute_id is not None:
+            ids[name] = attribute_id
+    return ids
+
+
+async def bind_sensor(device, ieee: str, parameters: dict[str, dict]) -> dict[str, str]:
+    """Bind and configure reporting for every registered quantity this device has.
+
+    Called at pairing time, while the device is provably awake, and again when
+    a settings change is owed and the device has just answered. Doing it blindly
+    at every startup instead would, for a sleeping device, be spent radio and an
+    empty log.
+
+    ``parameters`` is the operator's desired settings keyed by measurement; any
+    missing field falls back to the registry default. Returns per-measurement
+    ``"ok"`` / ``"refused"`` so the caller can surface what the device actually
+    accepted rather than leaving it to be inferred from silence — which is how
+    the plugs' reporting was believed to work for a whole phase.
+    """
+    from backend.app.services.zigbee.measurements import measurements_on, to_raw_change
+    from backend.app.services.zigbee.sensors import sensor_store
+
+    applied: dict[str, str] = {}
+    clusters: dict[int, object] = {}
+    for endpoint in (getattr(device, "endpoints", None) or {}).values():
+        for cluster_id, cluster in (getattr(endpoint, "in_clusters", None) or {}).items():
+            clusters.setdefault(cluster_id, cluster)
+
+    for cluster_id, cluster in clusters.items():
+        wanted = measurements_on(cluster_id)
+        if not wanted:
+            continue
+
+        listener = SensorReportListener(store=sensor_store, ieee=ieee, cluster_id=cluster_id)
+        attribute_ids = _attribute_ids(cluster)
+        for measurement in wanted:
+            attribute_id = attribute_ids.get(measurement.attribute)
+            if attribute_id is not None:
+                listener.bind_attribute(attribute_id, measurement.key)
+        cluster.add_listener(listener)
+
+        for measurement in wanted:
+            settings = parameters.get(measurement.key, {})
+            min_interval = int(settings.get("min_interval", measurement.default_min_interval))
+            max_interval = int(settings.get("max_interval", measurement.default_max_interval))
+            change = float(settings.get("reportable_change", measurement.default_reportable_change))
+            try:
+                await cluster.bind()
+                result = await cluster.configure_reporting(
+                    measurement.attribute, min_interval, max_interval, to_raw_change(measurement, change)
+                )
+                _warn_if_sensor_reporting_refused(ieee, cluster_id, result)
+                applied[measurement.key] = "ok"
+            except Exception as exc:  # noqa: BLE001 — one quantity failing must not lose the others
+                logger.warning(
+                    "Zigbee sensor %s: could not configure %s on 0x%04X: %s",
+                    ieee,
+                    measurement.key,
+                    cluster_id,
+                    describe_exception(exc),
+                )
+                applied[measurement.key] = "refused"
+
+    return applied
