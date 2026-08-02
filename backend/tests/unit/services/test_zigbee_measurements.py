@@ -72,7 +72,61 @@ def test_a_battery_alone_does_not_make_a_sensor():
 
 
 def test_every_registry_entry_round_trips_its_own_change():
-    """Guards the next row somebody adds: a scale that cannot express its own
-    default change is a row that silently reports on every flicker."""
+    """Guards the next row somebody adds.
+
+    A change that converts to zero asks the device to report on every sample; a
+    row whose scale cannot express its own default is broken in one direction or
+    the other. Integer attributes additionally floor at 1, since anything below
+    that IS zero to the device — but a float attribute must not be forced up to
+    1, which for CO2 would mean a million ppm.
+    """
     for m in BY_KEY.values():
-        assert to_raw_change(m, m.default_reportable_change) >= 1
+        raw = to_raw_change(m, m.default_reportable_change)
+        assert raw > 0, m.key
+        if m.raw_is_integer:
+            assert isinstance(raw, int) and raw >= 1, m.key
+
+
+class TestFloatValuedMeasurementsKeepTheirPrecision:
+    """CO2 and PM2.5 are ZCL floats, and rounding their change to an integer
+    destroys the setting silently.
+
+    A CO2 change of 1 ppm is 0.000001 in raw units: rounded to an int it becomes
+    0, and a floor of 1 turns it into "tell me when it moves by a million ppm" —
+    a device that then never reports, with nothing anywhere saying why.
+    """
+
+    def test_one_ppm_of_co2_survives_the_conversion(self):
+        assert to_raw_change(BY_KEY["co2"], 1.0) == pytest.approx(0.000001)
+
+    def test_a_tenth_of_a_microgram_survives(self):
+        assert to_raw_change(BY_KEY["pm25"], 0.1) == pytest.approx(0.1)
+
+    def test_integer_attributes_still_round_and_never_reach_zero(self):
+        """The floor stays where it belongs: a change of 0 on an integer
+        attribute asks for a report on every sample."""
+        assert to_raw_change(BY_KEY["temperature"], 0.1) == 10
+        assert to_raw_change(BY_KEY["humidity"], 0.1) == 10
+        assert to_raw_change(BY_KEY["battery"], 0.5) == 1
+        assert to_raw_change(BY_KEY["temperature"], 0.001) == 1
+        assert isinstance(to_raw_change(BY_KEY["temperature"], 0.1), int)
+
+
+def test_the_defaults_are_the_agreed_ones():
+    """Pinned deliberately: these were chosen against ZHA's own numbers, and a
+    silent drift in a default is a farm-wide change nobody reviews."""
+    expected = {
+        "temperature": (30, 900, 0.1),
+        "humidity": (30, 900, 0.1),
+        "co2": (30, 900, 1.0),
+        "pm25": (30, 900, 0.1),
+        "battery": (3600, 10800, 0.5),
+        "battery_voltage": (3600, 10800, 0.1),
+    }
+    for key, (minimum, maximum, change) in expected.items():
+        m = BY_KEY[key]
+        assert (m.default_min_interval, m.default_max_interval, m.default_reportable_change) == (
+            minimum,
+            maximum,
+            change,
+        ), key

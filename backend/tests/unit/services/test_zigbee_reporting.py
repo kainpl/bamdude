@@ -465,7 +465,7 @@ async def test_the_reportable_change_reaches_the_device_in_raw_units():
 
     await bind_sensor(device, "aa:bb", parameters={"temperature": {"reportable_change": 0.5}})
 
-    assert device.endpoints[1].in_clusters[0x0402].configured == [("measured_value", 30, 1800, 50)]
+    assert device.endpoints[1].in_clusters[0x0402].configured == [("measured_value", 30, 900, 50)]
 
 
 @pytest.mark.asyncio

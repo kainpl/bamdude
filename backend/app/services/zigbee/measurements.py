@@ -48,6 +48,12 @@ class Measurement:
     # Raw values that mean "no measurement". NaN is handled separately because
     # it is never equal to itself.
     invalid_raw: tuple[int, ...]
+    # Whether the device stores this attribute as an integer. CO2 and PM2.5 are
+    # ZCL floats, and rounding their reportable change to an int destroys it:
+    # 1 ppm of CO2 is 0.000001 raw, which rounds to zero and then hits the
+    # floor of 1 — asking the device to report on a change of a million ppm,
+    # which it never does, with nothing anywhere saying why.
+    raw_is_integer: bool
     default_min_interval: int
     default_max_interval: int
     default_reportable_change: float
@@ -62,9 +68,10 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         scale=0.01,
         plausible=(-60.0, 150.0),
         invalid_raw=(-32768,),
+        raw_is_integer=True,
         default_min_interval=30,
-        default_max_interval=1800,
-        default_reportable_change=0.5,
+        default_max_interval=900,
+        default_reportable_change=0.1,
     ),
     Measurement(
         key="humidity",
@@ -74,9 +81,10 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         scale=0.01,
         plausible=(0.0, 100.0),
         invalid_raw=(0xFFFF,),
+        raw_is_integer=True,
         default_min_interval=30,
-        default_max_interval=1800,
-        default_reportable_change=2.0,
+        default_max_interval=900,
+        default_reportable_change=0.1,
     ),
     Measurement(
         key="co2",
@@ -86,9 +94,10 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         scale=1_000_000.0,
         plausible=(0.0, 40_000.0),
         invalid_raw=(),
+        raw_is_integer=False,
         default_min_interval=30,
-        default_max_interval=1800,
-        default_reportable_change=50.0,
+        default_max_interval=900,
+        default_reportable_change=1.0,
     ),
     Measurement(
         key="pm25",
@@ -98,9 +107,10 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         scale=1.0,
         plausible=(0.0, 1000.0),
         invalid_raw=(),
+        raw_is_integer=False,
         default_min_interval=30,
-        default_max_interval=1800,
-        default_reportable_change=5.0,
+        default_max_interval=900,
+        default_reportable_change=0.1,
     ),
     Measurement(
         key="battery",
@@ -110,9 +120,10 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         scale=0.5,
         plausible=(0.0, 100.0),
         invalid_raw=(0xFF,),
+        raw_is_integer=True,
         default_min_interval=3600,
-        default_max_interval=43200,
-        default_reportable_change=1.0,
+        default_max_interval=10800,
+        default_reportable_change=0.5,
     ),
     Measurement(
         key="battery_voltage",
@@ -122,8 +133,9 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         scale=0.1,
         plausible=(0.0, 10.0),
         invalid_raw=(0xFF,),
+        raw_is_integer=True,
         default_min_interval=3600,
-        default_max_interval=43200,
+        default_max_interval=10800,
         default_reportable_change=0.1,
     ),
 )
@@ -171,8 +183,16 @@ def to_display(measurement: Measurement, raw) -> float | None:
     return value
 
 
-def to_raw_change(measurement: Measurement, display_change: float) -> int:
+def to_raw_change(measurement: Measurement, display_change: float) -> int | float:
     """A reportable change expressed in display units, in the raw units the
-    device expects. At least 1: a change of zero asks for a report on every
-    sample, which on a battery device is how a coin cell dies in a week."""
-    return max(1, round(display_change / measurement.scale))
+    device expects.
+
+    Integer attributes round, with a floor of 1: a change of zero asks for a
+    report on every sample, which on a battery device is how a coin cell dies in
+    a week. Float attributes keep their precision and get no floor — for CO2 the
+    useful setting is 0.000001, and rounding it to 1 would mean a million ppm.
+    """
+    raw = display_change / measurement.scale
+    if not measurement.raw_is_integer:
+        return raw
+    return max(1, round(raw))

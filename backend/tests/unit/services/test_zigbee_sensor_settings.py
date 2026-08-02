@@ -39,9 +39,9 @@ async def test_defaults_come_from_the_registry_when_nothing_is_stored():
     parameters = await load_reporting_parameters(_Db({}))
 
     assert parameters["temperature"]["min_interval"] == 30
-    assert parameters["temperature"]["max_interval"] == 1800
-    assert parameters["temperature"]["reportable_change"] == 0.5
-    assert parameters["battery"]["max_interval"] == 43200
+    assert parameters["temperature"]["max_interval"] == 900
+    assert parameters["temperature"]["reportable_change"] == 0.1
+    assert parameters["battery"]["max_interval"] == 10800
 
 
 @pytest.mark.asyncio
