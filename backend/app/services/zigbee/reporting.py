@@ -71,6 +71,29 @@ _POLLED_CLUSTERS = (
 )
 
 
+def _subscribe_cluster(cluster, listener, who: str) -> None:
+    """Subscribe a listener on every channel zigpy delivers through.
+
+    ``on_event`` is the one that carries device reports in zigpy 2.x;
+    ``add_listener`` still fires for attributes zigpy does not recognise and for
+    values written outside report handling. Recording is idempotent, so the
+    overlap costs nothing — and a cluster with no ``on_event`` says so loudly,
+    because a subscription that looks alive and never fires is what cost a
+    hardware session to find.
+    """
+    on_event = getattr(cluster, "on_event", None)
+    if on_event is None:
+        logger.warning(
+            "Zigbee %s: cluster 0x%04X has no on_event — device reports will NOT arrive, only polled reads",
+            who,
+            getattr(cluster, "cluster_id", 0),
+        )
+    else:
+        for event_name in (ATTRIBUTE_REPORT_EVENT, ATTRIBUTE_UPDATED_EVENT):
+            on_event(event_name, listener)
+    cluster.add_listener(listener)
+
+
 class ClusterReportListener:
     """Routes one cluster's attribute reports into the driver cache.
 
@@ -85,6 +108,24 @@ class ClusterReportListener:
         self._cluster_id = cluster_id
         self._multiplier = multiplier
         self._divisor = divisor
+
+    def __call__(self, event) -> None:
+        """zigpy's current event API, which is what actually carries reports.
+
+        ``Report_Attributes`` handling suppresses the legacy ``listener_event``
+        for known attributes, so a plug subscribed only through ``add_listener``
+        never hears from the device: every "reported state" line came from
+        ``_read_into_cache`` after a poll, and ``configure_reporting`` was
+        decorative. Same routing either way, so a report and a read cannot
+        disagree about what a counter means.
+        """
+        try:
+            attribute_id = getattr(event, "attribute_id", None)
+            if attribute_id is None:
+                return
+            self.attribute_updated(attribute_id, getattr(event, "value", None))
+        except Exception as exc:  # noqa: BLE001 — an event callback must not raise into zigpy
+            logger.warning("Zigbee plug %s: event ignored: %s", self._plug_id, exc)
 
     def attribute_updated(self, attrid, value, timestamp=None) -> None:
         """zigpy calls this synchronously — plain ``def``, never ``async def``.
@@ -175,16 +216,27 @@ async def bind_plug(service, plug, device) -> dict[int, bool]:
         if scaling_attrs:
             multiplier, divisor = await _scaling_pair(cluster, scaling_attrs)
 
-        listener = ClusterReportListener(
-            service=service,
-            plug_id=plug.id,
-            cluster_id=cluster_id,
-            multiplier=multiplier,
-            divisor=divisor,
-        )
+        # Re-binding reuses the listener that is already subscribed rather than
+        # adding a second one. Multiplier and divisor are device constants, so
+        # the existing object is equivalent — and the reads below have to route
+        # through the same object the events do, or a report and a poll would
+        # be handled by two listeners with two identities.
+        already = (str(getattr(device, "ieee", plug.id)).strip().lower(), cluster_id) in _attached_clusters
+        listener = service._listeners.get((plug.id, cluster_id)) if already else None
+        if listener is None:
+            listener = ClusterReportListener(
+                service=service,
+                plug_id=plug.id,
+                cluster_id=cluster_id,
+                multiplier=multiplier,
+                divisor=divisor,
+            )
+            already = False
         service._listeners[(plug.id, cluster_id)] = listener
         try:
-            cluster.add_listener(listener)
+            if not already:
+                _subscribe_cluster(cluster, listener, f"plug {plug.id}")
+                _attached_clusters.add((str(getattr(device, "ieee", plug.id)).strip().lower(), cluster_id))
             bind_result = await cluster.bind()
             _warn_if_bind_refused(plug.id, cluster_id, bind_result)
             result = await cluster.configure_reporting(attr, _MIN_INTERVAL, _MAX_INTERVAL, _REPORTABLE_CHANGE)
@@ -586,21 +638,7 @@ def attach_sensor_listeners(device, ieee: str, keys: tuple[str, ...] = (), store
             # in zigpy 2.x; ``add_listener`` still fires for attributes zigpy
             # does not recognise and for writes outside report handling.
             # Recording is idempotent, so the overlap costs nothing.
-            on_event = getattr(cluster, "on_event", None)
-            if on_event is None:
-                # Loudly, not silently: without this channel the subscription
-                # exists and never fires, which is the failure mode that cost a
-                # hardware session to find.
-                logger.warning(
-                    "Zigbee sensor %s: cluster 0x%04X has no on_event — device reports will NOT arrive, "
-                    "only polled reads",
-                    ieee,
-                    cluster_id,
-                )
-            else:
-                for event_name in (ATTRIBUTE_REPORT_EVENT, ATTRIBUTE_UPDATED_EVENT):
-                    on_event(event_name, listener)
-            cluster.add_listener(listener)
+            _subscribe_cluster(cluster, listener, f"sensor {ieee}")
             _attached_clusters.add((marker, cluster_id))
             attached += 1
         except Exception as exc:  # noqa: BLE001 — one cluster must not cost the others

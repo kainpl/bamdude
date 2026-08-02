@@ -779,3 +779,69 @@ async def test_a_re_paired_device_gets_a_fresh_listener():
     attach_sensor_listeners(fresh, "again", ("temperature",), store=store)
 
     assert len(fresh.endpoints[1].in_clusters[0x0402].event_callbacks["attribute_report"]) == 1
+
+
+class TestPlugsUseTheCurrentEventApiToo:
+    """The same dead channel, on the path that pays for this subsystem.
+
+    Plugs subscribed with add_listener alone, so their "reported state ON" lines
+    never came from a plug — _read_into_cache calls the listener by hand after
+    each poll. configure_reporting has been decorative for them, and everything
+    rested on the poller.
+    """
+
+    def test_a_plug_report_reaches_the_driver_cache(self):
+        from backend.app.services.zigbee.reporting import ClusterReportListener
+
+        service = ZigbeeSmartPlugService()
+        listener = ClusterReportListener(service=service, plug_id=1, cluster_id=ON_OFF)
+
+        listener(SimpleNamespace(attribute_id=ATTR_ON_OFF, value=1))
+
+        assert service.get_plug_data(1).state == "ON"
+
+    def test_an_energy_report_is_scaled_the_same_way_as_a_polled_read(self):
+        """One routing, whichever channel delivered it — otherwise a report and
+        a read could disagree about what the same counter means."""
+        from backend.app.services.zigbee.reporting import ClusterReportListener
+
+        service = ZigbeeSmartPlugService()
+        listener = ClusterReportListener(service=service, plug_id=1, cluster_id=METERING, multiplier=1, divisor=1000)
+
+        listener(SimpleNamespace(attribute_id=ATTR_SUMMATION, value=5000))
+
+        assert service.get_plug_data(1).energy_total == pytest.approx(5.0)
+
+    def test_an_event_callback_never_raises_into_zigpy(self):
+        from backend.app.services.zigbee.reporting import ClusterReportListener
+
+        listener = ClusterReportListener(service=ZigbeeSmartPlugService(), plug_id=1, cluster_id=METERING)
+        listener(SimpleNamespace())  # no attribute_id at all
+
+    @pytest.mark.asyncio
+    async def test_binding_a_plug_subscribes_the_event_channel(self):
+        from backend.app.services.zigbee.reporting import bind_plug
+        from backend.tests.zigbee_fixtures import MAINS_DEVICE_FLAGS, fake_device
+
+        device = fake_device("plug1", ON_OFF, mac_capability_flags=MAINS_DEVICE_FLAGS, model="S60ZBTPF")
+        service = ZigbeeSmartPlugService()
+
+        await bind_plug(service, SimpleNamespace(id=7), device)
+
+        cluster = device.endpoints[1].in_clusters[ON_OFF]
+        assert len(cluster.event_callbacks["attribute_report"]) == 1, "reports must have somewhere to land"
+
+    @pytest.mark.asyncio
+    async def test_binding_twice_does_not_double_the_subscription(self):
+        from backend.app.services.zigbee.reporting import bind_plug
+        from backend.tests.zigbee_fixtures import MAINS_DEVICE_FLAGS, fake_device
+
+        device = fake_device("plug2", ON_OFF, mac_capability_flags=MAINS_DEVICE_FLAGS, model="S60ZBTPF")
+        service = ZigbeeSmartPlugService()
+
+        await bind_plug(service, SimpleNamespace(id=8), device)
+        await bind_plug(service, SimpleNamespace(id=8), device)
+
+        cluster = device.endpoints[1].in_clusters[ON_OFF]
+        assert len(cluster.event_callbacks["attribute_report"]) == 1
+        assert len(cluster.listeners) == 1
