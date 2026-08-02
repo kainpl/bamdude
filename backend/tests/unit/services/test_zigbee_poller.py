@@ -139,3 +139,154 @@ def test_the_interval_matches_the_reference_implementation():
     N seconds.
     """
     assert poller_module._POLL_INTERVAL_SECONDS == (30, 45)
+
+
+# --- sensors (cycle S) -------------------------------------------------------
+#
+# The plug rule above does not transfer. A battery sensor is asleep almost
+# always: polling it every cycle times out while holding the one radio and
+# flattens the cell. Which mechanism applies is decided per device from
+# RxOnWhenIdle, so a mains-powered sensor IS polled -- just on its own cadence.
+
+
+def _sensor_device(ieee, rx_on_when_idle):
+    endpoint = SimpleNamespace(in_clusters={0x0402: object()})
+    return SimpleNamespace(
+        ieee=ieee,
+        nwk=0x1234,
+        manufacturer="SONOFF",
+        model="SNZB-02D",
+        endpoints={0: SimpleNamespace(in_clusters={}), 1: endpoint},
+        node_desc=SimpleNamespace(mac_capability_flags=SimpleNamespace(RxOnWhenIdle=rx_on_when_idle)),
+    )
+
+
+def _app_with(*devices):
+    return SimpleNamespace(devices={d.ieee: d for d in devices})
+
+
+def _reads_into(sink, answered=False):
+    async def _read(device, ieee, keys):
+        sink.append(ieee)
+        return answered
+
+    return _read
+
+
+@pytest.fixture
+def sensor_db(monkeypatch):
+    """Settings at their defaults, without a database."""
+
+    async def _parameters(db):
+        return {"temperature": {"min_interval": 30, "max_interval": 1800, "reportable_change": 0.5}}
+
+    async def _multiplier(db):
+        return 2.0
+
+    async def _poll_seconds(db):
+        return 30
+
+    monkeypatch.setattr(poller_module, "load_reporting_parameters", _parameters)
+    monkeypatch.setattr(poller_module, "load_stale_multiplier", _multiplier)
+    monkeypatch.setattr(poller_module, "load_poll_seconds", _poll_seconds)
+    return SimpleNamespace()
+
+
+@pytest.mark.asyncio
+async def test_a_battery_sensor_with_a_fresh_reading_is_not_read(monkeypatch, sensor_db):
+    """Reports are its mechanism. Reading it while it has just reported would
+    spend the radio on a device that is asleep by definition."""
+    reads: list[str] = []
+    monkeypatch.setattr(poller_module, "read_sensor_once", _reads_into(reads))
+    poller_module.sensor_store.forget("aa")
+    poller_module.sensor_store.record("aa", "temperature", 2341)
+
+    await ZigbeePoller()._poll_sensors_once(_app_with(_sensor_device("aa", False)), sensor_db)
+
+    assert reads == []
+    poller_module.sensor_store.forget("aa")
+
+
+@pytest.mark.asyncio
+async def test_a_silent_battery_sensor_gets_one_watchdog_read_per_window(monkeypatch, sensor_db):
+    reads: list[str] = []
+    monkeypatch.setattr(poller_module, "read_sensor_once", _reads_into(reads))
+    poller_module.sensor_store.forget("cc")
+
+    poller = ZigbeePoller()
+    app = _app_with(_sensor_device("cc", False))
+    await poller._poll_sensors_once(app, sensor_db)
+    await poller._poll_sensors_once(app, sensor_db)
+
+    assert reads == ["cc"], "the second cycle is inside the same window and must not read again"
+    poller_module.sensor_store.forget("cc")
+
+
+@pytest.mark.asyncio
+async def test_a_mains_sensor_is_polled(monkeypatch, sensor_db):
+    reads: list[str] = []
+    monkeypatch.setattr(poller_module, "read_sensor_once", _reads_into(reads))
+    poller_module.sensor_store.forget("bb")
+
+    await ZigbeePoller()._poll_sensors_once(_app_with(_sensor_device("bb", True)), sensor_db)
+
+    assert reads == ["bb"]
+    poller_module.sensor_store.forget("bb")
+
+
+@pytest.mark.asyncio
+async def test_a_mains_sensor_polled_moments_ago_is_left_alone(monkeypatch, sensor_db):
+    """This runs on every plug cycle (30-45 s). Without honouring the sensor's
+    own cadence the setting would be decorative."""
+    reads: list[str] = []
+    monkeypatch.setattr(poller_module, "read_sensor_once", _reads_into(reads))
+    poller_module.sensor_store.forget("bb")
+    poller_module.sensor_store.record("bb", "temperature", 2341)
+
+    await ZigbeePoller()._poll_sensors_once(_app_with(_sensor_device("bb", True)), sensor_db)
+
+    assert reads == []
+    poller_module.sensor_store.forget("bb")
+
+
+@pytest.mark.asyncio
+async def test_a_plug_is_not_treated_as_a_sensor(monkeypatch, sensor_db):
+    reads: list[str] = []
+    monkeypatch.setattr(poller_module, "read_sensor_once", _reads_into(reads))
+    plug = SimpleNamespace(
+        ieee="dd",
+        nwk=0x2222,
+        manufacturer="SONOFF",
+        model="S60ZBTPF",
+        endpoints={0: SimpleNamespace(in_clusters={}), 1: SimpleNamespace(in_clusters={0x0006: object()})},
+        node_desc=None,
+    )
+
+    await ZigbeePoller()._poll_sensors_once(_app_with(plug), sensor_db)
+
+    assert reads == []
+
+
+@pytest.mark.asyncio
+async def test_a_settings_change_is_pushed_when_the_device_next_answers(monkeypatch, sensor_db):
+    """Reporting parameters live IN the device: changing a setting does nothing
+    until configure_reporting is re-issued, and for a sleeper the only safe
+    moment is when it has just proved it is awake."""
+    from backend.app.services.zigbee import reporting as reporting_module
+
+    rebinds: list[str] = []
+
+    async def fake_bind(device, ieee, parameters):
+        rebinds.append(ieee)
+        return {"temperature": "ok"}
+
+    monkeypatch.setattr(poller_module, "read_sensor_once", _reads_into([], answered=True))
+    monkeypatch.setattr(reporting_module, "bind_sensor", fake_bind)
+    poller_module.sensor_store.forget("ee")
+    poller_module.zigbee_coordinator.forget_reporting("ee")
+
+    await ZigbeePoller()._poll_sensors_once(_app_with(_sensor_device("ee", False)), sensor_db)
+
+    assert rebinds == ["ee"], "nothing had been configured yet, so the desired parameters are owed"
+    poller_module.sensor_store.forget("ee")
+    poller_module.zigbee_coordinator.forget_reporting("ee")
