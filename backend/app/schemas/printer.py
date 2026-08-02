@@ -1,6 +1,8 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from backend.app.schemas.printer_location import PrinterLocationOut, reject_legacy_key
 
 
 class PrinterBase(BaseModel):
@@ -30,7 +32,13 @@ class PrinterBase(BaseModel):
         pattern=r"^(\d{1,3}(\.\d{1,3}){3}|[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*)$",
     )
     model: str | None = None
-    location: str | None = None  # Group/location name
+    location_id: int | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_legacy_location(cls, values):
+        return reject_legacy_key(values, "location", "location_id")
+
     auto_archive: bool = True
     cleanup_after_print: bool = True
     mqtt_connection_timeout: int = 0  # seconds; 0 = disabled — see models/printer.py for why that is the default
@@ -70,8 +78,14 @@ class PrinterUpdate(BaseModel):
     )
     access_code: str | None = None
     model: str | None = None
-    location: str | None = None
+    location_id: int | None = None
     is_active: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_legacy_location(cls, values):
+        return reject_legacy_key(values, "location", "location_id")
+
     auto_archive: bool | None = None
     cleanup_after_print: bool | None = None
     mqtt_connection_timeout: int | None = None
@@ -92,6 +106,10 @@ class PrinterUpdate(BaseModel):
 class PrinterResponse(PrinterBase):
     id: int
     is_active: bool
+    # The place, resolved. ``location_id`` comes from PrinterBase and is what a
+    # form posts back; this is what anything displaying it reads, so neither has
+    # to look the other up.
+    location: PrinterLocationOut | None = None
     archived: bool = False
     archived_at: datetime | None = None
     nozzle_count: int = 1  # 1 or 2, auto-detected from MQTT
@@ -121,7 +139,12 @@ class PrinterResponse(PrinterBase):
             "serial_number": printer.serial_number,
             "ip_address": printer.ip_address,
             "model": printer.model,
-            "location": printer.location,
+            "location_id": printer.location_id,
+            "location": (
+                PrinterLocationOut(id=printer.location.id, name=printer.location.name)
+                if getattr(printer, "location", None)
+                else None
+            ),
             "auto_archive": printer.auto_archive,
             "cleanup_after_print": printer.cleanup_after_print,
             "mqtt_connection_timeout": printer.mqtt_connection_timeout,

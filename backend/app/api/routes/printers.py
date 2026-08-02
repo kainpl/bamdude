@@ -22,6 +22,7 @@ from backend.app.core.permissions import Permission
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.ams_label import AmsLabel
 from backend.app.models.printer import Printer
+from backend.app.models.printer_location import PrinterLocation
 from backend.app.models.slot_preset import SlotPresetMapping
 from backend.app.models.user import User
 from backend.app.schemas.printer import (
@@ -112,6 +113,19 @@ async def list_printers(
     return [_serialize_printer(p, include_secret=include_secret) for p in printers]
 
 
+async def _require_known_location(db, location_id: int | None) -> None:
+    """A location id that names nothing must not be stored.
+
+    SQLite does not enforce foreign keys by default, so without this the row
+    would take a dangling id and the printer would show no place with no error
+    anywhere — which is the silent-nothing this stage exists to remove.
+    """
+    if location_id is None:
+        return
+    if await db.get(PrinterLocation, location_id) is None:
+        raise HTTPException(422, "No such location.")
+
+
 @router.post("/", response_model=PrinterResponse)
 async def create_printer(
     printer_data: PrinterCreate,
@@ -129,6 +143,8 @@ async def create_printer(
         if existing.archived:
             raise HTTPException(409, "This serial belongs to an archived printer — unarchive it instead of re-adding")
         raise HTTPException(400, "Printer with this serial number already exists")
+
+    await _require_known_location(db, printer_data.location_id)
 
     printer = Printer(**printer_data.model_dump())
 
@@ -191,7 +207,7 @@ async def list_usb_cameras(
 @router.get("/available-filaments")
 async def get_available_filaments(
     model: str = Query(..., description="Target printer model"),
-    location: str | None = Query(None, description="Optional location filter"),
+    location_id: int | None = Query(None, description="Optional location filter"),
     _=RequirePermission(Permission.QUEUE_CREATE),
     db: AsyncSession = Depends(get_db),
 ):
@@ -210,8 +226,8 @@ async def get_available_filaments(
         .where(Printer.is_active == True)  # noqa: E712
         .where(Printer.archived.is_(False))
     )
-    if location:
-        query = query.where(Printer.location == location)
+    if location_id:
+        query = query.where(Printer.location_id == location_id)
 
     result = await db.execute(query)
     printers_list = list(result.scalars().all())
@@ -352,6 +368,8 @@ async def update_printer(
         raise HTTPException(404, "Printer not found")
 
     update_data = printer_data.model_dump(exclude_unset=True)
+    if "location_id" in update_data:
+        await _require_known_location(db, update_data["location_id"])
 
     # Handle nested ROI object - flatten to individual columns
     if "plate_detection_roi" in update_data:
