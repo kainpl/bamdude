@@ -65,12 +65,34 @@ class StubCluster:
     def __init__(self, cluster_id: int):
         self.cluster_id = cluster_id
         self.listeners: list = []
+        self.event_callbacks: dict[str, list] = {}
+        self.cache: dict[str, object] = {}
         self.configured: list = []
         self.bound = False
         self.AttributeDefs = _POWER_CONFIGURATION_DEFS if cluster_id == 0x0001 else _MEASURED_VALUE_DEFS
 
     def add_listener(self, listener):
         self.listeners.append(listener)
+
+    def on_event(self, event_name, callback, with_context=False):
+        """zigpy's current subscription API.
+
+        The legacy ``add_listener``/``attribute_updated`` path is suppressed for
+        reported attributes in zigpy 2.x, so a fixture without this makes a dead
+        subscription look alive.
+        """
+        self.event_callbacks.setdefault(event_name, []).append(callback)
+        return lambda: None
+
+    def emit_report(self, attribute_name: str, attribute_id: int, value):
+        """Simulate a device report the way zigpy delivers one: the cache is
+        written first, then the event carries the parsed value."""
+        self.cache[attribute_name] = value
+        event = SimpleNamespace(
+            attribute_id=attribute_id, attribute_name=attribute_name, value=value, cluster_id=self.cluster_id
+        )
+        for callback in self.event_callbacks.get("attribute_report", []):
+            callback(event)
 
     async def bind(self):
         self.bound = True
@@ -84,7 +106,7 @@ class StubCluster:
         return ({}, {})
 
     def get(self, attr, default=None):
-        return default
+        return self.cache.get(attr, default)
 
 
 def fake_device(

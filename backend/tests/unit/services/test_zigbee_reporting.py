@@ -25,6 +25,22 @@ from backend.app.services.zigbee.reporting import (
     ATTR_SUMMATION,
     ClusterReportListener,
 )
+from backend.tests.zigbee_fixtures import fake_device
+
+
+@pytest.fixture(autouse=True)
+def _clean_attachment_registry():
+    """The attachment registry is process-global, so it leaks between tests.
+
+    Clearing it here rather than per test: a shared registry that survives is
+    exactly the sort of state that makes one test pass because another ran
+    first, and the failure lands on whoever adds the next test.
+    """
+    from backend.app.services.zigbee.reporting import _attached_clusters
+
+    _attached_clusters.clear()
+    yield
+    _attached_clusters.clear()
 
 
 def _listener(service, cluster_id, **scaling):
@@ -420,45 +436,10 @@ class TestQuirksAreNotBypassed:
 # two routes.
 
 
-class _RecordingCluster:
-    """A cluster that accepts everything and remembers what it was asked."""
-
-    def __init__(self, cluster_id, attribute_defs=()):
-        self.cluster_id = cluster_id
-        self.listeners = []
-        self.configured = []
-        self.bound = False
-        self.AttributeDefs = attribute_defs
-
-    def add_listener(self, listener):
-        self.listeners.append(listener)
-
-    async def bind(self):
-        self.bound = True
-        return [0]
-
-    async def configure_reporting(self, attribute, min_interval, max_interval, change):
-        self.configured.append((attribute, min_interval, max_interval, change))
-        return [SimpleNamespace(status=0)]
-
-    def get(self, attr, default=None):
-        return default
-
-
-def _attr(name, attr_id):
-    return SimpleNamespace(name=name, id=attr_id)
-
-
-_MEASURED_VALUE = (_attr("measured_value", 0x0000),)
-_BATTERY_ATTRS = (_attr("battery_percentage_remaining", 0x0021), _attr("battery_voltage", 0x0020))
-
-
 def _sensor_device(*cluster_ids):
-    clusters = {}
-    for cluster_id in cluster_ids:
-        defs = _BATTERY_ATTRS if cluster_id == 0x0001 else _MEASURED_VALUE
-        clusters[cluster_id] = _RecordingCluster(cluster_id, defs)
-    return SimpleNamespace(endpoints={1: SimpleNamespace(in_clusters=clusters)}, ieee="aa:bb")
+    """Shared fixture — see backend/tests/zigbee_fixtures.py for why local
+    cluster stubs are not allowed to exist here any more."""
+    return fake_device("aa:bb", *cluster_ids)
 
 
 @pytest.mark.asyncio
@@ -712,3 +693,89 @@ async def test_startup_attaches_every_paired_sensor_and_skips_plugs():
     attached = attach_all_sensors(app)
 
     assert attached == 1
+
+
+@pytest.mark.asyncio
+async def test_a_device_report_reaches_the_store_through_the_current_event_api():
+    """zigpy 2.x suppresses the legacy listener for REPORTED attributes.
+
+    Report_Attributes handling wraps the cache write in
+    _suppress_attribute_update_event, so listener_event("attribute_updated")
+    never fires and the value arrives only as an emitted AttributeReportedEvent.
+    Subscribing the old way makes a dead subscription look alive: the plugs have
+    been running on their poller alone, and the sensor showed nothing at all.
+    """
+    from backend.app.services.zigbee.reporting import attach_sensor_listeners
+    from backend.app.services.zigbee.sensors import SensorStore
+    from backend.tests.zigbee_fixtures import fake_device
+
+    device = fake_device("ev1", 0x0402)
+    store = SensorStore()
+
+    attach_sensor_listeners(device, "ev1", ("temperature",), store=store)
+    device.endpoints[1].in_clusters[0x0402].emit_report("measured_value", 0x0000, 2341)
+
+    assert store.reading("ev1", "temperature").value == pytest.approx(23.41)
+
+
+@pytest.mark.asyncio
+async def test_the_reported_value_is_taken_from_the_cache_not_the_event():
+    """One rule for where a value comes from: the cluster cache, which is what a
+    quirk has had its say over. The event payload is the pre-quirk report."""
+    from backend.app.services.zigbee.reporting import attach_sensor_listeners
+    from backend.app.services.zigbee.sensors import SensorStore
+    from backend.tests.zigbee_fixtures import fake_device
+
+    device = fake_device("ev2", 0x0402)
+    cluster = device.endpoints[1].in_clusters[0x0402]
+    store = SensorStore()
+    attach_sensor_listeners(device, "ev2", ("temperature",), store=store)
+
+    # The quirk left 25.00 in the cache; the raw report said 23.41.
+    cluster.cache["measured_value"] = 2500
+    event = SimpleNamespace(attribute_id=0x0000, attribute_name="measured_value", value=2341)
+    for callback in cluster.event_callbacks["attribute_report"]:
+        callback(event)
+
+    assert store.reading("ev2", "temperature").value == pytest.approx(25.0)
+
+
+@pytest.mark.asyncio
+async def test_attaching_twice_leaves_one_listener():
+    """bind_sensor attaches before it talks to the radio, so every re-apply of
+    changed settings would add another listener to the same cluster — one more
+    duplicate report each time, for the life of the process. Seen in the field
+    as every first-report line printed twice.
+    """
+    from backend.app.services.zigbee.reporting import attach_sensor_listeners
+    from backend.app.services.zigbee.sensors import SensorStore
+    from backend.tests.zigbee_fixtures import fake_device
+
+    device = fake_device("dup", 0x0402)
+    cluster = device.endpoints[1].in_clusters[0x0402]
+    store = SensorStore()
+
+    attach_sensor_listeners(device, "dup", ("temperature",), store=store)
+    attach_sensor_listeners(device, "dup", ("temperature",), store=store)
+
+    assert len(cluster.event_callbacks["attribute_report"]) == 1
+    assert len(cluster.listeners) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_re_paired_device_gets_a_fresh_listener():
+    """Idempotence must not outlive the device: unpairing and pairing again
+    hands back new cluster objects, and the old registration would leave the
+    new ones unheard."""
+    from backend.app.services.zigbee.reporting import attach_sensor_listeners, forget_sensor_listeners
+    from backend.app.services.zigbee.sensors import SensorStore
+    from backend.tests.zigbee_fixtures import fake_device
+
+    store = SensorStore()
+    attach_sensor_listeners(fake_device("again", 0x0402), "again", ("temperature",), store=store)
+    forget_sensor_listeners("again")
+
+    fresh = fake_device("again", 0x0402)
+    attach_sensor_listeners(fresh, "again", ("temperature",), store=store)
+
+    assert len(fresh.endpoints[1].in_clusters[0x0402].event_callbacks["attribute_report"]) == 1

@@ -487,6 +487,7 @@ async def remove_device(
     unreachable for ever, with nothing on screen saying why.
     """
     from backend.app.services.zigbee.driver import zigbee_smart_plug_service
+    from backend.app.services.zigbee.reporting import forget_sensor_listeners
     from backend.app.services.zigbee.sensors import sensor_store
 
     app = _require_up()
@@ -511,6 +512,9 @@ async def remove_device(
 
     sensor_store.forget(str(match.ieee))
     zigbee_coordinator.forget_reporting(str(match.ieee))
+    # The attachment record too: pairing this address again hands back new
+    # cluster objects, and a stale record would leave those unheard.
+    forget_sensor_listeners(str(match.ieee))
 
     # The row goes with the device, in the same call. Its hourly energy
     # snapshots go too (ON DELETE CASCADE); per-print energy is unaffected,

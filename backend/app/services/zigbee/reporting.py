@@ -34,6 +34,14 @@ from backend.app.services.zigbee.metering import (
 
 logger = logging.getLogger(__name__)
 
+# zigpy's current event names. "attribute_report" carries a device's own report;
+# "attribute_updated" fires when the value was written some other way (a read, a
+# quirk transforming the report). Report handling deliberately suppresses the
+# LEGACY listener_event of the same name, so subscribing only through
+# add_listener leaves a subscription that looks alive and never fires.
+ATTRIBUTE_REPORT_EVENT = "attribute_report"
+ATTRIBUTE_UPDATED_EVENT = "attribute_updated"
+
 # Attribute ids. ON_OFF and SUMMATION collide at 0x0000 by design of the ZCL —
 # see the module docstring for why that forces per-cluster listeners.
 ATTR_ON_OFF = 0x0000
@@ -385,13 +393,29 @@ class SensorReportListener:
     awake** — the one moment changed reporting parameters can be pushed to it.
     """
 
-    def __init__(self, store, ieee: str, cluster_id: int, device=None, keys: tuple[str, ...] = ()):
+    def __init__(self, store, ieee: str, cluster_id: int, device=None, keys: tuple[str, ...] = (), cluster=None):
         self._store = store
         self._ieee = ieee
         self._cluster_id = cluster_id
         self._device = device
         self._keys = keys
+        self._cluster = cluster
         self._by_attribute_id: dict[int, str] = {}
+        self._reported: set[str] = set()
+
+    def __call__(self, event) -> None:
+        """zigpy's current event API hands the subscriber a dataclass.
+
+        This is the path that actually carries device reports. ``Report_Attributes``
+        handling wraps its cache write in ``_suppress_attribute_update_event``,
+        so the legacy ``listener_event("attribute_updated")`` never fires for a
+        reported attribute — subscribing only that way makes a dead
+        subscription look alive.
+        """
+        try:
+            self._record(getattr(event, "attribute_id", None), getattr(event, "value", None))
+        except Exception as exc:  # noqa: BLE001 — an event callback must not raise into zigpy
+            logger.warning("Zigbee sensor %s: event ignored: %s", self._ieee, exc)
 
     def bind_attribute(self, attribute_id: int, key: str) -> None:
         """Learn which quantity an attribute id carries.
@@ -403,26 +427,57 @@ class SensorReportListener:
         self._by_attribute_id[attribute_id] = key
 
     def attribute_updated(self, attrid, value, timestamp=None) -> None:
-        """zigpy calls this synchronously — plain ``def``, never ``async def``,
-        and it must not raise: zigpy logs listener exceptions at DEBUG, so a
-        failure here would vanish rather than break."""
+        """The legacy path, kept as a second belt.
+
+        zigpy still calls it for attributes it does not know and for values
+        written outside report handling. Plain ``def``, never ``async def``, and
+        it must not raise: zigpy logs listener exceptions at DEBUG, so a failure
+        here would vanish rather than break.
+        """
         try:
-            key = self._by_attribute_id.get(attrid)
-            if key is None:
-                return  # devices report far more than they were asked for
-            self._store.record(self._ieee, key, value)
-            if self._device is not None:
-                # The device is demonstrably awake right now. Hanging the
-                # re-apply on the watchdog alone would defer an operator's edit
-                # by a whole silence window — and the watchdog only runs once
-                # the device has gone quiet, which is exactly when it cannot
-                # hear us.
-                spawn_background_task(
-                    reapply_if_settings_changed(self._device, self._ieee, self._keys),
-                    name=f"zigbee-reapply-{self._ieee}",
-                )
+            self._record(attrid, value)
         except Exception as exc:  # noqa: BLE001 — see the docstring
             logger.warning("Zigbee sensor %s: report for 0x%04X ignored: %s", self._ieee, attrid, exc)
+
+    def _record(self, attrid, value) -> None:
+        """One place where a value becomes a reading, whichever path delivered it."""
+        key = self._by_attribute_id.get(attrid)
+        if key is None:
+            return  # devices report far more than they were asked for
+
+        # From the cluster cache rather than the event payload: the cache is
+        # what a quirk has had its say over, and this subsystem has one rule
+        # about where a value comes from. The payload is the fallback for a
+        # cluster we were handed without one.
+        cached = None
+        if self._cluster is not None:
+            from backend.app.services.zigbee.measurements import BY_KEY
+
+            measurement = BY_KEY.get(key)
+            if measurement is not None:
+                cached = self._cluster.get(measurement.attribute)
+        value = cached if cached is not None else value
+
+        # The first report of each quantity is logged at INFO, the rest at
+        # DEBUG — the same reasoning as the plug listener's state line:
+        # whether reports arrive AT ALL is the question that costs a hardware
+        # session to answer, and an empty log looks identical to a working
+        # subscription.
+        if key not in self._reported:
+            self._reported.add(key)
+            logger.info("Zigbee sensor %s: first %s report received (raw=%r)", self._ieee, key, value)
+        else:
+            logger.debug("Zigbee sensor %s reported %s=%r", self._ieee, key, value)
+        self._store.record(self._ieee, key, value)
+        if self._device is not None:
+            # The device is demonstrably awake right now. Hanging the re-apply
+            # on the watchdog alone would defer an operator's edit by a whole
+            # silence window — and the watchdog only runs once the device has
+            # gone quiet, which is exactly when it cannot hear us.
+            spawn_background_task(
+                reapply_if_settings_changed(self._device, self._ieee, self._keys),
+                name=f"zigbee-reapply-{self._ieee}",
+            )
 
 
 def _warn_if_sensor_reporting_refused(ieee: str, cluster_id: int, result) -> None:
@@ -473,6 +528,25 @@ def _sensor_clusters(device) -> dict[int, object]:
     return found
 
 
+# Which (ieee, cluster id) pairs already carry a listener in this process.
+# bind_sensor attaches before it touches the radio, so every re-apply of changed
+# settings would otherwise add another listener to the same cluster — one more
+# duplicate report each time, growing for the life of the process. Seen in the
+# field as every first-report line printed twice.
+_attached_clusters: set[tuple[str, int]] = set()
+
+
+def forget_sensor_listeners(ieee: str) -> None:
+    """Drop the attachment record for an unpaired device.
+
+    Idempotence must not outlive the device: pairing it again hands back new
+    cluster objects, and a stale record would leave those unheard.
+    """
+    marker = str(ieee).strip().lower()
+    for key in [k for k in _attached_clusters if k[0] == marker]:
+        _attached_clusters.discard(key)
+
+
 def attach_sensor_listeners(device, ieee: str, keys: tuple[str, ...] = (), store=None) -> int:
     """Route this device's reports into the store. **Local — no radio.**
 
@@ -487,8 +561,12 @@ def attach_sensor_listeners(device, ieee: str, keys: tuple[str, ...] = (), store
     from backend.app.services.zigbee.measurements import measurements_on
     from backend.app.services.zigbee.sensors import sensor_store
 
+    marker = str(ieee).strip().lower()
     attached = 0
     for cluster_id, cluster in _sensor_clusters(device).items():
+        if (marker, cluster_id) in _attached_clusters:
+            attached += 1
+            continue
         wanted = measurements_on(cluster_id)
         listener = SensorReportListener(
             store=sensor_store if store is None else store,
@@ -496,6 +574,7 @@ def attach_sensor_listeners(device, ieee: str, keys: tuple[str, ...] = (), store
             cluster_id=cluster_id,
             device=device,
             keys=keys or tuple(m.key for m in wanted),
+            cluster=cluster,
         )
         attribute_ids = _attribute_ids(cluster)
         for measurement in wanted:
@@ -503,7 +582,26 @@ def attach_sensor_listeners(device, ieee: str, keys: tuple[str, ...] = (), store
             if attribute_id is not None:
                 listener.bind_attribute(attribute_id, measurement.key)
         try:
+            # Both channels. ``on_event`` is the one that carries device reports
+            # in zigpy 2.x; ``add_listener`` still fires for attributes zigpy
+            # does not recognise and for writes outside report handling.
+            # Recording is idempotent, so the overlap costs nothing.
+            on_event = getattr(cluster, "on_event", None)
+            if on_event is None:
+                # Loudly, not silently: without this channel the subscription
+                # exists and never fires, which is the failure mode that cost a
+                # hardware session to find.
+                logger.warning(
+                    "Zigbee sensor %s: cluster 0x%04X has no on_event — device reports will NOT arrive, "
+                    "only polled reads",
+                    ieee,
+                    cluster_id,
+                )
+            else:
+                for event_name in (ATTRIBUTE_REPORT_EVENT, ATTRIBUTE_UPDATED_EVENT):
+                    on_event(event_name, listener)
             cluster.add_listener(listener)
+            _attached_clusters.add((marker, cluster_id))
             attached += 1
         except Exception as exc:  # noqa: BLE001 — one cluster must not cost the others
             logger.warning("Zigbee sensor %s: could not listen on 0x%04X: %s", ieee, cluster_id, exc)
