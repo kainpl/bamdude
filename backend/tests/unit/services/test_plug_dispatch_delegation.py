@@ -58,6 +58,104 @@ async def test_main_energy_path_asks_the_resolver():
     assert result == {"total": 1.5}
 
 
+class TestTheEndOfAPrintAsksThePlugItself:
+    """A cached reading is not good enough for the end of an energy measurement.
+
+    The counter only moves when the plug reports it, and it is asked to report
+    at most every 30 s. A print that has just stopped drawing 200 W therefore
+    leaves up to half a minute of consumption out of its own archive — every
+    time, and always in the same direction, so it does not average out.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_cache_backed_driver_is_told_to_go_and_look(self):
+        from backend.app import main
+
+        driver = SimpleNamespace(
+            reads_from_a_cache=True,
+            refresh=AsyncMock(return_value=True),
+            get_energy=AsyncMock(return_value={"total": 3.0}),
+        )
+        with patch.object(main.smart_plug_manager, "get_service_for_plug", AsyncMock(return_value=driver)):
+            result = await main._get_plug_energy(_plug("zigbee"), db=None, force_read=True)
+
+        driver.refresh.assert_awaited_once()
+        assert result == {"total": 3.0}
+
+    @pytest.mark.asyncio
+    async def test_a_driver_that_reads_live_is_left_alone(self):
+        """Tasmota, REST and Home Assistant make an HTTP call per question, and
+        the MQTT driver holds what the plug pushed. There is nothing to force,
+        and a driver without the attribute must not blow up on the flag."""
+        from backend.app import main
+
+        driver = SimpleNamespace(get_energy=AsyncMock(return_value={"total": 3.0}))
+        with patch.object(main.smart_plug_manager, "get_service_for_plug", AsyncMock(return_value=driver)):
+            result = await main._get_plug_energy(_plug("tasmota"), db=None, force_read=True)
+
+        assert result == {"total": 3.0}
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_read_does_not_touch_the_radio(self):
+        """Everything else — status cards, the snapshot loop — keeps taking the
+        cache. Forcing a read per viewer is the pile-up this driver was fixed
+        for once already."""
+        from backend.app import main
+
+        driver = SimpleNamespace(
+            reads_from_a_cache=True,
+            refresh=AsyncMock(return_value=True),
+            get_energy=AsyncMock(return_value={"total": 3.0}),
+        )
+        with patch.object(main.smart_plug_manager, "get_service_for_plug", AsyncMock(return_value=driver)):
+            await main._get_plug_energy(_plug("zigbee"), db=None)
+
+        driver.refresh.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_end_of_print_handler_actually_passes_the_flag(self):
+        """The flag is only worth having if the one caller that needs it sets it.
+
+        Driving the real function rather than asserting on the source: a keyword
+        dropped in a refactor would leave every archive short by whatever the
+        printer drew in the last half-minute, with nothing failing anywhere.
+        """
+        from contextlib import asynccontextmanager
+
+        from backend.app import main
+
+        archive = SimpleNamespace(energy_start_kwh=1.0, energy_kwh=None, energy_cost=None)
+        db = SimpleNamespace(get=AsyncMock(return_value=archive), commit=AsyncMock())
+
+        @asynccontextmanager
+        async def fake_session():
+            yield db
+
+        seen = {}
+
+        async def fake_energy(plug, db, *, force_read=False):
+            seen["force_read"] = force_read
+            return {"total": 1.25}
+
+        with (
+            patch.object(main, "async_session", fake_session),
+            patch.object(main, "_energy_plug_for_printer", AsyncMock(return_value=_plug("zigbee"))),
+            patch.object(main, "_get_plug_energy", fake_energy),
+            patch.object(main.smart_plug_manager, "record_energy_snapshot", AsyncMock()),
+            patch("backend.app.api.routes.settings.get_setting", AsyncMock(return_value="0.20")),
+        ):
+            await main._record_print_energy(archive_id=7, printer_id=3)
+
+        assert seen["force_read"] is True
+        assert archive.energy_kwh == 0.25, "and the delta is still computed from it"
+
+    def test_the_zigbee_driver_is_the_one_that_declares_a_cache(self):
+        """Pins the flag to the driver rather than to the test's own stub."""
+        from backend.app.services.zigbee.driver import ZigbeeSmartPlugService
+
+        assert ZigbeeSmartPlugService.reads_from_a_cache is True
+
+
 @pytest.mark.asyncio
 async def test_archive_total_asks_the_resolver():
     """A plug type the chain predates must contribute, not be skipped."""

@@ -122,6 +122,12 @@ class ZigbeePlugData:
 
 
 class ZigbeeSmartPlugService:
+    # Every answer here comes from the cache, which reports and the poller fill.
+    # The other plug types read live over HTTP or hold state the device pushed,
+    # so a caller who needs the newest possible reading — the two ends of a
+    # per-print energy measurement — can only ask this one to go and look.
+    reads_from_a_cache = True
+
     def __init__(self):
         self._cache: dict[int, ZigbeePlugData] = {}
         # Listeners built at bind time, kept so an on-demand read can reuse one

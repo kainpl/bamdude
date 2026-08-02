@@ -626,7 +626,7 @@ def _clear_unknown_tag_dedup(printer_id: int, ams_id: int, tray_id: int) -> None
     per_printer.pop((ams_id, tray_id), None)
 
 
-async def _get_plug_energy(plug, db) -> dict | None:
+async def _get_plug_energy(plug, db, *, force_read: bool = False) -> dict | None:
     """Energy for one plug, through whichever driver the manager resolves.
 
     This was a hand-rolled ``if/elif`` chain ending in ``else:
@@ -642,9 +642,100 @@ async def _get_plug_energy(plug, db) -> dict | None:
     here loses nothing.
 
     The driver each type returns is unchanged — only the route to it.
+
+    ``force_read`` is for the two ends of a per-print measurement, where a
+    reading that is merely recent is not good enough. Only a driver that answers
+    from a cache has anything to force: Tasmota, REST and Home Assistant make a
+    live HTTP call per question, and the MQTT driver holds state the plug pushes
+    at it, so for those it is already as fresh as the device is willing to be.
+    The flag is honoured through ``reads_from_a_cache`` rather than by asking
+    which plug type this is — that if/elif chain is the one this function exists
+    to have removed.
     """
     service = await smart_plug_manager.get_service_for_plug(plug, db)
+    if force_read and getattr(service, "reads_from_a_cache", False):
+        # No timeout of our own: this runs in a background task, and the driver
+        # already bounds the wait and shares one read between callers.
+        await service.refresh(plug)
     return await service.get_energy(plug)
+
+
+async def _record_print_energy(archive_id: int, printer_id: int) -> None:
+    """Calculate and save energy usage in background.
+
+    Reads the starting kWh from the archive row (#941: persisted so a mid-print
+    backend restart no longer loses per-print energy data).
+
+    Lifted out of ``on_print_complete`` so it can be tested: what it does that
+    is easy to get silently wrong — asking the plug for a fresh reading rather
+    than accepting the cache — fails by producing a slightly small number, which
+    is the one kind of wrong nobody notices.
+    """
+    logger = logging.getLogger(__name__)
+    try:
+        logger.info("[ENERGY-BG] Starting energy calculation for archive %s", archive_id)
+        async with async_session() as db:
+            from backend.app.models.archive import PrintArchive
+
+            archive = await db.get(PrintArchive, archive_id)
+            if archive is None:
+                logger.warning("[ENERGY-BG] Archive %s no longer exists", archive_id)
+                return
+            starting_kwh = archive.energy_start_kwh
+            if starting_kwh is None:
+                logger.info("[ENERGY-BG] No start kWh recorded for archive %s", archive_id)
+                return
+
+            plug = await _energy_plug_for_printer(printer_id, db)
+            if plug is None:
+                logger.info("[ENERGY-BG] No smart plug for printer %s", printer_id)
+                return
+
+            # Ask the plug itself rather than accept what is cached. The
+            # counter only moves when the plug reports it, and it is asked
+            # to report at most every 30 s — so a print that has just
+            # stopped drawing 200 W leaves up to half a minute of it
+            # unrecorded, every time, in the same direction. The start
+            # reading has the same lag over an idle printer, where it is
+            # worth a fraction of a watt-hour and cannot pay for a radio
+            # read on the dispatch path.
+            energy = await _get_plug_energy(plug, db, force_read=True)
+            logger.info("[ENERGY-BG] Energy response: %s", energy)
+            if not energy or energy.get("total") is None:
+                logger.warning("[ENERGY-BG] No 'total' in energy response")
+                return
+
+            # Recorded before the sanity check below, not after: a counter
+            # that went backwards is precisely when the range report most
+            # needs a fresh baseline, and the reading itself is true even
+            # though the per-print delta derived from it is not.
+            await smart_plug_manager.record_energy_snapshot(db, plug.id, energy["total"])
+
+            energy_used = round(energy["total"] - starting_kwh, 4)
+            logger.info("[ENERGY-BG] Per-print energy: %s kWh", energy_used)
+            if energy_used < 0:
+                logger.warning(
+                    "[ENERGY-BG] Negative energy delta for archive %s (start=%s, end=%s) - counter reset?",
+                    archive_id,
+                    starting_kwh,
+                    energy["total"],
+                )
+                # Commit the snapshot even though no per-print figure is
+                # written — otherwise the session unwinds and the one
+                # reading that could re-baseline the report is thrown away.
+                await db.commit()
+                return
+
+            from backend.app.api.routes.settings import get_setting
+
+            energy_cost_per_kwh = await get_setting(db, "energy_cost_per_kwh")
+            cost_per_kwh = float(energy_cost_per_kwh) if energy_cost_per_kwh else 0.15
+            archive.energy_kwh = energy_used
+            archive.energy_cost = round(energy_used * cost_per_kwh, 3)
+            await db.commit()
+            logger.info("[ENERGY-BG] Saved: %s kWh, cost=%s", energy_used, archive.energy_cost)
+    except Exception as e:
+        logger.warning("[ENERGY-BG] Failed: %s", e)
 
 
 async def _default_queue_id_for_printer(db, printer_id: int) -> int | None:
@@ -5497,67 +5588,7 @@ async def on_print_complete(printer_id: int, data: dict):
     # These operations can take 5-10+ seconds and would freeze the UI if awaited
 
     async def _background_energy_calculation():
-        """Calculate and save energy usage in background.
-
-        Reads the starting kWh from the archive row (#941: persisted so a mid-print
-        backend restart no longer loses per-print energy data).
-        """
-        try:
-            logger.info("[ENERGY-BG] Starting energy calculation for archive %s", archive_id)
-            async with async_session() as db:
-                from backend.app.models.archive import PrintArchive
-
-                archive = await db.get(PrintArchive, archive_id)
-                if archive is None:
-                    logger.warning("[ENERGY-BG] Archive %s no longer exists", archive_id)
-                    return
-                starting_kwh = archive.energy_start_kwh
-                if starting_kwh is None:
-                    logger.info("[ENERGY-BG] No start kWh recorded for archive %s", archive_id)
-                    return
-
-                plug = await _energy_plug_for_printer(printer_id, db)
-                if plug is None:
-                    logger.info("[ENERGY-BG] No smart plug for printer %s", printer_id)
-                    return
-
-                energy = await _get_plug_energy(plug, db)
-                logger.info("[ENERGY-BG] Energy response: %s", energy)
-                if not energy or energy.get("total") is None:
-                    logger.warning("[ENERGY-BG] No 'total' in energy response")
-                    return
-
-                # Recorded before the sanity check below, not after: a counter
-                # that went backwards is precisely when the range report most
-                # needs a fresh baseline, and the reading itself is true even
-                # though the per-print delta derived from it is not.
-                await smart_plug_manager.record_energy_snapshot(db, plug.id, energy["total"])
-
-                energy_used = round(energy["total"] - starting_kwh, 4)
-                logger.info("[ENERGY-BG] Per-print energy: %s kWh", energy_used)
-                if energy_used < 0:
-                    logger.warning(
-                        "[ENERGY-BG] Negative energy delta for archive %s (start=%s, end=%s) - counter reset?",
-                        archive_id,
-                        starting_kwh,
-                        energy["total"],
-                    )
-                    # Commit the snapshot even though no per-print figure is
-                    # written — otherwise the session unwinds and the one
-                    # reading that could re-baseline the report is thrown away.
-                    await db.commit()
-                    return
-
-                from backend.app.api.routes.settings import get_setting
-
-                energy_cost_per_kwh = await get_setting(db, "energy_cost_per_kwh")
-                cost_per_kwh = float(energy_cost_per_kwh) if energy_cost_per_kwh else 0.15
-                archive.energy_kwh = energy_used
-                archive.energy_cost = round(energy_used * cost_per_kwh, 3)
-                await db.commit()
-                logger.info("[ENERGY-BG] Saved: %s kWh, cost=%s", energy_used, archive.energy_cost)
-        except Exception as e:
-            logger.warning("[ENERGY-BG] Failed: %s", e)
+        await _record_print_energy(archive_id, printer_id)
 
     async def _background_finish_photo() -> str | None:
         """Capture finish photo in background. Returns photo filename if captured."""
