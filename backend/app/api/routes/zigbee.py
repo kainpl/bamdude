@@ -12,7 +12,6 @@ leave existing installs unable to use their own admin account for it.
 
 import asyncio
 import logging
-from dataclasses import asdict
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -24,7 +23,7 @@ from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.user import User
 from backend.app.services.zigbee.coordinator import CoordinatorState, zigbee_coordinator
-from backend.app.services.zigbee.devices import describe_device
+from backend.app.services.zigbee.devices import DeviceKind, describe_device, describe_for_ui
 
 logger = logging.getLogger(__name__)
 
@@ -391,7 +390,75 @@ async def list_devices(
     # is_plug=false: an entry the operator cannot act on is noise, and phase 4
     # would have to special-case it in the UI instead.
     described = (describe_device(d) for d in app.devices.values())
-    return {"devices": [asdict(info) for info in described if not info.is_coordinator]}
+    return {"devices": [describe_for_ui(info) for info in described if not info.is_coordinator]}
+
+
+@router.get("/sensors")
+async def list_sensors(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
+):
+    """Every paired sensor with what it last told us.
+
+    The only surface for readings in this cycle: there is no row and no page.
+
+    ``value`` is null when nothing is known — never 0. A fabricated reading is
+    worse than a missing one, which is the rule plug power already follows.
+    ``stale`` says the value is older than its window, and ``reporting`` is what
+    the device actually accepted, so "reporting is configured" never has to be
+    inferred from silence.
+    """
+    from backend.app.services.zigbee.measurements import BY_KEY
+    from backend.app.services.zigbee.sensor_settings import load_reporting_parameters, load_stale_multiplier
+    from backend.app.services.zigbee.sensors import power_class, sensor_store
+
+    app = zigbee_coordinator.app
+    if app is None:
+        # Consistent with the device list: an install whose radio is down asks
+        # this question and gets an answer rather than a 503.
+        return {"sensors": []}
+
+    parameters = await load_reporting_parameters(db)
+    multiplier = await load_stale_multiplier(db)
+
+    sensors = []
+    for device in list(app.devices.values()):
+        info = describe_device(device)
+        if info.kind is not DeviceKind.SENSOR:
+            continue
+
+        measurements = {}
+        # Battery does not classify a device as a sensor — plenty of things
+        # carry one — but once paired, its charge is worth reporting.
+        for key in (*info.measurements, "battery", "battery_voltage"):
+            measurement = BY_KEY.get(key)
+            if measurement is None:
+                continue
+            reading = sensor_store.reading(info.ieee, key)
+            max_interval = parameters.get(key, {}).get("max_interval", measurement.default_max_interval)
+            measurements[key] = {
+                "value": reading.value if reading else None,
+                "unit": measurement.unit,
+                "last_report_at": reading.at.isoformat() if reading else None,
+                "stale": sensor_store.is_stale(info.ieee, key, max_interval, multiplier),
+                "reporting": zigbee_coordinator.applied_reporting(info.ieee).get(key, "pending"),
+            }
+
+        sensors.append(
+            {
+                "ieee": info.ieee,
+                "nwk": info.nwk,
+                "manufacturer": info.manufacturer,
+                "model": info.model,
+                "power": power_class(device).value,
+                # A quirk that did not apply is invisible in the values; the
+                # class name is the one place it shows.
+                "quirk_applied": type(device).__name__ != "Device",
+                "unreachable": sensor_store.is_unreachable(info.ieee),
+                "measurements": measurements,
+            }
+        )
+    return {"sensors": sensors}
 
 
 @router.delete("/devices/{ieee}")
