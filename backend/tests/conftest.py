@@ -155,6 +155,7 @@ async def test_engine():
         print_options_preference,
         print_queue,
         printer,
+        printer_location,
         project,
         project_print_plan,
         settings,

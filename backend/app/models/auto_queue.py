@@ -20,11 +20,15 @@ See ``temp/auto-queue-adaptation-variants.md`` §12 for the full design.
 """
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
+
+if TYPE_CHECKING:
+    from backend.app.models.printer_location import PrinterLocation
 
 
 class AutoQueueItem(Base):
@@ -44,7 +48,10 @@ class AutoQueueItem(Base):
     # Routing target (upstream-style)
     # target_model: normalized printer model code, e.g. "X1C", "P1S", "K1C", "A1MINI"
     target_model: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    target_location: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    target_location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("printer_locations.id", ondelete="RESTRICT"), nullable=True
+    )
+    target_location: Mapped["PrinterLocation | None"] = relationship(lazy="selectin")
     # JSON array of required filament types extracted from 3MF, user-overridable
     # Example: '["PLA","PETG"]'
     required_filament_types: Mapped[str | None] = mapped_column(Text, nullable=True)

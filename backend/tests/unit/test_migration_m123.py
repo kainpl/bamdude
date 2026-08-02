@@ -94,11 +94,16 @@ async def test_upgrade_creates_the_tables_on_a_database_that_predates_them(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_the_models_and_the_migration_agree_on_the_columns(tmp_path):
+async def test_the_models_and_the_migration_chain_agree_on_the_columns(tmp_path):
     """Adding a table is TWO places — the model (fresh installs via create_all)
     and the migration (existing DBs). They drift silently: a fresh install and
     an upgraded one end up with different schemas, and only one of them is
-    tested by everything else."""
+    tested by everything else.
+
+    The comparison is against the whole chain from here on, not this migration
+    alone. m124 turns ``smart_sensors.location`` into a foreign key, so m123's
+    own DDL is no longer what an upgraded database ends up with — only the
+    chain is."""
     from sqlalchemy import inspect
     from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -120,9 +125,12 @@ async def test_the_models_and_the_migration_agree_on_the_columns(tmp_path):
         from_models = await conn.run_sync(columns_of)
     await fresh.dispose()
 
+    from backend.app.migrations import m124_printer_locations as m124
+
     upgraded = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'upgraded.db'}")
     async with upgraded.begin() as conn:
         await m.upgrade(conn)
+        await m124.upgrade(conn)
         from_migration = await conn.run_sync(columns_of)
     await upgraded.dispose()
 
