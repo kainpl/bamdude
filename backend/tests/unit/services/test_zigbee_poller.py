@@ -293,3 +293,62 @@ async def test_a_settings_change_is_pushed_when_the_device_next_answers(monkeypa
     assert rebinds == ["ee"], "nothing had been configured yet, so the desired parameters are owed"
     poller_module.sensor_store.forget("ee")
     poller_module.zigbee_coordinator.forget_reporting("ee")
+
+
+@pytest.mark.asyncio
+async def test_a_read_that_times_out_still_takes_what_zigpy_cached():
+    """The subsystem's own invariant, applied where it was missing.
+
+    zigpy suppresses the update event for the attribute being READ, so a late
+    answer from a sleeping device lands in the cluster cache and fires no
+    listener. Giving up on the timeout and never looking at the cache is how
+    zigpy ended up holding a temperature this store had never heard of.
+
+    zigpy also restores that cache from its database at startup, so taking it
+    is what gives a battery sensor its last known values immediately after a
+    restart instead of a blank hour.
+    """
+    from backend.app.services.zigbee import poller as module
+
+    class _LateAnswer:
+        """Times out on the read, but the value is in the cache anyway."""
+
+        AttributeDefs = ()
+
+        async def read_attributes(self, attrs, **kwargs):
+            raise TimeoutError("device did not answer in time")
+
+        def get(self, attr, default=None):
+            return 2341 if attr == "measured_value" else default
+
+    device = SimpleNamespace(endpoints={1: SimpleNamespace(in_clusters={0x0402: _LateAnswer()})})
+    module.sensor_store.forget("late")
+
+    learned = await module.read_sensor_once(device, "late", ("temperature",))
+
+    assert learned is True
+    assert module.sensor_store.reading("late", "temperature").value == pytest.approx(23.41)
+    module.sensor_store.forget("late")
+
+
+@pytest.mark.asyncio
+async def test_a_read_that_fails_with_nothing_cached_learns_nothing():
+    """The honest other half: no answer and no cache is not a reading."""
+    from backend.app.services.zigbee import poller as module
+
+    class _Silent:
+        AttributeDefs = ()
+
+        async def read_attributes(self, attrs, **kwargs):
+            raise TimeoutError("nothing")
+
+        def get(self, attr, default=None):
+            return default
+
+    device = SimpleNamespace(endpoints={1: SimpleNamespace(in_clusters={0x0402: _Silent()})})
+    module.sensor_store.forget("silent")
+
+    learned = await module.read_sensor_once(device, "silent", ("temperature",))
+
+    assert learned is False
+    assert module.sensor_store.reading("silent", "temperature") is None

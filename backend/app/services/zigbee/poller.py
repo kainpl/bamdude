@@ -77,12 +77,25 @@ async def read_sensor_once(device, ieee: str, keys: tuple[str, ...]) -> bool:
                 timeout=_SENSOR_READ_BUDGET_SECONDS,
             )
         except Exception:  # noqa: BLE001 — a sleeping device is the normal case
-            logger.debug("Zigbee sensor %s: read of %s did not answer", ieee, key)
+            logger.debug("Zigbee sensor %s: read of %s did not answer in time", ieee, key)
+
+        # The cache is read whether or not the request timed out, and this is
+        # the whole point rather than belt and braces. zigpy suppresses the
+        # update event for the attribute being READ, so a late answer from a
+        # sleeping device lands here and fires no listener — give up on the
+        # timeout without looking and zigpy ends up holding a temperature this
+        # store has never heard of, which is exactly what happened in the field.
+        #
+        # It also restores this cache from its database at startup, so taking
+        # it is what gives a battery sensor its last known values immediately
+        # after a restart instead of a blank hour.
+        #
+        # Never from what read_attributes returned: that is the raw pre-quirk
+        # value. Existing invariant of this subsystem.
+        value = cluster.get(measurement.attribute)
+        if value is None:
             continue
-        # From the cache, never from what the read returned: zigpy suppresses
-        # the update event for the attribute being read, so the returned value
-        # is the raw pre-quirk one.
-        sensor_store.record(ieee, key, cluster.get(measurement.attribute))
+        sensor_store.record(ieee, key, value)
         learned = True
     return learned
 
