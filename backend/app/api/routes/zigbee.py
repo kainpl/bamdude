@@ -15,12 +15,13 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.user import User
 from backend.app.services.zigbee.coordinator import CoordinatorState, zigbee_coordinator
 from backend.app.services.zigbee.devices import DeviceKind, describe_device, describe_for_ui
@@ -461,16 +462,33 @@ async def list_sensors(
     return {"sensors": sensors}
 
 
+# A leave request the device must be awake to receive. Beyond this we stop
+# waiting and drop it locally: a switched-off plug or a sleeping sensor would
+# otherwise hold the request for as long as zigpy cares to retry.
+_REMOVE_BUDGET_SECONDS = 10.0
+
+
 @router.delete("/devices/{ieee}")
 async def remove_device(
     ieee: str,
+    db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SMART_PLUGS_DELETE),
 ):
-    """Remove a device from the network.
+    """Remove a device from the network, and say which of the two happened.
 
-    Present in this phase because pairing without unpairing means the only way
-    to undo a mistake is to wipe the network and re-pair everything.
+    ``left`` means the device acknowledged and is off the network. ``forced``
+    means it never answered — it keeps the network key and will try to rejoin
+    when it is powered back on, so it should be reset at the device if that is
+    not wanted. For a battery sensor ``forced`` is the normal outcome, since it
+    is asleep almost all of the time.
+
+    Anything BamDude held about the device goes with it. Leaving a ``SmartPlug``
+    row behind gives a card bound to a device that is no longer on the network:
+    unreachable for ever, with nothing on screen saying why.
     """
+    from backend.app.services.zigbee.driver import zigbee_smart_plug_service
+    from backend.app.services.zigbee.sensors import sensor_store
+
     app = _require_up()
     # Case-insensitive: zigpy stringifies EUI64 lower-case, but a UI will echo
     # whatever the operator typed or pasted.
@@ -484,9 +502,31 @@ async def remove_device(
     if match is None:
         raise HTTPException(status_code=404, detail=f"No Zigbee device with address {ieee}.")
 
-    await app.remove(match.ieee)
-    logger.info("Removed Zigbee device %s from the network", ieee)
-    return {"removed": str(match.ieee)}
+    outcome = "left"
+    try:
+        await asyncio.wait_for(app.remove(match.ieee), timeout=_REMOVE_BUDGET_SECONDS)
+    except TimeoutError:
+        outcome = "forced"
+        logger.info("Zigbee device %s did not answer the leave request — removed locally", ieee)
+
+    sensor_store.forget(str(match.ieee))
+    zigbee_coordinator.forget_reporting(str(match.ieee))
+
+    # The row goes with the device, in the same call. Its hourly energy
+    # snapshots go too (ON DELETE CASCADE); per-print energy is unaffected,
+    # being written onto the archive rather than looked up.
+    deleted_plug_id = None
+    plug = (
+        await db.execute(select(SmartPlug).where(func.lower(SmartPlug.zigbee_ieee) == str(match.ieee).lower()))
+    ).scalar_one_or_none()
+    if plug is not None:
+        deleted_plug_id = plug.id
+        await zigbee_smart_plug_service.teardown(plug.id)
+        await db.delete(plug)
+        await db.commit()
+
+    logger.info("Removed Zigbee device %s from the network (%s)", ieee, outcome)
+    return {"removed": str(match.ieee), "outcome": outcome, "deleted_plug_id": deleted_plug_id}
 
 
 @router.get("/devices/{ieee}/attributes")

@@ -105,9 +105,21 @@ export function ZigbeeCoordinatorCard() {
 
   const remove = useMutation({
     mutationFn: (ieee: string) => api.removeZigbeeDevice(ieee),
-    onSuccess: () => {
+    onSuccess: (result) => {
       setRemoving(null);
       queryClient.invalidateQueries({ queryKey: ['zigbee-devices'] });
+      // The device may have taken a plug row with it, and that row's own
+      // status query must go rather than be refreshed — it would 404.
+      queryClient.invalidateQueries({ queryKey: ['smart-plugs'] });
+      if (result.deleted_plug_id) {
+        queryClient.removeQueries({ queryKey: ['smart-plug-status', result.deleted_plug_id] });
+      }
+      // "forced" is not a failure, but it is not silence either: the device
+      // never heard the leave request and will try to rejoin when powered on.
+      showToast(
+        result.outcome === 'forced' ? t('zigbee.removedForced') : t('zigbee.removedLeft'),
+        result.outcome === 'forced' ? 'info' : 'success',
+      );
     },
     onError: (err: Error) => showToast(err.message, 'error'),
   });

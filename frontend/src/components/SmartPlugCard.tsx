@@ -91,6 +91,11 @@ export function SmartPlugCard({ plug, onEdit }: SmartPlugCardProps) {
   const deleteMutation = useMutation({
     mutationFn: () => api.deleteSmartPlug(plug.id),
     onSuccess: () => {
+      // removeQueries, not invalidateQueries: this card's 30 s status interval
+      // outlives the row until the refreshed list unmounts it, and every tick
+      // in between asks about a plug that no longer exists. That is where the
+      // burst of 404s after deleting a plug came from.
+      queryClient.removeQueries({ queryKey: ['smart-plug-status', plug.id] });
       queryClient.invalidateQueries({ queryKey: ['smart-plugs'] });
       // Also invalidate printer card HA entity queries
       if (plug.printer_id) {

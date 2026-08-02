@@ -1557,6 +1557,8 @@ export default {
   // Settings page
   settings: {
     zigbee: {
+      removedLeft: 'Пристрій вилучено з мережі.',
+      removedForced: 'Пристрій вилучено в BamDude, але він не відповів — мережевий ключ у нього лишився, і при ввімкненні він може повернутись. Скиньте його на самому пристрої, якщо це не те, чого ви хочете.',
       title: 'Zigbee-координатор',
       description:
         'BamDude керує Zigbee-донглом самостійно — без Home Assistant і без Zigbee2MQTT.',

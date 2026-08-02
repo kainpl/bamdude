@@ -367,6 +367,28 @@ class ZigbeeSmartPlugService:
             logger.warning("Zigbee plug %s: refresh failed: %s", plug.id, describe_exception(exc))
             return False
 
+    async def teardown(self, plug_id: int) -> None:
+        """Forget a plug that has been deleted.
+
+        Without this the shared refresh task keeps running, ``_refreshing``
+        keeps an entry for a row that no longer exists, and the report listeners
+        stay bound to the device's clusters — so the radio, the scarcest thing
+        in this subsystem, goes on being spent on a plug BamDude no longer
+        manages. Measured in the field: reads of a deleted plug continued for
+        eleven seconds past the deletion of its row.
+
+        The counterpart of the MQTT branch's ``unsubscribe`` in the same delete
+        handler, which is what made the omission easy to miss.
+        """
+        task = self._refreshing.pop(plug_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        for key in [k for k in self._listeners if k[0] == plug_id]:
+            self._listeners.pop(key, None)
+        self._cache.pop(plug_id, None)
+
     async def get_status(self, plug: Any) -> dict:
         """Current state, refreshed by a direct read if the cache has aged out.
 

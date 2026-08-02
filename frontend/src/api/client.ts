@@ -6154,7 +6154,10 @@ export const api = {
       body: JSON.stringify({ seconds }),
     }),
   removeZigbeeDevice: (ieee: string) =>
-    request<{ removed: string }>(`/zigbee/devices/${encodeURIComponent(ieee)}`, { method: 'DELETE' }),
+    request<{ removed: string; outcome: 'left' | 'forced'; deleted_plug_id: number | null }>(
+      `/zigbee/devices/${encodeURIComponent(ieee)}`,
+      { method: 'DELETE' },
+    ),
   restartZigbeeCoordinator: () => request<ZigbeeStatus>('/zigbee/restart', { method: 'POST' }),
   // Reversible: stops the radio and clears the setting, keeping the network,
   // the paired devices and every plug row. Connect brings it all back.

@@ -1549,6 +1549,8 @@ export default {
   // Settings page
   settings: {
     zigbee: {
+      removedLeft: 'Device removed from the network.',
+      removedForced: 'Device removed here, but it never answered — it keeps the network key and may rejoin when powered on. Reset it at the device to be sure.',
       title: 'Zigbee coordinator',
       description:
         'BamDude drives the Zigbee dongle itself — no Home Assistant and no Zigbee2MQTT needed.',

@@ -614,6 +614,13 @@ async def delete_smart_plug(
     # Unsubscribe MQTT plug before deletion
     if plug_type == "mqtt":
         mqtt_relay.smart_plug_service.unsubscribe(plug_id)
+    elif plug_type == "zigbee":
+        # The counterpart of the line above, and its absence is what let a
+        # deleted plug keep spending the radio: the shared read task ran on, the
+        # listeners stayed bound, and the cache entry outlived the row.
+        from backend.app.services.zigbee.driver import zigbee_smart_plug_service
+
+        await zigbee_smart_plug_service.teardown(plug_id)
 
     await db.delete(plug)
     await db.commit()
