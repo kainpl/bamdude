@@ -25,7 +25,7 @@ import logging
 
 from backend.app.api.routes.settings import get_setting
 from backend.app.models.zigbee_device import ZigbeeDevice
-from backend.app.services.zigbee.devices import DeviceInfo
+from backend.app.services.zigbee.devices import DeviceInfo, DeviceKind
 from backend.app.services.zigbee.reporting_targets import ReportingTarget, targets_for
 
 logger = logging.getLogger(__name__)
@@ -161,6 +161,48 @@ async def upsert_device_row(db, info: DeviceInfo) -> ZigbeeDevice:
         row.name = hardware_name or row.name
     await db.commit()
     return row
+
+
+async def reconcile_device_rows(infos, db) -> int:
+    """Give every paired device a row, for the ones that predate the table.
+
+    Runs at startup rather than in the migration, which has no radio and cannot
+    know what is paired. Idempotent by design and by necessity: it runs on every
+    boot, so refreshing an existing row here would wipe an operator's settings
+    once per restart with nothing to report it.
+
+    The coordinator and unsupported devices are skipped — one is our own radio,
+    the other is something BamDude can neither switch nor read, so there is
+    nothing about either that anybody configures.
+    """
+    added = 0
+    for info in infos:
+        if info.kind not in (DeviceKind.PLUG, DeviceKind.SENSOR):
+            continue
+        if await load_device_row(db, info.ieee) is None:
+            await upsert_device_row(db, info)
+            added += 1
+    return added
+
+
+async def forget_device_row(db, ieee: str) -> None:
+    """Drop a device that has left the network, and what the farm did with it.
+
+    The adopted sensor goes too. Keeping it would leave a row claiming the farm
+    tracks a device that is no longer reachable and cannot be reached again
+    without pairing — at which point the row would be in the way rather than
+    useful.
+    """
+    from sqlalchemy import delete
+
+    from backend.app.models.smart_sensor import SmartSensor
+
+    key = str(ieee).strip().lower()
+    await db.execute(delete(SmartSensor).where(SmartSensor.zigbee_ieee == key))
+    row = await db.get(ZigbeeDevice, key)
+    if row is not None:
+        await db.delete(row)
+    await db.commit()
 
 
 async def save_overrides(

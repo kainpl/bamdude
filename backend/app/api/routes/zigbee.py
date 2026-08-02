@@ -497,6 +497,7 @@ async def remove_device(
     row behind gives a card bound to a device that is no longer on the network:
     unreachable for ever, with nothing on screen saying why.
     """
+    from backend.app.services.zigbee.device_settings import forget_device_row
     from backend.app.services.zigbee.driver import zigbee_smart_plug_service
     from backend.app.services.zigbee.reporting import forget_sensor_listeners
     from backend.app.services.zigbee.sensors import sensor_store
@@ -539,6 +540,12 @@ async def remove_device(
         await zigbee_smart_plug_service.teardown(plug.id)
         await db.delete(plug)
         await db.commit()
+
+    # And what the radio knew about it, with the adopted sensor attached to it.
+    # Left behind, the settings would be re-applied to whatever device is next
+    # given this address — which is a different device wearing an old
+    # configuration nobody chose for it.
+    await forget_device_row(db, str(match.ieee))
 
     logger.info("Removed Zigbee device %s from the network (%s)", ieee, outcome)
     return {"removed": str(match.ieee), "outcome": outcome, "deleted_plug_id": deleted_plug_id}

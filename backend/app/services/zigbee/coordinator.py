@@ -202,6 +202,22 @@ class ZigbeeCoordinator:
         except Exception as exc:  # noqa: BLE001 — see the docstring
             logger.warning("Zigbee sensor %s: binding failed: %s", ieee, describe_exception(exc))
 
+    async def _remember_device(self, info) -> None:
+        """Record a newly paired device. Never raises into pairing.
+
+        A device that joined but could not be written down is still paired and
+        still works; it simply runs on the farm defaults until the next startup
+        reconciles it.
+        """
+        from backend.app.core.database import async_session
+        from backend.app.services.zigbee.device_settings import upsert_device_row
+
+        try:
+            async with async_session() as db:
+                await upsert_device_row(db, info)
+        except Exception as exc:  # noqa: BLE001 — see the docstring
+            logger.warning("Zigbee %s: could not record the device: %s", info.ieee, describe_exception(exc))
+
     def applied_reporting(self, ieee: str) -> dict[str, dict]:
         """What a device actually accepted, per target.
 
@@ -245,6 +261,10 @@ class ZigbeeCoordinator:
             if info.kind in (DeviceKind.PLUG, DeviceKind.SENSOR):
                 logger.info("Paired Zigbee %s %s (%s)", info.kind.value, info.ieee, info.model)
                 self._emit({"type": "zigbee_device_paired", "device": describe_for_ui(info)})
+                # The row first, and separately from adoption: settings have to
+                # have somewhere to live from the moment the device is on the
+                # mesh, which for a plug is well before anybody adds it.
+                spawn_background_task(self._remember_device(info), name=f"zigbee-row-{info.ieee}")
                 if info.kind is DeviceKind.SENSOR:
                     # Bound here and nowhere else: this is the one moment a
                     # battery sensor is provably awake. Binding it blindly at

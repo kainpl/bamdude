@@ -162,6 +162,7 @@ async def test_engine():
         slicer_pipeline,
         slot_preset,
         smart_plug,
+        smart_sensor,
         spool,
         spool_assignment,
         spool_catalog,
@@ -173,6 +174,7 @@ async def test_engine():
         user_otp_code,
         user_totp,
         virtual_printer,
+        zigbee_device,
     )
 
     async with engine.begin() as conn:

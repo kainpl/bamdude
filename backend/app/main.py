@@ -6768,6 +6768,21 @@ async def lifespan(app: FastAPI):
             if _zb_sensors:
                 logging.getLogger(__name__).info("Zigbee reporting attached for %s sensor(s)", _zb_sensors)
 
+            # Devices paired before this table existed get their rows now. The
+            # migration could not do it: it has no radio and cannot know what
+            # is paired. Idempotent, so later boots cost one query per device.
+            from backend.app.core.database import async_session as _zb_session
+            from backend.app.services.zigbee.device_settings import reconcile_device_rows as _zb_reconcile
+            from backend.app.services.zigbee.devices import describe_device as _zb_describe
+
+            async with _zb_session() as _zb_db:
+                _zb_added = await _zb_reconcile(
+                    [_zb_describe(d) for d in list(zigbee_coordinator.app.devices.values())],
+                    _zb_db,
+                )
+            if _zb_added:
+                logging.getLogger(__name__).info("Zigbee: recorded %s device(s) paired before this version", _zb_added)
+
             # Polling, started whether or not any plug is configured yet: the
             # loop re-queries each cycle, so a plug added later joins without a
             # restart. Reporting alone does not keep readings current — ZHA
