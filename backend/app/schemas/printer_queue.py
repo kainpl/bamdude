@@ -4,6 +4,8 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from backend.app.schemas.printer_location import PrinterLocationOut
+
 
 class PrinterQueueResponse(BaseModel):
     """Response schema for a printer queue."""
@@ -12,7 +14,7 @@ class PrinterQueueResponse(BaseModel):
     printer_id: int
     printer_name: str | None = None
     printer_model: str | None = None
-    printer_location: str | None = None
+    printer_location: PrinterLocationOut | None = None
     status: str  # idle, printing, paused, error
     is_paused: bool = False  # operator-controlled queue pause, orthogonal to status
     last_activity_at: datetime | None

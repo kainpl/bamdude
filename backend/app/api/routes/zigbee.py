@@ -22,9 +22,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.models.printer_location import PrinterLocation
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.smart_sensor import SmartSensor
 from backend.app.models.user import User
+from backend.app.schemas.printer_location import PrinterLocationOut
 from backend.app.schemas.smart_sensor import SmartSensorCreate, SmartSensorOut, SmartSensorUpdate
 from backend.app.schemas.zigbee_settings import DeviceSettingsUpdate
 from backend.app.services.zigbee.coordinator import CoordinatorState, zigbee_coordinator
@@ -459,22 +461,18 @@ async def list_sensors(
     # Adopted only. A paired sensor that nobody has added stays on the network
     # and keeps being configured, but it is not something the farm shows or
     # acts on — the same rule plugs have always had.
-    adopted = {
-        str(ieee).lower(): (sensor_id, name, location)
-        for sensor_id, name, location, ieee in (
-            await db.execute(select(SmartSensor.id, SmartSensor.name, SmartSensor.location, SmartSensor.zigbee_ieee))
-        ).all()
-    }
+    # Whole rows rather than named columns: the place is a relationship now, and
+    # selecting it as a column silently yields nothing rather than failing.
+    adopted = {str(row.zigbee_ieee).lower(): row for row in (await db.execute(select(SmartSensor))).scalars().all()}
 
     sensors = []
     for device in list(app.devices.values()):
         info = describe_device(device)
         if info.kind is not DeviceKind.SENSOR:
             continue
-        entry = adopted.get(info.ieee.lower())
-        if entry is None:
+        adopted_row = adopted.get(info.ieee.lower())
+        if adopted_row is None:
             continue
-        sensor_id, sensor_name, sensor_location = entry
 
         parameters = await resolve_reporting(db, info)
         polled = power_class(device) is PowerClass.MAINS
@@ -508,11 +506,16 @@ async def list_sensors(
 
         sensors.append(
             {
-                "id": sensor_id,
+                "id": adopted_row.id,
                 # What the operator calls it. The hardware's own name is a
                 # different question, answered by the settings endpoint.
-                "name": sensor_name,
-                "location": sensor_location,
+                "name": adopted_row.name,
+                # The place, resolved — one shape for a location everywhere.
+                "location": (
+                    PrinterLocationOut(id=adopted_row.location.id, name=adopted_row.location.name)
+                    if adopted_row.location
+                    else None
+                ),
                 "ieee": info.ieee,
                 "nwk": info.nwk,
                 "manufacturer": info.manufacturer,
@@ -555,7 +558,10 @@ async def adopt_sensor(
     if existing.scalar_one_or_none() is not None:
         raise HTTPException(status_code=409, detail="This sensor has already been added.")
 
-    sensor = SmartSensor(name=payload.name.strip(), location=(payload.location or "").strip() or None, zigbee_ieee=ieee)
+    if payload.location_id is not None and await db.get(PrinterLocation, payload.location_id) is None:
+        raise HTTPException(status_code=422, detail="No such location.")
+
+    sensor = SmartSensor(name=payload.name.strip(), location_id=payload.location_id, zigbee_ieee=ieee)
     db.add(sensor)
     await db.commit()
     await db.refresh(sensor)
@@ -579,10 +585,10 @@ async def rename_sensor(
         raise HTTPException(status_code=404, detail="No such sensor.")
     if payload.name is not None:
         sensor.name = payload.name.strip()
-    if payload.location is not None:
-        # An empty string clears it rather than storing emptiness — "nowhere
-        # recorded" and "recorded as nothing" are the same thing to a reader.
-        sensor.location = payload.location.strip() or None
+    if payload.location_id is not None:
+        if await db.get(PrinterLocation, payload.location_id) is None:
+            raise HTTPException(status_code=422, detail="No such location.")
+        sensor.location_id = payload.location_id
     await db.commit()
     await db.refresh(sensor)
     return sensor

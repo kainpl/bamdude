@@ -25,6 +25,18 @@ def paired(monkeypatch):
 
 
 @pytest.fixture
+async def place(db_session):
+    """A location to adopt into. Sensors point at the entity now, not a string."""
+    from backend.app.models.printer_location import PrinterLocation
+
+    row = PrinterLocation(name="Shop 2", name_key="shop 2")
+    db_session.add(row)
+    await db_session.commit()
+    await db_session.refresh(row)
+    return row
+
+
+@pytest.fixture
 async def known(db_session, paired):
     """Paired, so it has a row — but not adopted."""
     from backend.app.models.zigbee_device import ZigbeeDevice
@@ -44,16 +56,16 @@ class TestAdoption:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_adopting_it_lists_it_under_the_name_given(self, async_client: AsyncClient, known):
+    async def test_adopting_it_lists_it_under_the_name_given(self, async_client: AsyncClient, known, place):
         await async_client.post(
             "/api/v1/zigbee/sensors",
-            json={"zigbee_ieee": IEEE, "name": "Workshop", "location": "Shop 2"},
+            json={"zigbee_ieee": IEEE, "name": "Workshop", "location_id": place.id},
         )
 
         listed = (await async_client.get("/api/v1/zigbee/sensors")).json()["sensors"]
 
         assert [s["name"] for s in listed] == ["Workshop"]
-        assert listed[0]["location"] == "Shop 2"
+        assert listed[0]["location"] == {"id": place.id, "name": "Shop 2"}
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -168,17 +180,26 @@ class TestRenaming:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_a_location_can_be_set_and_cleared(self, async_client: AsyncClient, known):
+    async def test_a_location_can_be_set(self, async_client: AsyncClient, known, place):
         created = (
-            await async_client.post(
-                "/api/v1/zigbee/sensors", json={"zigbee_ieee": IEEE, "name": "Workshop", "location": "Shop 2"}
-            )
+            await async_client.post("/api/v1/zigbee/sensors", json={"zigbee_ieee": IEEE, "name": "Workshop"})
         ).json()
 
-        await async_client.patch(f"/api/v1/zigbee/sensors/{created['id']}", json={"location": ""})
+        await async_client.patch(f"/api/v1/zigbee/sensors/{created['id']}", json={"location_id": place.id})
 
         listed = (await async_client.get("/api/v1/zigbee/sensors")).json()["sensors"]
-        assert listed[0]["location"] in (None, "")
+        assert listed[0]["location"]["name"] == "Shop 2"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_old_free_text_key_is_refused(self, async_client: AsyncClient, known):
+        """Ignored, it would silently store nothing — the failure the entity
+        exists to remove, reintroduced at the last step."""
+        rsp = await async_client.post(
+            "/api/v1/zigbee/sensors", json={"zigbee_ieee": IEEE, "name": "Workshop", "location": "Shop 2"}
+        )
+
+        assert rsp.status_code == 422
 
     @pytest.mark.asyncio
     @pytest.mark.integration

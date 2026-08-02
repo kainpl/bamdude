@@ -7,27 +7,39 @@ is a different question with a different answer.
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from backend.app.schemas.printer_location import PrinterLocationOut, reject_legacy_key
 
 
 class SmartSensorCreate(BaseModel):
     zigbee_ieee: str = Field(min_length=1, max_length=23)
     name: str = Field(min_length=1, max_length=100)
-    # The same free string as ``Printer.location`` — a group name an operator
-    # types, not a foreign key. Nothing consumes it yet; it is here so the
-    # cycle that binds a sensor to the printers around it needs no migration.
-    location: str | None = Field(default=None, max_length=100)
+    # The place it stands in — the same entity a printer points at, so a sensor
+    # and the printers around it can be asked about together.
+    location_id: int | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_legacy_location(cls, values):
+        return reject_legacy_key(values, "location", "location_id")
 
 
 class SmartSensorUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
-    location: str | None = Field(default=None, max_length=100)
+    location_id: int | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_legacy_location(cls, values):
+        return reject_legacy_key(values, "location", "location_id")
 
 
 class SmartSensorOut(BaseModel):
     id: int
     name: str
-    location: str | None
+    location_id: int | None = None
+    location: PrinterLocationOut | None = None
     zigbee_ieee: str
     created_at: datetime
 
