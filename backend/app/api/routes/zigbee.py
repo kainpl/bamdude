@@ -409,9 +409,10 @@ async def list_sensors(
     the device actually accepted, so "reporting is configured" never has to be
     inferred from silence.
     """
+    from backend.app.services.zigbee.device_settings import resolve_reporting, resolve_stale_after_seconds
     from backend.app.services.zigbee.measurements import BY_KEY
-    from backend.app.services.zigbee.sensor_settings import load_reporting_parameters, load_stale_multiplier
-    from backend.app.services.zigbee.sensors import power_class, sensor_store
+    from backend.app.services.zigbee.reporting_targets import targets_for
+    from backend.app.services.zigbee.sensors import PowerClass, power_class, sensor_store
 
     app = zigbee_coordinator.app
     if app is None:
@@ -419,30 +420,40 @@ async def list_sensors(
         # this question and gets an answer rather than a 503.
         return {"sensors": []}
 
-    parameters = await load_reporting_parameters(db)
-    multiplier = await load_stale_multiplier(db)
-
     sensors = []
     for device in list(app.devices.values()):
         info = describe_device(device)
         if info.kind is not DeviceKind.SENSOR:
             continue
 
+        parameters = await resolve_reporting(db, info)
+        polled = power_class(device) is PowerClass.MAINS
+        applied = zigbee_coordinator.applied_reporting(info.ieee)
+
         measurements = {}
-        # Battery does not classify a device as a sensor — plenty of things
-        # carry one — but once paired, its charge is worth reporting.
-        for key in (*info.measurements, "battery", "battery_voltage"):
-            measurement = BY_KEY.get(key)
+        # From the targets, which are derived from the clusters the device
+        # actually carries. Battery is in that list and NOT in
+        # ``info.measurements`` — a battery cluster alone does not make a
+        # sensor — and listing it by hand here was the second place that
+        # knowledge lived.
+        for target in targets_for(info):
+            measurement = BY_KEY.get(target.key)
             if measurement is None:
                 continue
-            reading = sensor_store.reading(info.ieee, key)
-            max_interval = parameters.get(key, {}).get("max_interval", measurement.default_max_interval)
-            measurements[key] = {
+            reading = sensor_store.reading(info.ieee, target.key)
+            max_interval = parameters.get(target.key, {}).get("max_interval", measurement.default_max_interval)
+            window = await resolve_stale_after_seconds(db, info.ieee, polled=polled, max_interval=max_interval)
+            state = applied.get(target.key) or {}
+            measurements[target.key] = {
                 "value": reading.value if reading else None,
                 "unit": measurement.unit,
                 "last_report_at": reading.at.isoformat() if reading else None,
-                "stale": sensor_store.is_stale(info.ieee, key, max_interval, multiplier),
-                "reporting": zigbee_coordinator.applied_reporting(info.ieee).get(key, "pending"),
+                "stale": sensor_store.is_stale(info.ieee, target.key, window, 1),
+                # Two facts, not one word: what the device answered, and what
+                # reading the configuration back said. Both are unknown after a
+                # restart and are re-established at the next contact.
+                "reporting": state.get("state", "unknown"),
+                "verification": state.get("verification", "not-checked"),
             }
 
         sensors.append(

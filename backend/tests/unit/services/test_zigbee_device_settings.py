@@ -12,7 +12,14 @@ import pytest
 from backend.app.services.zigbee.devices import DeviceInfo, DeviceKind
 
 
-def _info(kind=DeviceKind.SENSOR, measurements=("temperature",)):
+def _info(kind=DeviceKind.SENSOR, measurements=("temperature",), clusters=None):
+    from backend.app.services.zigbee.devices import ELECTRICAL_MEASUREMENT, METERING, ON_OFF
+    from backend.app.services.zigbee.measurements import BY_KEY
+
+    if clusters is None:
+        clusters = {BY_KEY[key].cluster for key in measurements if key in BY_KEY}
+        if kind is DeviceKind.PLUG:
+            clusters |= {ON_OFF, ELECTRICAL_MEASUREMENT, METERING}
     return DeviceInfo(
         ieee="aa:bb",
         nwk=1,
@@ -20,6 +27,7 @@ def _info(kind=DeviceKind.SENSOR, measurements=("temperature",)):
         model="Y",
         kind=kind,
         measurements=measurements,
+        cluster_ids=frozenset(clusters),
         has_metering=True,
         has_electrical_measurement=True,
         reject_reason=None,

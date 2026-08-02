@@ -79,7 +79,21 @@ def _overlay(into: dict[str, dict], layer) -> None:
 
 
 async def load_device_row(db, ieee: str) -> ZigbeeDevice | None:
-    return await db.get(ZigbeeDevice, str(ieee).strip().lower())
+    """This device's row, or None — including when the row cannot be read.
+
+    Total like the rest of this module, and for a sharper reason than the other
+    loaders. The callers are a pairing callback and a background loop, and the
+    one above them swallows exceptions at debug level: a database hiccup here
+    would not surface as an error, it would surface as a sensor that quietly
+    stops being reconfigured until the next restart. Losing the per-device layer
+    and applying the two beneath it is strictly better than applying nothing,
+    and the warning says which happened.
+    """
+    try:
+        return await db.get(ZigbeeDevice, str(ieee).strip().lower())
+    except Exception as exc:  # noqa: BLE001 — see the docstring
+        logger.warning("Zigbee %s: could not read device settings, using the farm defaults: %s", ieee, exc)
+        return None
 
 
 async def resolve_reporting(db, info: DeviceInfo) -> dict[str, dict]:

@@ -740,7 +740,7 @@ def attach_all_sensors(app) -> int:
     return attached
 
 
-async def bind_sensor(device, ieee: str, parameters: dict[str, dict]) -> dict[str, str]:
+async def bind_sensor(device, ieee: str, parameters: dict[str, dict]) -> dict[str, dict]:
     """Attach listeners AND ask the device to report. Needs it awake.
 
     Called at pairing, while the device is provably awake, and again when a
@@ -748,45 +748,27 @@ async def bind_sensor(device, ieee: str, parameters: dict[str, dict]) -> dict[st
     delegated to :func:`attach_sensor_listeners`, which the startup path calls
     on its own — that much needs no radio.
 
-    ``parameters`` is the operator's desired settings keyed by measurement; any
-    missing field falls back to the registry default. Returns per-measurement
-    ``"ok"`` / ``"refused"`` so the caller can surface what the device actually
-    accepted rather than leaving it to be inferred from silence — which is how
-    the plugs' reporting was believed to work for a whole phase.
-    """
-    from backend.app.services.zigbee.measurements import measurements_on, to_raw_change
+    The radio half is the shared :func:`apply_reporting`, the same one plugs go
+    through. What differs between the classes is only which targets exist and
+    how a change converts to raw units, and both of those live on the target.
 
-    applied: dict[str, str] = {}
+    Returns per-target ``{"state": ..., "verification": ...}`` — what the device
+    answered, and what reading the configuration back said. Two facts, because
+    "accepted" and "verified" are not the same claim.
+    """
+    from backend.app.services.zigbee.devices import describe_device
+    from backend.app.services.zigbee.reporting_apply import apply_reporting
+    from backend.app.services.zigbee.reporting_targets import targets_for
+
     clusters = _sensor_clusters(device)
     attach_sensor_listeners(device, ieee)
 
-    for cluster_id, cluster in clusters.items():
-        for measurement in measurements_on(cluster_id):
-            settings = parameters.get(measurement.key, {})
-            min_interval = int(settings.get("min_interval", measurement.default_min_interval))
-            max_interval = int(settings.get("max_interval", measurement.default_max_interval))
-            change = float(settings.get("reportable_change", measurement.default_reportable_change))
-            try:
-                await cluster.bind()
-                result = await cluster.configure_reporting(
-                    measurement.attribute, min_interval, max_interval, to_raw_change(measurement, change)
-                )
-                applied[measurement.key] = "ok" if _sensor_reporting_accepted(ieee, cluster_id, result) else "refused"
-            except Exception as exc:  # noqa: BLE001 — one quantity failing must not lose the others
-                # "unanswered", not "refused": a sleeping device that dozed off
-                # mid-configuration has declined nothing, and saying it did
-                # sends the operator hunting a fault that is not there. It also
-                # has to be retried, which REFUSED would not be.
-                logger.warning(
-                    "Zigbee sensor %s: could not configure %s on 0x%04X: %s",
-                    ieee,
-                    measurement.key,
-                    cluster_id,
-                    describe_exception(exc),
-                )
-                applied[measurement.key] = "unanswered"
-
-    return applied
+    return await apply_reporting(
+        clusters.get,
+        ieee,
+        targets_for(describe_device(device)),
+        parameters,
+    )
 
 
 # One re-apply in flight per device. A sensor reports several quantities within
@@ -804,27 +786,27 @@ async def reapply_if_settings_changed(device, ieee: str, keys: tuple[str, ...]) 
     """
     from backend.app.core.database import async_session
     from backend.app.services.zigbee.coordinator import zigbee_coordinator
-    from backend.app.services.zigbee.sensor_settings import load_reporting_parameters
+    from backend.app.services.zigbee.device_settings import resolve_reporting
+    from backend.app.services.zigbee.devices import describe_device
+    from backend.app.services.zigbee.reporting_apply import fully_applied
 
     marker = str(ieee).strip().lower()
     if marker in _reapplying:
         return
     _reapplying.add(marker)
     try:
+        info = describe_device(device)
         async with async_session() as db:
-            parameters = await load_reporting_parameters(db)
-        desired = {key: parameters.get(key, {}) for key in keys}
+            desired = await resolve_reporting(db, info)
         if not desired or zigbee_coordinator.desired_reporting(ieee) == desired:
             return
-        applied = await bind_sensor(device, ieee, parameters)
-        # Only a complete apply is recorded as done. An attribute that timed out
-        # has to be tried again at the next contact; recording the desired state
-        # regardless would mark the configuration applied for ever on the
-        # strength of one sleepy moment.
-        if all(state == "ok" for state in applied.values()):
-            zigbee_coordinator.record_reporting(ieee, desired, applied)
-        else:
-            zigbee_coordinator.record_reporting(ieee, {}, applied)
+        applied = await bind_sensor(device, ieee, desired)
+        # Only a complete apply is recorded as done — accepted AND verified.
+        # An attribute that timed out has to be tried again at the next
+        # contact, and one the device silently clamped is running something
+        # nobody asked for; recording the desired state regardless would mark
+        # both settled for ever on the strength of one moment.
+        zigbee_coordinator.record_reporting(ieee, desired if fully_applied(applied) else {}, applied)
         logger.info("Zigbee sensor %s: reporting re-applied from settings: %s", ieee, applied)
     except Exception as exc:  # noqa: BLE001 — a failed re-apply must not break the report path
         logger.debug("Zigbee sensor %s: could not re-apply reporting: %s", ieee, describe_exception(exc))

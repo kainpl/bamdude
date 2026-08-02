@@ -27,14 +27,14 @@ from sqlalchemy import select
 
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.services.zigbee.coordinator import zigbee_coordinator
+from backend.app.services.zigbee.device_settings import (
+    resolve_poll_seconds,
+    resolve_reporting,
+    resolve_stale_after_seconds,
+)
 from backend.app.services.zigbee.devices import DeviceKind, describe_device
 from backend.app.services.zigbee.measurements import BY_KEY
 from backend.app.services.zigbee.reporting import reapply_if_settings_changed
-from backend.app.services.zigbee.sensor_settings import (
-    load_poll_seconds,
-    load_reporting_parameters,
-    load_stale_multiplier,
-)
 from backend.app.services.zigbee.sensors import PowerClass, power_class, sensor_store
 
 logger = logging.getLogger(__name__)
@@ -190,10 +190,6 @@ class ZigbeePoller:
         The choice is per device, from the node descriptor — see
         ``sensors.power_class`` for why it cannot be per class.
         """
-        parameters = await load_reporting_parameters(db)
-        multiplier = await load_stale_multiplier(db)
-        poll_seconds = await load_poll_seconds(db)
-
         for device in list(getattr(app, "devices", {}).values()):
             info = describe_device(device)
             if info.kind is not DeviceKind.SENSOR:
@@ -206,9 +202,14 @@ class ZigbeePoller:
                 # This method runs on every plug cycle (30–45 s), so the
                 # sensor's own cadence has to be checked here or the setting
                 # would be decorative.
-                window = poll_seconds
+                window = await resolve_poll_seconds(db, info.ieee)
             else:
-                window = max(parameters.get(key, {}).get("max_interval", 1800) for key in keys) * multiplier
+                # Judged against how often this device was told to speak, so
+                # telling it to speak less often moves the threshold with it
+                # instead of turning the new interval into a fault.
+                parameters = await resolve_reporting(db, info)
+                slowest = max((parameters.get(key, {}).get("max_interval", 1800) for key in keys), default=1800)
+                window = await resolve_stale_after_seconds(db, info.ieee, polled=False, max_interval=slowest)
 
             due = [key for key in keys if sensor_store.due_for_watchdog(info.ieee, key, window=window)]
             if not due:

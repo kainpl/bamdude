@@ -57,6 +57,13 @@ class DeviceInfo:
     # anything unsupported: a plug's energy has its own scaling and its own
     # path, and is deliberately not a "measurement" in this sense.
     measurements: tuple[str, ...]
+    # Every cluster the device carries. Distinct from ``measurements`` on
+    # purpose: that list is the CLASSIFYING quantities and deliberately omits
+    # battery, since a battery cluster alone does not make something a sensor.
+    # Configuring reporting needs the other list — the one that includes it —
+    # and deriving it from ``measurements`` would silently stop configuring
+    # every sensor's battery.
+    cluster_ids: frozenset[int]
     # Recorded even though nothing reads them yet: phase 3 needs to know a plug
     # will never report energy *before* it starts treating an absent reading as
     # a measurement of zero.
@@ -123,6 +130,7 @@ def describe_device(device) -> DeviceInfo:
         model=getattr(device, "model", None),
         kind=kind,
         measurements=() if kind is DeviceKind.PLUG else measurements,
+        cluster_ids=frozenset(clusters),
         has_metering=METERING in clusters,
         has_electrical_measurement=ELECTRICAL_MEASUREMENT in clusters,
         reject_reason=(

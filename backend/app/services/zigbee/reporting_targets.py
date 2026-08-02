@@ -27,7 +27,7 @@ from backend.app.services.zigbee.devices import (
     DeviceInfo,
     DeviceKind,
 )
-from backend.app.services.zigbee.measurements import BY_KEY, to_raw_change
+from backend.app.services.zigbee.measurements import BY_KEY, MEASUREMENTS, to_raw_change
 
 ATTR_ON_OFF = 0x0000
 ATTR_SUMMATION = 0x0000
@@ -159,19 +159,25 @@ def _power_target(info: DeviceInfo) -> ReportingTarget | None:
 def targets_for(info: DeviceInfo) -> tuple[ReportingTarget, ...]:
     """Every target this device has, in the one vocabulary both classes use."""
     if info.kind is DeviceKind.SENSOR:
+        # From the clusters the device actually carries, NOT from
+        # ``info.measurements``. That list holds the quantities that made this a
+        # sensor and omits battery by design — a battery cluster alone does not
+        # make a sensor — but battery reporting is exactly the thing an operator
+        # most wants to slow down. Reading the classifying list here would have
+        # left every sensor's battery unconfigured, in silence.
         return tuple(
             ReportingTarget(
-                key=key,
-                cluster=BY_KEY[key].cluster,
-                attribute=BY_KEY[key].attribute,
-                min_interval=BY_KEY[key].default_min_interval,
-                max_interval=BY_KEY[key].default_max_interval,
-                reportable_change=BY_KEY[key].default_reportable_change,
+                key=m.key,
+                cluster=m.cluster,
+                attribute=m.attribute,
+                min_interval=m.default_min_interval,
+                max_interval=m.default_max_interval,
+                reportable_change=m.default_reportable_change,
                 editable=FULLY_EDITABLE,
-                to_raw=_sensor_to_raw(key),
+                to_raw=_sensor_to_raw(m.key),
             )
-            for key in info.measurements
-            if key in BY_KEY
+            for m in MEASUREMENTS
+            if m.cluster in info.cluster_ids
         )
     if info.kind is DeviceKind.PLUG:
         power = _power_target(info)

@@ -18,7 +18,19 @@ from backend.app.services.zigbee.devices import (
 from backend.app.services.zigbee.reporting_targets import targets_for
 
 
-def _info(kind, measurements=(), has_em=True, has_metering=True):
+def _info(kind, measurements=(), has_em=True, has_metering=True, extra_clusters=()):
+    """``measurements`` is the CLASSIFYING list; ``cluster_ids`` is what the
+    device actually carries. They differ, and the difference is load-bearing —
+    see the battery test below."""
+    from backend.app.services.zigbee.measurements import BY_KEY
+
+    clusters = {BY_KEY[key].cluster for key in measurements if key in BY_KEY} | set(extra_clusters)
+    if kind is DeviceKind.PLUG:
+        clusters |= {ON_OFF}
+        if has_em:
+            clusters.add(ELECTRICAL_MEASUREMENT)
+        if has_metering:
+            clusters.add(METERING)
     return DeviceInfo(
         ieee="aa:bb",
         nwk=1,
@@ -26,6 +38,7 @@ def _info(kind, measurements=(), has_em=True, has_metering=True):
         model="Y",
         kind=kind,
         measurements=measurements,
+        cluster_ids=frozenset(clusters),
         has_metering=has_metering,
         has_electrical_measurement=has_em,
         reject_reason=None,
@@ -154,11 +167,32 @@ def test_an_unsupported_device_has_no_targets():
     assert targets_for(_info(DeviceKind.UNSUPPORTED)) == ()
 
 
-def test_a_measurement_the_registry_does_not_know_is_skipped():
-    """A device classified before a registry row was removed, or an IEEE that
-    now carries a different model."""
-    assert targets_for(_info(DeviceKind.SENSOR, ("temperature", "radiation"))) != ()
-    assert {t.key for t in targets_for(_info(DeviceKind.SENSOR, ("temperature", "radiation")))} == {"temperature"}
+def test_a_cluster_the_registry_does_not_know_is_skipped():
+    """A device carrying something we have no row for — a manufacturer cluster,
+    or a quantity dropped from the registry."""
+    info = _info(DeviceKind.SENSOR, ("temperature",), extra_clusters=(0xFC11,))
+
+    assert {t.key for t in targets_for(info)} == {"temperature"}
+
+
+def test_battery_is_a_target_even_though_it_does_not_classify_a_sensor():
+    """The trap this cost a rewrite to find. ``measurements`` deliberately omits
+    battery — a battery cluster alone does not make something a sensor — but the
+    battery IS configurable, and every real sensor has one. Deriving targets
+    from the classifying list left it unconfigured with nothing failing."""
+    from backend.app.services.zigbee.measurements import POWER_CONFIGURATION_CLUSTER
+
+    info = _info(DeviceKind.SENSOR, ("temperature",), extra_clusters=(POWER_CONFIGURATION_CLUSTER,))
+
+    assert "battery" not in info.measurements, "the fixture must reproduce the real asymmetry"
+    assert {t.key for t in targets_for(info)} == {"temperature", "battery", "battery_voltage"}
+
+
+def test_battery_keeps_the_hour_long_defaults_the_registry_pins():
+    info = _info(DeviceKind.SENSOR, ("temperature",), extra_clusters=(0x0001,))
+    battery = next(t for t in targets_for(info) if t.key == "battery")
+
+    assert (battery.min_interval, battery.max_interval) == (3600, 10800)
 
 
 class TestAPlugWithOnlyMetering:

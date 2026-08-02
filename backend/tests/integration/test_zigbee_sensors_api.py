@@ -16,11 +16,17 @@ from backend.tests.zigbee_fixtures import BATTERY_SENSOR_FLAGS, MAINS_DEVICE_FLA
 IEEE = "aa:bb:cc:dd:ee:ff:00:11"
 
 
-def _sensor_device(ieee=IEEE, rx_on_when_idle=False):
+def _sensor_device(ieee=IEEE, rx_on_when_idle=False, battery=True):
+    """Temperature, humidity and — like every real sensor — a battery cluster.
+
+    The battery matters to the fixture: what a device is offered is derived from
+    the clusters it carries, so a stub without 0x0001 is a device with no
+    battery to report, not a bug in the endpoint.
+    """
+    clusters = (0x0402, 0x0405, *((0x0001,) if battery else ()))
     return fake_device(
         ieee,
-        0x0402,
-        0x0405,
+        *clusters,
         mac_capability_flags=MAINS_DEVICE_FLAGS if rx_on_when_idle else BATTERY_SENSOR_FLAGS,
     )
 
@@ -47,7 +53,11 @@ async def test_a_sensor_with_no_reading_reports_null_not_zero(async_client: Asyn
     assert sensor["power"] == "battery"
     assert sensor["measurements"]["temperature"]["value"] is None
     assert sensor["measurements"]["temperature"]["stale"] is True
-    assert sensor["measurements"]["temperature"]["reporting"] == "pending"
+    # Unknown, not "pending": nothing has been asked of this device yet, and
+    # "pending" implies something is under way. Two fields because "accepted"
+    # and "verified" are separate claims.
+    assert sensor["measurements"]["temperature"]["reporting"] == "unknown"
+    assert sensor["measurements"]["temperature"]["verification"] == "not-checked"
 
 
 @pytest.mark.asyncio
@@ -73,6 +83,22 @@ async def test_battery_is_offered_even_though_it_does_not_make_a_sensor(async_cl
     sensor = (await async_client.get("/api/v1/zigbee/sensors")).json()["sensors"][0]
 
     assert sensor["measurements"]["battery"]["value"] == pytest.approx(100.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_sensor_without_a_battery_cluster_is_not_offered_one(async_client: AsyncClient, monkeypatch):
+    """The list comes from the clusters the device carries. Offering a battery
+    to a mains sensor that has none would show a quantity permanently null and
+    permanently stale, which reads as a fault rather than as absence."""
+    from backend.app.services.zigbee.coordinator import zigbee_coordinator
+
+    device = _sensor_device(ieee="cc:cc", battery=False)
+    monkeypatch.setattr(zigbee_coordinator, "_app", SimpleNamespace(devices={device.ieee: device}))
+
+    sensor = (await async_client.get("/api/v1/zigbee/sensors")).json()["sensors"][0]
+
+    assert set(sensor["measurements"]) == {"temperature", "humidity"}
 
 
 @pytest.mark.asyncio

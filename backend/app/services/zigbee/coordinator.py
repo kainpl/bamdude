@@ -61,7 +61,10 @@ class ZigbeeCoordinator:
         # next contact repairs — configure_reporting is idempotent, so
         # re-issuing when in doubt is cheap and correct.
         self._desired_reporting: dict[str, dict[str, dict]] = {}
-        self._applied_reporting: dict[str, dict[str, str]] = {}
+        # Per target: {"state": ok|refused|unanswered, "verification":
+        # verified|mismatch|not-checked}. Two facts, kept apart — see
+        # reporting_apply for why one word cannot carry both.
+        self._applied_reporting: dict[str, dict[str, dict]] = {}
 
     @property
     def status(self) -> CoordinatorStatus:
@@ -178,21 +181,29 @@ class ZigbeeCoordinator:
         rather than pretending it works.
         """
         from backend.app.core.database import async_session
+        from backend.app.services.zigbee.device_settings import resolve_reporting
         from backend.app.services.zigbee.reporting import bind_sensor
-        from backend.app.services.zigbee.sensor_settings import load_reporting_parameters
+        from backend.app.services.zigbee.reporting_apply import fully_applied
 
         try:
-            async with async_session() as db:
-                parameters = await load_reporting_parameters(db)
-            applied = await bind_sensor(device, ieee, parameters)
             info = describe_device(device)
-            self.record_reporting(ieee, {key: parameters.get(key, {}) for key in info.measurements}, applied)
+            async with async_session() as db:
+                # The row is created by the pairing route before this runs, so
+                # a device paired with settings already on it — re-paired after
+                # walking out of range — comes back configured the way it was.
+                parameters = await resolve_reporting(db, info)
+            applied = await bind_sensor(device, ieee, parameters)
+            # Only a complete apply is recorded as the desired state. Recording
+            # it regardless would mark the configuration done for ever on the
+            # strength of one sleepy moment, and a clamped device would go on
+            # running something else with nothing left to correct it.
+            self.record_reporting(ieee, parameters if fully_applied(applied) else {}, applied)
             logger.info("Zigbee sensor %s reporting: %s", ieee, applied)
         except Exception as exc:  # noqa: BLE001 — see the docstring
             logger.warning("Zigbee sensor %s: binding failed: %s", ieee, describe_exception(exc))
 
-    def applied_reporting(self, ieee: str) -> dict[str, str]:
-        """What a sensor actually accepted, per measurement.
+    def applied_reporting(self, ieee: str) -> dict[str, dict]:
+        """What a device actually accepted, per target.
 
         Empty after a restart, which readers render as "pending" rather than as
         failure — we genuinely do not know until the device is next contacted.
@@ -204,7 +215,7 @@ class ZigbeeCoordinator:
         settings change is compared against to decide a re-apply is owed."""
         return self._desired_reporting.get(str(ieee).strip().lower(), {})
 
-    def record_reporting(self, ieee: str, desired: dict[str, dict], applied: dict[str, str]) -> None:
+    def record_reporting(self, ieee: str, desired: dict[str, dict], applied: dict[str, dict]) -> None:
         key = str(ieee).strip().lower()
         self._desired_reporting[key] = desired
         self._applied_reporting[key] = applied

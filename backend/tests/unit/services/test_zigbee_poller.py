@@ -178,20 +178,25 @@ def _reads_into(sink, answered=False):
 
 @pytest.fixture
 def sensor_db(monkeypatch):
-    """Settings at their defaults, without a database."""
+    """Settings at their defaults, without a database.
 
-    async def _parameters(db):
+    The resolvers are per device now, so the fakes take an ieee or a DeviceInfo
+    — same values as before, so every window in these tests is unchanged and
+    they still measure what they measured.
+    """
+
+    async def _parameters(db, info):
         return {"temperature": {"min_interval": 30, "max_interval": 1800, "reportable_change": 0.5}}
 
-    async def _multiplier(db):
-        return 2.0
-
-    async def _poll_seconds(db):
+    async def _poll_seconds(db, ieee):
         return 30
 
-    monkeypatch.setattr(poller_module, "load_reporting_parameters", _parameters)
-    monkeypatch.setattr(poller_module, "load_stale_multiplier", _multiplier)
-    monkeypatch.setattr(poller_module, "load_poll_seconds", _poll_seconds)
+    async def _stale_after(db, ieee, *, polled, max_interval):
+        return max_interval * 2
+
+    monkeypatch.setattr(poller_module, "resolve_reporting", _parameters)
+    monkeypatch.setattr(poller_module, "resolve_poll_seconds", _poll_seconds)
+    monkeypatch.setattr(poller_module, "resolve_stale_after_seconds", _stale_after)
     return SimpleNamespace()
 
 
@@ -281,7 +286,7 @@ async def test_a_settings_change_is_pushed_when_the_device_next_answers(monkeypa
 
     async def fake_bind(device, ieee, parameters):
         rebinds.append(ieee)
-        return {"temperature": "ok"}
+        return {"temperature": {"state": "ok", "verification": "verified"}}
 
     monkeypatch.setattr(poller_module, "read_sensor_once", _reads_into([], answered=True))
     monkeypatch.setattr(reporting_module, "bind_sensor", fake_bind)

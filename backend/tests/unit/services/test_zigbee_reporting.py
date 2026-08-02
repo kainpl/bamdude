@@ -497,9 +497,9 @@ async def test_binding_a_sensor_configures_every_registered_cluster_it_has():
 
     result = await bind_sensor(device, "aa:bb", parameters={})
 
-    assert result["temperature"] == "ok"
-    assert result["humidity"] == "ok"
-    assert result["battery"] == "ok"
+    assert result["temperature"]["state"] == "ok"
+    assert result["humidity"]["state"] == "ok"
+    assert result["battery"]["state"] == "ok"
 
 
 @pytest.mark.asyncio
@@ -546,8 +546,8 @@ async def test_one_cluster_failing_does_not_cost_the_others():
 
     result = await bind_sensor(device, "aa:bb", parameters={})
 
-    assert result["temperature"] == "unanswered"
-    assert result["humidity"] == "ok"
+    assert result["temperature"]["state"] == "unanswered"
+    assert result["humidity"]["state"] == "ok"
 
 
 @pytest.mark.asyncio
@@ -679,9 +679,9 @@ async def test_a_report_does_nothing_when_the_settings_already_match(monkeypatch
 
     async def fake_bind(device, ieee, parameters):
         binds.append(ieee)
-        return {"temperature": "ok"}
+        return {"temperature": {"state": "ok", "verification": "verified"}}
 
-    async def fake_parameters(db):
+    async def fake_parameters(db, info):
         return settings
 
     @asynccontextmanager
@@ -689,10 +689,14 @@ async def test_a_report_does_nothing_when_the_settings_already_match(monkeypatch
         yield SimpleNamespace()
 
     monkeypatch.setattr(module, "bind_sensor", fake_bind)
-    monkeypatch.setattr("backend.app.services.zigbee.sensor_settings.load_reporting_parameters", fake_parameters)
+    monkeypatch.setattr("backend.app.services.zigbee.device_settings.resolve_reporting", fake_parameters)
     monkeypatch.setattr("backend.app.core.database.async_session", fake_session)
 
-    zigbee_coordinator.record_reporting("aa:bb", {"temperature": settings["temperature"]}, {"temperature": "ok"})
+    zigbee_coordinator.record_reporting(
+        "aa:bb",
+        {"temperature": settings["temperature"]},
+        {"temperature": {"state": "ok", "verification": "verified"}},
+    )
     try:
         await module.reapply_if_settings_changed(_sensor_device(0x0402), "aa:bb", ("temperature",))
         assert binds == [], "the device already has these parameters"
@@ -921,7 +925,7 @@ class TestReportingStateIsHonest:
 
         applied = await bind_sensor(device, "aa:bb", parameters={})
 
-        assert applied["temperature"] == "unanswered"
+        assert applied["temperature"]["state"] == "unanswered"
 
     @pytest.mark.asyncio
     async def test_an_explicit_non_success_status_is_reported_as_refused(self):
@@ -943,7 +947,7 @@ class TestReportingStateIsHonest:
 
         applied = await bind_sensor(device, "aa:bb", parameters={})
 
-        assert applied["temperature"] == "refused"
+        assert applied["temperature"]["state"] == "refused"
 
     @pytest.mark.asyncio
     async def test_an_incomplete_apply_is_retried_at_the_next_contact(self, monkeypatch):
@@ -957,9 +961,12 @@ class TestReportingStateIsHonest:
 
         async def half_applied(device, ieee, parameters):
             calls.append(ieee)
-            return {"temperature": "ok", "battery": "unanswered"}
+            return {
+                "temperature": {"state": "ok", "verification": "verified"},
+                "battery": {"state": "unanswered", "verification": "not-checked"},
+            }
 
-        async def fake_parameters(db):
+        async def fake_parameters(db, info):
             return {"temperature": {"min_interval": 30, "max_interval": 900, "reportable_change": 0.1}}
 
         @asynccontextmanager
@@ -967,7 +974,7 @@ class TestReportingStateIsHonest:
             yield SimpleNamespace()
 
         monkeypatch.setattr(module, "bind_sensor", half_applied)
-        monkeypatch.setattr("backend.app.services.zigbee.sensor_settings.load_reporting_parameters", fake_parameters)
+        monkeypatch.setattr("backend.app.services.zigbee.device_settings.resolve_reporting", fake_parameters)
         monkeypatch.setattr("backend.app.core.database.async_session", fake_session)
         zigbee_coordinator.forget_reporting("retry")
 
