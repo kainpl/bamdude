@@ -436,6 +436,18 @@ async function request<T>(
 }
 
 // Printer types
+/** A place on the farm. Distinct from spool storage, which is a different table. */
+export interface PrinterLocation {
+  id: number;
+  name: string;
+}
+
+export interface PrinterLocationListItem extends PrinterLocation {
+  printer_count: number;
+  sensor_count: number;
+  queued_count: number;
+}
+
 export interface Printer {
   id: number;
   name: string;
@@ -446,7 +458,10 @@ export interface Printer {
   // so it can't be harvested to bypass RBAC (upstream 8283b175 / 9a432f00).
   access_code?: string;
   model: string | null;
-  location: string | null;  // Group/location name
+  // The place this printer stands in. An object, not a name: renaming a
+  // location changes it everywhere at once because everything points at the id.
+  location: PrinterLocation | null;
+  location_id: number | null;
   nozzle_count: number;  // 1 or 2, auto-detected from MQTT
   is_active: boolean;
   // Soft-retire (#archived): archived printers are hidden from the whole app +
@@ -710,7 +725,7 @@ export interface PrinterCreate {
   ip_address: string;
   access_code: string;
   model?: string;
-  location?: string;
+  location_id?: number | null;
   auto_archive?: boolean;
   // Maintenance Mode (#1476). Backend already gates MQTT, queue dispatch,
   // scheduler, metrics and the print picker on this; PATCH /printers/{id}
@@ -2737,7 +2752,7 @@ export interface PrinterQueue {
   printer_id: number;
   printer_name?: string | null;
   printer_model?: string | null;
-  printer_location?: string | null;
+  printer_location?: PrinterLocation | null;
   status: 'idle' | 'printing' | 'paused' | 'error';
   is_paused: boolean;
   last_activity_at: string | null;
@@ -2795,7 +2810,8 @@ export interface AutoQueueItem {
   library_file_id: number | null;
   project_id: number | null;
   target_model: string | null;
-  target_location: string | null;
+  target_location: PrinterLocation | null;
+  target_location_id: number | null;
   required_filament_types: string[] | null;
   filament_overrides: AutoQueueFilamentOverride[] | null;
   force_color_match: boolean;
@@ -2844,7 +2860,7 @@ export interface AutoQueueItemCreate {
   library_file_id?: number | null;
   project_id?: number | null;
   target_model?: string | null;
-  target_location?: string | null;
+  target_location_id?: number | null;
   required_filament_types?: string[] | null;
   filament_overrides?: AutoQueueFilamentOverride[] | null;
   force_color_match?: boolean;
@@ -2868,7 +2884,7 @@ export interface AutoQueueItemCreate {
 export interface AutoQueueItemUpdate {
   position?: number | null;
   target_model?: string | null;
-  target_location?: string | null;
+  target_location_id?: number | null;
   required_filament_types?: string[] | null;
   filament_overrides?: AutoQueueFilamentOverride[] | null;
   force_color_match?: boolean | null;
@@ -3731,7 +3747,7 @@ export interface PrinterMaintenanceOverview {
   printer_id: number;
   printer_name: string;
   printer_model: string | null;
-  printer_location: string | null;
+  printer_location: PrinterLocation | null;
   total_print_hours: number;
   maintenance_items: MaintenanceStatus[];
   due_count: number;
@@ -4852,11 +4868,19 @@ export const api = {
       `/printers/${id}?delete_archives=${deleteArchives}`,
       { method: 'DELETE' }
     ),
+  getPrinterLocations: () =>
+    request<{ locations: PrinterLocationListItem[] }>('/printer-locations'),
+  createPrinterLocation: (name: string) =>
+    request<PrinterLocation>('/printer-locations', { method: 'POST', body: JSON.stringify({ name }) }),
+  renamePrinterLocation: (id: number, name: string) =>
+    request<PrinterLocation>(`/printer-locations/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+  deletePrinterLocation: (id: number) =>
+    request<{ deleted: number }>(`/printer-locations/${id}`, { method: 'DELETE' }),
   getDeveloperModeWarnings: () =>
     request<{ printer_id: number; name: string }[]>('/printers/developer-mode-warnings'),
-  getAvailableFilaments: (model: string, location?: string) => {
+  getAvailableFilaments: (model: string, locationId?: number) => {
     const params = new URLSearchParams({ model });
-    if (location) params.set('location', location);
+    if (locationId) params.set('location_id', String(locationId));
     return request<Array<{ type: string; color: string; tray_info_idx: string; tray_sub_brands: string; extruder_id: number | null }>>(`/printers/available-filaments?${params}`);
   },
   getPrinterStatus: (id: number) =>

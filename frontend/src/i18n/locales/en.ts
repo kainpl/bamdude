@@ -1233,7 +1233,16 @@ export default {
     noPending: 'No pending items',
     pending: 'pending',
     manualStart: 'Manual',
-    ungrouped: 'Ungrouped'
+    ungrouped: 'Ungrouped',
+    locations: {
+      title: 'Locations',
+      addShort: '+ New',
+      add: 'Add location',
+      empty: 'No locations yet. Add one to group printers and sensors by where they stand.',
+      inUse: 'This location is still in use. Move what is in it first.',
+      nameTaken: 'A location with this name already exists.',
+      counts: '{{printers}} printers · {{sensors}} sensors · {{queued}} queued'
+    }
   },
 
   backgroundDispatch: {

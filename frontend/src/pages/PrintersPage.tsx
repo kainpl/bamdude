@@ -2,6 +2,7 @@ import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } fr
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ZigbeeStatusBadge } from '../components/zigbee/ZigbeeStatusBadge';
 import { useTranslation } from 'react-i18next';
+import { PrinterLocationSelect } from '../components/PrinterLocationSelect';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
 import {
@@ -6305,7 +6306,7 @@ export function AddPrinterModal({
     ip_address: '',
     access_code: '',
     model: '',
-    location: '',
+    location_id: null as number | null,
     auto_archive: true,
     cleanup_after_print: false,
     // 0 = disabled, matching the backend default. Recycling a live MQTT link
@@ -6743,12 +6744,10 @@ export function AddPrinterModal({
                 </div>
                 <div>
                   <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.locationGroup')}</label>
-                  <input
-                    type="text"
-                    className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                    value={form.location || ''}
-                    onChange={(e) => setForm({ ...form, location: e.target.value })}
-                    placeholder={t('printers.modal.locationPlaceholder')}
+                  <PrinterLocationSelect
+                    value={form.location_id ?? null}
+                    onChange={(id) => setForm({ ...form, location_id: id })}
+                    allowCreate
                   />
                   <p className="text-xs text-bambu-gray mt-1">{t('printers.locationHelp')}</p>
                 </div>
@@ -7225,7 +7224,7 @@ function EditPrinterModal({
     ip_address: printer.ip_address,
     access_code: '',
     model: printer.model || '',
-    location: printer.location || '',
+    location_id: printer.location?.id ?? null,
     auto_archive: printer.auto_archive,
     is_active: printer.is_active,
     cleanup_after_print: printer.cleanup_after_print ?? false,
@@ -7274,7 +7273,7 @@ function EditPrinterModal({
       name: form.name,
       ip_address: form.ip_address,
       model: form.model || undefined,
-      location: form.location || undefined,
+      location_id: form.location_id,
       auto_archive: form.auto_archive,
       is_active: form.is_active,
       cleanup_after_print: form.cleanup_after_print,
@@ -7416,12 +7415,10 @@ function EditPrinterModal({
                 </div>
                 <div>
                   <label className="block text-sm text-bambu-gray mb-1">Location / Group</label>
-                  <input
-                    type="text"
-                    className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                    value={form.location}
-                    onChange={(e) => setForm({ ...form, location: e.target.value })}
-                    placeholder={t('printers.modal.locationPlaceholder')}
+                  <PrinterLocationSelect
+                    value={form.location_id}
+                    onChange={(id) => setForm({ ...form, location_id: id })}
+                    allowCreate
                   />
                   <p className="text-xs text-bambu-gray mt-1">{t('printers.locationHelp')}</p>
                 </div>
@@ -8057,9 +8054,9 @@ export function PrintersPage() {
     setSelectedPrinterIds(new Set(printers.map(p => p.id)));
   }, [printers]);
 
-  const selectByLocation = useCallback((location: string) => {
+  const selectByLocation = useCallback((locationId: number) => {
     if (!printers) return;
-    setSelectedPrinterIds(new Set(printers.filter(p => p.location === location).map(p => p.id)));
+    setSelectedPrinterIds(new Set(printers.filter(p => p.location?.id === locationId).map(p => p.id)));
   }, [printers]);
 
   const selectByState = useCallback((state: string) => {
@@ -8135,13 +8132,13 @@ export function PrintersPage() {
       result = result.filter(p =>
         p.name.toLowerCase().includes(q) ||
         (p.model || '').toLowerCase().includes(q) ||
-        (p.location || '').toLowerCase().includes(q) ||
+        (p.location?.name || '').toLowerCase().includes(q) ||
         (p.serial_number || '').toLowerCase().includes(q)
       );
     }
 
     if (locationFilter !== 'all') {
-      result = result.filter(p => (p.location || '') === locationFilter);
+      result = result.filter(p => (p.location?.name || '') === locationFilter);
     }
 
     if (statusFilter !== 'all') {
@@ -8183,7 +8180,7 @@ export function PrintersPage() {
   // Derive unique locations for the location filter dropdown
   const availableLocations = useMemo(() => {
     if (!printers) return [];
-    return [...new Set(printers.map(p => p.location || '').filter(Boolean))].sort();
+    return [...new Set(printers.map(p => p.location?.name || '').filter(Boolean))].sort();
   }, [printers]);
 
   const sortedPrinters = useMemo(() => {
@@ -8199,8 +8196,8 @@ export function PrintersPage() {
       case 'location':
         // Sort by location, with ungrouped printers last
         sorted.sort((a, b) => {
-          const locA = a.location || '';
-          const locB = b.location || '';
+          const locA = a.location?.name || '';
+          const locB = b.location?.name || '';
           if (!locA && locB) return 1;
           if (locA && !locB) return -1;
           return locA.localeCompare(locB) || a.name.localeCompare(b.name);
@@ -8308,7 +8305,7 @@ export function PrintersPage() {
 
     const groups: Record<string, typeof sortedPrinters> = {};
     sortedPrinters.forEach(printer => {
-      const location = printer.location || 'Ungrouped';
+      const location = printer.location?.name || t('printers.ungrouped');
       if (!groups[location]) groups[location] = [];
       groups[location].push(printer);
     });

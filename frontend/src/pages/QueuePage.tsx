@@ -150,7 +150,7 @@ export function QueuePage() {
   const availableLocations = useMemo(() => {
     if (!queues) return [] as string[];
     const set = new Set<string>();
-    queues.forEach(q => { if (q.printer_location) set.add(q.printer_location); });
+    queues.forEach(q => { if (q.printer_location) set.add(q.printer_location.name); });
     return Array.from(set).sort();
   }, [queues]);
 
@@ -164,7 +164,7 @@ export function QueuePage() {
       if (term) {
         const name = (q.printer_name || '').toLowerCase();
         const model = (q.printer_model || '').toLowerCase();
-        const loc = (q.printer_location || '').toLowerCase();
+        const loc = (q.printer_location?.name || '').toLowerCase();
         if (!name.includes(term) && !model.includes(term) && !loc.includes(term)) return false;
       }
       if (hideOffline) {
@@ -193,7 +193,7 @@ export function QueuePage() {
         filtered.sort((a, b) => (a.printer_model || '').localeCompare(b.printer_model || ''));
         break;
       case 'location':
-        filtered.sort((a, b) => (a.printer_location || '').localeCompare(b.printer_location || ''));
+        filtered.sort((a, b) => (a.printer_location?.name || '').localeCompare(b.printer_location?.name || ''));
         break;
     }
 
@@ -209,7 +209,7 @@ export function QueuePage() {
     if (sortBy !== 'location') return null;
     const groups: Record<string, PrinterQueue[]> = {};
     sortedQueues.forEach(q => {
-      const loc = q.printer_location || t('queueCard.ungrouped');
+      const loc = q.printer_location?.name || t('queueCard.ungrouped');
       if (!groups[loc]) groups[loc] = [];
       groups[loc].push(q);
     });

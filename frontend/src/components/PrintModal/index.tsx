@@ -682,7 +682,7 @@ export function PrintModal({
           library_file_id: isLibraryFile ? libraryFileId : undefined,
           project_id: projectId,
           target_model: autoModeOptions.target_model ?? undefined,
-          target_location: autoModeOptions.target_location ?? undefined,
+          target_location_id: autoModeOptions.target_location_id ?? undefined,
           force_color_match: autoModeOptions.force_color_match,
           plate_ids: platesToQueue.length > 1 ? platesToQueue : undefined,
           plate_id: platesToQueue.length === 1 ? platesToQueue[0] : null,

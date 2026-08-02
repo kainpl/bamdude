@@ -52,6 +52,7 @@ import { registerSettingsSearch, getSettingsSearchEntries } from '../lib/setting
 import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
 import { PrintOptionsPreferencesPanel } from '../components/settings/PrintOptionsPreferencesPanel';
 import { ArchivedPrintersPanel } from '../components/settings/ArchivedPrintersPanel';
+import { PrinterLocationsCard } from '../components/settings/PrinterLocationsCard';
 import { PreheatFilamentTargetsEditor } from '../components/PreheatFilamentTargetsEditor';
 
 const validTabs = ['general', 'printing', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
@@ -2956,6 +2957,8 @@ export function SettingsPage() {
                 </h3>
               </CardHeader>
               <CardContent>
+                <PrinterLocationsCard />
+
                 <ArchivedPrintersPanel />
               </CardContent>
             </Card>

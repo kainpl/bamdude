@@ -150,13 +150,13 @@ export const DEFAULT_SCHEDULE_OPTIONS: ScheduleOptions = {
  */
 export interface AutoModeOptionsState {
   target_model: string | null;
-  target_location: string | null;
+  target_location_id: number | null;
   force_color_match: boolean;
 }
 
 export const DEFAULT_AUTO_MODE_OPTIONS: AutoModeOptionsState = {
   target_model: null,
-  target_location: null,
+  target_location_id: null,
   force_color_match: false,
 };
 

@@ -21,7 +21,7 @@ interface BulkPrinterToolbarProps {
   printers: Printer[];
   onClose: () => void;
   onSelectAll: () => void;
-  onSelectByLocation: (location: string) => void;
+  onSelectByLocation: (locationId: number) => void;
   onSelectByState: (state: PrinterStateFilter) => void;
   onAction: (action: BulkAction) => void;
   actionPending: boolean;
@@ -70,7 +70,10 @@ export function BulkPrinterToolbar({
   const canControl = hasPermission('printers:control');
   const canClearPlate = hasPermission('printers:clear_plate');
 
-  const locations = [...new Set(printers.map(p => p.location).filter((l): l is string => !!l))].sort();
+  // Deduped by id, labelled by name — two printers in the same place share a
+  // row now instead of being two entries that merely look alike.
+  const locations = [...new Map(printers.filter(p => p.location).map(p => [p.location!.id, p.location!])).values()]
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   const stateCounts: Record<PrinterStateFilter, number> = { printing: 0, paused: 0, finished: 0, idle: 0, error: 0, offline: 0 };
   printers.forEach(p => {
@@ -164,11 +167,11 @@ export function BulkPrinterToolbar({
               <div className="absolute bottom-full mb-2 left-0 w-48 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg z-20 py-1">
                 {locations.map(location => (
                   <button
-                    key={location}
-                    onClick={() => { onSelectByLocation(location); setShowLocationDropdown(false); }}
+                    key={location.id}
+                    onClick={() => { onSelectByLocation(location.id); setShowLocationDropdown(false); }}
                     className="w-full text-left px-3 py-2 text-sm text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white transition-colors"
                   >
-                    {location}
+                    {location.name}
                   </button>
                 ))}
               </div>

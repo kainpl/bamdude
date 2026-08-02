@@ -1608,7 +1608,7 @@ export function MaintenancePage() {
   const availableLocations = (() => {
     if (!overview) return [] as string[];
     const set = new Set<string>();
-    overview.forEach(p => { if (p.printer_location) set.add(p.printer_location); });
+    overview.forEach(p => { if (p.printer_location) set.add(p.printer_location.name); });
     return Array.from(set).sort();
   })();
 
@@ -1620,10 +1620,10 @@ export function MaintenancePage() {
       if (term) {
         const name = (p.printer_name || '').toLowerCase();
         const model = (p.printer_model || '').toLowerCase();
-        const loc = (p.printer_location || '').toLowerCase();
+        const loc = (p.printer_location?.name || '').toLowerCase();
         if (!name.includes(term) && !model.includes(term) && !loc.includes(term)) return false;
       }
-      if (locationFilter !== 'all' && (p.printer_location || '') !== locationFilter) return false;
+      if (locationFilter !== 'all' && (p.printer_location?.name || '') !== locationFilter) return false;
       if (statusFilter !== 'all') {
         if (statusFilter === 'due' && p.due_count === 0) return false;
         if (statusFilter === 'warning' && p.warning_count === 0) return false;
@@ -1653,7 +1653,7 @@ export function MaintenancePage() {
         sorted.sort((a, b) => b.total_print_hours - a.total_print_hours);
         break;
       case 'location':
-        sorted.sort((a, b) => (a.printer_location || '').localeCompare(b.printer_location || ''));
+        sorted.sort((a, b) => (a.printer_location?.name || '').localeCompare(b.printer_location?.name || ''));
         break;
     }
     if (!sortAsc && sortBy !== 'upcoming') sorted.reverse();
@@ -1666,7 +1666,7 @@ export function MaintenancePage() {
     if (sortBy !== 'location' || availableLocations.length === 0) return null;
     const groups: Record<string, typeof visibleOverviews> = {};
     visibleOverviews.forEach(p => {
-      const key = p.printer_location || t('printers.ungrouped');
+      const key = p.printer_location?.name || t('printers.ungrouped');
       (groups[key] ??= []).push(p);
     });
     return Object.entries(groups);

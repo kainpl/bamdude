@@ -333,7 +333,7 @@ export function PrinterInfoModal({ printer, status, totalPrintHours, onClose }: 
   if (printer.location) {
     rows.push({
       label: t('printers.sort.location'),
-      value: printer.location,
+      value: printer.location.name,
     });
   }
 
