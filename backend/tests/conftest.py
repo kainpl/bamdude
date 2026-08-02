@@ -200,6 +200,38 @@ async def db_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
 
 
 @pytest.fixture(autouse=True)
+def _clean_zigbee_process_state():
+    """The Zigbee subsystem keeps three process-global caches. They leak.
+
+    The coordinator holds what each device was last configured with, the
+    reporting module holds which clusters already carry a listener, and the
+    sensor store holds the readings. All three survive a test, so one test
+    passes because another ran first — and the failure lands on whoever adds
+    the next test, in a file they did not touch.
+
+    Found exactly that way: two files happened to use the same IEEE, one
+    recorded a reporting state, and the other's "nothing has been asked of this
+    device yet" assertion failed only in a full run.
+
+    Here rather than in one test module, because the leak crosses files.
+    """
+    from backend.app.services.zigbee.coordinator import zigbee_coordinator
+    from backend.app.services.zigbee.reporting import _attached_clusters
+    from backend.app.services.zigbee.sensors import sensor_store
+
+    def _reset():
+        zigbee_coordinator._desired_reporting.clear()
+        zigbee_coordinator._applied_reporting.clear()
+        _attached_clusters.clear()
+        for ieee in list(sensor_store.known_ieees()):
+            sensor_store.forget(ieee)
+
+    _reset()
+    yield
+    _reset()
+
+
+@pytest.fixture(autouse=True)
 async def _cancel_leaked_asyncio_tasks():
     """Cancel asyncio tasks that leaked past the test body.
 

@@ -28,21 +28,6 @@ from backend.app.services.zigbee.reporting import (
 from backend.tests.zigbee_fixtures import fake_device
 
 
-@pytest.fixture(autouse=True)
-def _clean_attachment_registry():
-    """The attachment registry is process-global, so it leaks between tests.
-
-    Clearing it here rather than per test: a shared registry that survives is
-    exactly the sort of state that makes one test pass because another ran
-    first, and the failure lands on whoever adds the next test.
-    """
-    from backend.app.services.zigbee.reporting import _attached_clusters
-
-    _attached_clusters.clear()
-    yield
-    _attached_clusters.clear()
-
-
 def _listener(service, cluster_id, **scaling):
     return ClusterReportListener(service=service, plug_id=1, cluster_id=cluster_id, **scaling)
 
