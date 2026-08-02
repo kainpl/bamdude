@@ -1,9 +1,10 @@
 """Binding a plug's clusters and routing their reports into the driver cache.
 
 ``bind`` tells the device where to send reports; ``configure_reporting`` says
-which attributes and how often. Both are set up here, and both are treated as a
-bonus rather than the mechanism: reports are welcome when they arrive, and
-``poller.py`` keeps the cache honest whether they do or not.
+which attributes and how often. Reports are what actually moves a reading —
+measured on hardware at 35 value changes in three minutes where the poller alone
+would have given about five — and ``poller.py`` is the floor under them, not the
+mechanism. ZHA keeps both for the same reason.
 
 **One listener per cluster, never one per device.** ``OnOff.on_off`` and
 ``Metering.current_summ_delivered`` are *both* attribute id ``0x0000``, so a
@@ -19,6 +20,7 @@ would move the scaling problem into every reader instead of solving it once.
 from __future__ import annotations
 
 import logging
+from collections import namedtuple
 
 from zigpy.zcl import foundation
 from zigpy.zdo import types as zdo_types
@@ -48,26 +50,45 @@ ATTR_ON_OFF = 0x0000
 ATTR_SUMMATION = 0x0000
 ATTR_ACTIVE_POWER = 0x050B
 
-# Reporting bounds. The minimum keeps a chattering device from flooding the
-# mesh; the maximum is a heartbeat, so a plug that never changes still proves it
-# is alive rather than looking unreachable forever.
-_MIN_INTERVAL = 5
-_MAX_INTERVAL = 900
-_REPORTABLE_CHANGE = 1
+# Reporting bounds, per cluster and taken from ZHA
+# (``zha/application/platforms/{switch,sensor}``). The minimum keeps a
+# chattering device from flooding the mesh; the maximum is a heartbeat, so a
+# plug that never changes still proves it is alive rather than looking
+# unreachable forever.
+#
+# They are NOT one shared triple, and the differences are the point:
+#
+# * **On/Off has no minimum.** A relay changing state is the one event the
+#   operator is waiting for, and it cannot chatter on its own — anything that
+#   flips it fast enough to matter is us. Holding it back five seconds only
+#   delays the answer to a command we just sent.
+# * **The energy counter is asked ten times less often than power.** It only
+#   ever grows, so "changed by one raw unit" is guaranteed to keep being true
+#   for as long as anything is drawing: on a plug with a fine divisor that is a
+#   report every five seconds, all print long, for a number nobody reads at that
+#   resolution.
+# * **Power keeps the five seconds.** It is the reading that actually moves and
+#   the one shown live on a printer card.
+_ReportingBounds = namedtuple("_ReportingBounds", "min_interval max_interval reportable_change")
+
+_ON_OFF_REPORTING = _ReportingBounds(0, 900, 1)
+_SUMMATION_REPORTING = _ReportingBounds(30, 900, 1)
+_ACTIVE_POWER_REPORTING = _ReportingBounds(5, 900, 1)
 
 # The three clusters we bind, subscribe and poll, with the scaling pair each one
-# needs and the attribute that carries its reading. One table so bind and poll
-# can never drift apart — a cluster subscribed but not polled is exactly the
-# silent half-configuration this module keeps rediscovering.
+# needs, the attribute that carries its reading, and how often we ask to hear
+# about it. One table so bind and poll can never drift apart — a cluster
+# subscribed but not polled is exactly the silent half-configuration this module
+# keeps rediscovering.
 #
 # **On/Off comes first, and the order is load-bearing.** The S60ZBTPF quirk gates
 # power on the socket's cached on_off value, so reading power before on_off in the
 # same cycle would judge a freshly-switched-on socket by its previous state and
 # discard the first real measurement.
 _POLLED_CLUSTERS = (
-    (ON_OFF, (), ATTR_ON_OFF),
-    (METERING, ENERGY_SCALING_ATTRS, ATTR_SUMMATION),
-    (ELECTRICAL_MEASUREMENT, POWER_SCALING_ATTRS, ATTR_ACTIVE_POWER),
+    (ON_OFF, (), ATTR_ON_OFF, _ON_OFF_REPORTING),
+    (METERING, ENERGY_SCALING_ATTRS, ATTR_SUMMATION, _SUMMATION_REPORTING),
+    (ELECTRICAL_MEASUREMENT, POWER_SCALING_ATTRS, ATTR_ACTIVE_POWER, _ACTIVE_POWER_REPORTING),
 )
 
 
@@ -206,7 +227,7 @@ async def bind_plug(service, plug, device) -> dict[int, bool]:
     """
     wired: dict[int, bool] = {}
 
-    for cluster_id, scaling_attrs, attr in _POLLED_CLUSTERS:
+    for cluster_id, scaling_attrs, attr, bounds in _POLLED_CLUSTERS:
         cluster = service._cluster(device, cluster_id)
         if cluster is None:
             wired[cluster_id] = False
@@ -239,7 +260,9 @@ async def bind_plug(service, plug, device) -> dict[int, bool]:
                 _attached_clusters.add((str(getattr(device, "ieee", plug.id)).strip().lower(), cluster_id))
             bind_result = await cluster.bind()
             _warn_if_bind_refused(plug.id, cluster_id, bind_result)
-            result = await cluster.configure_reporting(attr, _MIN_INTERVAL, _MAX_INTERVAL, _REPORTABLE_CHANGE)
+            result = await cluster.configure_reporting(
+                attr, bounds.min_interval, bounds.max_interval, bounds.reportable_change
+            )
             _warn_if_reporting_refused(plug.id, cluster_id, result)
             wired[cluster_id] = True
         except Exception as exc:  # noqa: BLE001 — one cluster failing must not lose the others
@@ -392,7 +415,7 @@ async def refresh_plug(service, plug, device) -> bool:
     what the freshness of a reading actually rests on.
     """
     ok = False
-    for cluster_id, scaling_attrs, attr in _POLLED_CLUSTERS:
+    for cluster_id, scaling_attrs, attr, _bounds in _POLLED_CLUSTERS:
         cluster = service._cluster(device, cluster_id)
         if cluster is None:
             continue

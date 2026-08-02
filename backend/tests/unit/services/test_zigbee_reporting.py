@@ -249,6 +249,53 @@ class TestInitialRead:
         assert wired[ON_OFF] is True
 
 
+class TestEachClusterGetsItsOwnReportingBounds:
+    """One shared triple would be wrong for two of the three clusters.
+
+    The numbers are ZHA's, and they differ on purpose: an energy counter that
+    only ever grows meets "changed by one" continuously, so asking for it as
+    often as power means a report every few seconds, all print long, for a
+    figure read to two decimals. On/Off has no minimum because a relay cannot
+    chatter by itself and the operator is waiting for exactly that event.
+
+    Pinned rather than left to the constants: a silent drift here changes mesh
+    traffic on every plug on the farm and nothing would fail.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_bounds_asked_of_each_cluster_are_zhas(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from backend.app.services.zigbee.devices import ELECTRICAL_MEASUREMENT, METERING
+        from backend.app.services.zigbee.driver import ZigbeeSmartPlugService
+        from backend.app.services.zigbee.reporting import ATTR_ACTIVE_POWER, ATTR_SUMMATION, bind_plug
+
+        def cluster():
+            return SimpleNamespace(
+                add_listener=lambda _l: None,
+                on_event=lambda _name, _l: None,
+                bind=AsyncMock(),
+                configure_reporting=AsyncMock(return_value={}),
+                read_attributes=AsyncMock(return_value=({}, {})),
+                get=lambda attr, default=None: default,
+            )
+
+        clusters = {ON_OFF: cluster(), METERING: cluster(), ELECTRICAL_MEASUREMENT: cluster()}
+        device = SimpleNamespace(endpoints={1: SimpleNamespace(in_clusters=clusters)})
+
+        await bind_plug(ZigbeeSmartPlugService(), SimpleNamespace(id=1), device)
+
+        assert clusters[ON_OFF].configure_reporting.await_args.args == (ATTR_ON_OFF, 0, 900, 1)
+        assert clusters[METERING].configure_reporting.await_args.args == (ATTR_SUMMATION, 30, 900, 1)
+        assert clusters[ELECTRICAL_MEASUREMENT].configure_reporting.await_args.args == (
+            ATTR_ACTIVE_POWER,
+            5,
+            900,
+            1,
+        )
+
+
 class _Attr:
     """Hashable stand-in for ZCLAttributeDef.
 
