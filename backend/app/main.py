@@ -52,6 +52,7 @@ from backend.app.api.routes import (
     orca_cloud,
     print_options_preferences,
     print_queue,
+    printer_locations,
     printer_queues,
     printer_sensor_history,
     printer_settings as printer_settings_routes,
@@ -7834,6 +7835,7 @@ app.include_router(mfa.router, prefix=app_settings.api_prefix)
 app.include_router(users.router, prefix=app_settings.api_prefix)
 app.include_router(groups.router, prefix=app_settings.api_prefix)
 app.include_router(printers.router, prefix=app_settings.api_prefix)
+app.include_router(printer_locations.router, prefix=app_settings.api_prefix)
 # archive_purge must come BEFORE archives so its `/archives/trash/*` routes
 # don't get swallowed by archives' `/archives/{archive_id}` catch-all.
 app.include_router(archive_purge.router, prefix=app_settings.api_prefix)
