@@ -62,8 +62,13 @@ class StubCluster:
     still passes for the wrong reason.
     """
 
-    def __init__(self, cluster_id: int):
+    def __init__(self, cluster_id: int, asleep: bool = False):
         self.cluster_id = cluster_id
+        # A battery device is asleep almost all of the time, so "the request
+        # times out" is its NORMAL answer rather than an error case. A fixture
+        # that always succeeds cannot reproduce the state the honest-reporting
+        # vocabulary was built for.
+        self.asleep = asleep
         self.listeners: list = []
         self.event_callbacks: dict[str, list] = {}
         self.cache: dict[str, object] = {}
@@ -95,10 +100,14 @@ class StubCluster:
             callback(event)
 
     async def bind(self):
+        if self.asleep:
+            raise TimeoutError()
         self.bound = True
         return [0]
 
     async def configure_reporting(self, attribute, min_interval, max_interval, change):
+        if self.asleep:
+            raise TimeoutError()
         self.configured.append((attribute, min_interval, max_interval, change))
         return [SimpleNamespace(status=0)]
 
@@ -116,6 +125,7 @@ def fake_device(
     model: str = "SNZB-02D",
     manufacturer: str = "SONOFF",
     nwk: int = 0x1234,
+    asleep: bool = False,
 ):
     """A stand-in zigpy device carrying the given input clusters.
 
@@ -129,7 +139,7 @@ def fake_device(
         model=model,
         endpoints={
             0: SimpleNamespace(in_clusters={}),
-            1: SimpleNamespace(in_clusters={cid: StubCluster(cid) for cid in cluster_ids}),
+            1: SimpleNamespace(in_clusters={cid: StubCluster(cid, asleep=asleep) for cid in cluster_ids}),
         },
         node_desc=node_descriptor(mac_capability_flags),
     )

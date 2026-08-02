@@ -23,7 +23,9 @@ from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.user import User
+from backend.app.schemas.zigbee_settings import DeviceSettingsUpdate
 from backend.app.services.zigbee.coordinator import CoordinatorState, zigbee_coordinator
+from backend.app.services.zigbee.device_settings import resolve_reporting
 from backend.app.services.zigbee.devices import DeviceKind, describe_device, describe_for_ui
 
 logger = logging.getLogger(__name__)
@@ -471,6 +473,199 @@ async def list_sensors(
             }
         )
     return {"sensors": sensors}
+
+
+def _find_device(app, ieee: str):
+    """The paired device with this address, or None.
+
+    Case-insensitive: zigpy stringifies EUI64 lower-case, but a UI echoes
+    whatever the operator typed or pasted.
+    """
+    wanted = str(ieee).strip().lower()
+    return next((d for k, d in (getattr(app, "devices", None) or {}).items() if str(k).lower() == wanted), None)
+
+
+async def _is_adopted(db, info) -> bool:
+    """Whether an entity row references this device.
+
+    Computed rather than stored: a plug's adoption has always meant "a
+    smart_plugs row carries this IEEE", and a flag beside that would be a
+    second source of truth for one question.
+    """
+    from backend.app.models.smart_sensor import SmartSensor
+
+    model = SmartSensor if info.kind is DeviceKind.SENSOR else SmartPlug
+    found = await db.execute(select(model.id).where(func.lower(model.zigbee_ieee) == info.ieee.lower()))
+    return found.scalar_one_or_none() is not None
+
+
+async def _settings_payload(db, device, info, row) -> dict:
+    """Everything the settings dialog needs, in one answer.
+
+    Reporting and polling share this endpoint because they are one dialog and
+    one Save; two endpoints would mean two requests, the second of which can
+    fail after the first has already succeeded.
+    """
+    from backend.app.services.zigbee.device_settings import resolve_poll_seconds, resolve_stale_after_seconds
+    from backend.app.services.zigbee.reporting_targets import targets_for
+    from backend.app.services.zigbee.sensors import PowerClass, power_class
+
+    desired = await resolve_reporting(db, info)
+    targets = targets_for(info)
+    polled = power_class(device) is PowerClass.MAINS
+    slowest = max((values.get("max_interval", 900) for values in desired.values()), default=900)
+    applied = zigbee_coordinator.applied_reporting(info.ieee)
+
+    return {
+        "ieee": info.ieee,
+        "kind": info.kind.value,
+        "name": row.name if row else None,
+        "adopted": await _is_adopted(db, info),
+        "editable": {t.key: list(t.editable) for t in targets},
+        "desired": desired,
+        # Unknown rather than ok: after a restart nothing has been asked of this
+        # device yet, and claiming a state nobody confirmed is the failure this
+        # whole vocabulary exists to avoid.
+        "applied": {
+            t.key: {
+                "state": (applied.get(t.key) or {}).get("state", "unknown"),
+                "verification": (applied.get(t.key) or {}).get("verification", "not-checked"),
+            }
+            for t in targets
+        },
+        "poll_seconds": await resolve_poll_seconds(db, info.ieee),
+        "poll_supported": polled,
+        "stale_after_seconds": await resolve_stale_after_seconds(db, info.ieee, polled=polled, max_interval=slowest),
+    }
+
+
+async def _load_for_settings(db, ieee: str):
+    """The live device, its description and its row.
+
+    Two different 404s on purpose: "never paired with us" and "not on the
+    network right now" are different problems with different fixes, and one
+    message covering both sends an operator to look in the wrong place.
+    """
+    from backend.app.services.zigbee.device_settings import load_device_row
+
+    row = await load_device_row(db, ieee)
+    if row is None:
+        raise HTTPException(status_code=404, detail="This device has never paired with BamDude.")
+    app = zigbee_coordinator.app
+    device = _find_device(app, ieee) if app is not None else None
+    if device is None:
+        raise HTTPException(status_code=404, detail="This device is not on the network right now.")
+    return device, describe_device(device), row
+
+
+@router.get("/devices/{ieee}/settings")
+async def get_device_settings(
+    ieee: str,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
+):
+    """What this device is asked to report, and what it made of the request."""
+    device, info, row = await _load_for_settings(db, ieee)
+    return await _settings_payload(db, device, info, row)
+
+
+def _validate(update, info, resolved) -> None:
+    """Refuse, out loud, anything that would be stored and never take effect.
+
+    Every branch here is a setting that would otherwise sit in the API looking
+    applied while the device runs something else -- the exact failure this
+    cycle exists to remove.
+    """
+    from backend.app.services.zigbee.reporting_targets import targets_for
+
+    by_key = {t.key: t for t in targets_for(info)}
+    for key, values in (update.reporting or {}).items():
+        target = by_key.get(key)
+        if target is None:
+            raise HTTPException(status_code=422, detail=f"This device has no '{key}' to report.")
+        for field, value in values.model_dump(exclude_none=True).items():
+            if field not in target.editable:
+                raise HTTPException(status_code=422, detail=f"'{field}' cannot be set for '{key}' on this device.")
+            resolved.setdefault(key, {})[field] = value
+
+        # Checked against what RESOLVES, not only against what was sent: a
+        # request moving one field at a time would otherwise walk past this.
+        pair = resolved.get(key, {})
+        if pair.get("min_interval", 0) > pair.get("max_interval", 0):
+            raise HTTPException(
+                status_code=422,
+                detail=f"'{key}': the shortest gap between reports cannot be longer than the longest.",
+            )
+
+
+@router.put("/devices/{ieee}/settings")
+async def update_device_settings(
+    ieee: str,
+    update: DeviceSettingsUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_UPDATE),
+):
+    """Store what the operator chose, and apply it if the device is awake.
+
+    A sleeping device is a **success**: the desired state is saved and applied
+    at its next contact. Answering with an error there would report the
+    ordinary course of events for a battery sensor as a broken feature.
+    """
+    from backend.app.services.zigbee.device_settings import save_overrides
+    from backend.app.services.zigbee.reporting import bind_sensor
+    from backend.app.services.zigbee.reporting_apply import fully_applied
+    from backend.app.services.zigbee.sensors import PowerClass, power_class
+
+    device, info, row = await _load_for_settings(db, ieee)
+
+    if update.poll_seconds is not None and power_class(device) is not PowerClass.MAINS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This device sleeps between reports, so it cannot be polled. "
+                "It reports on its own instead -- change how often it reports."
+            ),
+        )
+
+    resolved = await resolve_reporting(db, info)
+    _validate(update, info, resolved)
+
+    stored = dict(row.reporting or {})
+    for key, values in (update.reporting or {}).items():
+        stored.setdefault(key, {}).update(values.model_dump(exclude_none=True))
+    await save_overrides(
+        db,
+        info.ieee,
+        reporting=stored,
+        poll_seconds=update.poll_seconds,
+        stale_after_seconds=update.stale_after_seconds,
+    )
+
+    if info.kind is DeviceKind.SENSOR:
+        # Reporting parameters live IN the device, so saving alone changes
+        # nothing until configure_reporting is re-issued. A sleeper answers
+        # nothing and is retried at its next contact.
+        desired = await resolve_reporting(db, info)
+        applied = await bind_sensor(device, info.ieee, desired)
+        zigbee_coordinator.record_reporting(info.ieee, desired if fully_applied(applied) else {}, applied)
+
+    device, info, row = await _load_for_settings(db, ieee)
+    return await _settings_payload(db, device, info, row)
+
+
+@router.delete("/devices/{ieee}/settings")
+async def clear_device_settings(
+    ieee: str,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_UPDATE),
+):
+    """Drop this device's overrides so the farm defaults apply again."""
+    from backend.app.services.zigbee.device_settings import save_overrides
+
+    device, info, row = await _load_for_settings(db, ieee)
+    await save_overrides(db, info.ieee, reporting={}, poll_seconds=0, stale_after_seconds=0)
+    device, info, row = await _load_for_settings(db, ieee)
+    return await _settings_payload(db, device, info, row)
 
 
 # A leave request the device must be awake to receive. Beyond this we stop
