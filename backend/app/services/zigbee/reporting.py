@@ -342,6 +342,9 @@ async def subscribe_all(service, plugs) -> int:
     bind must not cost the others their reporting. Returns how many were wired
     so the caller can log it rather than leave a silent partial result.
     """
+    from backend.app.core.database import async_session
+    from backend.app.services.zigbee.device_settings import load_device_row
+
     wired = 0
     for plug in plugs:
         device = service._device_for(plug)
@@ -351,6 +354,12 @@ async def subscribe_all(service, plugs) -> int:
         try:
             await bind_plug(service, plug, device)
             wired += 1
+            # After binding, deliberately. Anything that goes wrong reading a
+            # setting must cost this plug its threshold, not its reporting —
+            # and reporting is the thing whose absence is invisible.
+            async with async_session() as db:
+                row = await load_device_row(db, getattr(device, "ieee", "") or "")
+            service.set_stale_after(plug.id, row.stale_after_seconds if row else None)
         except Exception as exc:  # noqa: BLE001 — one plug must not lose the rest
             logger.warning("Zigbee plug %s: could not set up reporting: %s", plug.id, exc)
     return wired

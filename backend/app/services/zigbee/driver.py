@@ -138,6 +138,10 @@ class ZigbeeSmartPlugService:
         # One read per plug at a time, shared by everyone who asks while it runs.
         # See ``refresh`` for why this is not merely an optimisation.
         self._refreshing: dict[int, asyncio.Task] = {}
+        # Per-plug staleness, loaded from zigbee_devices when a plug is wired.
+        # Absent means the module default — which is every plug that nobody has
+        # set a value for, and was every plug before this was configurable.
+        self._stale_after: dict[int, int] = {}
 
     # ---- cache, written by the reporting listener ---------------------------
 
@@ -292,11 +296,24 @@ class ZigbeeSmartPlugService:
         data = self._cache.setdefault(plug_id, ZigbeePlugData())
         data.power = None
 
-    def _is_stale(self, data) -> bool:
+    def set_stale_after(self, plug_id: int, seconds: int | None) -> None:
+        """How long this plug's reading may go unrefreshed before it is doubted.
+
+        None clears the override rather than storing a zero: "not set" and "set
+        to nothing" are different answers, and only one of them means the
+        default applies.
+        """
+        if seconds:
+            self._stale_after[plug_id] = int(seconds)
+        else:
+            self._stale_after.pop(plug_id, None)
+
+    def _is_stale(self, data, plug_id: int) -> bool:
         last_seen = getattr(data, "last_seen", None)
         if last_seen is None:
             return True
-        return (datetime.now(timezone.utc) - last_seen).total_seconds() > _STALE_AFTER_SECONDS
+        threshold = self._stale_after.get(plug_id, _STALE_AFTER_SECONDS)
+        return (datetime.now(timezone.utc) - last_seen).total_seconds() > threshold
 
     def _forget_refresh(self, task: asyncio.Task) -> None:
         """Drop a finished read, and take its exception with it.
@@ -394,6 +411,9 @@ class ZigbeeSmartPlugService:
         for key in [k for k in self._listeners if k[0] == plug_id]:
             self._listeners.pop(key, None)
         self._cache.pop(plug_id, None)
+        # Or the next plug to be given this id inherits a threshold nobody set
+        # for it — plug ids are reused, and this one is invisible when wrong.
+        self._stale_after.pop(plug_id, None)
 
     async def get_status(self, plug: Any) -> dict:
         """Current state, refreshed by a direct read if the cache has aged out.
@@ -407,7 +427,7 @@ class ZigbeeSmartPlugService:
             return unknown
 
         data = self.get_plug_data(plug.id)
-        if data is None or self._is_stale(data):
+        if data is None or self._is_stale(data, plug.id):
             if not await self.refresh(plug, timeout=_REQUEST_REFRESH_BUDGET_SECONDS):
                 return unknown
             data = self.get_plug_data(plug.id)
@@ -426,7 +446,7 @@ class ZigbeeSmartPlugService:
         failure this whole path is built to avoid.
         """
         data = self.get_plug_data(plug.id)
-        if data is not None and self._is_stale(data):
+        if data is not None and self._is_stale(data, plug.id):
             # Refresh rather than hand back an aged reading. If the refresh
             # fails, report nothing: a stale wattage is indistinguishable from a
             # live one to every consumer downstream.

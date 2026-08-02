@@ -557,3 +557,112 @@ def test_the_stale_window_keeps_headroom_above_two_poll_cycles():
     assert _POLL_INTERVAL_SECONDS[1] * 2 < _STALE_AFTER_SECONDS, (
         "must leave room above two worst-case polls, or jitter alone can fake an offline plug"
     )
+
+
+class TestStalenessIsPerDevice:
+    """One question — after how many seconds do we stop trusting the last value.
+
+    Plug staleness must stay where it is. Deriving it from the poll interval
+    times a multiplier gives 60–90 s instead of 120 and SHORTENS the time to
+    "unreachable" — and a plug wrongly marked offline is worse than one marked
+    late, because that is the reading people act on.
+    """
+
+    def test_the_default_for_a_polled_device_is_still_two_minutes(self):
+        from backend.app.services.zigbee.driver import _STALE_AFTER_SECONDS
+
+        assert _STALE_AFTER_SECONDS == 120
+
+    def test_a_reading_inside_the_default_window_is_fresh(self):
+        from datetime import datetime, timedelta, timezone
+
+        from backend.app.services.zigbee.driver import ZigbeePlugData, ZigbeeSmartPlugService
+
+        service = ZigbeeSmartPlugService()
+        data = ZigbeePlugData(last_seen=datetime.now(timezone.utc) - timedelta(seconds=60))
+
+        assert service._is_stale(data, 1) is False
+
+    def test_a_device_override_shortens_the_window(self):
+        from datetime import datetime, timedelta, timezone
+
+        from backend.app.services.zigbee.driver import ZigbeePlugData, ZigbeeSmartPlugService
+
+        service = ZigbeeSmartPlugService()
+        data = ZigbeePlugData(last_seen=datetime.now(timezone.utc) - timedelta(seconds=60))
+        service.set_stale_after(1, 45)
+
+        assert service._is_stale(data, 1) is True
+
+    def test_a_device_override_lengthens_it_too(self):
+        from datetime import datetime, timedelta, timezone
+
+        from backend.app.services.zigbee.driver import ZigbeePlugData, ZigbeeSmartPlugService
+
+        service = ZigbeeSmartPlugService()
+        data = ZigbeePlugData(last_seen=datetime.now(timezone.utc) - timedelta(seconds=200))
+        service.set_stale_after(1, 600)
+
+        assert service._is_stale(data, 1) is False
+
+    def test_one_plug_s_setting_does_not_reach_another(self):
+        from datetime import datetime, timedelta, timezone
+
+        from backend.app.services.zigbee.driver import ZigbeePlugData, ZigbeeSmartPlugService
+
+        service = ZigbeeSmartPlugService()
+        data = ZigbeePlugData(last_seen=datetime.now(timezone.utc) - timedelta(seconds=60))
+        service.set_stale_after(1, 45)
+
+        assert service._is_stale(data, 2) is False
+
+    def test_clearing_the_override_restores_the_default(self):
+        from datetime import datetime, timedelta, timezone
+
+        from backend.app.services.zigbee.driver import ZigbeePlugData, ZigbeeSmartPlugService
+
+        service = ZigbeeSmartPlugService()
+        data = ZigbeePlugData(last_seen=datetime.now(timezone.utc) - timedelta(seconds=60))
+        service.set_stale_after(1, 45)
+        service.set_stale_after(1, None)
+
+        assert service._is_stale(data, 1) is False
+
+    @pytest.mark.asyncio
+    async def test_removing_a_plug_takes_its_override_with_it(self):
+        """Otherwise the next plug to be given this id inherits a threshold
+        nobody set for it."""
+        from backend.app.services.zigbee.driver import ZigbeeSmartPlugService
+
+        service = ZigbeeSmartPlugService()
+        service.set_stale_after(1, 45)
+        await service.teardown(1)
+
+        assert service._stale_after == {}
+
+    @pytest.mark.asyncio
+    async def test_the_stored_threshold_reaches_the_driver_when_a_plug_is_wired(self, monkeypatch):
+        """Otherwise the column is decorative: stored, shown, and never used."""
+        from contextlib import asynccontextmanager
+        from types import SimpleNamespace
+
+        from backend.app.services.zigbee import reporting as module
+        from backend.app.services.zigbee.driver import ZigbeeSmartPlugService
+
+        service = ZigbeeSmartPlugService()
+        device = SimpleNamespace(ieee="aa:bb", endpoints={})
+        monkeypatch.setattr(service, "_device_for", lambda _plug: device)
+
+        @asynccontextmanager
+        async def fake_session():
+            yield SimpleNamespace()
+
+        async def fake_row(db, ieee):
+            return SimpleNamespace(stale_after_seconds=45)
+
+        monkeypatch.setattr("backend.app.core.database.async_session", fake_session)
+        monkeypatch.setattr("backend.app.services.zigbee.device_settings.load_device_row", fake_row)
+
+        await module.subscribe_all(service, [SimpleNamespace(id=1)])
+
+        assert service._stale_after == {1: 45}

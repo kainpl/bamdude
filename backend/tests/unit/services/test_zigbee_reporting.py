@@ -152,7 +152,12 @@ class TestSubscriptionIsActuallyWired:
             SimpleNamespace(id=1, plug_type="zigbee", zigbee_ieee="aa"),
             SimpleNamespace(id=2, plug_type="zigbee", zigbee_ieee="bb"),
         ]
-        service = SimpleNamespace(_device_for=lambda p: SimpleNamespace(ieee=p.zigbee_ieee))
+        # set_stale_after is part of the service contract now; a stub without
+        # it would fail inside the per-plug guard and read as "the plug failed".
+        service = SimpleNamespace(
+            _device_for=lambda p: SimpleNamespace(ieee=p.zigbee_ieee),
+            set_stale_after=lambda plug_id, seconds: None,
+        )
 
         with patch.object(reporting, "bind_plug", AsyncMock(return_value={})) as bind:
             await reporting.subscribe_all(service, plugs)
@@ -185,7 +190,12 @@ class TestSubscriptionIsActuallyWired:
             SimpleNamespace(id=1, plug_type="zigbee", zigbee_ieee="aa"),
             SimpleNamespace(id=2, plug_type="zigbee", zigbee_ieee="bb"),
         ]
-        service = SimpleNamespace(_device_for=lambda p: SimpleNamespace(ieee=p.zigbee_ieee))
+        # set_stale_after is part of the service contract now; a stub without
+        # it would fail inside the per-plug guard and read as "the plug failed".
+        service = SimpleNamespace(
+            _device_for=lambda p: SimpleNamespace(ieee=p.zigbee_ieee),
+            set_stale_after=lambda plug_id, seconds: None,
+        )
 
         with patch.object(reporting, "bind_plug", AsyncMock(side_effect=[OSError("boom"), {}])) as bind:
             await reporting.subscribe_all(service, plugs)
