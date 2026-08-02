@@ -22,7 +22,9 @@ from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.smart_plug import SmartPlug
+from backend.app.models.smart_sensor import SmartSensor
 from backend.app.models.user import User
+from backend.app.schemas.smart_sensor import SmartSensorCreate, SmartSensorOut, SmartSensorUpdate
 from backend.app.schemas.zigbee_settings import DeviceSettingsUpdate
 from backend.app.services.zigbee.coordinator import CoordinatorState, zigbee_coordinator
 from backend.app.services.zigbee.device_settings import resolve_reporting
@@ -422,11 +424,25 @@ async def list_sensors(
         # this question and gets an answer rather than a 503.
         return {"sensors": []}
 
+    # Adopted only. A paired sensor that nobody has added stays on the network
+    # and keeps being configured, but it is not something the farm shows or
+    # acts on — the same rule plugs have always had.
+    adopted = {
+        str(ieee).lower(): (sensor_id, name, location)
+        for sensor_id, name, location, ieee in (
+            await db.execute(select(SmartSensor.id, SmartSensor.name, SmartSensor.location, SmartSensor.zigbee_ieee))
+        ).all()
+    }
+
     sensors = []
     for device in list(app.devices.values()):
         info = describe_device(device)
         if info.kind is not DeviceKind.SENSOR:
             continue
+        entry = adopted.get(info.ieee.lower())
+        if entry is None:
+            continue
+        sensor_id, sensor_name, sensor_location = entry
 
         parameters = await resolve_reporting(db, info)
         polled = power_class(device) is PowerClass.MAINS
@@ -460,6 +476,11 @@ async def list_sensors(
 
         sensors.append(
             {
+                "id": sensor_id,
+                # What the operator calls it. The hardware's own name is a
+                # different question, answered by the settings endpoint.
+                "name": sensor_name,
+                "location": sensor_location,
                 "ieee": info.ieee,
                 "nwk": info.nwk,
                 "manufacturer": info.manufacturer,
@@ -473,6 +494,88 @@ async def list_sensors(
             }
         )
     return {"sensors": sensors}
+
+
+@router.post("/sensors", status_code=201, response_model=SmartSensorOut)
+async def adopt_sensor(
+    payload: SmartSensorCreate,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_SENSORS_CREATE),
+):
+    """Start tracking a paired sensor, under a name the operator chooses.
+
+    The same two steps a plug already takes: pair it, then add it. Pairing on
+    its own puts a device on the network and gives its settings somewhere to
+    live; it does not decide that the farm cares about it.
+    """
+    from backend.app.services.zigbee.device_settings import load_device_row
+
+    ieee = payload.zigbee_ieee.strip().lower()
+    row = await load_device_row(db, ieee)
+    if row is None:
+        raise HTTPException(status_code=404, detail="This device has never paired with BamDude.")
+    if row.kind != DeviceKind.SENSOR.value:
+        # The device classes are closed and separate. A plug adopted here would
+        # appear in two lists with two names and no on/off anywhere.
+        raise HTTPException(status_code=422, detail="This device is a plug. Add it under Smart plugs instead.")
+
+    existing = await db.execute(select(SmartSensor.id).where(func.lower(SmartSensor.zigbee_ieee) == ieee))
+    if existing.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=409, detail="This sensor has already been added.")
+
+    sensor = SmartSensor(name=payload.name.strip(), location=(payload.location or "").strip() or None, zigbee_ieee=ieee)
+    db.add(sensor)
+    await db.commit()
+    await db.refresh(sensor)
+    return sensor
+
+
+@router.patch("/sensors/{sensor_id}", response_model=SmartSensorOut)
+async def rename_sensor(
+    sensor_id: int,
+    payload: SmartSensorUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_SENSORS_UPDATE),
+):
+    """Change what the operator calls it, and where it stands.
+
+    Not what the hardware calls itself: that is the radio's answer, kept in
+    ``zigbee_devices`` and never edited, so the two never have to be reconciled.
+    """
+    sensor = await db.get(SmartSensor, sensor_id)
+    if sensor is None:
+        raise HTTPException(status_code=404, detail="No such sensor.")
+    if payload.name is not None:
+        sensor.name = payload.name.strip()
+    if payload.location is not None:
+        # An empty string clears it rather than storing emptiness — "nowhere
+        # recorded" and "recorded as nothing" are the same thing to a reader.
+        sensor.location = payload.location.strip() or None
+    await db.commit()
+    await db.refresh(sensor)
+    return sensor
+
+
+@router.delete("/sensors/{sensor_id}")
+async def drop_sensor(
+    sensor_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_SENSORS_DELETE),
+):
+    """Stop tracking a sensor. It stays on the network.
+
+    Only the farm-level row goes. The device remains paired, keeps its
+    reporting settings and goes on being configured, so adopting it again
+    restores exactly what it had. Taking it off the network is
+    ``DELETE /zigbee/devices/{ieee}`` — a different, more expensive action,
+    since a sensor removed from the mesh has to be paired again in person.
+    """
+    sensor = await db.get(SmartSensor, sensor_id)
+    if sensor is None:
+        raise HTTPException(status_code=404, detail="No such sensor.")
+    await db.delete(sensor)
+    await db.commit()
+    return {"deleted": sensor_id}
 
 
 def _find_device(app, ieee: str):

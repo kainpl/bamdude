@@ -31,12 +31,24 @@ def _sensor_device(ieee=IEEE, rx_on_when_idle=False, battery=True):
     )
 
 
+async def _adopt(db, ieee, name="Workshop"):
+    """Pair AND adopt. The list shows adopted sensors only — a paired device
+    nobody has added stays on the network and out of the way."""
+    from backend.app.models.smart_sensor import SmartSensor
+    from backend.app.models.zigbee_device import ZigbeeDevice
+
+    db.add(ZigbeeDevice(ieee=str(ieee).lower(), kind="sensor", name="SONOFF SNZB-02D"))
+    db.add(SmartSensor(name=name, zigbee_ieee=str(ieee).lower()))
+    await db.commit()
+
+
 @pytest.fixture
-def paired_sensor(monkeypatch):
+async def paired_sensor(monkeypatch, db_session):
     from backend.app.services.zigbee.coordinator import zigbee_coordinator
 
     device = _sensor_device()
     monkeypatch.setattr(zigbee_coordinator, "_app", SimpleNamespace(devices={device.ieee: device}))
+    await _adopt(db_session, device.ieee)
     sensor_store.forget(device.ieee)
     yield device
     sensor_store.forget(device.ieee)
@@ -87,7 +99,9 @@ async def test_battery_is_offered_even_though_it_does_not_make_a_sensor(async_cl
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_a_sensor_without_a_battery_cluster_is_not_offered_one(async_client: AsyncClient, monkeypatch):
+async def test_a_sensor_without_a_battery_cluster_is_not_offered_one(
+    async_client: AsyncClient, monkeypatch, db_session
+):
     """The list comes from the clusters the device carries. Offering a battery
     to a mains sensor that has none would show a quantity permanently null and
     permanently stale, which reads as a fault rather than as absence."""
@@ -95,6 +109,7 @@ async def test_a_sensor_without_a_battery_cluster_is_not_offered_one(async_clien
 
     device = _sensor_device(ieee="cc:cc", battery=False)
     monkeypatch.setattr(zigbee_coordinator, "_app", SimpleNamespace(devices={device.ieee: device}))
+    await _adopt(db_session, device.ieee)
 
     sensor = (await async_client.get("/api/v1/zigbee/sensors")).json()["sensors"][0]
 
@@ -103,11 +118,12 @@ async def test_a_sensor_without_a_battery_cluster_is_not_offered_one(async_clien
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_a_mains_sensor_is_reported_as_such(async_client: AsyncClient, monkeypatch):
+async def test_a_mains_sensor_is_reported_as_such(async_client: AsyncClient, monkeypatch, db_session):
     from backend.app.services.zigbee.coordinator import zigbee_coordinator
 
     device = _sensor_device(ieee="bb:bb", rx_on_when_idle=True)
     monkeypatch.setattr(zigbee_coordinator, "_app", SimpleNamespace(devices={device.ieee: device}))
+    await _adopt(db_session, device.ieee)
 
     sensor = (await async_client.get("/api/v1/zigbee/sensors")).json()["sensors"][0]
 
