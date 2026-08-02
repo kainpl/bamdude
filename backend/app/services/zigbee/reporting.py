@@ -532,21 +532,27 @@ class SensorReportListener:
             )
 
 
-def _warn_if_sensor_reporting_refused(ieee: str, cluster_id: int, result) -> None:
-    """The plug version of this takes a plug id; a sensor has no row and no id.
+def _sensor_reporting_accepted(ieee: str, cluster_id: int, result) -> bool:
+    """Whether the device accepted every attribute in this result.
 
-    Worth its own function rather than passing 0: "Zigbee plug 0 refused
-    reporting" in the log would name a device that does not exist, in exactly
-    the place the log is being read to find out what happened.
+    The plug version takes a plug id; a sensor has no row and no id, and
+    "Zigbee plug 0 refused reporting" would name a device that does not exist in
+    exactly the place the log is read to find out what happened.
+
+    Returns a verdict rather than only warning: a device that answers "no" was
+    being recorded as ``ok`` while the refusal went to the log alone, so the API
+    claimed a configuration the device had declined.
     """
     if not isinstance(result, dict):
         logger.debug(
             "Zigbee sensor %s: unexpected configure_reporting result for cluster 0x%04X: %r", ieee, cluster_id, result
         )
-        return
+        return True
+    accepted = True
     for attr, status in result.items():
         if status == foundation.Status.SUCCESS:
             continue
+        accepted = False
         logger.warning(
             "Zigbee sensor %s: device refused reporting for %s on cluster 0x%04X (status=%s). "
             "Its readings will only update when something else reads it.",
@@ -555,6 +561,7 @@ def _warn_if_sensor_reporting_refused(ieee: str, cluster_id: int, result) -> Non
             cluster_id,
             status,
         )
+    return accepted
 
 
 def _attribute_ids(cluster) -> dict[str, int]:
@@ -696,9 +703,12 @@ async def bind_sensor(device, ieee: str, parameters: dict[str, dict]) -> dict[st
                 result = await cluster.configure_reporting(
                     measurement.attribute, min_interval, max_interval, to_raw_change(measurement, change)
                 )
-                _warn_if_sensor_reporting_refused(ieee, cluster_id, result)
-                applied[measurement.key] = "ok"
+                applied[measurement.key] = "ok" if _sensor_reporting_accepted(ieee, cluster_id, result) else "refused"
             except Exception as exc:  # noqa: BLE001 — one quantity failing must not lose the others
+                # "unanswered", not "refused": a sleeping device that dozed off
+                # mid-configuration has declined nothing, and saying it did
+                # sends the operator hunting a fault that is not there. It also
+                # has to be retried, which REFUSED would not be.
                 logger.warning(
                     "Zigbee sensor %s: could not configure %s on 0x%04X: %s",
                     ieee,
@@ -706,7 +716,7 @@ async def bind_sensor(device, ieee: str, parameters: dict[str, dict]) -> dict[st
                     cluster_id,
                     describe_exception(exc),
                 )
-                applied[measurement.key] = "refused"
+                applied[measurement.key] = "unanswered"
 
     return applied
 
@@ -739,7 +749,14 @@ async def reapply_if_settings_changed(device, ieee: str, keys: tuple[str, ...]) 
         if not desired or zigbee_coordinator.desired_reporting(ieee) == desired:
             return
         applied = await bind_sensor(device, ieee, parameters)
-        zigbee_coordinator.record_reporting(ieee, desired, applied)
+        # Only a complete apply is recorded as done. An attribute that timed out
+        # has to be tried again at the next contact; recording the desired state
+        # regardless would mark the configuration applied for ever on the
+        # strength of one sleepy moment.
+        if all(state == "ok" for state in applied.values()):
+            zigbee_coordinator.record_reporting(ieee, desired, applied)
+        else:
+            zigbee_coordinator.record_reporting(ieee, {}, applied)
         logger.info("Zigbee sensor %s: reporting re-applied from settings: %s", ieee, applied)
     except Exception as exc:  # noqa: BLE001 — a failed re-apply must not break the report path
         logger.debug("Zigbee sensor %s: could not re-apply reporting: %s", ieee, describe_exception(exc))

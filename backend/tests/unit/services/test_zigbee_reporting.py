@@ -484,19 +484,22 @@ async def test_operator_intervals_override_the_registry_defaults():
 
 
 @pytest.mark.asyncio
-async def test_a_cluster_that_refuses_does_not_cost_the_others():
+async def test_one_cluster_failing_does_not_cost_the_others():
+    """Isolation between clusters. The failure here is an exception, which means
+    "we never heard back" rather than "the device declined" — see
+    TestReportingStateIsHonest for why the two are not the same word."""
     from backend.app.services.zigbee.reporting import bind_sensor
 
     device = _sensor_device(0x0402, 0x0405)
 
-    async def refuse(*args, **kwargs):
-        raise RuntimeError("device said no")
+    async def blows_up(*args, **kwargs):
+        raise RuntimeError("no answer")
 
-    device.endpoints[1].in_clusters[0x0402].configure_reporting = refuse
+    device.endpoints[1].in_clusters[0x0402].configure_reporting = blows_up
 
     result = await bind_sensor(device, "aa:bb", parameters={})
 
-    assert result["temperature"] == "refused"
+    assert result["temperature"] == "unanswered"
     assert result["humidity"] == "ok"
 
 
@@ -845,3 +848,86 @@ class TestPlugsUseTheCurrentEventApiToo:
         cluster = device.endpoints[1].in_clusters[ON_OFF]
         assert len(cluster.event_callbacks["attribute_report"]) == 1
         assert len(cluster.listeners) == 1
+
+
+class TestReportingStateIsHonest:
+    """ "Refused" and "we never heard back" are different facts, and the second
+    one has to be retried.
+
+    Found on hardware: a sleeping sensor went back to sleep mid-configuration,
+    the battery attribute timed out, and the API said the device had REFUSED it.
+    An operator reading that goes looking for a fault in the device. Worse, the
+    desired state was recorded as applied anyway, so nothing ever retried and
+    the attribute stayed unconfigured for good.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_is_reported_as_unanswered_not_refused(self):
+        from backend.app.services.zigbee.reporting import bind_sensor
+
+        device = _sensor_device(0x0402)
+
+        async def times_out(*args, **kwargs):
+            raise TimeoutError("the device did not answer in time")
+
+        device.endpoints[1].in_clusters[0x0402].configure_reporting = times_out
+
+        applied = await bind_sensor(device, "aa:bb", parameters={})
+
+        assert applied["temperature"] == "unanswered"
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_non_success_status_is_reported_as_refused(self):
+        """The device answered and said no. That is a different fact again, and
+        it was being recorded as "ok" while the warning went only to the log."""
+        from zigpy.zcl import foundation
+
+        from backend.app.services.zigbee.reporting import bind_sensor
+
+        device = _sensor_device(0x0402)
+
+        async def says_no(*args, **kwargs):
+            # Keyed by name: zigpy keys this by ZCLAttributeDef, and the reader
+            # takes getattr(attr, "name", attr) so a plain string is equivalent
+            # here — and hashable, which a SimpleNamespace is not.
+            return {"measured_value": foundation.Status.UNSUPPORTED_ATTRIBUTE}
+
+        device.endpoints[1].in_clusters[0x0402].configure_reporting = says_no
+
+        applied = await bind_sensor(device, "aa:bb", parameters={})
+
+        assert applied["temperature"] == "refused"
+
+    @pytest.mark.asyncio
+    async def test_an_incomplete_apply_is_retried_at_the_next_contact(self, monkeypatch):
+        """A transient timeout must not mark the configuration as done."""
+        from contextlib import asynccontextmanager
+
+        from backend.app.services.zigbee import reporting as module
+        from backend.app.services.zigbee.coordinator import zigbee_coordinator
+
+        calls: list[str] = []
+
+        async def half_applied(device, ieee, parameters):
+            calls.append(ieee)
+            return {"temperature": "ok", "battery": "unanswered"}
+
+        async def fake_parameters(db):
+            return {"temperature": {"min_interval": 30, "max_interval": 900, "reportable_change": 0.1}}
+
+        @asynccontextmanager
+        async def fake_session():
+            yield SimpleNamespace()
+
+        monkeypatch.setattr(module, "bind_sensor", half_applied)
+        monkeypatch.setattr("backend.app.services.zigbee.sensor_settings.load_reporting_parameters", fake_parameters)
+        monkeypatch.setattr("backend.app.core.database.async_session", fake_session)
+        zigbee_coordinator.forget_reporting("retry")
+
+        try:
+            await module.reapply_if_settings_changed(_sensor_device(0x0402), "retry", ("temperature",))
+            await module.reapply_if_settings_changed(_sensor_device(0x0402), "retry", ("temperature",))
+
+            assert calls == ["retry", "retry"], "an unanswered attribute must be tried again"
+        finally:
+            zigbee_coordinator.forget_reporting("retry")
