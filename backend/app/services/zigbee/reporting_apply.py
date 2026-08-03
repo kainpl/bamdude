@@ -43,17 +43,24 @@ REFUSED = "refused"
 UNANSWERED = "unanswered"
 
 
-def _outcome(state: str, verification: str, values: dict) -> dict:
+def _outcome(state: str, verification: str, values: dict, actual: dict | None = None) -> dict:
     """One entry, always carrying WHICH settings it describes.
 
     Every branch records the values it was working on, including the ones
     that got nowhere: "we last tried 900 and it did not answer" is a
     different fact from "we last verified 600", and both are worth saying.
+
+    ``actual`` is what reading the configuration back said, in RAW units --
+    that is what the device reports -- while ``values`` is in the operator's
+    units. Only a read-back produces it, so it is None everywhere else. Without
+    it "the device stored something else" cannot say what, and an operator has
+    nothing to act on short of reading the log.
     """
     return {
         "state": state,
         "verification": verification,
         "values": values,
+        "actual": actual,
         "at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -183,7 +190,7 @@ async def apply_reporting(cluster_for, ieee: str, targets, desired: dict[str, di
                 actual,
                 asked,
             )
-        applied[target.key] = _outcome(OK, verification, values)
+        applied[target.key] = _outcome(OK, verification, values, actual)
     return applied
 
 

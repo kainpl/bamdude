@@ -304,6 +304,34 @@ class TestAnOutcomeSaysWhichSettingsItIsAbout:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_a_clamped_value_reaches_the_answer_and_not_only_the_log(
+        self, async_client: AsyncClient, monkeypatch, db_session
+    ):
+        """The device says SUCCESS and stores something else. Until now that
+        difference went to the log alone, so "it stored something else" could
+        never say what."""
+        from backend.app.services.zigbee.coordinator import zigbee_coordinator
+
+        # Answers the read-back with a max_interval it clamped to 300.
+        plug = fake_device(
+            PLUG, 0x0006, 0x0702, 0x0B04, mac_capability_flags=MAINS_DEVICE_FLAGS, model="S60ZBTPF", stored=(5, 300, 1)
+        )
+        monkeypatch.setattr(zigbee_coordinator, "_app", SimpleNamespace(devices={plug.ieee: plug}))
+        await _pair(db_session, PLUG, "plug")
+
+        body = (
+            await async_client.put(
+                f"/api/v1/zigbee/devices/{PLUG}/settings",
+                json={"reporting": {"power": {"max_interval": 900}}},
+            )
+        ).json()
+
+        entry = body["applied"]["power"]
+        assert entry["verification"] == "mismatch"
+        assert entry["actual"]["max_interval"] == 300, "the number an operator needs, not a line in the log"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_a_sleeper_shows_the_new_settings_as_not_yet_confirmed(
         self, async_client: AsyncClient, paired, db_session
     ):
@@ -356,6 +384,33 @@ class TestEditableIsDeclared:
         body = (await async_client.get(f"/api/v1/zigbee/devices/{SENSOR}/settings")).json()
 
         assert body["poll_supported"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_every_target_says_what_its_change_is_measured_in(
+        self, async_client: AsyncClient, paired, db_session
+    ):
+        """The dialog labels the "change by" field. Hardcoding a key-to-unit map
+        in the frontend would be a second copy of the measurement registry, and
+        it would drift at the first new quantity."""
+        await _pair(db_session, SENSOR, "sensor")
+
+        body = (await async_client.get(f"/api/v1/zigbee/devices/{SENSOR}/settings")).json()
+
+        assert body["units"]["temperature"] == "°C"
+        assert body["units"]["humidity"] == "%"
+        assert body["units"]["battery"] == "%"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_relay_has_no_unit_because_it_has_no_amount(self, async_client: AsyncClient, paired, db_session):
+        await _pair(db_session, PLUG, "plug")
+
+        body = (await async_client.get(f"/api/v1/zigbee/devices/{PLUG}/settings")).json()
+
+        assert body["units"]["state"] == ""
+        assert body["units"]["power"] == "W"
+        assert body["units"]["energy"] == "kWh"
 
 
 class TestAPlugsSettingsActuallyReachIt:

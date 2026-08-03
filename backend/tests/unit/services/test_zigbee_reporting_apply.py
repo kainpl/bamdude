@@ -31,6 +31,7 @@ def _target(key="temperature", cluster=0x0402, attribute=0x0000, editable=None):
         max_interval=900,
         reportable_change=0.1,
         editable=editable or ("min_interval", "max_interval", "reportable_change"),
+        unit="°C",
         to_raw=lambda change, scaling=None: 10,
     )
 
@@ -301,6 +302,7 @@ async def test_the_scaling_is_handed_to_the_target_conversion():
         max_interval=900,
         reportable_change=1,
         editable=("min_interval", "max_interval", "reportable_change"),
+        unit="°C",
         to_raw=to_raw,
     )
     cluster = _Cluster(read_back=_rsp(5, 900, 7, attrid=0x050B))
@@ -394,6 +396,7 @@ async def test_each_cluster_gets_its_own_scaling():
             max_interval=900,
             reportable_change=1,
             editable=(),
+            unit="°C",
             to_raw=to_raw_for("power"),
         ),
         ReportingTarget(
@@ -404,6 +407,7 @@ async def test_each_cluster_gets_its_own_scaling():
             max_interval=900,
             reportable_change=1,
             editable=(),
+            unit="°C",
             to_raw=to_raw_for("energy"),
         ),
     )
@@ -413,3 +417,29 @@ async def test_each_cluster_gets_its_own_scaling():
     await apply_reporting(lambda _c: cluster, "aa:bb", targets, {}, scaling_for=pairs.get)
 
     assert seen == {"power": (1, 10), "energy": (1, 1000)}
+
+
+@pytest.mark.asyncio
+async def test_a_mismatch_says_what_the_device_stored():
+    """ "It stored something else", with no way to learn what short of reading
+    the log, is barely worth showing."""
+    from backend.app.services.zigbee.reporting_apply import apply_reporting
+
+    cluster = _Cluster(read_back=_rsp(60, 300, 10))
+    result = await apply_reporting(lambda _c: cluster, "aa:bb", (_target(),), DESIRED)
+
+    entry = result["temperature"]
+    assert _outcome_of(entry) == ("ok", "mismatch")
+    assert entry["actual"]["max_interval"] == 300, "the device clamped 900 to 300 and can now say so"
+
+
+@pytest.mark.asyncio
+async def test_an_outcome_with_no_read_back_has_no_actual():
+    """A sleeper that never answered stored nothing we know of. None, not {}:
+    an empty dict reads as "it reported nothing back", which is a claim."""
+    from backend.app.services.zigbee.reporting_apply import apply_reporting
+
+    cluster = _Cluster(read_back=None)
+    result = await apply_reporting(lambda _c: cluster, "aa:bb", (_target(),), DESIRED)
+
+    assert result["temperature"]["actual"] is None

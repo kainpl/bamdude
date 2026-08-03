@@ -62,6 +62,9 @@ class ReportingTarget:
     # Which fields an operator may change. Lives here rather than in the UI so
     # that no consumer has to know ``state`` is peculiar.
     editable: tuple[str, ...]
+    # What the "change by" number is measured in, for the dialog to label it.
+    # Empty for a relay: it has changed or it has not, and there is no amount.
+    unit: str
     to_raw: Callable[..., int | float]
 
 
@@ -111,6 +114,7 @@ _STATE_TARGET = ReportingTarget(
     max_interval=900,
     reportable_change=1,
     editable=("max_interval",),
+    unit="",
     to_raw=_always_one,
 )
 
@@ -126,6 +130,7 @@ _ENERGY_TARGET = ReportingTarget(
     max_interval=900,
     reportable_change=1,
     editable=FULLY_EDITABLE,
+    unit="kWh",
     to_raw=_device_scaled_to_raw,
 )
 
@@ -152,6 +157,7 @@ def _power_target(info: DeviceInfo) -> ReportingTarget | None:
         max_interval=900,
         reportable_change=1,
         editable=FULLY_EDITABLE,
+        unit="W",
         to_raw=_device_scaled_to_raw,
     )
 
@@ -174,6 +180,7 @@ def targets_for(info: DeviceInfo) -> tuple[ReportingTarget, ...]:
                 max_interval=m.default_max_interval,
                 reportable_change=m.default_reportable_change,
                 editable=FULLY_EDITABLE,
+                unit=m.unit,
                 to_raw=_sensor_to_raw(m.key),
             )
             for m in MEASUREMENTS

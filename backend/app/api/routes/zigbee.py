@@ -679,6 +679,10 @@ def _applied_entry(recorded: dict | None, wanted: dict | None) -> dict:
         "state": recorded.get("state", "unknown"),
         "verification": recorded.get("verification", "not-checked"),
         "values": values,
+        # Raw units, unlike `values`. Only the intervals are comparable between
+        # the two, which is why the dialog names a mismatched change without a
+        # number rather than putting a raw count beside a label reading °C.
+        "actual": recorded.get("actual"),
         "at": recorded.get("at"),
         # False when nothing has been recorded at all: an unknown outcome
         # describes no settings, least of all these.
@@ -726,6 +730,10 @@ async def _settings_payload(db, device, info, row) -> dict:
         "name": row.name if row else None,
         "adopted": await _is_adopted(db, info),
         "editable": {t.key: list(t.editable) for t in targets},
+        # What the "change by" number is measured in. Sent rather than known by
+        # the frontend: a key-to-unit map there would be a second copy of the
+        # measurement registry, and it would drift at the first new quantity.
+        "units": {t.key: t.unit for t in targets},
         "desired": desired,
         # Unknown rather than ok: after a restart nothing has been asked of this
         # device yet, and claiming a state nobody confirmed is the failure this

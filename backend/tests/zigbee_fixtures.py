@@ -62,13 +62,18 @@ class StubCluster:
     still passes for the wrong reason.
     """
 
-    def __init__(self, cluster_id: int, asleep: bool = False):
+    def __init__(self, cluster_id: int, asleep: bool = False, stored: tuple[int, int, int] | None = None):
         self.cluster_id = cluster_id
         # A battery device is asleep almost all of the time, so "the request
         # times out" is its NORMAL answer rather than an error case. A fixture
         # that always succeeds cannot reproduce the state the honest-reporting
         # vocabulary was built for.
         self.asleep = asleep
+        # What the device claims to have stored, when a test wants the
+        # read-back to answer. Off by default: most tests are about what the
+        # device ANSWERED, and a stub that always confirms would quietly turn
+        # every "accepted, not verified" outcome into "verified".
+        self.stored = stored
         self.listeners: list = []
         self.event_callbacks: dict[str, list] = {}
         self.cache: dict[str, object] = {}
@@ -111,6 +116,25 @@ class StubCluster:
         self.configured.append((attribute, min_interval, max_interval, change))
         return [SimpleNamespace(status=0)]
 
+    async def general_command(self, command_id, *args, **kwargs):
+        """The read-back. zigpy has no convenience method for it, so production
+        code issues Read_Reporting_Configuration by hand and so does this."""
+        if self.stored is None:
+            raise TimeoutError()
+        from zigpy.zcl import foundation
+
+        config = foundation.AttributeReportingConfig()
+        config.direction = foundation.ReportingDirection.SendReports
+        # The attribute the caller ASKED about: production code discards any
+        # record whose attrid does not match, so a hardcoded zero here would
+        # make every read-back look unanswerable and quietly turn a mismatch
+        # into "not checked".
+        records = args[0] if args else []
+        config.attrid = getattr(records[0], "attrid", 0x0000) if records else 0x0000
+        config.min_interval, config.max_interval, config.reportable_change = self.stored
+        entry = foundation.AttributeReportingConfigWithStatus(status=foundation.Status.SUCCESS, config=config)
+        return type("Rsp", (), {"attribute_configs": [entry]})()
+
     async def read_attributes(self, attrs, **kwargs):
         return ({}, {})
 
@@ -126,6 +150,7 @@ def fake_device(
     manufacturer: str = "SONOFF",
     nwk: int = 0x1234,
     asleep: bool = False,
+    stored: tuple[int, int, int] | None = None,
 ):
     """A stand-in zigpy device carrying the given input clusters.
 
@@ -139,7 +164,9 @@ def fake_device(
         model=model,
         endpoints={
             0: SimpleNamespace(in_clusters={}),
-            1: SimpleNamespace(in_clusters={cid: StubCluster(cid, asleep=asleep) for cid in cluster_ids}),
+            1: SimpleNamespace(
+                in_clusters={cid: StubCluster(cid, asleep=asleep, stored=stored) for cid in cluster_ids}
+            ),
         },
         node_desc=node_descriptor(mac_capability_flags),
     )
