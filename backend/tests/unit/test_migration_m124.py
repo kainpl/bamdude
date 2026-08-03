@@ -154,14 +154,20 @@ async def test_upgrade_is_idempotent(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_the_model_and_the_migration_agree_on_the_columns(tmp_path):
+async def test_the_model_and_the_migration_chain_agree_on_the_columns(tmp_path):
     """A table is created in two places — the model for fresh installs and the
-    migration for existing ones. They drift in silence, and only one of them is
-    exercised by everything else."""
+    migrations for existing ones. They drift in silence, and only one of them is
+    exercised by everything else.
+
+    The CHAIN, not one migration: an existing database gets every migration in
+    order, so comparing the model against m124 alone starts failing the moment a
+    later one touches this table — as m126 did by adding ``parent_id``. A
+    migration that touches ``printer_locations`` belongs in this list.
+    """
     from sqlalchemy import inspect
 
     from backend.app.core.database import Base
-    from backend.app.migrations import m124_printer_locations as m
+    from backend.app.migrations import m124_printer_locations as m, m126_location_hierarchy as m126
     from backend.app.models import printer_location  # noqa: F401 — puts it on the metadata
 
     def columns_of(sync_conn):
@@ -176,6 +182,7 @@ async def test_the_model_and_the_migration_agree_on_the_columns(tmp_path):
     upgraded = await _legacy_db(tmp_path / "upgraded.db")
     async with upgraded.begin() as conn:
         await m.upgrade(conn)
+        await m126.upgrade(conn)
         from_migration = await conn.run_sync(columns_of)
     await upgraded.dispose()
 
