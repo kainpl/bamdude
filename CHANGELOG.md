@@ -22,6 +22,8 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **The locations panel was buried inside the archived-printers card.** It had been nested in the wrong place since locations were added, which also meant it inherited that card's permission: anyone who could manage places but not permanently delete a printer never saw it at all. It is now its own card, under the permission that actually governs locations.
+
 - **The locations panel showed internal names instead of its labels.** Every caption in Settings → Printing → Locations, and in the location picker, was rendering as its own internal identifier — text like `printers.locations.title` where a heading belonged. It has read that way since locations were introduced. Fixed, and a check now runs with the tests so a caption that loses its translation fails the build instead of quietly printing its own name; that check found sixty-three more captions elsewhere in the app doing the same thing, which will be corrected as those screens are worked on.
 
 - **A paired sensor is no longer described as if it were a plug.** The list of paired Zigbee devices labelled every entry with a relay's vocabulary, so a temperature sensor read as "switching only" — a lesser plug rather than a different device. It now says what the device measures. A sensor you have already added also reads as in use: that was worked out by searching the list of plugs, which knows nothing about sensors, so every adopted one looked free to take. And where the device's own name is known it is shown instead of the model number.

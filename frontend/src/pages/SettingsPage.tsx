@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Archive, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles } from 'lucide-react';
+import { Loader2, Archive, MapPin, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, macrosApi } from '../api/client';
@@ -2957,6 +2957,24 @@ export function SettingsPage() {
             </CardContent>
           </Card>
 
+          {/* Locations — its own card, and gated on the permission the
+              locations API actually checks. It used to sit INSIDE the archived
+              printers card, which put it under printers:delete: anyone who
+              could manage places but not retire a printer never saw it. */}
+          {hasPermission('printers:update') && (
+            <Card id="card-printer-locations">
+              <CardHeader>
+                <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                  <MapPin className="w-4 h-4 text-bambu-green" />
+                  {t('printers.locations.title')}
+                </h3>
+              </CardHeader>
+              <CardContent>
+                <PrinterLocationsCard />
+              </CardContent>
+            </Card>
+          )}
+
           {/* Archived printers — soft-retired printers, hidden everywhere else.
               Restore (unarchive) or delete permanently. Admin-grade
               (printers:delete), the same gate as the archive action itself. */}
@@ -2969,8 +2987,6 @@ export function SettingsPage() {
                 </h3>
               </CardHeader>
               <CardContent>
-                <PrinterLocationsCard />
-
                 <ArchivedPrintersPanel />
               </CardContent>
             </Card>
