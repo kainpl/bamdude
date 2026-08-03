@@ -9,6 +9,10 @@ export interface LocationNode {
 export interface LocationIndex {
   /** The id and everything beneath it. Empty for an id that is not there. */
   descendantsOf: (id: number) => Set<number>;
+  /** The id, then its parent, then its parent — nearest first, up to the root.
+   *  Empty for an id that is not there. The ORDER is the display order: the
+   *  nearest sensor reads leftmost in a group header. */
+  ancestorsOf: (id: number) => number[];
   /** The resolved path, or an empty string for an id that is not there. */
   pathOf: (id: number) => string;
 }
@@ -23,9 +27,11 @@ export interface LocationIndex {
  */
 export function buildLocationIndex(rows: LocationNode[]): LocationIndex {
   const children = new Map<number, number[]>();
+  const parents = new Map<number, number | null>();
   const paths = new Map<number, string>();
   for (const row of rows) {
     paths.set(row.id, row.path);
+    parents.set(row.id, row.parent_id);
     if (row.parent_id != null) {
       children.set(row.parent_id, [...(children.get(row.parent_id) ?? []), row.id]);
     }
@@ -45,6 +51,20 @@ export function buildLocationIndex(rows: LocationNode[]): LocationIndex {
         }
       }
       return found;
+    },
+    ancestorsOf(id: number) {
+      if (!paths.has(id)) return [];
+      const chain: number[] = [];
+      const seen = new Set<number>();
+      let current: number | null | undefined = id;
+      // The visited set is not defensive dressing: the backend refuses cycles,
+      // but a corrupt row must not hang the browser.
+      while (current != null && !seen.has(current) && paths.has(current)) {
+        seen.add(current);
+        chain.push(current);
+        current = parents.get(current);
+      }
+      return chain;
     },
     pathOf: (id: number) => paths.get(id) ?? '',
   };

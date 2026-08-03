@@ -40,3 +40,35 @@ describe('buildLocationIndex', () => {
     expect(buildLocationIndex(ROWS).pathOf(999)).toBe('');
   });
 });
+
+describe('ancestorsOf', () => {
+  it('starts at the location itself', () => {
+    // The workshop's own sensor has to show in the workshop's own group, not
+    // only in its children's.
+    expect(buildLocationIndex(ROWS).ancestorsOf(1)).toEqual([1]);
+  });
+
+  it('walks up to the root, nearest first', () => {
+    // The order IS the display order: the nearest sensor reads leftmost.
+    expect(buildLocationIndex(ROWS).ancestorsOf(4)).toEqual([4, 2, 1]);
+  });
+
+  it('does not reach into a sibling branch', () => {
+    expect(buildLocationIndex(ROWS).ancestorsOf(2)).not.toContain(3);
+  });
+
+  it('an unknown id is empty rather than an exception', () => {
+    // A group whose location was deleted mid-session must show no sensors, not
+    // break the page.
+    expect(buildLocationIndex(ROWS).ancestorsOf(999)).toEqual([]);
+  });
+
+  it('terminates on a cycle', () => {
+    // The backend refuses cycles, but a corrupt row must not hang the browser.
+    const looped: LocationNode[] = [
+      { id: 1, name: 'A', parent_id: 2, path: 'A', depth: 1 },
+      { id: 2, name: 'B', parent_id: 1, path: 'B', depth: 1 },
+    ];
+    expect(buildLocationIndex(looped).ancestorsOf(1).sort()).toEqual([1, 2]);
+  });
+});
