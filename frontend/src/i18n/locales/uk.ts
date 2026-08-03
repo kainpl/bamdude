@@ -1631,6 +1631,7 @@ export default {
         battery_voltage: 'напругу батареї',
       },
       removeDevice: 'Видалити пристрій',
+      addAsSensor: 'Додати як датчик',
       removeDeviceConfirm:
         'Видалити {{name}} із Zigbee-мережі? Він перестане відповідати, доки ви не спаруєте його знову вручну.',
       radioDownShort: 'Zigbee-радіо не працює',

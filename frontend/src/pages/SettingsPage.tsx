@@ -4144,7 +4144,7 @@ export function SettingsPage() {
           {/* The coordinator lives here rather than in its own tab: it exists to
               serve plugs, so this is where an operator looks for it, and the tab
               strip is already eleven entries long. */}
-          <ZigbeeCoordinatorCard />
+          <ZigbeeCoordinatorCard onAdoptSensor={setAdoptSensorDevice} />
 
           {/* Energy Summary Card */}
           {smartPlugs && smartPlugs.length > 0 && (

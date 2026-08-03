@@ -1625,6 +1625,7 @@ export default {
         battery_voltage: 'battery voltage',
       },
       removeDevice: 'Remove device',
+      addAsSensor: 'Add as sensor',
       removeDeviceConfirm:
         'Remove {{name}} from the Zigbee network? It will stop responding until you pair it again by hand.',
       radioDownShort: 'The Zigbee radio is down',

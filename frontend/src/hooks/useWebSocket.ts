@@ -599,10 +599,16 @@ export function useWebSocket() {
 
       case 'zigbee_device_left':
         queryClient.invalidateQueries({ queryKey: ['zigbee-devices'] });
+        // An adopted sensor that just left is still listed -- with its name and
+        // place -- and must flip to "not on the network" now, not in 30 s.
+        queryClient.invalidateQueries({ queryKey: ['zigbee-sensors'] });
         break;
 
       case 'zigbee_status_changed':
         queryClient.invalidateQueries({ queryKey: ['zigbee-status'] });
+        // A radio coming up or going down changes every sensor's readings at
+        // once, and the section reads them from its own query.
+        queryClient.invalidateQueries({ queryKey: ['zigbee-sensors'] });
         // A radio dying mid-session is worth an unprompted message: every plug on
         // it stops answering at once, and nothing else on screen explains why.
         // The reason is shown verbatim — it is the only part that says what to do.

@@ -41,7 +41,13 @@ const STATE_STYLES: Record<string, string> = {
   disabled: 'bg-bambu-dark text-bambu-gray',
 };
 
-export function ZigbeeCoordinatorCard() {
+interface Props {
+  /** Optional so every other caller is unaffected. The card does not know
+   *  about the dialog -- it only says which device was pressed. */
+  onAdoptSensor?: (device: ZigbeeDevice) => void;
+}
+
+export function ZigbeeCoordinatorCard({ onAdoptSensor }: Props = {}) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -386,6 +392,15 @@ export function ZigbeeCoordinatorCard() {
                         </p>
                       ) : null}
                     </div>
+                    {onAdoptSensor && device.kind === 'sensor' && !device.adopted && (
+                      <button
+                        type="button"
+                        onClick={() => onAdoptSensor(device)}
+                        className="text-xs text-bambu-green whitespace-nowrap px-2 py-1 rounded hover:bg-bambu-dark-tertiary shrink-0"
+                      >
+                        {t('settings.zigbee.addAsSensor')}
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => setRemoving(device)}

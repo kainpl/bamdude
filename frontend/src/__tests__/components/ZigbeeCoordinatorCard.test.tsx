@@ -176,6 +176,34 @@ describe('ZigbeeCoordinatorCard', () => {
       expect(await screen.findByText(/already added/i)).toBeInTheDocument();
     });
 
+    it('offers to add a sensor that nobody has added', async () => {
+      stub(UP);
+      vi.spyOn(api, 'getZigbeeDevices').mockResolvedValue({
+        devices: [device({ kind: 'sensor', measurements: ['temperature'], is_plug: false })],
+      });
+      const onAdoptSensor = vi.fn();
+
+      render(<ZigbeeCoordinatorCard onAdoptSensor={onAdoptSensor} />);
+      await userEvent.click(await screen.findByRole('button', { name: /add as sensor/i }));
+
+      expect(onAdoptSensor).toHaveBeenCalledWith(expect.objectContaining({ kind: 'sensor' }));
+    });
+
+    it('does not offer to add one twice, or to add a plug as a sensor', async () => {
+      stub(UP);
+      vi.spyOn(api, 'getZigbeeDevices').mockResolvedValue({
+        devices: [
+          device({ kind: 'sensor', measurements: ['temperature'], is_plug: false, adopted: true }),
+          device({ ieee: '11:11', kind: 'plug' }),
+        ],
+      });
+
+      render(<ZigbeeCoordinatorCard onAdoptSensor={() => {}} />);
+      await screen.findByText(/11:11/);
+
+      expect(screen.queryByRole('button', { name: /add as sensor/i })).not.toBeInTheDocument();
+    });
+
     it('the hardware name wins over the model when it is known', async () => {
       stub(UP);
       vi.spyOn(api, 'getZigbeeDevices').mockResolvedValue({
