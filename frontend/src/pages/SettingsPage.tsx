@@ -7,11 +7,12 @@ import { checkPasswordComplexity, isPasswordValid } from '../utils/password';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDateOnly, type DateFormat } from '../utils/date';
 import { getCurrencySymbol, SUPPORTED_CURRENCIES } from '../utils/currency';
-import type { AppSettings, AppSettingsUpdate, APIKey, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, Macro, MacroCreate, MacroUpdate } from '../api/client';
+import type { AppSettings, AppSettingsUpdate, APIKey, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, Macro, MacroCreate, MacroUpdate, ZigbeeDevice } from '../api/client';
 import { Card, CardContent, CardHeader } from '../components/Card';
 import { Button } from '../components/Button';
 import { LdapUserPicker } from '../components/LdapUserPicker';
 import { ZigbeeCoordinatorCard } from '../components/zigbee/ZigbeeCoordinatorCard';
+import { SensorsSection } from '../components/zigbee/SensorsSection';
 import { SmartPlugCard } from '../components/SmartPlugCard';
 import { AddSmartPlugModal } from '../components/AddSmartPlugModal';
 import { NotificationProviderCard } from '../components/NotificationProviderCard';
@@ -240,6 +241,10 @@ export function SettingsPage() {
   // intermediate values ("", "3", "5") aren't eaten by the [5, 95] clamp mid-type.
   const [humidityDrafts, setHumidityDrafts] = useState<Record<string, string>>({});
   const [showPlugModal, setShowPlugModal] = useState(false);
+  // Which paired device the operator pressed "add" on in the coordinator
+  // card. The sensors section owns the dialog it opens; this only carries
+  // the choice between two components that do not know about each other.
+  const [adoptSensorDevice, setAdoptSensorDevice] = useState<ZigbeeDevice | null>(null);
   const [editingPlug, setEditingPlug] = useState<SmartPlug | null>(null);
   const [showNotificationModal, setShowNotificationModal] = useState(false);
   const [editingProvider, setEditingProvider] = useState<NotificationProvider | null>(null);
@@ -4268,6 +4273,8 @@ export function SettingsPage() {
               </CardContent>
             </Card>
           )}
+
+          <SensorsSection adoptDevice={adoptSensorDevice} onAdoptHandled={() => setAdoptSensorDevice(null)} />
         </div>
       )}
       {/* ══════ /SMART PLUGS TAB ══════ */}

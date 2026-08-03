@@ -1606,6 +1606,11 @@ export default {
         battery: 'Батарея {{percent}} %',
         batteryVoltage: '{{volts}} В',
         mainsPowered: 'Живлення від мережі',
+        add: 'Додати датчик',
+        empty: 'Датчиків ще не додано.',
+        emptyHint: 'Спаруйте пристрій вище, потім додайте його тут.',
+        radioDown:
+          'Zigbee-рація лежить, тож покази не надходять. Датчики показані з тим, що про них було відомо востаннє.',
       },
       measurement: {
         temperature: 'температуру',

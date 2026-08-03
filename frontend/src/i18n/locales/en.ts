@@ -1600,6 +1600,11 @@ export default {
         battery: 'Battery {{percent}} %',
         batteryVoltage: '{{volts}} V',
         mainsPowered: 'Mains powered',
+        add: 'Add sensor',
+        empty: 'No sensors added yet.',
+        emptyHint: 'Pair one above, then add it here.',
+        radioDown:
+          'The Zigbee radio is down, so no readings are coming in. Your sensors are listed with what was last known about them.',
       },
       measurement: {
         temperature: 'temperature',
