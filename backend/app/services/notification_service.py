@@ -1122,6 +1122,7 @@ class NotificationService:
         db: AsyncSession,
         event_field: str,
         printer_id: int | None = None,
+        unscoped_only: bool = False,
     ) -> list[NotificationProvider]:
         """Get all enabled providers that want a specific event type.
 
@@ -1131,6 +1132,11 @@ class NotificationService:
         downstream. Other provider types (email / ntfy / pushover / discord
         / webhook / homeassistant / callmebot) keep the legacy
         provider-level event gate.
+
+        ``unscoped_only`` is for farm-wide news that belongs to no printer —
+        a sensor stands in a place, not on a machine. Without it, calling with
+        ``printer_id=None`` applies no filter at all, so a provider somebody
+        deliberately bound to one printer would receive everything.
         """
         enabled_filter = NotificationProvider.enabled.is_(True)
         printer_filter = None
@@ -1153,6 +1159,10 @@ class NotificationService:
         if printer_filter is not None:
             telegram_q = telegram_q.where(printer_filter)
             other_q = other_q.where(printer_filter)
+
+        if unscoped_only:
+            telegram_q = telegram_q.where(NotificationProvider.printer_id.is_(None))
+            other_q = other_q.where(NotificationProvider.printer_id.is_(None))
 
         rows = list((await db.execute(telegram_q)).scalars().all())
         rows.extend((await db.execute(other_q)).scalars().all())
@@ -1197,7 +1207,6 @@ class NotificationService:
         event_type: str = "unknown",
         printer_id: int | None = None,
         printer_name: str | None = None,
-        force_immediate: bool = False,
         image_data: bytes | None = None,
         extra_data: dict | None = None,
         variables: dict[str, Any] | None = None,
@@ -1206,6 +1215,12 @@ class NotificationService:
 
         All notifications are always sent immediately. If digest mode is enabled,
         the notification is ALSO queued for the daily digest summary.
+
+        There is no "send this one immediately" switch, because everything is
+        already immediate. A ``force_immediate`` flag was accepted here and
+        never read, so six callers — the four AMS alarms, the plate check and
+        the low-filament warning — believed they bypassed the digest and did
+        not. Do not reintroduce it.
         """
         for provider in providers:
             try:
@@ -1649,7 +1664,6 @@ class NotificationService:
             "print_missing_spool_assignment",
             printer_id,
             printer_name,
-            force_immediate=True,
             variables=variables,
         )
 
@@ -1764,7 +1778,6 @@ class NotificationService:
             "plate_not_empty",
             printer_id,
             printer_name,
-            force_immediate=True,
             variables=variables,
         )
 
@@ -1850,7 +1863,7 @@ class NotificationService:
         threshold: float,
         db: AsyncSession,
     ):
-        """Handle AMS high humidity alarm event. Always sends immediately (bypasses digest)."""
+        """Handle AMS high humidity alarm event. Sent immediately, like everything else."""
         providers = await self._get_providers_for_event(db, "on_ams_humidity_high", printer_id)
         if not providers:
             return
@@ -1863,7 +1876,8 @@ class NotificationService:
         }
 
         title, message = await self._build_message_from_template(db, "ams_humidity_high", variables)
-        # Alarms always send immediately, bypassing digest mode
+        # Immediate, like every notification here. This once asked to bypass
+        # the digest through a flag that was never read.
         await self._send_to_providers(
             providers,
             title,
@@ -1872,7 +1886,6 @@ class NotificationService:
             "ams_humidity_high",
             printer_id,
             printer_name,
-            force_immediate=True,
             variables=variables,
         )
 
@@ -1885,7 +1898,7 @@ class NotificationService:
         threshold: float,
         db: AsyncSession,
     ):
-        """Handle AMS high temperature alarm event. Always sends immediately (bypasses digest)."""
+        """Handle AMS high temperature alarm event. Sent immediately, like everything else."""
         providers = await self._get_providers_for_event(db, "on_ams_temperature_high", printer_id)
         if not providers:
             return
@@ -1898,7 +1911,8 @@ class NotificationService:
         }
 
         title, message = await self._build_message_from_template(db, "ams_temperature_high", variables)
-        # Alarms always send immediately, bypassing digest mode
+        # Immediate, like every notification here. This once asked to bypass
+        # the digest through a flag that was never read.
         await self._send_to_providers(
             providers,
             title,
@@ -1907,7 +1921,6 @@ class NotificationService:
             "ams_temperature_high",
             printer_id,
             printer_name,
-            force_immediate=True,
             variables=variables,
         )
 
@@ -1920,7 +1933,7 @@ class NotificationService:
         threshold: float,
         db: AsyncSession,
     ):
-        """Handle AMS-HT high humidity alarm event. Always sends immediately (bypasses digest)."""
+        """Handle AMS-HT high humidity alarm event. Sent immediately, like everything else."""
         providers = await self._get_providers_for_event(db, "on_ams_ht_humidity_high", printer_id)
         if not providers:
             return
@@ -1934,7 +1947,8 @@ class NotificationService:
 
         # Use the same template as regular AMS (can create separate templates later if needed)
         title, message = await self._build_message_from_template(db, "ams_humidity_high", variables)
-        # Alarms always send immediately, bypassing digest mode
+        # Immediate, like every notification here. This once asked to bypass
+        # the digest through a flag that was never read.
         await self._send_to_providers(
             providers,
             title,
@@ -1943,7 +1957,6 @@ class NotificationService:
             "ams_ht_humidity_high",
             printer_id,
             printer_name,
-            force_immediate=True,
             variables=variables,
         )
 
@@ -1956,7 +1969,7 @@ class NotificationService:
         threshold: float,
         db: AsyncSession,
     ):
-        """Handle AMS-HT high temperature alarm event. Always sends immediately (bypasses digest)."""
+        """Handle AMS-HT high temperature alarm event. Sent immediately, like everything else."""
         providers = await self._get_providers_for_event(db, "on_ams_ht_temperature_high", printer_id)
         if not providers:
             return
@@ -1970,7 +1983,8 @@ class NotificationService:
 
         # Use the same template as regular AMS (can create separate templates later if needed)
         title, message = await self._build_message_from_template(db, "ams_temperature_high", variables)
-        # Alarms always send immediately, bypassing digest mode
+        # Immediate, like every notification here. This once asked to bypass
+        # the digest through a flag that was never read.
         await self._send_to_providers(
             providers,
             title,
@@ -1979,7 +1993,51 @@ class NotificationService:
             "ams_ht_temperature_high",
             printer_id,
             printer_name,
-            force_immediate=True,
+            variables=variables,
+        )
+
+    # Which provider column governs which message. Two columns against five
+    # templates on purpose: the raise and its all-clear are never divided —
+    # switching off the all-clear while keeping the alarm is the AMS fault this
+    # avoids — while "tell me about the room" versus "tell me about the device"
+    # is a division people do make.
+    _SENSOR_ALERT_FIELDS = {
+        "sensor_above_max": "on_sensor_threshold",
+        "sensor_below_min": "on_sensor_threshold",
+        "sensor_back_in_range": "on_sensor_threshold",
+        "sensor_silent": "on_sensor_silent",
+        "sensor_speaking_again": "on_sensor_silent",
+    }
+
+    async def on_sensor_alert(self, event, db: AsyncSession):
+        """One sensor alert, raised or cleared.
+
+        ``unscoped_only``: a sensor belongs to a place, not to a printer, so a
+        provider bound to one printer is not a recipient.
+        """
+        from backend.app.i18n import get_language, t
+
+        field = self._SENSOR_ALERT_FIELDS.get(event.template)
+        if field is None:
+            return
+        providers = await self._get_providers_for_event(db, field, unscoped_only=True)
+        if not providers:
+            return
+
+        variables = dict(event.variables)
+        quantity = variables.get("quantity")
+        if quantity:
+            # The template row was seeded once in the system language; the key
+            # substituted raw would be an English word inside that sentence.
+            variables["quantity"] = t(await get_language(), "measurements", quantity)
+
+        title, message = await self._build_message_from_template(db, event.template, variables)
+        await self._send_to_providers(
+            providers,
+            title,
+            message,
+            db,
+            event.template,
             variables=variables,
         )
 

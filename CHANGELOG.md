@@ -30,6 +30,8 @@ All notable changes to BamDude will be documented in this file.
 
 - **A Zigbee device's saved settings no longer show a confirmation that belongs to the previous ones.** Saving does not wait for the device — a battery sensor is asleep almost all of the time, so the new configuration reaches it whenever it next wakes. Until then the answer showed the *earlier* configuration's "confirmed", which reads as confirmation of what you just saved. Each outcome now says which values it is about and when it was recorded, so settings still on their way are visibly still on their way. Attempts that reached nothing are recorded too: "we last tried these and heard nothing" is what explains a device running something other than what is on screen.
 
+- **Environmental and plate alarms no longer claimed to skip the daily digest.** Six alerts asked to be sent immediately regardless of digest settings; the request was accepted and never acted on. Every notification was already sent immediately, so nothing changes in what you receive — the setting that never did anything is gone.
+
 - **Filtering the queue list by location no longer empties it.** Picking a place on the Queues page matched nothing at all, so every queue disappeared instead of the list narrowing to that place. Sorting and grouping by location were unaffected.
 
 - **A sensor's recorded readings are no longer sent one by one.** A single sensor records around a hundred and fifty readings an hour, so a week of them was tens of thousands of points handed to the browser at once. They are now grouped into short intervals, the same way plug power already was.
