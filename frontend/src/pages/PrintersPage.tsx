@@ -154,6 +154,8 @@ const MODELS_WITH_CHAMBER_FAN: ReadonlySet<string> = new Set([
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
 import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors';
 import { formatSpoolDisplayName, DEFAULT_SPOOL_DISPLAY_TEMPLATE } from '../utils/spoolName';
+import { groupByLocation } from '../utils/locationGroups';
+import { LocationConditions } from '../components/zigbee/LocationConditions';
 
 // Color names resolve via getColorName() which reads the backend color_catalog
 // (loaded once at app startup by ColorCatalogProvider). Hardcoded hex/code tables
@@ -8333,17 +8335,14 @@ export function PrintersPage() {
     [lastSelectedId, sortedPrinters],
   );
 
-  // Group printers by location when sorted by location
+  // Group printers by location when sorted by location. Keyed on the location
+  // ID, which is what the header's sensors are matched against — an object
+  // keyed by that id would be reordered by the engine into ascending numeric
+  // order and would throw away the name sort applied above, hence an array.
   const groupedPrinters = useMemo(() => {
     if (sortBy !== 'location') return null;
-
-    const groups: Record<string, typeof sortedPrinters> = {};
-    sortedPrinters.forEach(printer => {
-      const location = printer.location?.path || t('printers.ungrouped');
-      if (!groups[location]) groups[location] = [];
-      groups[location].push(printer);
-    });
-    return groups;
+    return groupByLocation(sortedPrinters, printer => printer.location, t('printers.ungrouped'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- t is stable; listing it re-groups on every i18n tick
   }, [sortBy, sortedPrinters]);
 
   // ResizeObserver for the responsive toolbar: re-measure on layout changes
@@ -8769,15 +8768,16 @@ export function PrintersPage() {
       ) : groupedPrinters ? (
         /* Grouped by location view */
         <div className="space-y-6">
-          {Object.entries(groupedPrinters).map(([location, locationPrinters]) => (
-            <div key={location}>
-              <h2 className="text-lg font-semibold text-white mb-3 flex items-center gap-2">
+          {groupedPrinters.map((group) => (
+            <div key={group.locationId ?? 'ungrouped'}>
+              <h2 className="text-lg font-semibold text-white mb-3 flex items-center gap-2 flex-wrap">
                 <span className="w-2 h-2 rounded-full bg-bambu-green" />
-                {location}
-                <span className="text-sm font-normal text-bambu-gray">({locationPrinters.length})</span>
+                {group.label}
+                <span className="text-sm font-normal text-bambu-gray">({group.items.length})</span>
+                <LocationConditions locationId={group.locationId} />
               </h2>
               <div className={`grid gap-4 items-start ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
-                {locationPrinters.map((printer) => (
+                {group.items.map((printer) => (
                   <PrinterCard
                     key={printer.id}
                     printer={printer}

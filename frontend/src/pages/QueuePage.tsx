@@ -6,6 +6,8 @@ import { Calendar, LayoutGrid, Loader2 } from 'lucide-react';
 import { api } from '../api/client';
 import { byLocationName, compareLocationNames } from '../utils/locationOrder';
 import { buildLocationIndex, readStoredLocationFilter } from '../utils/locationTree';
+import { groupByLocation } from '../utils/locationGroups';
+import { LocationConditions } from '../components/zigbee/LocationConditions';
 import type { PrinterQueue, PrintQueueItem } from '../api/client';
 import { QueueCard } from '../components/QueueCard';
 import { QueueStatsBar } from '../components/Queue/QueueStatsBar';
@@ -216,16 +218,12 @@ export function QueuePage() {
 
   const hasActiveFilters = search.trim() !== '' || statusFilter !== 'all' || locationFilter !== 'all';
 
-  // Group queues by location (when sorted by location)
+  // Group queues by location (when sorted by location). An array, not an object
+  // keyed by id: integer-like object keys iterate in ascending numeric order and
+  // would throw away the name sort applied above.
   const groupedQueues = useMemo(() => {
     if (sortBy !== 'location') return null;
-    const groups: Record<string, PrinterQueue[]> = {};
-    sortedQueues.forEach(q => {
-      const loc = q.printer_location?.path || t('queueCard.ungrouped');
-      if (!groups[loc]) groups[loc] = [];
-      groups[loc].push(q);
-    });
-    return groups;
+    return groupByLocation(sortedQueues, q => q.printer_location, t('queueCard.ungrouped'));
   }, [sortBy, sortedQueues, t]);
 
   const renderGrid = (items: PrinterQueue[]) => (
@@ -311,14 +309,15 @@ export function QueuePage() {
         groupedQueues ? (
           // Grouped by location
           <div className="space-y-6">
-            {Object.entries(groupedQueues).map(([location, locationQueues]) => (
-              <div key={location}>
-                <h2 className="text-lg font-semibold text-white mb-3 flex items-center gap-2">
+            {groupedQueues.map((group) => (
+              <div key={group.locationId ?? 'ungrouped'}>
+                <h2 className="text-lg font-semibold text-white mb-3 flex items-center gap-2 flex-wrap">
                   <span className="w-2 h-2 rounded-full bg-bambu-green" />
-                  {location}
-                  <span className="text-sm font-normal text-bambu-gray">({locationQueues.length})</span>
+                  {group.label}
+                  <span className="text-sm font-normal text-bambu-gray">({group.items.length})</span>
+                  <LocationConditions locationId={group.locationId} />
                 </h2>
-                {renderGrid(locationQueues)}
+                {renderGrid(group.items)}
               </div>
             ))}
           </div>

@@ -4,6 +4,8 @@ import { useSearchParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { byLocationName, compareLocationNames } from '../utils/locationOrder';
 import { buildLocationIndex, readStoredLocationFilter } from '../utils/locationTree';
+import { groupByLocation } from '../utils/locationGroups';
+import { LocationConditions } from '../components/zigbee/LocationConditions';
 import {
   Wrench,
   Loader2,
@@ -1669,15 +1671,12 @@ export function MaintenancePage() {
     return sorted;
   })();
 
-  // Group by location when sortBy === 'location' (echoes the PrintersPage shape).
+  // Group by location when sortBy === 'location' (echoes the PrintersPage
+  // shape). An array: an object keyed by location id would be reordered into
+  // ascending numeric order by the engine, discarding the name sort above.
   const groupedOverviews = (() => {
     if (sortBy !== 'location' || availableLocations.length === 0) return null;
-    const groups: Record<string, typeof visibleOverviews> = {};
-    visibleOverviews.forEach(p => {
-      const key = p.printer_location?.path || t('printers.ungrouped');
-      (groups[key] ??= []).push(p);
-    });
-    return Object.entries(groups);
+    return groupByLocation(visibleOverviews, p => p.printer_location, t('printers.ungrouped'));
   })();
 
   // statusCacheVersion is read so the filter recomputes when WS updates land
@@ -1737,11 +1736,15 @@ export function MaintenancePage() {
                 </CardContent>
               </Card>
             ) : groupedOverviews ? (
-              groupedOverviews.map(([location, items]) => (
-                <div key={location} className="space-y-3">
-                  <h2 className="text-lg font-semibold text-bambu-green">{location} <span className="text-bambu-gray text-sm font-normal">({items.length})</span></h2>
+              groupedOverviews.map((group) => (
+                <div key={group.locationId ?? 'ungrouped'} className="space-y-3">
+                  <h2 className="text-lg font-semibold text-bambu-green flex items-center gap-2 flex-wrap">
+                    {group.label}
+                    <span className="text-bambu-gray text-sm font-normal">({group.items.length})</span>
+                    <LocationConditions locationId={group.locationId} />
+                  </h2>
                   <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start">
-                    {items.map((printerOverview) => (
+                    {group.items.map((printerOverview) => (
                       <PrinterSection
                         key={printerOverview.printer_id}
                         overview={printerOverview}
