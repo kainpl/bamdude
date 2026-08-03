@@ -1237,6 +1237,9 @@ export default {
     locations: {
       title: 'Locations',
       addShort: '+ New',
+      parent: 'Inside',
+      noParent: 'Top level',
+      hasChildren: 'holds {{count}} location(s)',
       add: 'Add location',
       empty: 'No locations yet. Add one to group printers and sensors by where they stand.',
       inUse: 'This location is still in use. Move what is in it first.',

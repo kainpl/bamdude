@@ -7,14 +7,21 @@ import { byLocationName } from '../../utils/locationOrder';
 /**
  * Manage the places printers and sensors stand in.
  *
- * Deleting is refused while anything holds a location, and the refusal is
- * explained rather than shown as a raw error: the queued items are the reason,
- * since nulling their target would send that work somewhere nobody chose.
+ * Deleting is refused while anything holds a location — printers, sensors,
+ * queued work, or other locations — and the refusal is explained rather than
+ * shown as a raw error: the queued items are the reason, since nulling their
+ * target would send that work somewhere nobody chose.
+ *
+ * Moving a location to another parent is here for the same reason the cycle
+ * check exists on the backend: without it a mistaken parent could only be
+ * fixed by deleting, and deleting is refused while anything stands in the
+ * place.
  */
 export function PrinterLocationsCard() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [name, setName] = useState('');
+  const [parentId, setParentId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const { data } = useQuery({ queryKey: ['printer-locations'], queryFn: api.getPrinterLocations });
@@ -26,13 +33,25 @@ export function PrinterLocationsCard() {
   };
 
   const create = useMutation({
-    mutationFn: () => api.createPrinterLocation(name.trim()),
+    mutationFn: () => api.createPrinterLocation(name.trim(), parentId),
     onSuccess: () => {
       setName('');
       setError(null);
       invalidate();
     },
-    onError: () => setError(t('printers.locations.nameTaken')),
+    // The backend's own sentence: a cycle and a fourth level each say what is
+    // wrong, and "name taken" would be a guess that is usually incorrect.
+    onError: (e: Error) => setError(e.message || t('printers.locations.nameTaken')),
+  });
+
+  const move = useMutation({
+    mutationFn: ({ id, parent_id }: { id: number; parent_id: number | null }) =>
+      api.updatePrinterLocation(id, { parent_id }),
+    onSuccess: () => {
+      setError(null);
+      invalidate();
+    },
+    onError: (e: Error) => setError(e.message),
   });
 
   const remove = useMutation({
@@ -44,9 +63,10 @@ export function PrinterLocationsCard() {
     onError: () => setError(t('printers.locations.inUse')),
   });
 
-  // Sorted here rather than trusted from the server: SQLite orders text by
-  // byte, which puts Ґ/Є/І/Ї before А and every lowercase name last.
-  const locations = [...(data?.locations ?? [])].sort(byLocationName(loc => loc.name));
+  // By PATH, so a parent leads its own children. Sorted here rather than
+  // trusted from the server: SQLite orders text by byte, which puts Ґ/Є/І/Ї
+  // before А and every lowercase name last.
+  const locations = [...(data?.locations ?? [])].sort(byLocationName((loc) => loc.path));
 
   return (
     <div className="bg-bambu-dark-secondary rounded-xl p-4">
@@ -57,7 +77,34 @@ export function PrinterLocationsCard() {
       <ul className="space-y-2 mb-3">
         {locations.map((loc) => (
           <li key={loc.id} className="flex items-center justify-between gap-3">
-            <span className="text-white">{loc.name}</span>
+            {/* Indented by depth: the tree is the point, and a flat list of
+                paths repeats every parent on every row. */}
+            <span className="text-white" style={{ paddingLeft: (loc.depth - 1) * 16 }} title={loc.path}>
+              {loc.name}
+            </span>
+
+            <label className="sr-only" htmlFor={`parent-of-${loc.id}`}>
+              {t('printers.locations.parent')} {loc.name}
+            </label>
+            <select
+              id={`parent-of-${loc.id}`}
+              className="text-xs bg-bambu-dark border border-bambu-dark-tertiary rounded px-1.5 py-1 text-bambu-gray"
+              value={loc.parent_id ?? ''}
+              onChange={(e) => move.mutate({ id: loc.id, parent_id: e.target.value ? Number(e.target.value) : null })}
+            >
+              <option value="">{t('printers.locations.noParent')}</option>
+              {locations
+                // Itself excluded; the backend refuses the deeper cases and its
+                // sentence is what gets shown.
+                .filter((candidate) => candidate.id !== loc.id)
+                .map((candidate) => (
+                  <option key={candidate.id} value={candidate.id} title={candidate.path}>
+                    {' '.repeat((candidate.depth - 1) * 3)}
+                    {candidate.name}
+                  </option>
+                ))}
+            </select>
+
             <span className="text-xs text-bambu-gray">
               {t('printers.locations.counts', {
                 printers: loc.printer_count,
@@ -79,6 +126,23 @@ export function PrinterLocationsCard() {
           onChange={(e) => setName(e.target.value)}
           placeholder={t('printers.modal.locationPlaceholder')}
         />
+        <label className="sr-only" htmlFor="new-location-parent">
+          {t('printers.locations.parent')}
+        </label>
+        <select
+          id="new-location-parent"
+          className="px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white"
+          value={parentId ?? ''}
+          onChange={(e) => setParentId(e.target.value ? Number(e.target.value) : null)}
+        >
+          <option value="">{t('printers.locations.noParent')}</option>
+          {locations.map((loc) => (
+            <option key={loc.id} value={loc.id} title={loc.path}>
+              {' '.repeat((loc.depth - 1) * 3)}
+              {loc.name}
+            </option>
+          ))}
+        </select>
         <button
           type="button"
           className="px-3 py-1.5 bg-bambu-green rounded-lg text-white disabled:opacity-50"

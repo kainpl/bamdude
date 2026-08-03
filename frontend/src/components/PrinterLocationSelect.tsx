@@ -74,11 +74,18 @@ export function PrinterLocationSelect({ value, onChange, allowCreate = false }: 
         {/* A printer without a place is a normal state, so it needs a real
             choice rather than an empty first row that reads as unset-by-accident. */}
         <option value="">{t('printers.ungrouped')}</option>
-        {[...(data?.locations ?? [])].sort(byLocationName(loc => loc.name)).map((loc) => (
-          <option key={loc.id} value={loc.id}>
-            {loc.name}
-          </option>
-        ))}
+        {/* Sorted by PATH so a parent leads its own children, and labelled by
+            NAME because the indent already says whose child it is — a full path
+            on every row turns a three-level list into mush. The path stays in
+            the title. */}
+        {[...(data?.locations ?? [])]
+          .sort(byLocationName((loc) => loc.path))
+          .map((loc) => (
+            <option key={loc.id} value={loc.id} title={loc.path}>
+              {' '.repeat((loc.depth - 1) * 3)}
+              {loc.name}
+            </option>
+          ))}
       </select>
       {allowCreate && (
         <button type="button" className="px-3 py-1.5 text-bambu-green whitespace-nowrap" onClick={() => setCreating(true)}>
