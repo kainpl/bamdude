@@ -13,6 +13,7 @@ leave existing installs unable to use their own admin account for it.
 import asyncio
 import contextlib
 import logging
+import math
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -640,6 +641,46 @@ async def _is_adopted(db, info) -> bool:
     return found.scalar_one_or_none() is not None
 
 
+def _applied_entry(recorded: dict | None, wanted: dict | None) -> dict:
+    """One measurement's outcome, plus whether it is about the CURRENT settings.
+
+    ``describes_desired`` is the difference between "verified" and "verified,
+    for what you are looking at". A sleeping sensor keeps the previous outcome
+    until it next wakes, so without this the answer showed a confirmation of the
+    old configuration as if it confirmed the settings just saved — the one
+    failure the state/verification split exists to prevent, arriving through a
+    third door.
+    """
+    recorded = recorded or {}
+    values = recorded.get("values")
+    return {
+        "state": recorded.get("state", "unknown"),
+        "verification": recorded.get("verification", "not-checked"),
+        "values": values,
+        "at": recorded.get("at"),
+        # False when nothing has been recorded at all: an unknown outcome
+        # describes no settings, least of all these.
+        "describes_desired": bool(values) and _same_settings(values, wanted or {}),
+    }
+
+
+def _same_settings(recorded: dict, wanted: dict) -> bool:
+    """Whether two settings triples are the same request.
+
+    ``reportable_change`` is a float that has been through JSON, so it is
+    compared with a tolerance; the intervals are whole seconds and are not.
+    """
+    for field in ("min_interval", "max_interval"):
+        if int(recorded.get(field, -1)) != int(wanted.get(field, -2)):
+            return False
+    return math.isclose(
+        float(recorded.get("reportable_change", -1.0)),
+        float(wanted.get("reportable_change", -2.0)),
+        rel_tol=1e-9,
+        abs_tol=1e-12,
+    )
+
+
 async def _settings_payload(db, device, info, row) -> dict:
     """Everything the settings dialog needs, in one answer.
 
@@ -667,13 +708,7 @@ async def _settings_payload(db, device, info, row) -> dict:
         # Unknown rather than ok: after a restart nothing has been asked of this
         # device yet, and claiming a state nobody confirmed is the failure this
         # whole vocabulary exists to avoid.
-        "applied": {
-            t.key: {
-                "state": (applied.get(t.key) or {}).get("state", "unknown"),
-                "verification": (applied.get(t.key) or {}).get("verification", "not-checked"),
-            }
-            for t in targets
-        },
+        "applied": {t.key: _applied_entry(applied.get(t.key), desired.get(t.key)) for t in targets},
         "poll_seconds": await resolve_poll_seconds(db, info.ieee),
         "poll_supported": polled,
         "stale_after_seconds": await resolve_stale_after_seconds(db, info.ieee, polled=polled, max_interval=slowest),

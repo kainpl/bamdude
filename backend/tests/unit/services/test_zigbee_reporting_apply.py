@@ -12,6 +12,16 @@ from zigpy.zcl import foundation
 from backend.app.services.zigbee.reporting_targets import ReportingTarget
 
 
+def _outcome_of(entry: dict) -> tuple[str, str]:
+    """State and verification, without pinning the rest of the entry.
+
+    The entry also carries the values it is about and when it was recorded;
+    asserting on the whole dict would make every test here fail the next time
+    a fact is added, which is how a shape ends up frozen by accident.
+    """
+    return entry["state"], entry["verification"]
+
+
 def _target(key="temperature", cluster=0x0402, attribute=0x0000, editable=None):
     return ReportingTarget(
         key=key,
@@ -72,7 +82,49 @@ async def test_accepted_and_confirmed_is_ok_and_verified():
     cluster = _Cluster(read_back=_rsp(30, 900, 10))
     result = await apply_reporting(lambda _c: cluster, "aa:bb", (_target(),), DESIRED)
 
-    assert result["temperature"] == {"state": "ok", "verification": "verified"}
+    assert _outcome_of(result["temperature"]) == ("ok", "verified")
+
+
+@pytest.mark.asyncio
+async def test_an_outcome_carries_the_settings_it_is_about():
+    """Without this a "verified" from an hour ago and one from the save just made
+    are the same two words -- which is how a sleeping sensor showed a green tick
+    for a configuration still on its way."""
+    from backend.app.services.zigbee.reporting_apply import apply_reporting
+
+    cluster = _Cluster(read_back=_rsp(30, 900, 10))
+    result = await apply_reporting(lambda _c: cluster, "aa:bb", (_target(),), DESIRED)
+
+    entry = result["temperature"]
+    assert entry["values"] == {"min_interval": 30, "max_interval": 900, "reportable_change": 0.1}
+    assert entry["at"], "an outcome with no time cannot be told from a stale one either"
+
+
+@pytest.mark.asyncio
+async def test_the_recorded_change_is_in_the_operators_units_not_raw():
+    """``to_raw`` here turns 0.1 into 10. Recording the raw form would make the
+    entry incomparable with the settings it is supposed to describe, and the
+    conversion differs per cluster scaling."""
+    from backend.app.services.zigbee.reporting_apply import apply_reporting
+
+    cluster = _Cluster(read_back=_rsp(30, 900, 10))
+    result = await apply_reporting(lambda _c: cluster, "aa:bb", (_target(),), DESIRED)
+
+    assert result["temperature"]["values"]["reportable_change"] == 0.1
+    assert cluster.configured[-1][3] == 10, "the device still gets the raw form"
+
+
+@pytest.mark.asyncio
+async def test_an_attempt_that_reached_nothing_still_says_what_it_tried():
+    """ "We last tried these and heard nothing" is a different fact from "we last
+    verified those", and it is the one that explains a device out of step."""
+    from backend.app.services.zigbee.reporting_apply import apply_reporting
+
+    result = await apply_reporting(lambda _c: None, "aa:bb", (_target(),), DESIRED)
+
+    entry = result["temperature"]
+    assert _outcome_of(entry) == ("unanswered", "not-checked")
+    assert entry["values"]["max_interval"] == 900
 
 
 @pytest.mark.asyncio
@@ -84,7 +136,7 @@ async def test_accepted_but_unconfirmed_is_ok_and_not_checked():
     cluster = _Cluster(read_back=None)
     result = await apply_reporting(lambda _c: cluster, "aa:bb", (_target(),), DESIRED)
 
-    assert result["temperature"] == {"state": "ok", "verification": "not-checked"}
+    assert _outcome_of(result["temperature"]) == ("ok", "not-checked")
 
 
 @pytest.mark.asyncio
@@ -97,7 +149,7 @@ async def test_silently_clamped_is_ok_and_mismatch():
     cluster = _Cluster(read_back=_rsp(60, 300, 10))
     result = await apply_reporting(lambda _c: cluster, "aa:bb", (_target(),), DESIRED)
 
-    assert result["temperature"] == {"state": "ok", "verification": "mismatch"}
+    assert _outcome_of(result["temperature"]) == ("ok", "mismatch")
 
 
 @pytest.mark.asyncio
@@ -152,7 +204,7 @@ async def test_no_answer_is_unanswered_not_refused():
     cluster = _Cluster(configure=TimeoutError())
     result = await apply_reporting(lambda _c: cluster, "aa:bb", (_target(),), DESIRED)
 
-    assert result["temperature"] == {"state": "unanswered", "verification": "not-checked"}
+    assert _outcome_of(result["temperature"]) == ("unanswered", "not-checked")
 
 
 @pytest.mark.asyncio

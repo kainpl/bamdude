@@ -6,10 +6,20 @@ Two facts come out, and they are kept apart:
                  ok · refused (an explicit non-SUCCESS) · unanswered (no reply)
 ``verification`` what reading the configuration back said
                  verified · mismatch · not-checked
+``values``       WHICH settings this outcome is about
+``at``           when it was recorded
 
 "Did not answer" is not "declined", and "accepted" is not "verified". A single
 vocabulary cannot say "accepted but not confirmed", which is the ordinary
 outcome for a battery device, without lying in one direction or the other.
+
+``values`` is what stops the vocabulary from lying in a third way. Without it a
+"verified" from an hour ago and a "verified" from the settings just saved are
+the same two words, so a sleeping sensor showed the previous configuration as
+confirmation of the new one — the reader sees a green tick for something that
+has not happened yet. Measured on hardware: the request gives up after five
+seconds, the push lands whenever the sensor next wakes, and in between the
+answer said "verified".
 
 The read-back is issued immediately after the write, inside the same wake
 window: for a sleeper the next one may be an hour away.
@@ -18,6 +28,7 @@ window: for a sleeper the next one may be an hour away.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from zigpy.zcl import foundation
 from zigpy.zdo import types as zdo_types
@@ -30,6 +41,21 @@ logger = logging.getLogger(__name__)
 OK = "ok"
 REFUSED = "refused"
 UNANSWERED = "unanswered"
+
+
+def _outcome(state: str, verification: str, values: dict) -> dict:
+    """One entry, always carrying WHICH settings it describes.
+
+    Every branch records the values it was working on, including the ones
+    that got nowhere: "we last tried 900 and it did not answer" is a
+    different fact from "we last verified 600", and both are worth saying.
+    """
+    return {
+        "state": state,
+        "verification": verification,
+        "values": values,
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _statuses(result) -> list:
@@ -112,11 +138,16 @@ async def apply_reporting(cluster_for, ieee: str, targets, desired: dict[str, di
         minimum = int(wanted.get("min_interval", target.min_interval))
         maximum = int(wanted.get("max_interval", target.max_interval))
         scaling = scaling_for(target.cluster) if scaling_for else None
-        raw_change = target.to_raw(float(wanted.get("reportable_change", target.reportable_change)), scaling)
+        change = float(wanted.get("reportable_change", target.reportable_change))
+        raw_change = target.to_raw(change, scaling)
+        # Recorded in the units the operator set, not the raw ones sent to the
+        # device: this is what a reader compares against the desired settings,
+        # and the raw form differs per cluster scaling.
+        values = {"min_interval": minimum, "max_interval": maximum, "reportable_change": change}
 
         cluster = cluster_for(target.cluster)
         if cluster is None:
-            applied[target.key] = {"state": UNANSWERED, "verification": NOT_CHECKED}
+            applied[target.key] = _outcome(UNANSWERED, NOT_CHECKED, values)
             continue
 
         try:
@@ -134,11 +165,11 @@ async def apply_reporting(cluster_for, ieee: str, targets, desired: dict[str, di
                 target.cluster,
                 describe_exception(exc),
             )
-            applied[target.key] = {"state": UNANSWERED, "verification": NOT_CHECKED}
+            applied[target.key] = _outcome(UNANSWERED, NOT_CHECKED, values)
             continue
 
         if not _accepted(ieee, target.key, result):
-            applied[target.key] = {"state": REFUSED, "verification": NOT_CHECKED}
+            applied[target.key] = _outcome(REFUSED, NOT_CHECKED, values)
             continue
 
         asked = {"min_interval": minimum, "max_interval": maximum, "reportable_change": raw_change}
@@ -152,7 +183,7 @@ async def apply_reporting(cluster_for, ieee: str, targets, desired: dict[str, di
                 actual,
                 asked,
             )
-        applied[target.key] = {"state": OK, "verification": verification}
+        applied[target.key] = _outcome(OK, verification, values)
     return applied
 
 

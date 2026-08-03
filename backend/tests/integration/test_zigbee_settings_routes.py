@@ -89,7 +89,9 @@ async def test_after_a_restart_the_applied_state_is_unknown_not_ok(async_client:
 
     body = (await async_client.get(f"/api/v1/zigbee/devices/{SENSOR}/settings")).json()
 
-    assert body["applied"]["temperature"] == {"state": "unknown", "verification": "not-checked"}
+    entry = body["applied"]["temperature"]
+    assert (entry["state"], entry["verification"]) == ("unknown", "not-checked")
+    assert entry["describes_desired"] is False, "an unknown outcome describes no settings, least of all these"
 
 
 class TestWhatMayBeChanged:
@@ -222,6 +224,101 @@ class TestSavingWhileTheDeviceSleeps:
 
         assert body["desired"]["temperature"]["max_interval"] == 600
         assert body["desired"]["temperature"]["min_interval"] == 30, "the layers beneath still apply"
+
+
+class TestAnOutcomeSaysWhichSettingsItIsAbout:
+    """ "Verified" alone cannot tell a fresh confirmation from last hour's.
+
+    Found on hardware: a sleeping sensor kept the previous outcome while the new
+    configuration was still on its way, so the answer showed a green tick for a
+    change that had not happened. The values ride along so the reader can tell.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_plug_that_answered_carries_what_was_confirmed(self, async_client: AsyncClient, paired, db_session):
+        await _pair(db_session, PLUG, "plug")
+
+        body = (
+            await async_client.put(
+                f"/api/v1/zigbee/devices/{PLUG}/settings",
+                json={"reporting": {"power": {"max_interval": 600}}},
+            )
+        ).json()
+
+        entry = body["applied"]["power"]
+        assert entry["values"]["max_interval"] == 600
+        assert entry["at"], "an outcome with no time cannot be told from a stale one either"
+        assert entry["describes_desired"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_an_outcome_that_predates_the_settings_is_not_confirmation_of_them(
+        self, async_client: AsyncClient, paired, db_session
+    ):
+        """The plug confirms 600. The desired value then moves to 900 without a
+        push -- which is what a request giving up on its five-second budget
+        leaves behind, and what the sleeping sensor did on live hardware.
+
+        The stored outcome still says ok/verified, truthfully, about 600. What
+        it must not say is that it describes what is on screen now.
+        """
+        from backend.app.services.zigbee.device_settings import save_overrides
+
+        await _pair(db_session, PLUG, "plug")
+        await async_client.put(
+            f"/api/v1/zigbee/devices/{PLUG}/settings",
+            json={"reporting": {"power": {"max_interval": 600}}},
+        )
+        await save_overrides(db_session, PLUG, reporting={"power": {"max_interval": 900}})
+
+        entry = (await async_client.get(f"/api/v1/zigbee/devices/{PLUG}/settings")).json()["applied"]["power"]
+
+        assert entry["state"] == "ok", "still true, about the old value"
+        assert entry["values"]["max_interval"] == 600
+        assert entry["describes_desired"] is False, "a green tick for a change that has not happened"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_an_attempt_that_got_nowhere_is_recorded_as_that_attempt(
+        self, async_client: AsyncClient, paired, db_session
+    ):
+        """ "We last tried 900 and heard nothing" is a different fact from "we
+        last verified 600", and the operator needs the first one."""
+        await _pair(db_session, PLUG, "plug")
+        # Asleep rather than absent: removing the cluster would take the power
+        # target out of the vocabulary entirely, and the plug falls back to
+        # Metering for power anyway -- the attempt would quietly succeed there.
+        paired.plug.endpoints[1].in_clusters[0x0B04].asleep = True
+
+        body = (
+            await async_client.put(
+                f"/api/v1/zigbee/devices/{PLUG}/settings",
+                json={"reporting": {"power": {"max_interval": 900}}},
+            )
+        ).json()
+
+        entry = body["applied"]["power"]
+        assert entry["state"] == "unanswered"
+        assert entry["values"]["max_interval"] == 900
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_sleeper_shows_the_new_settings_as_not_yet_confirmed(
+        self, async_client: AsyncClient, paired, db_session
+    ):
+        await _pair(db_session, SENSOR, "sensor")
+
+        body = (
+            await async_client.put(
+                f"/api/v1/zigbee/devices/{SENSOR}/settings",
+                json={"reporting": {"temperature": {"max_interval": 600}}},
+            )
+        ).json()
+
+        entry = body["applied"]["temperature"]
+        assert entry["state"] == "unanswered"
+        assert entry["verification"] == "not-checked", "nothing was read back from a device that said nothing"
 
 
 class TestClearing:
