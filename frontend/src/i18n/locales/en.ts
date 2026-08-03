@@ -169,6 +169,19 @@ export default {
 
   // Printers page
   printers: {
+    ungrouped: 'Ungrouped',
+    locations: {
+      parent: 'Inside',
+      noParent: 'Top level',
+      hasChildren: 'holds {{count}} location(s)',
+      title: 'Locations',
+      addShort: '+ New',
+      add: 'Add location',
+      empty: 'No locations yet. Add one to group printers and sensors by where they stand.',
+      inUse: 'This location is still in use. Move what is in it first.',
+      nameTaken: 'A location with this name already exists.',
+      counts: '{{printers}} printers · {{sensors}} sensors · {{queued}} queued'
+    },
     title: 'Printers',
     addPrinter: 'Add Printer',
     addPreflight: {
@@ -1139,6 +1152,7 @@ export default {
 
   // QueueCard component
   queueCard: {
+    ungrouped: 'Ungrouped',
     status: {
       idle: 'Idle',
       printing: 'Printing',
@@ -1233,19 +1247,6 @@ export default {
     noPending: 'No pending items',
     pending: 'pending',
     manualStart: 'Manual',
-    ungrouped: 'Ungrouped',
-    locations: {
-      title: 'Locations',
-      addShort: '+ New',
-      parent: 'Inside',
-      noParent: 'Top level',
-      hasChildren: 'holds {{count}} location(s)',
-      add: 'Add location',
-      empty: 'No locations yet. Add one to group printers and sensors by where they stand.',
-      inUse: 'This location is still in use. Move what is in it first.',
-      nameTaken: 'A location with this name already exists.',
-      counts: '{{printers}} printers · {{sensors}} sensors · {{queued}} queued'
-    }
   },
 
   backgroundDispatch: {

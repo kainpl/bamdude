@@ -45,8 +45,8 @@ describe('PrinterLocationsCard', () => {
     render(<PrinterLocationsCard />);
     await screen.findAllByText('Workshop');
     await userEvent.type(screen.getByPlaceholderText(/Workshop, Office/i), 'Shelf 2');
-    await userEvent.selectOptions(screen.getByLabelText(/^(Inside|printers\.locations\.parent)$/), '1');
-    await userEvent.click(screen.getByRole('button', { name: 'printers.locations.add' }));
+    await userEvent.selectOptions(screen.getByLabelText('Inside'), '1');
+    await userEvent.click(screen.getByRole('button', { name: 'Add location' }));
 
     await waitFor(() => expect(create).toHaveBeenCalledWith('Shelf 2', 1));
   });

@@ -169,6 +169,19 @@ export default {
 
   // Printers page
   printers: {
+    ungrouped: 'Без розташування',
+    locations: {
+      parent: 'Усередині',
+      noParent: 'Верхній рівень',
+      hasChildren: 'містить локацій: {{count}}',
+      title: 'Розташування',
+      addShort: '+ Нове',
+      add: 'Додати розташування',
+      empty: 'Розташувань ще немає. Додайте, щоб групувати принтери й датчики за місцем.',
+      inUse: 'Це розташування ще використовується. Спершу перенесіть те, що в ньому.',
+      nameTaken: 'Розташування з такою назвою вже існує.',
+      counts: '{{printers}} принтерів · {{sensors}} датчиків · {{queued}} у черзі'
+    },
     title: 'Принтери',
     addPrinter: 'Додати принтер',
     addPreflight: {
@@ -1145,6 +1158,7 @@ export default {
 
   // QueueCard component
   queueCard: {
+    ungrouped: 'Без розташування',
     status: {
       idle: 'Очікує',
       printing: 'Друкує',
@@ -1239,19 +1253,6 @@ export default {
     noPending: 'Немає елементів в очікуванні',
     pending: 'в очікуванні',
     manualStart: 'Вручну',
-    ungrouped: 'Без розташування',
-    locations: {
-      title: 'Розташування',
-      addShort: '+ Нове',
-      parent: 'Усередині',
-      noParent: 'Верхній рівень',
-      hasChildren: 'містить локацій: {{count}}',
-      add: 'Додати розташування',
-      empty: 'Розташувань ще немає. Додайте, щоб групувати принтери й датчики за місцем.',
-      inUse: 'Це розташування ще використовується. Спершу перенесіть те, що в ньому.',
-      nameTaken: 'Розташування з такою назвою вже існує.',
-      counts: '{{printers}} принтерів · {{sensors}} датчиків · {{queued}} у черзі'
-    }
   },
 
   backgroundDispatch: {
