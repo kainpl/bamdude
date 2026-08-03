@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Index, func
+from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Index, Integer, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
@@ -23,7 +23,11 @@ class SmartPlugPowerHistory(Base):
     __tablename__ = "smart_plug_power_history"
     __table_args__ = (Index("ix_plug_power_history_plug_time", "plug_id", "recorded_at"),)
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # BigInteger everywhere EXCEPT SQLite, where only INTEGER PRIMARY KEY is the
+    # rowid alias — a BIGINT primary key there is a plain column that nothing
+    # fills in, and every insert fails on NOT NULL. SQLite's rowid is already
+    # 64-bit, so the variant costs nothing and PostgreSQL still gets BIGSERIAL.
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     plug_id: Mapped[int] = mapped_column(ForeignKey("smart_plugs.id", ondelete="CASCADE"), nullable=False)
     power: Mapped[float] = mapped_column(Float, nullable=False)  # watts
     recorded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())

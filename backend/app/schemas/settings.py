@@ -111,6 +111,15 @@ class AppSettings(BaseModel):
         default=35.0, description="Temperature threshold for fair (orange): <= this value, > is red"
     )
     ams_history_retention_days: int = Field(default=30, description="Number of days to keep AMS sensor history data")
+    plug_power_history_retention_days: int = Field(
+        default=30, description="Number of days to keep smart-plug power history"
+    )
+    sensor_history_retention_days: int = Field(
+        default=30, description="Number of days to keep sensor measurement history"
+    )
+    plug_power_sample_seconds: int = Field(
+        default=60, description="How often plugs that do not report on their own are read for history"
+    )
     printer_sensor_history_retention_days: int = Field(
         default=30, description="Number of days to keep printer heater (nozzle/bed/chamber) history data"
     )
@@ -521,6 +530,9 @@ class AppSettingsUpdate(BaseModel):
     ams_temp_good: float | None = None
     ams_temp_fair: float | None = None
     ams_history_retention_days: int | None = None
+    plug_power_history_retention_days: int | None = Field(default=None, ge=1, le=365)
+    sensor_history_retention_days: int | None = Field(default=None, ge=1, le=365)
+    plug_power_sample_seconds: int | None = Field(default=None, ge=10, le=3600)
     printer_sensor_history_retention_days: int | None = None
     prefer_lowest_filament: bool | None = None
     queue_shortest_first: bool | None = None

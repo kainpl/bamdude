@@ -6,7 +6,7 @@ At this write rate a large farm reaches that ceiling inside a decade.
 """
 
 import pytest
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, select, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 
@@ -111,3 +111,37 @@ def test_the_keys_are_wide_enough_for_the_write_rate():
 
     for model in (SmartPlugPowerHistory, SmartSensorHistory):
         assert isinstance(model.__table__.c.id.type, BigInteger), model.__name__
+
+
+@pytest.mark.asyncio
+async def test_a_row_can_actually_be_inserted(tmp_path):
+    """The parity test compares column NAMES, so it says nothing about whether
+    a key is assigned. On SQLite only INTEGER PRIMARY KEY is the rowid alias: a
+    BIGINT primary key there is a plain column nothing fills in, and every
+    insert fails on NOT NULL — which is how this was found.
+    """
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from backend.app.core.database import Base
+    from backend.app.models.smart_plug import SmartPlug
+    from backend.app.models.smart_plug_power_history import SmartPlugPowerHistory
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'insert.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(
+            Base.metadata.create_all,
+            tables=[Base.metadata.tables[t] for t in ("smart_plugs", "smart_plug_power_history", "printer_locations")],
+        )
+
+    async with async_sessionmaker(engine, expire_on_commit=False)() as db:
+        plug = SmartPlug(name="P1", plug_type="tasmota", ip_address="10.0.0.1")
+        db.add(plug)
+        await db.commit()
+        await db.refresh(plug)
+
+        db.add(SmartPlugPowerHistory(plug_id=plug.id, power=42.5))
+        await db.commit()
+
+        row = (await db.execute(select(SmartPlugPowerHistory))).scalars().one()
+        assert row.id is not None, "the key has to be assigned by the database"
+    await engine.dispose()
