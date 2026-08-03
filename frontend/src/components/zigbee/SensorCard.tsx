@@ -3,6 +3,7 @@ import { Battery, Pencil, Plug, SlidersHorizontal, Trash2, WifiOff } from 'lucid
 
 import type { SensorMeasurement, ZigbeeSensor } from '../../api/client';
 import { formatRelativeTime } from '../../utils/date';
+import { roomReadings } from '../../utils/sensorReadings';
 
 interface Props {
   sensor: ZigbeeSensor;
@@ -13,9 +14,6 @@ interface Props {
   canDelete: boolean;
   canConfigure: boolean;
 }
-
-/** Kept out of the readings list: they describe the device, not the room. */
-const DEVICE_KEYS = ['battery', 'battery_voltage'];
 
 /**
  * One sensor, mirroring SmartPlugCard.
@@ -34,7 +32,7 @@ const DEVICE_KEYS = ['battery', 'battery_voltage'];
 export function SensorCard({ sensor, onEdit, onUnbind, onConfigure, canEdit, canDelete, canConfigure }: Props) {
   const { t } = useTranslation();
 
-  const readings = Object.entries(sensor.measurements).filter(([key]) => !DEVICE_KEYS.includes(key));
+  const readings = roomReadings(sensor);
   const battery = sensor.measurements.battery;
   const voltage = sensor.measurements.battery_voltage;
 
