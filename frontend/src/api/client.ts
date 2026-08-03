@@ -442,9 +442,15 @@ async function request<T>(
 export interface PrinterLocation {
   id: number;
   name: string;
+  parent_id: number | null;
+  /** Resolved by the backend on every read. Never stored, so renaming a parent
+   *  cannot leave a stale copy behind. */
+  path: string;
 }
 
 export interface PrinterLocationListItem extends PrinterLocation {
+  /** A root is 1. Drives the indent in every picker. */
+  depth: number;
   printer_count: number;
   sensor_count: number;
   queued_count: number;
@@ -4963,10 +4969,15 @@ export const api = {
     ),
   getPrinterLocations: () =>
     request<{ locations: PrinterLocationListItem[] }>('/printer-locations'),
-  createPrinterLocation: (name: string) =>
-    request<PrinterLocation>('/printer-locations', { method: 'POST', body: JSON.stringify({ name }) }),
-  renamePrinterLocation: (id: number, name: string) =>
-    request<PrinterLocation>(`/printer-locations/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+  createPrinterLocation: (name: string, parentId: number | null = null) =>
+    request<PrinterLocation>('/printer-locations', {
+      method: 'POST',
+      body: JSON.stringify({ name, parent_id: parentId }),
+    }),
+  // Partial on purpose: renaming must not move a location, and moving one back
+  // to the top level has to be sayable as an explicit null.
+  updatePrinterLocation: (id: number, payload: { name?: string; parent_id?: number | null }) =>
+    request<PrinterLocation>(`/printer-locations/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   deletePrinterLocation: (id: number) =>
     request<{ deleted: number }>(`/printer-locations/${id}`, { method: 'DELETE' }),
   getDeveloperModeWarnings: () =>

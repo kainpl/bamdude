@@ -26,7 +26,7 @@ function sensor(over: Partial<ZigbeeSensor> = {}): ZigbeeSensor {
   return {
     id: 1,
     name: 'Майстерня',
-    location: { id: 2, name: 'Shop 2' },
+    location: { id: 2, name: 'Shop 2', parent_id: null, path: 'Shop 2' },
     ieee: 'aa:bb:cc:dd:ee:ff:00:11',
     nwk: 123,
     manufacturer: 'SONOFF',
