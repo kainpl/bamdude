@@ -6049,6 +6049,9 @@ export default {
 
   // Maintenance type descriptions (built-in)
   // Smart Plugs
+  locationConditions: {
+    openChart: 'Графік показників — {{name}}',
+  },
   sensorHistory: {
     title: 'Історія показів',
     empty: 'Нічого не записано.',

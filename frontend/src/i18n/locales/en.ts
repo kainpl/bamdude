@@ -6047,6 +6047,9 @@ export default {
 
   // Maintenance type descriptions (built-in)
   // Smart Plugs
+  locationConditions: {
+    openChart: 'Readings chart — {{name}}',
+  },
   sensorHistory: {
     title: 'Readings history',
     empty: 'Nothing recorded yet.',
