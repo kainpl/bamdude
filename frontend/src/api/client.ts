@@ -6222,6 +6222,21 @@ export const api = {
   getZigbeePorts: () => request<{ ports: ZigbeePort[] }>('/zigbee/ports'),
   getZigbeeDevices: () => request<{ devices: ZigbeeDevice[] }>('/zigbee/devices'),
   getZigbeeSensors: () => request<{ sensors: ZigbeeSensor[] }>('/zigbee/sensors'),
+  adoptZigbeeSensor: (payload: { zigbee_ieee: string; name: string; location_id: number | null }) =>
+    request<{ id: number; name: string }>('/zigbee/sensors', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  // `location_id: null` clears the place; omitting the key leaves it alone.
+  updateZigbeeSensor: (id: number, payload: { name?: string; location_id?: number | null }) =>
+    request<{ id: number; name: string }>(`/zigbee/sensors/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  // Unbind, NOT remove from the network: the device stays paired and keeps its
+  // settings, so adopting it again restores what it had.
+  deleteZigbeeSensor: (id: number) =>
+    request<{ deleted: number }>(`/zigbee/sensors/${id}`, { method: 'DELETE' }),
   permitZigbeeJoin: (seconds: number) =>
     request<{ seconds: number }>('/zigbee/permit', {
       method: 'POST',

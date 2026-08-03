@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 
 import { render } from '../utils';
 import { SensorsSection } from '../../components/zigbee/SensorsSection';
@@ -31,6 +32,7 @@ function stub(status: ZigbeeStatus, sensors: ZigbeeSensor[]) {
   vi.spyOn(api, 'getZigbeeStatus').mockResolvedValue(status);
   vi.spyOn(api, 'getZigbeeSensors').mockResolvedValue({ sensors });
   vi.spyOn(api, 'getZigbeeDevices').mockResolvedValue({ devices: [] });
+  vi.spyOn(api, 'getPrinterLocations').mockResolvedValue({ locations: [] });
 }
 
 describe('SensorsSection', () => {
@@ -62,5 +64,18 @@ describe('SensorsSection', () => {
     expect(await screen.findByText('Майстерня')).toBeInTheDocument();
     expect(screen.getByText('Склад')).toBeInTheDocument();
     expect(screen.getByText(/radio is down/i)).toBeInTheDocument();
+  });
+
+  it('the unbind confirmation names the boundary it does not cross', async () => {
+    // Unbinding is not removing from the network. The confirmation is the only
+    // place a person learns the difference.
+    stub(UP, [sensor()]);
+
+    render(<SensorsSection adoptDevice={null} onAdoptHandled={() => {}} />);
+    await screen.findByText('Майстерня');
+    await userEvent.click(screen.getByLabelText(/delete/i));
+
+    expect(await screen.findByText(/stays on the Zigbee network/i)).toBeInTheDocument();
+    expect(screen.getByText(/separate action/i)).toBeInTheDocument();
   });
 });

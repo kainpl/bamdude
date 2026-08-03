@@ -1605,6 +1605,16 @@ export default {
         emptyHint: 'Pair one above, then add it here.',
         radioDown:
           'The Zigbee radio is down, so no readings are coming in. Your sensors are listed with what was last known about them.',
+        adoptTitle: 'Add a sensor',
+        editTitle: 'Edit sensor',
+        device: 'Device',
+        pickDevice: 'Choose a paired sensor…',
+        noFreeDevices: 'Every paired sensor has already been added. Pair another one above.',
+        nameLabel: 'Name',
+        unbindTitle: 'Remove {{name}} from the list?',
+        unbindBody:
+          'It stays on the Zigbee network and keeps its settings, so adding it again restores what it had. Taking it off the network is a separate action, in the coordinator card above, and needs the device pairing again by hand.',
+        unbindConfirm: 'Remove from the list',
       },
       measurement: {
         temperature: 'temperature',

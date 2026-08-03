@@ -1,4 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
+import { useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Thermometer } from 'lucide-react';
 
@@ -7,7 +8,9 @@ import type { ZigbeeDevice, ZigbeeSensor } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { Button } from '../Button';
 import { Card, CardContent, CardHeader } from '../Card';
+import { ConfirmModal } from '../ConfirmModal';
 import { SensorCard } from './SensorCard';
+import { SensorFormModal } from './SensorFormModal';
 
 interface Props {
   /** Set when the operator pressed "add" on a row in the coordinator card. */
@@ -18,6 +21,11 @@ interface Props {
 export function SensorsSection({ adoptDevice, onAdoptHandled }: Props) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
+  const queryClient = useQueryClient();
+
+  const [editing, setEditing] = useState<ZigbeeSensor | null>(null);
+  const [adopting, setAdopting] = useState(false);
+  const [unbinding, setUnbinding] = useState<ZigbeeSensor | null>(null);
 
   const mayRead = hasPermission('smart_sensors:read');
   const { data: status } = useQuery({ queryKey: ['zigbee-status'], queryFn: api.getZigbeeStatus });
@@ -27,6 +35,16 @@ export function SensorsSection({ adoptDevice, onAdoptHandled }: Props) {
     // The same cadence as plug status, and no faster than the sensors report.
     refetchInterval: 30000,
     enabled: mayRead,
+  });
+
+  const unbind = useMutation({
+    mutationFn: (id: number) => api.deleteZigbeeSensor(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['zigbee-sensors'] });
+      // The device becomes free to adopt again, which the paired list shows.
+      queryClient.invalidateQueries({ queryKey: ['zigbee-devices'] });
+      setUnbinding(null);
+    },
   });
 
   if (!mayRead) return null;
@@ -43,7 +61,7 @@ export function SensorsSection({ adoptDevice, onAdoptHandled }: Props) {
             {t('settings.zigbee.sensors.title')}
           </h3>
           {hasPermission('smart_sensors:create') && (
-            <Button size="sm" onClick={onAdoptHandled} disabled={!radioUp}>
+            <Button size="sm" onClick={() => setAdopting(true)} disabled={!radioUp}>
               {t('settings.zigbee.sensors.add')}
             </Button>
           )}
@@ -69,16 +87,37 @@ export function SensorsSection({ adoptDevice, onAdoptHandled }: Props) {
               <SensorCard
                 key={sensor.id}
                 sensor={sensor}
-                onEdit={() => {}}
-                onUnbind={() => {}}
+                onEdit={setEditing}
+                onUnbind={setUnbinding}
                 canEdit={hasPermission('smart_sensors:update')}
                 canDelete={hasPermission('smart_sensors:delete')}
               />
             ))}
           </div>
         )}
-        {/* adoptDevice becomes the modal's initial device in the next task. */}
-        {adoptDevice ? null : null}
+        {(adopting || adoptDevice) && (
+          <SensorFormModal
+            sensor={null}
+            initialDevice={adoptDevice}
+            onClose={() => {
+              setAdopting(false);
+              onAdoptHandled();
+            }}
+          />
+        )}
+        {editing && <SensorFormModal sensor={editing} initialDevice={null} onClose={() => setEditing(null)} />}
+        {unbinding && (
+          /* The confirmation is the only place a person learns that unbinding
+             is not the same as taking the device off the network. */
+          <ConfirmModal
+            title={t('settings.zigbee.sensors.unbindTitle', { name: unbinding.name })}
+            message={t('settings.zigbee.sensors.unbindBody')}
+            confirmText={t('settings.zigbee.sensors.unbindConfirm')}
+            variant="danger"
+            onConfirm={() => unbind.mutate(unbinding.id)}
+            onCancel={() => setUnbinding(null)}
+          />
+        )}
       </CardContent>
     </Card>
   );
