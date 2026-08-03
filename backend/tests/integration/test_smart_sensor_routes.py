@@ -65,7 +65,7 @@ class TestAdoption:
         listed = (await async_client.get("/api/v1/zigbee/sensors")).json()["sensors"]
 
         assert [s["name"] for s in listed] == ["Workshop"]
-        assert listed[0]["location"] == {"id": place.id, "name": "Shop 2"}
+        assert listed[0]["location"] == {"id": place.id, "name": "Shop 2", "parent_id": None, "path": "Shop 2"}
 
     @pytest.mark.asyncio
     @pytest.mark.integration

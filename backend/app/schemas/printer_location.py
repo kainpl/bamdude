@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field, field_validator
 
 class PrinterLocationCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
+    # Any level may hold printers and sensors, so any level may be a parent.
+    parent_id: int | None = None
 
     @field_validator("name")
     @classmethod
@@ -18,8 +20,23 @@ class PrinterLocationCreate(BaseModel):
         return value
 
 
-class PrinterLocationUpdate(PrinterLocationCreate):
-    pass
+class PrinterLocationUpdate(BaseModel):
+    """Both fields optional, and "not sent" is distinguished from "sent as null".
+
+    Renaming must not move a location, and moving one to the top level must be
+    sayable — which it is not if an omitted ``parent_id`` and an explicit null
+    look the same. The route reads ``model_fields_set``.
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    parent_id: int | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _not_only_space(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("A location needs a name.")
+        return value
 
 
 class PrinterLocationOut(BaseModel):
@@ -27,11 +44,21 @@ class PrinterLocationOut(BaseModel):
 
     id: int
     name: str
+    parent_id: int | None = None
+    # Derived on every read, never stored: renaming a parent then costs nothing
+    # and cannot leave a stale copy behind.
+    path: str = ""
 
     model_config = {"from_attributes": True}
 
+    @classmethod
+    def from_location(cls, location) -> "PrinterLocationOut | None":
+        """None-safe shorthand. The path itself comes from the model."""
+        return None if location is None else cls.model_validate(location)
+
 
 class PrinterLocationListItem(PrinterLocationOut):
+    depth: int = 1
     printer_count: int
     sensor_count: int
     queued_count: int

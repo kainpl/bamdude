@@ -479,7 +479,7 @@ async def list_sensors(
             # different question, answered by the settings endpoint.
             "name": row.name,
             # The place, resolved -- one shape for a location everywhere.
-            "location": (PrinterLocationOut(id=row.location.id, name=row.location.name) if row.location else None),
+            "location": PrinterLocationOut.from_location(row.location),
             "ieee": ieee,
             "present": device is not None,
         }

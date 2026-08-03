@@ -29,11 +29,7 @@ def _to_response(queue: PrinterQueue, terminal_counts: dict[str, int]) -> Printe
         printer_id=queue.printer_id,
         printer_name=queue.printer.name if queue.printer else None,
         printer_model=queue.printer.model if queue.printer else None,
-        printer_location=(
-            PrinterLocationOut(id=queue.printer.location.id, name=queue.printer.location.name)
-            if queue.printer and queue.printer.location
-            else None
-        ),
+        printer_location=(PrinterLocationOut.from_location(queue.printer.location) if queue.printer else None),
         status=queue.status,
         is_paused=queue.is_paused,
         last_activity_at=queue.last_activity_at,

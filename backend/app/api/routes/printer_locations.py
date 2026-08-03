@@ -28,7 +28,15 @@ from backend.app.schemas.printer_location import (
     PrinterLocationOut,
     PrinterLocationUpdate,
 )
-from backend.app.services.printer_location_service import location_key, normalize_location
+from backend.app.services.printer_location_service import (
+    MAX_DEPTH,
+    depth_of,
+    load_tree,
+    location_key,
+    normalize_location,
+    path_of,
+    would_cycle,
+)
 
 router = APIRouter(prefix="/printer-locations", tags=["printer-locations"])
 
@@ -49,12 +57,36 @@ async def _holders(db, location_id: int) -> tuple[int, int, int]:
     return counts[0], counts[1], counts[2]
 
 
-async def _name_is_taken(db, name: str, exclude_id: int | None = None) -> bool:
-    """Case-insensitively, which is the whole point of the entity."""
-    query = select(PrinterLocation.id).where(PrinterLocation.name_key == location_key(name))
+async def _name_is_taken(db, name: str, parent_id: int | None, exclude_id: int | None = None) -> bool:
+    """Case-insensitively, within one parent.
+
+    The composite index cannot do this alone: on SQLite NULL != NULL, so two
+    roots sharing a name pass straight through it. This check is the guard; the
+    index is a backstop.
+    """
+    query = select(PrinterLocation.id).where(
+        PrinterLocation.name_key == location_key(name),
+        PrinterLocation.parent_id.is_(None) if parent_id is None else PrinterLocation.parent_id == parent_id,
+    )
     if exclude_id is not None:
         query = query.where(PrinterLocation.id != exclude_id)
     return (await db.execute(query)).scalar_one_or_none() is not None
+
+
+async def _check_placement(db, location_id: int | None, parent_id: int | None) -> None:
+    """Refuse a parent that would make a ring or a fourth level."""
+    if parent_id is None:
+        return
+    tree = await load_tree(db)
+    if parent_id not in tree:
+        raise HTTPException(status_code=422, detail="No such parent location.")
+    if location_id is not None and would_cycle(tree, location_id, parent_id):
+        raise HTTPException(status_code=422, detail="A location cannot be placed inside itself.")
+    if depth_of(tree, parent_id) >= MAX_DEPTH:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Locations go {MAX_DEPTH} levels deep. This one would be deeper.",
+        )
 
 
 @router.get("")
@@ -63,7 +95,8 @@ async def list_locations(
     _: User | None = RequirePermission(Permission.PRINTERS_READ),
 ):
     """Every place, with how many things hold it — the manager needs both."""
-    rows = (await db.execute(select(PrinterLocation).order_by(PrinterLocation.name))).scalars().all()
+    rows = (await db.execute(select(PrinterLocation))).scalars().all()
+    tree = await load_tree(db)
     locations = []
     for row in rows:
         printers, sensors, queued = await _holders(db, row.id)
@@ -71,11 +104,17 @@ async def list_locations(
             PrinterLocationListItem(
                 id=row.id,
                 name=row.name,
+                parent_id=row.parent_id,
+                path=path_of(tree, row.id),
+                depth=depth_of(tree, row.id),
                 printer_count=printers,
                 sensor_count=sensors,
                 queued_count=queued,
             )
         )
+    # By path, so a parent leads its own children and the interface needs no
+    # second rule for which group comes first.
+    locations.sort(key=lambda item: item.path)
     return {"locations": locations}
 
 
@@ -86,13 +125,14 @@ async def create_location(
     _: User | None = RequirePermission(Permission.PRINTERS_UPDATE),
 ):
     name = normalize_location(payload.name)
-    if await _name_is_taken(db, name):
+    await _check_placement(db, None, payload.parent_id)
+    if await _name_is_taken(db, name, payload.parent_id):
         raise HTTPException(status_code=409, detail=_NAME_TAKEN)
-    row = PrinterLocation(name=name, name_key=location_key(name))
+    row = PrinterLocation(name=name, name_key=location_key(name), parent_id=payload.parent_id)
     db.add(row)
     await db.commit()
     await db.refresh(row)
-    return row
+    return PrinterLocationOut.from_location(row)
 
 
 @router.patch("/{location_id}", response_model=PrinterLocationOut)
@@ -110,18 +150,29 @@ async def rename_location(
     row = await db.get(PrinterLocation, location_id)
     if row is None:
         raise HTTPException(status_code=404, detail="No such location.")
-    name = normalize_location(payload.name)
-    if await _name_is_taken(db, name, exclude_id=location_id):
+
+    # "Not sent" is not "sent as null": a rename must not move the location, and
+    # moving one back to the top level has to be sayable.
+    moving = "parent_id" in payload.model_fields_set
+    parent_id = payload.parent_id if moving else row.parent_id
+    if moving:
+        await _check_placement(db, location_id, payload.parent_id)
+
+    name = normalize_location(payload.name) if payload.name is not None else row.name
+    if await _name_is_taken(db, name, parent_id, exclude_id=location_id):
         raise HTTPException(status_code=409, detail=_NAME_TAKEN)
+
     row.name = name
     # Rewritten with the name, always. A new name carrying the old key is unique
     # while its lookup still matches the old spelling, so the next
     # differently-cased duplicate would be accepted — the entity would then hold
     # the very problem it exists to remove.
     row.name_key = location_key(name)
+    if moving:
+        row.parent_id = payload.parent_id
     await db.commit()
     await db.refresh(row)
-    return row
+    return PrinterLocationOut.from_location(row)
 
 
 @router.delete("/{location_id}")
@@ -133,6 +184,16 @@ async def delete_location(
     row = await db.get(PrinterLocation, location_id)
     if row is None:
         raise HTTPException(status_code=404, detail="No such location.")
+    children = (
+        await db.execute(
+            select(func.count()).select_from(PrinterLocation).where(PrinterLocation.parent_id == location_id)
+        )
+    ).scalar_one()
+    if children:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This location holds {children} other location(s). Remove or move them first.",
+        )
     printers, sensors, queued = await _holders(db, location_id)
     if printers or sensors or queued:
         raise HTTPException(

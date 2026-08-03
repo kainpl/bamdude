@@ -470,9 +470,7 @@ async def _get_printer_maintenance_internal(
         printer_id=printer_id,
         printer_name=printer.name,
         printer_model=printer.model,
-        printer_location=(
-            PrinterLocationOut(id=printer.location.id, name=printer.location.name) if printer.location else None
-        ),
+        printer_location=(PrinterLocationOut.from_location(printer.location)),
         total_print_hours=total_hours,
         maintenance_items=maintenance_items,
         due_count=due_count,

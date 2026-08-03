@@ -32,7 +32,7 @@ async def test_a_printer_is_created_with_a_location_id(async_client: AsyncClient
 
     listed = (await async_client.get("/api/v1/printers/")).json()
 
-    assert listed[0]["location"] == {"id": loc["id"], "name": "Shop 2"}
+    assert listed[0]["location"] == {"id": loc["id"], "name": "Shop 2", "parent_id": None, "path": "Shop 2"}
     assert listed[0]["location_id"] == loc["id"]
 
 

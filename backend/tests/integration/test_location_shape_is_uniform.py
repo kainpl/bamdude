@@ -31,7 +31,7 @@ async def test_a_printer_reports_its_location_as_an_object(async_client: AsyncCl
 
     listed = (await async_client.get("/api/v1/printers/")).json()
 
-    assert listed[0]["location"] == {"id": place.id, "name": "Shop 2"}
+    assert listed[0]["location"] == {"id": place.id, "name": "Shop 2", "parent_id": None, "path": "Shop 2"}
 
 
 @pytest.mark.asyncio
@@ -53,7 +53,7 @@ async def test_a_printer_queue_reports_it_the_same_way(async_client: AsyncClient
     queues = body["queues"] if isinstance(body, dict) and "queues" in body else body
 
     assert queues, body
-    assert queues[0]["printer_location"] == {"id": place.id, "name": "Shop 2"}
+    assert queues[0]["printer_location"] == {"id": place.id, "name": "Shop 2", "parent_id": None, "path": "Shop 2"}
 
 
 @pytest.mark.asyncio
@@ -85,5 +85,10 @@ async def test_a_sensor_reports_its_location_as_an_object(async_client: AsyncCli
     # right place to assert the shape of the place itself.
     listed = (await async_client.get("/api/v1/zigbee/sensors")).json()
 
-    assert listed["sensors"][0]["location"] == {"id": place.id, "name": place.name}
+    assert listed["sensors"][0]["location"] == {
+        "id": place.id,
+        "name": place.name,
+        "parent_id": None,
+        "path": place.name,
+    }
     assert listed["sensors"][0]["present"] is False

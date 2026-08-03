@@ -140,11 +140,7 @@ class PrinterResponse(PrinterBase):
             "ip_address": printer.ip_address,
             "model": printer.model,
             "location_id": printer.location_id,
-            "location": (
-                PrinterLocationOut(id=printer.location.id, name=printer.location.name)
-                if getattr(printer, "location", None)
-                else None
-            ),
+            "location": (PrinterLocationOut.from_location(getattr(printer, "location", None))),
             "auto_archive": printer.auto_archive,
             "cleanup_after_print": printer.cleanup_after_print,
             "mqtt_connection_timeout": printer.mqtt_connection_timeout,

@@ -152,3 +152,116 @@ class TestUsageCounts:
         assert listed["printer_count"] == 1
         assert listed["sensor_count"] == 0
         assert listed["queued_count"] == 0
+
+
+class TestTheTree:
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_child_is_created_under_its_parent(self, async_client: AsyncClient):
+        parent = (await _make(async_client, "Workshop")).json()
+
+        child = await async_client.post(
+            "/api/v1/printer-locations", json={"name": "Shelf 1", "parent_id": parent["id"]}
+        )
+
+        assert child.status_code == 201
+        assert child.json()["path"] == "Workshop / Shelf 1"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_same_name_is_free_under_a_different_parent(self, async_client: AsyncClient):
+        one = (await _make(async_client, "Workshop")).json()
+        two = (await _make(async_client, "Hall")).json()
+
+        first = await async_client.post("/api/v1/printer-locations", json={"name": "Shelf 1", "parent_id": one["id"]})
+        second = await async_client.post("/api/v1/printer-locations", json={"name": "Shelf 1", "parent_id": two["id"]})
+
+        assert (first.status_code, second.status_code) == (201, 201)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_same_name_is_taken_under_the_same_parent(self, async_client: AsyncClient):
+        parent = (await _make(async_client, "Workshop")).json()
+        await async_client.post("/api/v1/printer-locations", json={"name": "Shelf 1", "parent_id": parent["id"]})
+
+        again = await async_client.post(
+            "/api/v1/printer-locations", json={"name": "shelf 1", "parent_id": parent["id"]}
+        )
+
+        assert again.status_code == 409, "case-insensitively, which is what name_key is for"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_two_roots_may_not_share_a_name_either(self, async_client: AsyncClient):
+        """The composite index cannot enforce this on SQLite -- NULL != NULL --
+        so the route's own check is the only thing standing here."""
+        await _make(async_client, "Workshop")
+
+        again = await _make(async_client, "workshop")
+
+        assert again.status_code == 409
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_location_cannot_be_moved_under_itself(self, async_client: AsyncClient):
+        parent = (await _make(async_client, "Workshop")).json()
+        child = (
+            await async_client.post("/api/v1/printer-locations", json={"name": "Shelf", "parent_id": parent["id"]})
+        ).json()
+
+        moved = await async_client.patch(f"/api/v1/printer-locations/{parent['id']}", json={"parent_id": child["id"]})
+
+        assert moved.status_code == 422
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_fourth_level_is_refused(self, async_client: AsyncClient):
+        parent_id = None
+        deepest = None
+        for name in ("Workshop", "Shelf", "Box"):
+            body = (
+                await async_client.post("/api/v1/printer-locations", json={"name": name, "parent_id": parent_id})
+            ).json()
+            parent_id = body["id"]
+            deepest = body
+
+        too_deep = await async_client.post(
+            "/api/v1/printer-locations", json={"name": "Corner", "parent_id": deepest["id"]}
+        )
+
+        assert too_deep.status_code == 422
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_parent_with_children_is_not_deleted(self, async_client: AsyncClient):
+        parent = (await _make(async_client, "Workshop")).json()
+        await async_client.post("/api/v1/printer-locations", json={"name": "Shelf", "parent_id": parent["id"]})
+
+        refused = await async_client.delete(f"/api/v1/printer-locations/{parent['id']}")
+
+        assert refused.status_code == 409
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_list_is_ordered_by_path_so_a_parent_leads_its_children(self, async_client: AsyncClient):
+        # Which is also where "the parent's own group comes first" comes from.
+        workshop = (await _make(async_client, "Workshop")).json()
+        await async_client.post("/api/v1/printer-locations", json={"name": "Shelf", "parent_id": workshop["id"]})
+        await _make(async_client, "Hall")
+
+        listed = (await async_client.get("/api/v1/printer-locations")).json()["locations"]
+
+        assert [row["path"] for row in listed] == ["Hall", "Workshop", "Workshop / Shelf"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_renaming_a_parent_moves_its_children_with_it(self, async_client: AsyncClient):
+        """No path is stored, so this is free -- and the test says so, because a
+        cached path is exactly the optimisation somebody adds later."""
+        workshop = (await _make(async_client, "Workshop")).json()
+        await async_client.post("/api/v1/printer-locations", json={"name": "Shelf", "parent_id": workshop["id"]})
+
+        await async_client.patch(f"/api/v1/printer-locations/{workshop['id']}", json={"name": "Big workshop"})
+
+        listed = (await async_client.get("/api/v1/printer-locations")).json()["locations"]
+        assert "Big workshop / Shelf" in [row["path"] for row in listed]
