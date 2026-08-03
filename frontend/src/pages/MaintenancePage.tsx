@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { byLocationName, compareLocationNames } from '../utils/locationOrder';
 import {
   Wrench,
   Loader2,
@@ -1609,7 +1610,7 @@ export function MaintenancePage() {
     if (!overview) return [] as string[];
     const set = new Set<string>();
     overview.forEach(p => { if (p.printer_location) set.add(p.printer_location.name); });
-    return Array.from(set).sort();
+    return Array.from(set).sort(compareLocationNames);
   })();
 
   // Filter + sort the Status-tab overviews.
@@ -1653,7 +1654,7 @@ export function MaintenancePage() {
         sorted.sort((a, b) => b.total_print_hours - a.total_print_hours);
         break;
       case 'location':
-        sorted.sort((a, b) => (a.printer_location?.name || '').localeCompare(b.printer_location?.name || ''));
+        sorted.sort(byLocationName(p => p.printer_location?.name));
         break;
     }
     if (!sortAsc && sortBy !== 'upcoming') sorted.reverse();

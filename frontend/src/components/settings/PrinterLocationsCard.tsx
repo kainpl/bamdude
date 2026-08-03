@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
+import { byLocationName } from '../../utils/locationOrder';
 
 /**
  * Manage the places printers and sensors stand in.
@@ -43,7 +44,9 @@ export function PrinterLocationsCard() {
     onError: () => setError(t('printers.locations.inUse')),
   });
 
-  const locations = data?.locations ?? [];
+  // Sorted here rather than trusted from the server: SQLite orders text by
+  // byte, which puts Ґ/Є/І/Ї before А and every lowercase name last.
+  const locations = [...(data?.locations ?? [])].sort(byLocationName(loc => loc.name));
 
   return (
     <div className="bg-bambu-dark-secondary rounded-xl p-4">

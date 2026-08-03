@@ -21,7 +21,7 @@ const mockQueues = [
     printer_id: 1,
     printer_name: 'X1 Carbon',
     printer_model: 'X1C',
-    printer_location: 'Lab',
+    printer_location: { id: 1, name: 'Lab' },
     status: 'idle',
     last_activity_at: null,
     current_item_id: null,
@@ -39,7 +39,7 @@ const mockQueues = [
     printer_id: 2,
     printer_name: 'P1S',
     printer_model: 'P1S',
-    printer_location: 'Office',
+    printer_location: { id: 2, name: 'Office' },
     status: 'printing',
     last_activity_at: '2026-04-14T10:00:00Z',
     current_item_id: 42,
@@ -128,6 +128,29 @@ describe('QueuePage', () => {
       });
     });
 
+  });
+
+  describe('location filter', () => {
+    it('narrows to the picked place instead of emptying the page', async () => {
+      // The filter compared the whole location row against the picked name, so
+      // it was never equal and every queue disappeared. The stale string
+      // fixture is why no test saw it.
+      const user = userEvent.setup();
+      render(<QueuePage />);
+      await waitFor(() => {
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+      });
+
+      const locationSelect = [...document.querySelectorAll('select')].find((select) =>
+        [...select.options].some((option) => option.value === 'Lab'),
+      )!;
+      await user.selectOptions(locationSelect, 'Lab');
+
+      await waitFor(() => {
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+        expect(screen.queryByText('P1S')).not.toBeInTheDocument();
+      });
+    });
   });
 
   describe('empty state', () => {

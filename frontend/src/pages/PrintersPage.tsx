@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ZigbeeStatusBadge } from '../components/zigbee/ZigbeeStatusBadge';
 import { useTranslation } from 'react-i18next';
 import { PrinterLocationSelect } from '../components/PrinterLocationSelect';
+import { compareLocationNames } from '../utils/locationOrder';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
 import {
@@ -8180,7 +8181,7 @@ export function PrintersPage() {
   // Derive unique locations for the location filter dropdown
   const availableLocations = useMemo(() => {
     if (!printers) return [];
-    return [...new Set(printers.map(p => p.location?.name || '').filter(Boolean))].sort();
+    return [...new Set(printers.map(p => p.location?.name || '').filter(Boolean))].sort(compareLocationNames);
   }, [printers]);
 
   const sortedPrinters = useMemo(() => {
@@ -8200,7 +8201,7 @@ export function PrintersPage() {
           const locB = b.location?.name || '';
           if (!locA && locB) return 1;
           if (locA && !locB) return -1;
-          return locA.localeCompare(locB) || a.name.localeCompare(b.name);
+          return compareLocationNames(locA, locB) || a.name.localeCompare(b.name);
         });
         break;
       case 'status':

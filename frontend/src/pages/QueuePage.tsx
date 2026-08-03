@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Calendar, LayoutGrid, Loader2 } from 'lucide-react';
 import { api } from '../api/client';
+import { byLocationName, compareLocationNames } from '../utils/locationOrder';
 import type { PrinterQueue, PrintQueueItem } from '../api/client';
 import { QueueCard } from '../components/QueueCard';
 import { QueueStatsBar } from '../components/Queue/QueueStatsBar';
@@ -151,7 +152,7 @@ export function QueuePage() {
     if (!queues) return [] as string[];
     const set = new Set<string>();
     queues.forEach(q => { if (q.printer_location) set.add(q.printer_location.name); });
-    return Array.from(set).sort();
+    return Array.from(set).sort(compareLocationNames);
   }, [queues]);
 
   // Filter + sort queues
@@ -160,7 +161,10 @@ export function QueuePage() {
     const term = search.trim().toLowerCase();
     const filtered = queues.filter(q => {
       if (statusFilter !== 'all' && q.status !== statusFilter) return false;
-      if (locationFilter !== 'all' && (q.printer_location || '') !== locationFilter) return false;
+      // `.name`, not the row: comparing the object to the picked name is never
+      // equal, so the filter used to empty the page instead of narrowing it.
+      // TypeScript cannot catch it — `PrinterLocation | ''` overlaps `string`.
+      if (locationFilter !== 'all' && (q.printer_location?.name || '') !== locationFilter) return false;
       if (term) {
         const name = (q.printer_name || '').toLowerCase();
         const model = (q.printer_model || '').toLowerCase();
@@ -193,7 +197,7 @@ export function QueuePage() {
         filtered.sort((a, b) => (a.printer_model || '').localeCompare(b.printer_model || ''));
         break;
       case 'location':
-        filtered.sort((a, b) => (a.printer_location?.name || '').localeCompare(b.printer_location?.name || ''));
+        filtered.sort(byLocationName(q => q.printer_location?.name));
         break;
     }
 

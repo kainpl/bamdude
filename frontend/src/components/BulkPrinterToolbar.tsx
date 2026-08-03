@@ -5,6 +5,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { X, Square, Pause, Play, ChevronDown, BellOff, Eraser } from 'lucide-react';
 import { Button } from './Button';
 import type { Printer } from '../api/client';
+import { byLocationName } from '../utils/locationOrder';
 
 export type BulkAction = 'stop' | 'pause' | 'resume' | 'clearPlate' | 'clearHMS';
 type PrinterStateFilter = 'printing' | 'paused' | 'finished' | 'idle' | 'error' | 'offline';
@@ -73,7 +74,7 @@ export function BulkPrinterToolbar({
   // Deduped by id, labelled by name — two printers in the same place share a
   // row now instead of being two entries that merely look alike.
   const locations = [...new Map(printers.filter(p => p.location).map(p => [p.location!.id, p.location!])).values()]
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort(byLocationName(loc => loc.name));
 
   const stateCounts: Record<PrinterStateFilter, number> = { printing: 0, paused: 0, finished: 0, idle: 0, error: 0, offline: 0 };
   printers.forEach(p => {

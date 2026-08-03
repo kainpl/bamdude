@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
+import { byLocationName } from '../utils/locationOrder';
 
 interface Props {
   value: number | null;
@@ -73,7 +74,7 @@ export function PrinterLocationSelect({ value, onChange, allowCreate = false }: 
         {/* A printer without a place is a normal state, so it needs a real
             choice rather than an empty first row that reads as unset-by-accident. */}
         <option value="">{t('printers.ungrouped')}</option>
-        {(data?.locations ?? []).map((loc) => (
+        {[...(data?.locations ?? [])].sort(byLocationName(loc => loc.name)).map((loc) => (
           <option key={loc.id} value={loc.id}>
             {loc.name}
           </option>

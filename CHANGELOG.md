@@ -20,6 +20,12 @@ All notable changes to BamDude will be documented in this file.
 >
 > **Why.** Queue entries are supposed to disappear when their print finishes. When a print ended in a way BamDude did not see — a connection dropped at the wrong moment, a swap macro wrongly reported as failed — the entry stayed behind, still claiming to be printing. Those leftovers never clear on their own, and they make a queue show work that printed hours ago. The causes are fixed in this release; this clears what they already left behind. There is no way to tell a leftover entry from a real one after the fact, which is exactly why we ask you to empty the queues first rather than guessing on your behalf.
 
+### Fixed
+
+- **Filtering the queue list by location no longer empties it.** Picking a place on the Queues page matched nothing at all, so every queue disappeared instead of the list narrowing to that place. Sorting and grouping by location were unaffected.
+
+- **Lists of locations are now in alphabetical order.** They were ordered by character code, which is not the alphabet: Ґ, Є, І and Ї sort before А, and anything typed in lower case fell to the very end — so a farm with places called "Ірпінь" and "Ангар" saw what looked like no order at all. This covers every location list: the filters on the printers, queues and maintenance pages, the picker in the printer and auto-queue dialogs, and the list under Settings. Numbered halls also count properly now — "Цех 2" comes before "Цех 10", not after it.
+
 ### Added
 
 - **Smart plugs and sensors now keep a history of what they measured.** Power draw and room conditions are recorded as they arrive and kept for a month, so a print can be looked at afterwards — what it drew, and what the air around it was doing. Every kind of plug is covered, not only the Zigbee ones: the three kinds that never report on their own are read on a timer instead, so their history exists whether or not anyone had the page open. How long each kind of reading is kept is now set under Settings → Data Management — including the two windows that could previously only be changed through the API and were, in practice, fixed at thirty days. There are no charts yet; this release records the data.
