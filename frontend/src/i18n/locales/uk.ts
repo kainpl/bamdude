@@ -1632,6 +1632,15 @@ export default {
       },
       removeDevice: 'Видалити пристрій',
       addAsSensor: 'Додати як датчик',
+      reporting: {
+        pending: 'Нове ще не підтверджено',
+        unknown: 'Ще не питали',
+        refused: 'Пристрій відмовив',
+        unanswered: 'Пристрій не відповів',
+        mismatch: 'Пристрій зберіг інше',
+        verified: 'Підтверджено пристроєм',
+        unchecked: 'Прийнято, не перевірено',
+      },
       removeDeviceConfirm:
         'Видалити {{name}} із Zigbee-мережі? Він перестане відповідати, доки ви не спаруєте його знову вручну.',
       radioDownShort: 'Zigbee-радіо не працює',

@@ -1626,6 +1626,15 @@ export default {
       },
       removeDevice: 'Remove device',
       addAsSensor: 'Add as sensor',
+      reporting: {
+        pending: 'Not confirmed yet',
+        unknown: 'Not asked yet',
+        refused: 'The device refused',
+        unanswered: 'The device did not answer',
+        mismatch: 'The device stored something else',
+        verified: 'Confirmed by the device',
+        unchecked: 'Accepted, not verified',
+      },
       removeDeviceConfirm:
         'Remove {{name}} from the Zigbee network? It will stop responding until you pair it again by hand.',
       radioDownShort: 'The Zigbee radio is down',
