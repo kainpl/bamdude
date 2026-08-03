@@ -32,3 +32,8 @@ class SmartSensor(Base):
     location: Mapped["PrinterLocation | None"] = relationship(lazy="selectin")
     zigbee_ieee: Mapped[str] = mapped_column(String(23), unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Silence is about the device, not about any one quantity, so it cannot
+    # live in a per-quantity threshold row. NULL means "speaking".
+    silent_since: Mapped[datetime | None] = mapped_column(DateTime)
+    silence_notified_at: Mapped[datetime | None] = mapped_column(DateTime)

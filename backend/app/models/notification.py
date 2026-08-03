@@ -84,6 +84,14 @@ class NotificationProvider(Base):
     on_ams_ht_humidity_high = Column(Boolean, default=False)  # AMS-HT humidity above threshold
     on_ams_ht_temperature_high = Column(Boolean, default=False)  # AMS-HT temperature above threshold
 
+    # Event triggers - Zigbee sensor alerts. Two columns rather than one per
+    # situation: the raise and its all-clear are never divided — switching off
+    # the all-clear while keeping the alarm is the AMS fault this avoids. The
+    # cut that IS useful is "tell me about the room" versus "tell me about the
+    # device".
+    on_sensor_threshold = Column(Boolean, default=False)  # reading left / returned to its limits
+    on_sensor_silent = Column(Boolean, default=False)  # sensor stopped / resumed reporting
+
     # Event triggers - Build plate detection
     on_plate_not_empty = Column(Boolean, default=True)  # Objects detected on plate before print
 

@@ -101,9 +101,10 @@ async def test_the_models_and_the_migration_chain_agree_on_the_columns(tmp_path)
     tested by everything else.
 
     The comparison is against the whole chain from here on, not this migration
-    alone. m124 turns ``smart_sensors.location`` into a foreign key, so m123's
-    own DDL is no longer what an upgraded database ends up with — only the
-    chain is."""
+    alone. m124 turns ``smart_sensors.location`` into a foreign key and m127
+    adds the two silence columns, so m123's own DDL is no longer what an
+    upgraded database ends up with — only the chain is. **A migration that
+    touches ``smart_sensors`` or ``zigbee_devices`` belongs in this list.**"""
     from sqlalchemy import inspect
     from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -113,7 +114,7 @@ async def test_the_models_and_the_migration_chain_agree_on_the_columns(tmp_path)
     # Importing the model modules is what puts them on Base.metadata — the app
     # does it lazily inside init_db() to avoid a models↔database import cycle,
     # so a fresh install gets these tables only because that block names them.
-    from backend.app.models import smart_sensor, zigbee_device  # noqa: F401
+    from backend.app.models import notification, smart_sensor, zigbee_device  # noqa: F401
 
     def columns_of(sync_conn):
         inspector = inspect(sync_conn)
@@ -125,12 +126,17 @@ async def test_the_models_and_the_migration_chain_agree_on_the_columns(tmp_path)
         from_models = await conn.run_sync(columns_of)
     await fresh.dispose()
 
-    from backend.app.migrations import m124_printer_locations as m124
+    from backend.app.migrations import m124_printer_locations as m124, m127_sensor_thresholds as m127
 
     upgraded = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'upgraded.db'}")
     async with upgraded.begin() as conn:
+        # m127 alters notification_providers as well; on a real database that
+        # table has existed since m001, so it is created here rather than
+        # letting a bare ALTER fail on a table this narrow test never made.
+        await conn.run_sync(Base.metadata.create_all, tables=[Base.metadata.tables["notification_providers"]])
         await m.upgrade(conn)
         await m124.upgrade(conn)
+        await m127.upgrade(conn)
         from_migration = await conn.run_sync(columns_of)
     await upgraded.dispose()
 
