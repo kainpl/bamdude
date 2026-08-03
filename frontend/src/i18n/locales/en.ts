@@ -6047,6 +6047,16 @@ export default {
 
   // Maintenance type descriptions (built-in)
   // Smart Plugs
+  sensorHistory: {
+    title: 'Readings history',
+    empty: 'Nothing recorded yet.',
+    error: 'Failed to load history',
+    min: 'Min',
+    avg: 'Average',
+    max: 'Peak',
+    bucketMinute: '{{value}} {{unit}} · 1-minute average',
+    bucketMinutes: '{{value}} {{unit}} · {{minutes}}-minute average',
+  },
   smartPlugs: {
     powerHistory: {
       title: 'Power history',

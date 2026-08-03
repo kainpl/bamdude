@@ -2486,6 +2486,25 @@ export interface PlugPowerHistory {
   max_power: number | null;
 }
 
+export interface SensorHistoryPoint {
+  recorded_at: string;
+  /** Never null. Unlike plug power, an empty bucket is simply not sent: a
+   *  sensor is silent on a schedule, not for want of an event. */
+  value: number;
+}
+
+export interface SensorHistory {
+  points: SensorHistoryPoint[];
+  /** How wide each bucket is. A point is the AVERAGE over this many seconds,
+   *  not an instant, and the tooltip has to say so. */
+  bucket_seconds: number;
+  /** Over the readings, not the buckets -- this is where the peak survives the
+   *  averaging the line does. */
+  min_value: number | null;
+  avg_value: number | null;
+  max_value: number | null;
+}
+
 export interface ZigbeePort {
   device: string;
   description: string;
@@ -6338,6 +6357,8 @@ export const api = {
     request<SmartPlugStatus>(`/smart-plugs/${id}/status`),
   getPlugPowerHistory: (plugId: number, hours: number) =>
     request<PlugPowerHistory>(`/smart-plugs/${plugId}/power-history?hours=${hours}`),
+  getSensorHistory: (sensorId: number, kind: string, hours: number) =>
+    request<SensorHistory>(`/zigbee/sensors/${sensorId}/history?kind=${encodeURIComponent(kind)}&hours=${hours}`),
   testSmartPlugConnection: (ip_address: string, username?: string | null, password?: string | null) =>
     request<SmartPlugTestResult>('/smart-plugs/test-connection', {
       method: 'POST',

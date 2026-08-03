@@ -6049,6 +6049,16 @@ export default {
 
   // Maintenance type descriptions (built-in)
   // Smart Plugs
+  sensorHistory: {
+    title: 'Історія показів',
+    empty: 'Нічого не записано.',
+    error: 'Не вдалося завантажити історію',
+    min: 'Мін',
+    avg: 'Середнє',
+    max: 'Пік',
+    bucketMinute: '{{value}} {{unit}} · середнє за 1 хв',
+    bucketMinutes: '{{value}} {{unit}} · середнє за {{minutes}} хв',
+  },
   smartPlugs: {
     powerHistory: {
       title: 'Історія потужності',
