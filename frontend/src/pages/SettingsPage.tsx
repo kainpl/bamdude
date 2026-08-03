@@ -52,6 +52,7 @@ import { registerSettingsSearch, getSettingsSearchEntries } from '../lib/setting
 import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
 import { PrintOptionsPreferencesPanel } from '../components/settings/PrintOptionsPreferencesPanel';
 import { ArchivedPrintersPanel } from '../components/settings/ArchivedPrintersPanel';
+import { RetentionCard } from '../components/settings/RetentionCard';
 import { PrinterLocationsCard } from '../components/settings/PrinterLocationsCard';
 import { PreheatFilamentTargetsEditor } from '../components/PreheatFilamentTargetsEditor';
 
@@ -2563,6 +2564,12 @@ export function SettingsPage() {
               <h2 className="text-lg font-semibold text-white">{t('settings.dataManagement')}</h2>
             </CardHeader>
             <CardContent className="space-y-4">
+              <RetentionCard
+                values={(settings ?? {}) as Record<string, number | undefined>}
+                onSave={(patch) => updateMutation.mutate(patch)}
+                saving={updateMutation.isPending}
+              />
+
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-white">{t('settings.clearNotificationLogs')}</p>

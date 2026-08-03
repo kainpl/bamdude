@@ -2161,6 +2161,14 @@ export default {
     costTracking: 'Cost Tracking',
     printsOnly: 'Prints Only',
     totalConsumption: 'Total Consumption',
+    retention: {
+      title: 'Measurement history',
+      help: 'How long each kind of reading is kept. Older rows are removed once a day.',
+      ams: 'AMS humidity and temperature (days)',
+      printerSensors: 'Printer temperatures (days)',
+      plugPower: 'Smart plug power (days)',
+      sensors: 'Sensor readings (days)'
+    },
     dataManagement: 'Data Management',
     storageUsage: 'Storage Usage',
     storageUsageDescription: 'Breakdown of data usage by category',
