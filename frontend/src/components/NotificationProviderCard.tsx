@@ -618,6 +618,37 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                                 </div>
                             </div>
 
+                            {/* Zigbee Sensor Alerts. Two toggles against five
+                                messages: the raise and its all-clear are never
+                                divided, but "the room" and "the device" are. */}
+                            <div className="space-y-2">
+                                <p className="text-xs text-bambu-gray uppercase tracking-wide">{t('notifications.sensorAlerts')}</p>
+
+                                <div className="flex items-center justify-between">
+                                    <div>
+                                        <p className="text-sm text-white">{t('notifications.sensorThreshold')}</p>
+                                        <p className="text-xs text-bambu-gray">{t('notifications.sensorThresholdDescription')}</p>
+                                    </div>
+                                    <Toggle
+                                        label={t('notifications.sensorThreshold')}
+                                        checked={provider.on_sensor_threshold ?? false}
+                                        onChange={(checked) => updateMutation.mutate({on_sensor_threshold: checked})}
+                                    />
+                                </div>
+
+                                <div className="flex items-center justify-between">
+                                    <div>
+                                        <p className="text-sm text-white">{t('notifications.sensorSilent')}</p>
+                                        <p className="text-xs text-bambu-gray">{t('notifications.sensorSilentDescription')}</p>
+                                    </div>
+                                    <Toggle
+                                        label={t('notifications.sensorSilent')}
+                                        checked={provider.on_sensor_silent ?? false}
+                                        onChange={(checked) => updateMutation.mutate({on_sensor_silent: checked})}
+                                    />
+                                </div>
+                            </div>
+
                             {/* Inventory Stock Alerts (upstream #1184; scaffold — UI-only today) */}
                             <div className="space-y-2">
                                 <p className="text-xs text-bambu-gray uppercase tracking-wide">{t('notifications.inventoryAlerts')}</p>

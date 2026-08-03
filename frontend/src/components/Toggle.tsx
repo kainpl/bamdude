@@ -2,9 +2,14 @@ interface ToggleProps {
   checked: boolean;
   onChange: (checked: boolean) => void;
   disabled?: boolean;
+  /** What this switch is for. Without it the control has no accessible name at
+   *  all — a screen reader announces "switch, on" and nothing else, and a test
+   *  has nothing to address it by. Optional because the callers that predate it
+   *  do not pass one. */
+  label?: string;
 }
 
-export function Toggle({ checked, onChange, disabled }: ToggleProps) {
+export function Toggle({ checked, onChange, disabled, label }: ToggleProps) {
   const handleClick = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -18,6 +23,7 @@ export function Toggle({ checked, onChange, disabled }: ToggleProps) {
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={label}
       disabled={disabled}
       onClick={handleClick}
       className={`relative inline-flex w-11 h-7 md:w-9 md:h-5 rounded-full transition-colors flex-shrink-0 focus:outline-none focus:ring-2 focus:ring-bambu-green focus:ring-offset-2 focus:ring-offset-bambu-dark ${

@@ -3130,6 +3130,11 @@ export interface NotificationProvider {
   // AMS-HT environmental alarms
   on_ams_ht_humidity_high: boolean;
   on_ams_ht_temperature_high: boolean;
+  // Zigbee sensor alerts
+  /** A reading left or returned to its limits. */
+  on_sensor_threshold: boolean;
+  /** A sensor stopped or resumed reporting. */
+  on_sensor_silent: boolean;
   // Build plate detection
   on_plate_not_empty: boolean;
   // Bed cooled
@@ -3191,6 +3196,11 @@ export interface NotificationProviderCreate {
   // AMS-HT environmental alarms
   on_ams_ht_humidity_high?: boolean;
   on_ams_ht_temperature_high?: boolean;
+  // Zigbee sensor alerts
+  /** A reading left or returned to its limits. */
+  on_sensor_threshold?: boolean;
+  /** A sensor stopped or resumed reporting. */
+  on_sensor_silent?: boolean;
   // Build plate detection
   on_plate_not_empty?: boolean;
   // Bed cooled
@@ -3246,6 +3256,11 @@ export interface NotificationProviderUpdate {
   // AMS-HT environmental alarms
   on_ams_ht_humidity_high?: boolean;
   on_ams_ht_temperature_high?: boolean;
+  // Zigbee sensor alerts
+  /** A reading left or returned to its limits. */
+  on_sensor_threshold?: boolean;
+  /** A sensor stopped or resumed reporting. */
+  on_sensor_silent?: boolean;
   // Build plate detection
   on_plate_not_empty?: boolean;
   // Bed cooled
