@@ -414,13 +414,19 @@ class TestSmartPlugManager:
         """Verify starting scheduler twice doesn't create multiple tasks."""
         mock_scheduler_task = MagicMock()
         mock_snapshot_task = MagicMock()
+        mock_history_task = MagicMock()
         manager._scheduler_task = mock_scheduler_task
         manager._snapshot_task = mock_snapshot_task
+        # The third loop, added with measurement history. Every loop the manager
+        # owns has to be listed here or "idempotent" quietly stops covering the
+        # newest one — which is the loop most likely to be started twice.
+        manager._history_task = mock_history_task
 
-        # Mock both loops to avoid unawaited coroutine warnings
+        # Mock the loops to avoid unawaited coroutine warnings
         with (
             patch.object(manager, "_schedule_loop") as mock_schedule_loop,
             patch.object(manager, "_snapshot_loop") as mock_snapshot_loop,
+            patch.object(manager, "_history_loop"),
             patch("asyncio.create_task") as mock_create,
         ):
             manager.start_scheduler()

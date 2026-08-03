@@ -13,6 +13,8 @@ from typing import Any
 
 import paho.mqtt.client as mqtt
 
+from backend.app.services.measurement_buffer import measurement_buffer
+
 logger = logging.getLogger(__name__)
 
 
@@ -282,6 +284,9 @@ class MQTTSmartPlugService:
                     try:
                         data.power = float(raw_value) * config.multiplier
                         logger.debug("MQTT smart plug %s: power=%s", plug_id, data.power)
+                        # Buffered rather than written: this is the paho callback
+                        # thread, and it has no event loop to write with.
+                        measurement_buffer.record_power(plug_id, data.power)
                     except (ValueError, TypeError):
                         pass  # Ignore unparseable power reading from MQTT
 

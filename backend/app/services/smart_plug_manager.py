@@ -43,6 +43,7 @@ class SmartPlugManager:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._scheduler_task: asyncio.Task | None = None
         self._snapshot_task: asyncio.Task | None = None
+        self._history_task: asyncio.Task | None = None
         self._last_schedule_check: dict[int, str] = {}  # plug_id -> "HH:MM" last executed
 
     async def get_service_for_plug(self, plug: "SmartPlug", db: AsyncSession | None = None):
@@ -113,6 +114,9 @@ class SmartPlugManager:
         if self._snapshot_task is None:
             self._snapshot_task = asyncio.create_task(self._snapshot_loop())
             logger.info("Smart plug energy snapshot loop started")
+        if self._history_task is None:
+            self._history_task = asyncio.create_task(self._history_loop())
+            logger.info("Measurement history loop started")
 
     def stop_scheduler(self):
         """Stop the background scheduler."""
@@ -124,6 +128,42 @@ class SmartPlugManager:
             self._snapshot_task.cancel()
             self._snapshot_task = None
             logger.info("Smart plug energy snapshot loop stopped")
+        if self._history_task:
+            self._history_task.cancel()
+            self._history_task = None
+            logger.info("Measurement history loop stopped")
+
+    async def _history_loop(self):
+        """Flush what was reported, read what does not report, prune daily.
+
+        One loop for three jobs because they share a schedule — and because
+        pruning has nowhere else to live: the reporting paths write from
+        callbacks, and a callback cannot hold "once a day".
+        """
+        from backend.app.core.database import async_session
+        from backend.app.services.measurement_history import (
+            flush_buffered,
+            prune,
+            resolve_sample_seconds,
+            sample_polled_plugs,
+        )
+
+        await asyncio.sleep(20)  # let the rest of the application finish booting
+        since_prune = 0.0
+        while True:
+            interval = 60
+            try:
+                async with async_session() as db:
+                    interval = await resolve_sample_seconds(db)
+                    await sample_polled_plugs(db)
+                    await flush_buffered(db)
+                    since_prune += interval
+                    if since_prune >= 24 * 60 * 60:
+                        since_prune = 0.0
+                        await prune(db)
+            except Exception as exc:  # noqa: BLE001 — the loop must outlive one bad cycle
+                logger.error("Measurement history cycle failed: %s", exc)
+            await asyncio.sleep(interval)
 
     async def _schedule_loop(self):
         """Background loop that checks scheduled on/off times every minute."""

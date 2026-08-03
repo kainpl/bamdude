@@ -26,6 +26,7 @@ from zigpy.zcl import foundation
 from zigpy.zdo import types as zdo_types
 
 from backend.app.core.tasks import spawn_background_task
+from backend.app.services.measurement_buffer import measurement_buffer
 from backend.app.services.zigbee.devices import ELECTRICAL_MEASUREMENT, METERING, ON_OFF
 from backend.app.services.zigbee.errors import describe_exception
 from backend.app.services.zigbee.metering import (
@@ -191,12 +192,16 @@ class ClusterReportListener:
                 power = demand_to_watts(value, self._multiplier, self._divisor)
                 if power is not None:
                     self._service.update(self._plug_id, power=power)
+                    # Buffered, never written here: this runs inside a zigpy
+                    # callback that must not block and must not raise.
+                    measurement_buffer.record_power(self._plug_id, power)
                 return
 
             if self._cluster_id == ELECTRICAL_MEASUREMENT and attrid == ATTR_ACTIVE_POWER:
                 power = scale(value, self._multiplier, self._divisor)
                 if power is not None:
                     self._service.update(self._plug_id, power=power)
+                    measurement_buffer.record_power(self._plug_id, power)
                 return
             # Anything else is noise: devices report far more than we asked for.
         except Exception as exc:  # noqa: BLE001 — see the docstring

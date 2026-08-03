@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 
+from backend.app.services.measurement_buffer import measurement_buffer
 from backend.app.services.zigbee.measurements import BY_KEY, to_display
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,13 @@ class SensorStore:
             at=now or _now(),
         )
         state.empty_windows = 0
+
+        # History gets the DISPLAY value — the same number the card shows. A raw
+        # count would need the registry read again to mean anything, and the two
+        # could then disagree about one reading. A sentinel converts to None and
+        # is not recorded: contact happened, a measurement did not.
+        if state.readings[key].value is not None:
+            measurement_buffer.record_sensor(ieee, key, state.readings[key].value)
 
     def reading(self, ieee: str, key: str) -> Reading | None:
         state = self._state.get(self._key(ieee))
