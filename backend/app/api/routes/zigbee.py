@@ -16,7 +16,7 @@ import logging
 import math
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -553,6 +553,124 @@ async def list_sensors(
             }
         )
     return {"sensors": sensors}
+
+
+class SensorThresholdIn(BaseModel):
+    kind: str
+    min_value: float | None = None
+    max_value: float | None = None
+    deadband: float = Field(default=0.0, ge=0)
+    enabled: bool = True
+
+    @field_validator("kind")
+    @classmethod
+    def _known_quantity(cls, value: str) -> str:
+        from backend.app.services.zigbee.measurements import BY_KEY
+
+        if value not in BY_KEY:
+            raise ValueError(f"Unknown quantity: {value}.")
+        return value
+
+    @model_validator(mode="after")
+    def _at_least_one_limit(self):
+        # An empty demand: it could never fire, and nothing on screen could
+        # explain why.
+        if self.min_value is None and self.max_value is None:
+            raise ValueError("A threshold needs a minimum, a maximum, or both.")
+        return self
+
+
+class SensorThresholdsIn(BaseModel):
+    thresholds: list[SensorThresholdIn]
+
+
+def _threshold_out(row) -> dict:
+    from backend.app.services.zigbee.measurements import BY_KEY
+
+    measurement = BY_KEY.get(row.kind)
+    return {
+        "kind": row.kind,
+        "min_value": row.min_value,
+        "max_value": row.max_value,
+        "deadband": row.deadband,
+        "enabled": row.enabled,
+        # Read-only: what the last evaluation decided.
+        "state": row.state,
+        # So the dialog can label each field without carrying its own copy of
+        # the measurement registry.
+        "unit": measurement.unit if measurement else "",
+    }
+
+
+@router.get("/sensors/{sensor_id}/thresholds")
+async def get_sensor_thresholds(
+    sensor_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_SENSORS_READ),
+):
+    """What counts as wrong for this sensor, and whether it currently is."""
+    from backend.app.models.smart_sensor_threshold import SmartSensorThreshold
+
+    if await db.get(SmartSensor, sensor_id) is None:
+        raise HTTPException(status_code=404, detail="No such sensor.")
+
+    rows = (
+        (await db.execute(select(SmartSensorThreshold).where(SmartSensorThreshold.sensor_id == sensor_id)))
+        .scalars()
+        .all()
+    )
+    return {"thresholds": [_threshold_out(row) for row in rows]}
+
+
+@router.put("/sensors/{sensor_id}/thresholds")
+async def put_sensor_thresholds(
+    sensor_id: int,
+    payload: SensorThresholdsIn,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_SENSORS_UPDATE),
+):
+    """The whole set at once, like the reporting dialog.
+
+    A quantity absent from the body ends up with no threshold. Rows that stay
+    are updated in place and **keep their alarm state**: rewriting a limit is
+    not an acknowledgement, and the next evaluation decides honestly — a limit
+    raised above the current reading produces a real all-clear.
+    """
+    from backend.app.models.smart_sensor_threshold import SmartSensorThreshold
+
+    if await db.get(SmartSensor, sensor_id) is None:
+        raise HTTPException(status_code=404, detail="No such sensor.")
+
+    existing = {
+        row.kind: row
+        for row in (await db.execute(select(SmartSensorThreshold).where(SmartSensorThreshold.sensor_id == sensor_id)))
+        .scalars()
+        .all()
+    }
+    wanted = {item.kind: item for item in payload.thresholds}
+
+    for kind, row in existing.items():
+        if kind not in wanted:
+            await db.delete(row)
+
+    for kind, item in wanted.items():
+        row = existing.get(kind)
+        if row is None:
+            row = SmartSensorThreshold(sensor_id=sensor_id, kind=kind)
+            db.add(row)
+        row.min_value = item.min_value
+        row.max_value = item.max_value
+        row.deadband = item.deadband
+        row.enabled = item.enabled
+
+    await db.commit()
+
+    rows = (
+        (await db.execute(select(SmartSensorThreshold).where(SmartSensorThreshold.sensor_id == sensor_id)))
+        .scalars()
+        .all()
+    )
+    return {"thresholds": [_threshold_out(row) for row in rows]}
 
 
 @router.post("/sensors", status_code=201, response_model=SmartSensorOut)
