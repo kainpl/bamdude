@@ -16,6 +16,7 @@ from sqlalchemy import select
 from backend.app.models.smart_sensor import SmartSensor
 from backend.app.models.smart_sensor_history import SmartSensorHistory
 from backend.app.models.smart_sensor_threshold import SmartSensorThreshold
+from backend.app.services.notification_service import notification_service
 from backend.app.services.zigbee.device_settings import (
     DEFAULT_REPORTING_STALE_MULTIPLIER,
     load_device_row,
@@ -300,3 +301,23 @@ async def sweep_silence(db, *, uptime_seconds: float) -> list[AlertEvent]:
 
     await db.commit()
     return events
+
+
+async def run_sensor_alerts(db) -> int:
+    """One tick: decide, then tell. Returns how many alerts were sent.
+
+    Every send is wrapped. This runs inside the loop that also writes
+    measurement history and prunes it, and an exception there is a feature that
+    silently stops working — taking the other two with it.
+    """
+    events = await evaluate_thresholds(db)
+    events.extend(await sweep_silence(db, uptime_seconds=uptime_seconds()))
+
+    sent = 0
+    for event in events:
+        try:
+            await notification_service.on_sensor_alert(event, db)
+            sent += 1
+        except Exception as exc:  # noqa: BLE001 — see the docstring
+            logger.warning("Sensor alert %s for sensor %s not sent: %s", event.template, event.sensor_id, exc)
+    return sent

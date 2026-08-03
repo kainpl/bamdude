@@ -147,6 +147,7 @@ class SmartPlugManager:
             resolve_sample_seconds,
             sample_polled_plugs,
         )
+        from backend.app.services.sensor_alerts import run_sensor_alerts
 
         await asyncio.sleep(20)  # let the rest of the application finish booting
         since_prune = 0.0
@@ -157,6 +158,10 @@ class SmartPlugManager:
                     interval = await resolve_sample_seconds(db)
                     await sample_polled_plugs(db)
                     await flush_buffered(db)
+                    # Same tick, same session: the alerts read what the flush
+                    # just wrote. Wrapped inside run_sensor_alerts — this loop
+                    # also prunes, and an exception here would stop that too.
+                    await run_sensor_alerts(db)
                     since_prune += interval
                     if since_prune >= 24 * 60 * 60:
                         since_prune = 0.0
