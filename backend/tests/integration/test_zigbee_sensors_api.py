@@ -132,7 +132,9 @@ async def test_a_mains_sensor_is_reported_as_such(async_client: AsyncClient, mon
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_plugs_and_the_coordinator_are_not_listed_as_sensors(async_client: AsyncClient, monkeypatch):
+async def test_only_adopted_rows_are_listed_whatever_is_on_the_mesh(async_client: AsyncClient, monkeypatch):
+    """Adoption is the row. A mesh full of plugs and a coordinator produces no
+    sensors, because none of them has one."""
     from backend.app.services.zigbee.coordinator import zigbee_coordinator
 
     plug = SimpleNamespace(
@@ -158,14 +160,47 @@ async def test_plugs_and_the_coordinator_are_not_listed_as_sensors(async_client:
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_no_radio_is_an_empty_list_not_an_error(async_client: AsyncClient, monkeypatch):
-    """Consistent with the device list: an install with the radio down asks this
-    question and gets an answer, not a 503."""
+async def test_a_downed_radio_does_not_erase_the_sensors(async_client: AsyncClient, monkeypatch, db_session):
+    """The row, its name and its place do not live in the radio. Answering with
+    an empty list reads as "BamDude forgot my sensor" rather than "cannot see
+    it right now"."""
     from backend.app.services.zigbee.coordinator import zigbee_coordinator
 
+    await _adopt(db_session, IEEE, name="Workshop")
     monkeypatch.setattr(zigbee_coordinator, "_app", None)
 
-    response = await async_client.get("/api/v1/zigbee/sensors")
+    body = (await async_client.get("/api/v1/zigbee/sensors")).json()
 
-    assert response.status_code == 200
-    assert response.json() == {"sensors": []}
+    assert [s["name"] for s in body["sensors"]] == ["Workshop"]
+    assert body["sensors"][0]["present"] is False
+    assert body["sensors"][0]["measurements"] == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_sensor_that_left_the_mesh_keeps_its_name_and_place(async_client: AsyncClient, monkeypatch, db_session):
+    """A flat cell or a device carried out of range. The row is untouched, so
+    it stays visible, renameable and unbindable -- none of which needs a radio."""
+    from backend.app.models.printer_location import PrinterLocation
+    from backend.app.models.smart_sensor import SmartSensor
+    from backend.app.models.zigbee_device import ZigbeeDevice
+    from backend.app.services.zigbee.coordinator import zigbee_coordinator
+
+    place = PrinterLocation(name="Shop 2", name_key="shop 2")
+    db_session.add(place)
+    await db_session.commit()
+    await db_session.refresh(place)
+    db_session.add(ZigbeeDevice(ieee=IEEE.lower(), kind="sensor", name="SONOFF SNZB-02DR2"))
+    db_session.add(SmartSensor(name="Workshop", zigbee_ieee=IEEE.lower(), location_id=place.id))
+    await db_session.commit()
+
+    # The radio is up and healthy; this one device simply is not on it.
+    monkeypatch.setattr(zigbee_coordinator, "_app", SimpleNamespace(devices={}))
+
+    sensor = (await async_client.get("/api/v1/zigbee/sensors")).json()["sensors"][0]
+
+    assert sensor["present"] is False
+    assert sensor["location"]["name"] == "Shop 2"
+    assert sensor["model"] == "SONOFF SNZB-02DR2", "the hardware name recorded at pairing is all we still know"
+    assert sensor["unreachable"] is True
+    assert sensor["power"] is None

@@ -18,10 +18,10 @@ class SmartSensor(Base):
     the farm shows or acts on. That is the same rule plugs have always had, and
     it is why there is no ``adopted`` flag anywhere.
 
-    ``location`` is a free string with the same meaning as ``Printer.location``
-    — a group name the operator types. It is NOT a foreign key to ``locations``,
-    which is filament-spool storage and unrelated. Nothing reads this column
-    yet; it lands now so the next cycle's location binding needs no migration.
+    ``location_id`` points at ``printer_locations`` — the same lookup table a
+    printer points at, so a sensor and the printers around it can be asked
+    about together. It is NOT the spool-storage ``locations`` table, which is
+    unrelated.
     """
 
     __tablename__ = "smart_sensors"

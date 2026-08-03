@@ -80,8 +80,10 @@ async def test_a_sensor_reports_its_location_as_an_object(async_client: AsyncCli
     db_session.add(SmartSensor(name="Workshop", zigbee_ieee="aa:bb", location_id=place.id))
     await db_session.commit()
 
-    # The radio is down in this test, so the sensor list is empty by design —
-    # what matters here is that the adoption endpoint accepts and echoes the id.
+    # The radio is down in this test, and the sensor is listed anyway: the row,
+    # its name and its place do not live in the radio. Which makes this the
+    # right place to assert the shape of the place itself.
     listed = (await async_client.get("/api/v1/zigbee/sensors")).json()
 
-    assert listed == {"sensors": []}
+    assert listed["sensors"][0]["location"] == {"id": place.id, "name": place.name}
+    assert listed["sensors"][0]["present"] is False

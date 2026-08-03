@@ -438,66 +438,95 @@ async def list_sensors(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
 ):
-    """Every paired sensor with what it last told us.
+    """Every adopted sensor with what it last told us.
 
-    The only surface for readings in this cycle: there is no row and no page.
+    Built from the ``smart_sensors`` rows, with the live device enriching them.
+    The other way round -- walking zigpy's table and keeping what is adopted --
+    made a downed radio and a sensor that left the mesh both answer "nothing
+    configured", which reads as BamDude having forgotten the device rather than
+    being unable to see it.
 
-    ``value`` is null when nothing is known — never 0. A fabricated reading is
+    ``value`` is null when nothing is known -- never 0. A fabricated reading is
     worse than a missing one, which is the rule plug power already follows.
     ``stale`` says the value is older than its window, and ``reporting`` is what
     the device actually accepted, so "reporting is configured" never has to be
     inferred from silence.
     """
+    from backend.app.models.zigbee_device import ZigbeeDevice
     from backend.app.services.zigbee.device_settings import resolve_reporting, resolve_stale_after_seconds
     from backend.app.services.zigbee.measurements import BY_KEY
     from backend.app.services.zigbee.reporting_targets import targets_for
     from backend.app.services.zigbee.sensors import PowerClass, power_class, sensor_store
 
-    app = zigbee_coordinator.app
-    if app is None:
-        # Consistent with the device list: an install whose radio is down asks
-        # this question and gets an answer rather than a 503.
+    rows = (await db.execute(select(SmartSensor))).scalars().all()
+    if not rows:
         return {"sensors": []}
 
-    # Adopted only. A paired sensor that nobody has added stays on the network
-    # and keeps being configured, but it is not something the farm shows or
-    # acts on — the same rule plugs have always had.
-    # Whole rows rather than named columns: the place is a relationship now, and
-    # selecting it as a column silently yields nothing rather than failing.
-    adopted = {str(row.zigbee_ieee).lower(): row for row in (await db.execute(select(SmartSensor))).scalars().all()}
+    # What the radio recorded when the device paired. It is the only thing we
+    # still know about a device that is no longer on the mesh.
+    hardware_names = {
+        str(ieee).lower(): name for ieee, name in (await db.execute(select(ZigbeeDevice.ieee, ZigbeeDevice.name))).all()
+    }
 
+    app = zigbee_coordinator.app
     sensors = []
-    for device in list(app.devices.values()):
-        info = describe_device(device)
-        if info.kind is not DeviceKind.SENSOR:
-            continue
-        adopted_row = adopted.get(info.ieee.lower())
-        if adopted_row is None:
+    for row in rows:
+        ieee = str(row.zigbee_ieee).lower()
+        device = _find_device(app, ieee) if app is not None else None
+        entry = {
+            "id": row.id,
+            # What the operator calls it. The hardware's own name is a
+            # different question, answered by the settings endpoint.
+            "name": row.name,
+            # The place, resolved -- one shape for a location everywhere.
+            "location": (PrinterLocationOut(id=row.location.id, name=row.location.name) if row.location else None),
+            "ieee": ieee,
+            "present": device is not None,
+        }
+
+        if device is None:
+            # Not on the mesh: a downed radio, a flat cell, a device carried out
+            # of range. Which quantities it would report is derived from the
+            # clusters a live device carries, so there is nothing honest to put
+            # in `measurements` -- inventing them would be worse than omitting.
+            sensors.append(
+                {
+                    **entry,
+                    "nwk": None,
+                    "manufacturer": None,
+                    "model": hardware_names.get(ieee),
+                    "power": None,
+                    "quirk_applied": None,
+                    "unreachable": True,
+                    "measurements": {},
+                }
+            )
             continue
 
+        info = describe_device(device)
         parameters = await resolve_reporting(db, info)
         polled = power_class(device) is PowerClass.MAINS
-        applied = zigbee_coordinator.applied_reporting(info.ieee)
+        applied = zigbee_coordinator.applied_reporting(ieee)
 
         measurements = {}
         # From the targets, which are derived from the clusters the device
         # actually carries. Battery is in that list and NOT in
-        # ``info.measurements`` — a battery cluster alone does not make a
-        # sensor — and listing it by hand here was the second place that
+        # ``info.measurements`` -- a battery cluster alone does not make a
+        # sensor -- and listing it by hand here was the second place that
         # knowledge lived.
         for target in targets_for(info):
             measurement = BY_KEY.get(target.key)
             if measurement is None:
                 continue
-            reading = sensor_store.reading(info.ieee, target.key)
+            reading = sensor_store.reading(ieee, target.key)
             max_interval = parameters.get(target.key, {}).get("max_interval", measurement.default_max_interval)
-            window = await resolve_stale_after_seconds(db, info.ieee, polled=polled, max_interval=max_interval)
+            window = await resolve_stale_after_seconds(db, ieee, polled=polled, max_interval=max_interval)
             state = applied.get(target.key) or {}
             measurements[target.key] = {
                 "value": reading.value if reading else None,
                 "unit": measurement.unit,
                 "last_report_at": reading.at.isoformat() if reading else None,
-                "stale": sensor_store.is_stale(info.ieee, target.key, window, 1),
+                "stale": sensor_store.is_stale(ieee, target.key, window, 1),
                 # Two facts, not one word: what the device answered, and what
                 # reading the configuration back said. Both are unknown after a
                 # restart and are re-established at the next contact.
@@ -507,17 +536,7 @@ async def list_sensors(
 
         sensors.append(
             {
-                "id": adopted_row.id,
-                # What the operator calls it. The hardware's own name is a
-                # different question, answered by the settings endpoint.
-                "name": adopted_row.name,
-                # The place, resolved — one shape for a location everywhere.
-                "location": (
-                    PrinterLocationOut(id=adopted_row.location.id, name=adopted_row.location.name)
-                    if adopted_row.location
-                    else None
-                ),
-                "ieee": info.ieee,
+                **entry,
                 "nwk": info.nwk,
                 "manufacturer": info.manufacturer,
                 "model": info.model,
@@ -525,7 +544,7 @@ async def list_sensors(
                 # A quirk that did not apply is invisible in the values; the
                 # class name is the one place it shows.
                 "quirk_applied": type(device).__name__ != "Device",
-                "unreachable": sensor_store.is_unreachable(info.ieee),
+                "unreachable": sensor_store.is_unreachable(ieee),
                 "measurements": measurements,
             }
         )
