@@ -122,3 +122,67 @@ async def test_the_waiting_reason_names_the_place_a_human_would_recognise(db_ses
     )
 
     assert "Цех 2" in reason
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_work_aimed_at_a_workshop_reaches_a_printer_on_a_shelf(db_session, printer_factory):
+    """The point of the tree. Before this the item had to name each shelf, and
+    aiming at the room they are in matched nothing at all."""
+    workshop = await _place(db_session, "Workshop")
+    shelf = PrinterLocation(name="Shelf", name_key="shelf", parent_id=workshop.id)
+    db_session.add(shelf)
+    await db_session.commit()
+    await db_session.refresh(shelf)
+
+    p = await printer_factory(name="X1", serial_number="LOC10", model="X1C", is_active=True)
+    p.location_id = shelf.id
+    db_session.add(PrinterQueue(printer_id=p.id, auto_distribute_eligible=True, is_paused=False))
+    await db_session.commit()
+
+    _printer, reason = await find_eligible_printer(
+        db_session, AutoQueueItem(target_model="X1C", target_location_id=workshop.id), set()
+    )
+
+    assert _EXCLUDED_BY_LOCATION not in (reason or ""), "a shelf is inside the workshop"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_printer_in_a_sibling_workshop_is_still_excluded(db_session, printer_factory):
+    """The subtree is a gate, not an amnesty: widening it to the whole tree
+    would make the target meaningless."""
+    workshop = await _place(db_session, "Workshop")
+    other = await _place(db_session, "Hall")
+    shelf = PrinterLocation(name="Shelf", name_key="shelf", parent_id=other.id)
+    db_session.add(shelf)
+    await db_session.commit()
+    await db_session.refresh(shelf)
+
+    p = await printer_factory(name="X1", serial_number="LOC11", model="X1C", is_active=True)
+    p.location_id = shelf.id
+    db_session.add(PrinterQueue(printer_id=p.id, auto_distribute_eligible=True, is_paused=False))
+    await db_session.commit()
+
+    _printer, reason = await find_eligible_printer(
+        db_session, AutoQueueItem(target_model="X1C", target_location_id=workshop.id), set()
+    )
+
+    assert _EXCLUDED_BY_LOCATION in (reason or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_the_refusal_names_the_path_not_the_bare_name(db_session):
+    """ "No printers in Shelf" reads oddly when the operator chose a workshop."""
+    workshop = await _place(db_session, "Workshop")
+    shelf = PrinterLocation(name="Shelf", name_key="shelf", parent_id=workshop.id)
+    db_session.add(shelf)
+    await db_session.commit()
+    await db_session.refresh(shelf)
+
+    _printer, reason = await find_eligible_printer(
+        db_session, AutoQueueItem(target_model="X1C", target_location_id=shelf.id), set()
+    )
+
+    assert "Workshop / Shelf" in (reason or "")

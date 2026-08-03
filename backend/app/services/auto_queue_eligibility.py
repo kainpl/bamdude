@@ -46,10 +46,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.printer import Printer
-from backend.app.models.printer_location import PrinterLocation
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services.auto_queue_ams import _normalize_color_for_compare
 from backend.app.services.print_scheduler import _canonical_filament_type, scheduler
+from backend.app.services.printer_location_service import load_tree, path_of, subtree_ids
 from backend.app.services.printer_manager import printer_manager
 from backend.app.utils.printer_models import normalize_printer_model
 
@@ -170,22 +170,28 @@ async def find_eligible_printer(
         # An operator-paused queue refuses new work — auto-queue included.
         .where(PrinterQueue.is_paused.is_(False))
     )
+    location_suffix = ""
     if item.target_location_id:
-        # By id, not by name. The string comparison this replaces made "Цех 2"
-        # and "цех 2" two different places, so an item aimed at a mistyped one
-        # matched nothing — silently and for ever, because "no printer matches"
-        # is a legitimate state for the dispatcher to be in.
-        query = query.where(Printer.location_id == item.target_location_id)
+        # The SUBTREE, by id. Aiming work at a workshop has to reach the
+        # printers on its shelves — before this the item had to name each shelf.
+        # By id and not by name because the string comparison this replaces made
+        # "Цех 2" and "цех 2" two different places, so an item aimed at a
+        # mistyped one matched nothing, silently and for ever.
+        #
+        # A GATE, not a rank: a printer standing directly on the workshop gets
+        # no preference over one on a shelf. "Who is ready" is the dispatcher's
+        # question and it already ranks.
+        tree = await load_tree(db)
+        query = query.where(Printer.location_id.in_(subtree_ids(tree, item.target_location_id)))
+        # Resolved for the message only. An operator reading "why did nothing
+        # move" is not helped by a row id — and with a tree, not by a bare name
+        # either: "no printers in Shelf" reads oddly when a workshop was chosen.
+        if item.target_location_id in tree:
+            location_suffix = f" in {path_of(tree, item.target_location_id)}"
 
     result = await db.execute(query)
     printers = list(result.scalars().all())
 
-    # Resolved for the message only. An operator reading "why did nothing move"
-    # is not helped by a row id.
-    location_suffix = ""
-    if item.target_location_id:
-        place = await db.get(PrinterLocation, item.target_location_id)
-        location_suffix = f" in {place.name}" if place else ""
     if not printers:
         return None, f"No active {normalized_model} printers{location_suffix} eligible"
 

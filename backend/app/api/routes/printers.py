@@ -51,6 +51,7 @@ from backend.app.services.bambu_ftp import (
     list_files_async,
 )
 from backend.app.services.printer_diagnostic import run_connection_diagnostic
+from backend.app.services.printer_location_service import load_tree, subtree_ids
 from backend.app.services.printer_manager import (
     drying_screen_only,
     find_ams_unit,
@@ -227,7 +228,10 @@ async def get_available_filaments(
         .where(Printer.archived.is_(False))
     )
     if location_id:
-        query = query.where(Printer.location_id == location_id)
+        # The subtree, so "the workshop" means the same thing here as it does
+        # in the auto-queue and on screen.
+        tree = await load_tree(db)
+        query = query.where(Printer.location_id.in_(subtree_ids(tree, location_id)))
 
     result = await db.execute(query)
     printers_list = list(result.scalars().all())
