@@ -12,6 +12,8 @@ import { ConfirmModal } from '../ConfirmModal';
 import { SensorCard } from './SensorCard';
 import { SensorFormModal } from './SensorFormModal';
 import { DeviceReportingModal } from './DeviceReportingModal';
+import { SensorHistoryModal } from './SensorHistoryModal';
+import { SensorThresholdsModal } from './SensorThresholdsModal';
 
 interface Props {
   /** Set when the operator pressed "add" on a row in the coordinator card. */
@@ -28,6 +30,8 @@ export function SensorsSection({ adoptDevice, onAdoptHandled }: Props) {
   const [adopting, setAdopting] = useState(false);
   const [unbinding, setUnbinding] = useState<ZigbeeSensor | null>(null);
   const [configuring, setConfiguring] = useState<ZigbeeSensor | null>(null);
+  const [charting, setCharting] = useState<ZigbeeSensor | null>(null);
+  const [thresholding, setThresholding] = useState<ZigbeeSensor | null>(null);
 
   const mayRead = hasPermission('smart_sensors:read');
   const { data: status } = useQuery({ queryKey: ['zigbee-status'], queryFn: api.getZigbeeStatus });
@@ -92,6 +96,8 @@ export function SensorsSection({ adoptDevice, onAdoptHandled }: Props) {
                 onEdit={setEditing}
                 onUnbind={setUnbinding}
                 onConfigure={setConfiguring}
+                onChart={setCharting}
+                onThresholds={setThresholding}
                 canEdit={hasPermission('smart_sensors:update')}
                 canDelete={hasPermission('smart_sensors:delete')}
                 // The permission the settings endpoint actually checks -- both
@@ -113,6 +119,10 @@ export function SensorsSection({ adoptDevice, onAdoptHandled }: Props) {
           />
         )}
         {editing && <SensorFormModal sensor={editing} initialDevice={null} onClose={() => setEditing(null)} />}
+        {charting && <SensorHistoryModal isOpen onClose={() => setCharting(null)} sensor={charting} />}
+        {thresholding && (
+          <SensorThresholdsModal isOpen onClose={() => setThresholding(null)} sensor={thresholding} />
+        )}
         {configuring && (
           <DeviceReportingModal
             ieee={configuring.ieee}

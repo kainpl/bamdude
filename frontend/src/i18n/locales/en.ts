@@ -1620,6 +1620,13 @@ export default {
           'It stays on the Zigbee network and keeps its settings, so adding it again restores what it had. Taking it off the network is a separate action, in the coordinator card above, and needs the device pairing again by hand.',
         unbindConfirm: 'Remove from the list',
       },
+      thresholds: {
+        title: 'Alert limits',
+        hint: 'Leave a field empty for no limit. The margin is how far back inside the limit a reading must come before the alert clears.',
+        min: 'minimum',
+        max: 'maximum',
+        deadband: 'margin',
+      },
       measurement: {
         temperature: 'temperature',
         humidity: 'humidity',

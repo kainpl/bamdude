@@ -2486,6 +2486,20 @@ export interface PlugPowerHistory {
   max_power: number | null;
 }
 
+export interface SensorThreshold {
+  kind: string;
+  min_value: number | null;
+  max_value: number | null;
+  deadband: number;
+  enabled: boolean;
+  /** Read-only: what the last evaluation decided. `ok` / `above` / `below`. */
+  state: string;
+  unit: string;
+}
+
+/** What a write carries. `state` and `unit` are the backend's to say. */
+export type SensorThresholdInput = Omit<SensorThreshold, 'state' | 'unit'>;
+
 export interface SensorHistoryPoint {
   recorded_at: string;
   /** Never null. Unlike plug power, an empty bucket is simply not sent: a
@@ -6374,6 +6388,13 @@ export const api = {
     request<PlugPowerHistory>(`/smart-plugs/${plugId}/power-history?hours=${hours}`),
   getSensorHistory: (sensorId: number, kind: string, hours: number) =>
     request<SensorHistory>(`/zigbee/sensors/${sensorId}/history?kind=${encodeURIComponent(kind)}&hours=${hours}`),
+  getSensorThresholds: (sensorId: number) =>
+    request<{ thresholds: SensorThreshold[] }>(`/zigbee/sensors/${sensorId}/thresholds`),
+  putSensorThresholds: (sensorId: number, thresholds: SensorThresholdInput[]) =>
+    request<{ thresholds: SensorThreshold[] }>(`/zigbee/sensors/${sensorId}/thresholds`, {
+      method: 'PUT',
+      body: JSON.stringify({ thresholds }),
+    }),
   testSmartPlugConnection: (ip_address: string, username?: string | null, password?: string | null) =>
     request<SmartPlugTestResult>('/smart-plugs/test-connection', {
       method: 'POST',

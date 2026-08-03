@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { Battery, Pencil, Plug, SlidersHorizontal, Trash2, WifiOff } from 'lucide-react';
+import { Battery, BellRing, LineChart, Pencil, Plug, SlidersHorizontal, Trash2, WifiOff } from 'lucide-react';
 
 import type { SensorMeasurement, ZigbeeSensor } from '../../api/client';
 import { formatRelativeTime } from '../../utils/date';
@@ -10,6 +10,8 @@ interface Props {
   onEdit: (sensor: ZigbeeSensor) => void;
   onUnbind: (sensor: ZigbeeSensor) => void;
   onConfigure: (sensor: ZigbeeSensor) => void;
+  onChart: (sensor: ZigbeeSensor) => void;
+  onThresholds: (sensor: ZigbeeSensor) => void;
   canEdit: boolean;
   canDelete: boolean;
   canConfigure: boolean;
@@ -29,7 +31,17 @@ interface Props {
  * The last two differ in subject. A sensor can be answering while its battery
  * reading is stale, because that one reports every three hours.
  */
-export function SensorCard({ sensor, onEdit, onUnbind, onConfigure, canEdit, canDelete, canConfigure }: Props) {
+export function SensorCard({
+  sensor,
+  onEdit,
+  onUnbind,
+  onConfigure,
+  onChart,
+  onThresholds,
+  canEdit,
+  canDelete,
+  canConfigure,
+}: Props) {
   const { t } = useTranslation();
 
   const readings = roomReadings(sensor);
@@ -72,6 +84,24 @@ export function SensorCard({ sensor, onEdit, onUnbind, onConfigure, canEdit, can
             </span>
           ) : null}
 
+          <button
+            type="button"
+            onClick={() => onChart(sensor)}
+            aria-label={t('sensorHistory.title')}
+            className="p-1 text-bambu-gray hover:text-white"
+          >
+            <LineChart className="w-4 h-4" />
+          </button>
+          {canEdit && (
+            <button
+              type="button"
+              onClick={() => onThresholds(sensor)}
+              aria-label={t('settings.zigbee.thresholds.title')}
+              className="p-1 text-bambu-gray hover:text-white"
+            >
+              <BellRing className="w-4 h-4" />
+            </button>
+          )}
           {canConfigure && (
             <button
               type="button"

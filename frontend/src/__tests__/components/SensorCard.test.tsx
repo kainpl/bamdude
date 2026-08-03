@@ -93,9 +93,27 @@ describe('SensorCard', () => {
     expect(screen.getByText(/mainsPowered/)).toBeInTheDocument();
   });
 
-  it('hides the controls a viewer may not use', () => {
-    render(<SensorCard sensor={sensor()} onEdit={() => {}} onUnbind={() => {}} canEdit={false} canDelete={false} />);
+  it('hides the controls a viewer may not use, and keeps the one they may', () => {
+    // Viewers hold smart_sensors:read, so the chart is theirs to open. What
+    // they must not see are the writes: limits, reporting, rename, remove.
+    render(
+      <SensorCard
+        sensor={sensor()}
+        onEdit={() => {}}
+        onUnbind={() => {}}
+        onConfigure={() => {}}
+        onChart={() => {}}
+        onThresholds={() => {}}
+        canEdit={false}
+        canDelete={false}
+        canConfigure={false}
+      />,
+    );
 
-    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'sensorHistory.title' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'settings.zigbee.thresholds.title' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'settings.zigbee.reporting.title' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'common.edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'common.delete' })).not.toBeInTheDocument();
   });
 });
