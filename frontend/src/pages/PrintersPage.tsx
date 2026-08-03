@@ -103,6 +103,7 @@ import { HMSErrorModal, filterKnownHMSErrors } from '../components/HMSErrorModal
 import { PrinterQueueWidget } from '../components/PrinterQueueWidget';
 import { AMSHistoryModal } from '../components/AMSHistoryModal';
 import { HeaterHistoryModal } from '../components/HeaterHistoryModal';
+import { PlugPowerHistoryModal } from '../components/PlugPowerHistoryModal';
 import { HeaterThermometer } from '../components/HeaterThermometer';
 import { FilamentHoverCard, EmptySlotHoverCard } from '../components/FilamentHoverCard';
 import { LinkSpoolModal } from '../components/LinkSpoolModal';
@@ -1500,6 +1501,7 @@ function PrinterCard({
   const [amsSettingsOpen, setAmsSettingsOpen] = useState(false);
   const [amsBackupModalOpen, setAmsBackupModalOpen] = useState(false);
   const [heaterHistoryOpen, setHeaterHistoryOpen] = useState(false);
+  const [plugPowerHistoryOpen, setPlugPowerHistoryOpen] = useState(false);
   const [printerSettingsOpen, setPrinterSettingsOpen] = useState(false);
   const [filamentCaliOpen, setFilamentCaliOpen] = useState(false);
   const [calibrationHistoryOpen, setCalibrationHistoryOpen] = useState(false);
@@ -5140,6 +5142,16 @@ function PrinterCard({
 
               {/* Power buttons */}
               <div className="flex items-center gap-1">
+                {/* The history belongs where the plug already is: this row
+                    already says what it is drawing right now. */}
+                <button
+                  onClick={() => setPlugPowerHistoryOpen(true)}
+                  title={t('smartPlugs.powerHistory.open')}
+                  aria-label={t('smartPlugs.powerHistory.open')}
+                  className="p-1.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
+                >
+                  <LineChart className="w-4 h-4" />
+                </button>
                 <button
                   onClick={() => setShowPowerOnConfirm(true)}
                   disabled={powerControlMutation.isPending || plugStatus?.state === 'ON' || !hasPermission('smart_plugs:control')}
@@ -5915,6 +5927,15 @@ function PrinterCard({
           />
         );
       })()}
+
+      {plugPowerHistoryOpen && smartPlug && (
+        <PlugPowerHistoryModal
+          isOpen
+          onClose={() => setPlugPowerHistoryOpen(false)}
+          plugId={smartPlug.id}
+          plugName={smartPlug.name}
+        />
+      )}
 
       {/* AMS History Modal */}
       {amsHistoryModal && (
