@@ -9,6 +9,8 @@ export class ApiError extends Error {
   }
 }
 
+import type { AppliedEntry } from '../utils/reportingStatus';
+
 const API_BASE = '/api/v1';
 
 // Auth token storage
@@ -2434,6 +2436,29 @@ export interface ZigbeeSensor {
    *  carried out of range -- the row, its name and its place survive. */
   present: boolean;
   measurements: Record<string, SensorMeasurement>;
+}
+
+export interface DeviceSettingsTarget {
+  min_interval: number;
+  max_interval: number;
+  reportable_change: number;
+}
+
+export interface DeviceSettings {
+  ieee: string;
+  kind: string;
+  name: string | null;
+  adopted: boolean;
+  /** Which of the three fields this target allows. A relay allows one. */
+  editable: Record<string, string[]>;
+  /** What the "change by" number is measured in. Empty for a relay. */
+  units: Record<string, string>;
+  desired: Record<string, DeviceSettingsTarget>;
+  applied: Record<string, AppliedEntry>;
+  poll_seconds: number;
+  /** False for a device that sleeps between reports. */
+  poll_supported: boolean;
+  stale_after_seconds: number;
 }
 
 export interface PlugPowerPoint {
@@ -6241,6 +6266,24 @@ export const api = {
   getZigbeePorts: () => request<{ ports: ZigbeePort[] }>('/zigbee/ports'),
   getZigbeeDevices: () => request<{ devices: ZigbeeDevice[] }>('/zigbee/devices'),
   getZigbeeSensors: () => request<{ sensors: ZigbeeSensor[] }>('/zigbee/sensors'),
+  getDeviceSettings: (ieee: string) =>
+    request<DeviceSettings>(`/zigbee/devices/${encodeURIComponent(ieee)}/settings`),
+  updateDeviceSettings: (
+    ieee: string,
+    payload: {
+      reporting?: Record<string, Partial<DeviceSettingsTarget>>;
+      poll_seconds?: number;
+      stale_after_seconds?: number;
+    },
+  ) =>
+    request<DeviceSettings>(`/zigbee/devices/${encodeURIComponent(ieee)}/settings`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  // Drops this device's overrides so the farm defaults apply again -- and
+  // re-issues them to the device, which is the whole point.
+  clearDeviceSettings: (ieee: string) =>
+    request<DeviceSettings>(`/zigbee/devices/${encodeURIComponent(ieee)}/settings`, { method: 'DELETE' }),
   adoptZigbeeSensor: (payload: { zigbee_ieee: string; name: string; location_id: number | null }) =>
     request<{ id: number; name: string }>('/zigbee/sensors', {
       method: 'POST',
