@@ -2406,6 +2406,36 @@ export interface ZigbeeDevice {
   has_electrical_measurement: boolean;
 }
 
+export interface SensorMeasurement {
+  value: number | null;
+  unit: string;
+  last_report_at: string | null;
+  /** Older than its own window. NOT an error: a battery sensor with a 900 s
+   *  max interval is legitimately silent for a quarter of an hour. */
+  stale: boolean;
+  /** Read but not shown in this stage -- the settings dialog's vocabulary. */
+  reporting: string;
+  verification: string;
+}
+
+export interface ZigbeeSensor {
+  id: number;
+  name: string;
+  location: PrinterLocation | null;
+  ieee: string;
+  nwk: number | null;
+  manufacturer: string | null;
+  model: string | null;
+  power: 'battery' | 'mains' | null;
+  quirk_applied: boolean | null;
+  /** On the mesh but silent past the point where we still vouch for it. */
+  unreachable: boolean;
+  /** On the mesh at all. False for a downed radio, a flat cell, a device
+   *  carried out of range -- the row, its name and its place survive. */
+  present: boolean;
+  measurements: Record<string, SensorMeasurement>;
+}
+
 export interface ZigbeePort {
   device: string;
   description: string;
@@ -6190,6 +6220,7 @@ export const api = {
   getZigbeeStatus: () => request<ZigbeeStatus>('/zigbee/status'),
   getZigbeePorts: () => request<{ ports: ZigbeePort[] }>('/zigbee/ports'),
   getZigbeeDevices: () => request<{ devices: ZigbeeDevice[] }>('/zigbee/devices'),
+  getZigbeeSensors: () => request<{ sensors: ZigbeeSensor[] }>('/zigbee/sensors'),
   permitZigbeeJoin: (seconds: number) =>
     request<{ seconds: number }>('/zigbee/permit', {
       method: 'POST',

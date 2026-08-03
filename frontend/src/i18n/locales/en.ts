@@ -1592,6 +1592,15 @@ export default {
       capabilitySwitchOnly: 'switching only',
       capabilitySensor: 'measures {{what}}',
       capabilityUnsupported: 'not supported',
+      sensors: {
+        title: 'Sensors',
+        notOnNetwork: 'Not on the network',
+        notOnNetworkHint: 'Its name and place are kept. Readings return when it does.',
+        notAnswering: 'Not answering',
+        battery: 'Battery {{percent}} %',
+        batteryVoltage: '{{volts}} V',
+        mainsPowered: 'Mains powered',
+      },
       measurement: {
         temperature: 'temperature',
         humidity: 'humidity',

@@ -1598,6 +1598,15 @@ export default {
       capabilitySwitchOnly: 'лише перемикання',
       capabilitySensor: 'вимірює: {{what}}',
       capabilityUnsupported: 'не підтримується',
+      sensors: {
+        title: 'Датчики',
+        notOnNetwork: 'Не в мережі',
+        notOnNetworkHint: "Ім'я й місце збережені. Покази повернуться разом із ним.",
+        notAnswering: 'Не відповідає',
+        battery: 'Батарея {{percent}} %',
+        batteryVoltage: '{{volts}} В',
+        mainsPowered: 'Живлення від мережі',
+      },
       measurement: {
         temperature: 'температуру',
         humidity: 'вологість',
