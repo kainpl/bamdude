@@ -842,6 +842,33 @@ async def _push_within_budget(coro, info, desired) -> None:
         await asyncio.wait_for(asyncio.shield(task), _APPLY_BUDGET_SECONDS)
 
 
+async def _reissue(db, device, info) -> None:
+    """Re-issue this device's resolved configuration, within the budget.
+
+    Reporting parameters live IN the device, so saving alone changes nothing
+    until ``configure_reporting`` runs again. Both classes go through here: a
+    plug is awake and takes it immediately, a sleeper answers nothing and is
+    retried at its next contact.
+
+    Shared by saving and by clearing. Clearing used only to save, so a reset
+    showed farm defaults in the answer while the device went on running the old
+    values -- the same setting-that-did-nothing this cycle exists to remove,
+    arriving through the one path it had not covered.
+    """
+    from backend.app.services.zigbee.reporting import bind_sensor, push_plug_reporting
+
+    desired = await resolve_reporting(db, info)
+    if info.kind is DeviceKind.SENSOR:
+        push = bind_sensor(device, info.ieee, desired)
+    else:
+        plug = (
+            await db.execute(select(SmartPlug).where(func.lower(SmartPlug.zigbee_ieee) == info.ieee.lower()))
+        ).scalar_one_or_none()
+        push = push_plug_reporting(device, info, desired, plug_id=plug.id if plug else None)
+
+    await _push_within_budget(push, info, desired)
+
+
 @router.put("/devices/{ieee}/settings")
 async def update_device_settings(
     ieee: str,
@@ -856,7 +883,6 @@ async def update_device_settings(
     ordinary course of events for a battery sensor as a broken feature.
     """
     from backend.app.services.zigbee.device_settings import save_overrides
-    from backend.app.services.zigbee.reporting import bind_sensor, push_plug_reporting
     from backend.app.services.zigbee.sensors import PowerClass, power_class
 
     device, info, row = await _load_for_settings(db, ieee)
@@ -884,21 +910,7 @@ async def update_device_settings(
         stale_after_seconds=update.stale_after_seconds,
     )
 
-    # Reporting parameters live IN the device, so saving alone changes nothing
-    # until configure_reporting is re-issued. Both classes are pushed here: a
-    # plug is awake and takes it immediately, a sleeper answers nothing and is
-    # retried at its next contact. Storing without pushing would be the exact
-    # setting-that-did-nothing this cycle exists to remove.
-    desired = await resolve_reporting(db, info)
-    if info.kind is DeviceKind.SENSOR:
-        push = bind_sensor(device, info.ieee, desired)
-    else:
-        plug = (
-            await db.execute(select(SmartPlug).where(func.lower(SmartPlug.zigbee_ieee) == info.ieee.lower()))
-        ).scalar_one_or_none()
-        push = push_plug_reporting(device, info, desired, plug_id=plug.id if plug else None)
-
-    await _push_within_budget(push, info, desired)
+    await _reissue(db, device, info)
 
     device, info, row = await _load_for_settings(db, ieee)
     return await _settings_payload(db, device, info, row)
@@ -915,6 +927,7 @@ async def clear_device_settings(
 
     device, info, row = await _load_for_settings(db, ieee)
     await save_overrides(db, info.ieee, reporting={}, poll_seconds=0, stale_after_seconds=0)
+    await _reissue(db, device, info)
     device, info, row = await _load_for_settings(db, ieee)
     return await _settings_payload(db, device, info, row)
 

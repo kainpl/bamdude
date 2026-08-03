@@ -364,6 +364,29 @@ class TestClearing:
         body = (await async_client.get(f"/api/v1/zigbee/devices/{SENSOR}/settings")).json()
         assert body["desired"]["temperature"]["max_interval"] == 900
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_clearing_re_issues_the_configuration_to_the_device(
+        self, async_client: AsyncClient, paired, db_session
+    ):
+        """Saving without pushing is the failure the device-settings cycle was
+        opened to remove. DELETE was the one path it did not cover: the dialog
+        would show farm defaults while the plug went on running the old values
+        until its next contact."""
+        await _pair(db_session, PLUG, "plug")
+        await async_client.put(
+            f"/api/v1/zigbee/devices/{PLUG}/settings",
+            json={"reporting": {"power": {"max_interval": 600}}},
+        )
+        em = paired.plug.endpoints[1].in_clusters[0x0B04]
+        em.configured.clear()
+
+        assert (await async_client.delete(f"/api/v1/zigbee/devices/{PLUG}/settings")).status_code == 200
+
+        assert em.configured, "the device was never told"
+        _attribute, _minimum, maximum, _change = em.configured[-1]
+        assert maximum == 900, "back to the default, on the device and not only in the answer"
+
 
 class TestEditableIsDeclared:
     @pytest.mark.asyncio
