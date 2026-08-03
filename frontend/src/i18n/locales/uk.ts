@@ -6022,6 +6022,17 @@ export default {
   // Maintenance type descriptions (built-in)
   // Smart Plugs
   smartPlugs: {
+    powerHistory: {
+      title: 'Історія потужності',
+      open: 'Історія потужності',
+      empty: 'Поки нічого не записано.',
+      error: 'Не вдалося завантажити історію',
+      min: 'Мін',
+      avg: 'Середнє',
+      max: 'Пік',
+      bucketMinute: '{{value}} Вт · середнє за 1 хв',
+      bucketMinutes: '{{value}} Вт · середнє за {{minutes}} хв',
+    },
     plugType: 'Тип розетки',
     zigbeeDevice: 'Zigbee-пристрій',
     zigbeePickDevice: 'Виберіть спарований пристрій…',

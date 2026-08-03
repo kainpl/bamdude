@@ -6020,6 +6020,17 @@ export default {
   // Maintenance type descriptions (built-in)
   // Smart Plugs
   smartPlugs: {
+    powerHistory: {
+      title: 'Power history',
+      open: 'Power history',
+      empty: 'Nothing recorded yet.',
+      error: 'Failed to load history',
+      min: 'Min',
+      avg: 'Average',
+      max: 'Peak',
+      bucketMinute: '{{value}} W · 1-minute average',
+      bucketMinutes: '{{value}} W · {{minutes}}-minute average',
+    },
     plugType: 'Plug type',
     zigbeeDevice: 'Zigbee device',
     zigbeePickDevice: 'Choose a paired device…',

@@ -2436,6 +2436,25 @@ export interface ZigbeeSensor {
   measurements: Record<string, SensorMeasurement>;
 }
 
+export interface PlugPowerPoint {
+  recorded_at: string;
+  /** Null where nothing was recorded in this bucket. Draws as a gap: a flat
+   *  line and a lost connection must not look alike. */
+  power: number | null;
+}
+
+export interface PlugPowerHistory {
+  points: PlugPowerPoint[];
+  /** How wide each bucket is. A point is the AVERAGE over this many seconds,
+   *  not an instant, and the tooltip has to say so. */
+  bucket_seconds: number;
+  /** Over the readings, not the buckets -- this is where the peak survives the
+   *  averaging the line does. */
+  min_power: number | null;
+  avg_power: number | null;
+  max_power: number | null;
+}
+
 export interface ZigbeePort {
   device: string;
   description: string;
@@ -6263,6 +6282,8 @@ export const api = {
     }),
   getSmartPlugStatus: (id: number) =>
     request<SmartPlugStatus>(`/smart-plugs/${id}/status`),
+  getPlugPowerHistory: (plugId: number, hours: number) =>
+    request<PlugPowerHistory>(`/smart-plugs/${plugId}/power-history?hours=${hours}`),
   testSmartPlugConnection: (ip_address: string, username?: string | null, password?: string | null) =>
     request<SmartPlugTestResult>('/smart-plugs/test-connection', {
       method: 'POST',
