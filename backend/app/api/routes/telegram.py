@@ -83,6 +83,16 @@ EVENT_CATEGORIES = {
             "ams_ht_temperature_high",
         ],
     },
+    "sensors": {
+        "label": "Sensor Alerts",
+        "events": [
+            "sensor_above_max",
+            "sensor_below_min",
+            "sensor_back_in_range",
+            "sensor_silent",
+            "sensor_speaking_again",
+        ],
+    },
     "print_events": {
         "label": "Print Events",
         "events": [
@@ -130,6 +140,11 @@ EVENT_LABELS = {
     "ams_temperature_high": "AMS temperature high",
     "ams_ht_humidity_high": "AMS-HT humidity high",
     "ams_ht_temperature_high": "AMS-HT temperature high",
+    "sensor_above_max": "Reading above limit",
+    "sensor_below_min": "Reading below limit",
+    "sensor_back_in_range": "Reading back in range",
+    "sensor_silent": "Sensor silent",
+    "sensor_speaking_again": "Sensor reporting again",
     "plate_not_empty": "Plate not empty",
     "bed_cooled": "Bed cooled",
     "first_layer_complete": "First layer complete",

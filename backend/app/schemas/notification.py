@@ -61,6 +61,12 @@ class NotificationProviderBase(BaseModel):
         default=False, description="Notify when AMS-HT temperature exceeds threshold"
     )
 
+    # Event triggers - Zigbee sensor alerts
+    on_sensor_threshold: bool = Field(
+        default=False, description="Notify when a sensor reading leaves or returns to its limits"
+    )
+    on_sensor_silent: bool = Field(default=False, description="Notify when a sensor stops or resumes reporting")
+
     # Event triggers - Build plate detection
     on_plate_not_empty: bool = Field(default=True, description="Notify when objects detected on plate before print")
 
@@ -150,6 +156,10 @@ class NotificationProviderUpdate(BaseModel):
     # Event triggers - AMS-HT environmental alarms
     on_ams_ht_humidity_high: bool | None = None
     on_ams_ht_temperature_high: bool | None = None
+
+    # Event triggers - Zigbee sensor alerts
+    on_sensor_threshold: bool | None = None
+    on_sensor_silent: bool | None = None
 
     # Event triggers - Build plate detection
     on_plate_not_empty: bool | None = None

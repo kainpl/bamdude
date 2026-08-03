@@ -45,6 +45,15 @@ ALL_NOTIFY_EVENTS = [
     "ams_temperature_high",
     "ams_ht_humidity_high",
     "ams_ht_temperature_high",
+    # Zigbee sensor alerts (cycle A). Five here against two provider columns on
+    # purpose: the column says whether at all, the chat says which ones — which
+    # is m045's whole position. Deliberately NOT in DEFAULT_NOTIFY_EVENTS:
+    # existing chats must not start receiving something new unasked.
+    "sensor_above_max",
+    "sensor_below_min",
+    "sensor_back_in_range",
+    "sensor_silent",
+    "sensor_speaking_again",
     # Print events
     "plate_not_empty",
     "bed_cooled",
