@@ -204,3 +204,66 @@ async def test_a_sensor_that_left_the_mesh_keeps_its_name_and_place(async_client
     assert sensor["model"] == "SONOFF SNZB-02DR2", "the hardware name recorded at pairing is all we still know"
     assert sensor["unreachable"] is True
     assert sensor["power"] is None
+
+
+class TestChangingWhatWeCallItAndWhereItStands:
+    """A sensor that was once given a place could never become placeless: the
+    handler assigned only a non-null value, so "no location" was unsayable."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_an_explicit_null_clears_the_place(self, async_client: AsyncClient, paired_sensor, db_session):
+        from sqlalchemy import select
+
+        from backend.app.models.printer_location import PrinterLocation
+        from backend.app.models.smart_sensor import SmartSensor
+
+        place = PrinterLocation(name="Shop 2", name_key="shop 2")
+        db_session.add(place)
+        await db_session.commit()
+        await db_session.refresh(place)
+        sensor = (await db_session.execute(select(SmartSensor))).scalars().first()
+        sensor.location_id = place.id
+        await db_session.commit()
+
+        body = (await async_client.patch(f"/api/v1/zigbee/sensors/{sensor.id}", json={"location_id": None})).json()
+
+        assert body["location_id"] is None
+        assert body["location"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_body_without_the_key_leaves_the_place_alone(
+        self, async_client: AsyncClient, paired_sensor, db_session
+    ):
+        """Renaming must not quietly move a sensor out of its shop."""
+        from sqlalchemy import select
+
+        from backend.app.models.printer_location import PrinterLocation
+        from backend.app.models.smart_sensor import SmartSensor
+
+        place = PrinterLocation(name="Shop 2", name_key="shop 2")
+        db_session.add(place)
+        await db_session.commit()
+        await db_session.refresh(place)
+        sensor = (await db_session.execute(select(SmartSensor))).scalars().first()
+        sensor.location_id = place.id
+        await db_session.commit()
+
+        body = (await async_client.patch(f"/api/v1/zigbee/sensors/{sensor.id}", json={"name": "Bench"})).json()
+
+        assert body["name"] == "Bench"
+        assert body["location"]["name"] == "Shop 2"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_an_unknown_place_is_refused(self, async_client: AsyncClient, paired_sensor, db_session):
+        from sqlalchemy import select
+
+        from backend.app.models.smart_sensor import SmartSensor
+
+        sensor = (await db_session.execute(select(SmartSensor))).scalars().first()
+
+        rsp = await async_client.patch(f"/api/v1/zigbee/sensors/{sensor.id}", json={"location_id": 999})
+
+        assert rsp.status_code == 422

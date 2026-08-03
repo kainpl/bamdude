@@ -603,10 +603,13 @@ async def rename_sensor(
     sensor = await db.get(SmartSensor, sensor_id)
     if sensor is None:
         raise HTTPException(status_code=404, detail="No such sensor.")
-    if payload.name is not None:
+    # `model_fields_set` distinguishes "the key was not sent" from "the key was
+    # sent as null". Without it, null means "leave alone" and a sensor that was
+    # once given a place can never become placeless.
+    if "name" in payload.model_fields_set and payload.name is not None:
         sensor.name = payload.name.strip()
-    if payload.location_id is not None:
-        if await db.get(PrinterLocation, payload.location_id) is None:
+    if "location_id" in payload.model_fields_set:
+        if payload.location_id is not None and await db.get(PrinterLocation, payload.location_id) is None:
             raise HTTPException(status_code=422, detail="No such location.")
         sensor.location_id = payload.location_id
     await db.commit()
