@@ -436,7 +436,11 @@ async def list_devices(
 @router.get("/sensors")
 async def list_sensors(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
+    # Sensors, not plugs. The two permissions travel together in all three
+    # default groups, so the mismatch was invisible until this list started
+    # feeding the group headers on three main pages -- where a group granted
+    # only smart_sensors:read would have got a 403 on every one of them.
+    _: User | None = RequirePermission(Permission.SMART_SENSORS_READ),
 ):
     """Every adopted sensor with what it last told us.
 

@@ -267,3 +267,37 @@ class TestChangingWhatWeCallItAndWhereItStands:
         rsp = await async_client.patch(f"/api/v1/zigbee/sensors/{sensor.id}", json={"location_id": 999})
 
         assert rsp.status_code == 422
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_the_sensor_list_answers_under_the_sensor_permission(async_client: AsyncClient):
+    """It sat on smart_plugs:read, which is invisible while the two travel
+    together in the default groups — and a 403 on three main pages for anybody
+    who separates them."""
+    from backend.app.core.auth import create_access_token, get_password_hash
+    from backend.app.core.database import async_session
+    from backend.app.models.group import Group
+    from backend.app.models.user import User
+
+    async with async_session() as db:
+        group = Group(name="SensorsOnly", permissions=["smart_sensors:read"])
+        db.add(group)
+        user = User(username="sensorsonly", password_hash=get_password_hash("TestPass123!"), role="user")
+        db.add(user)
+        await db.commit()
+        await db.refresh(group)
+        await db.refresh(user)
+
+        from sqlalchemy import text
+
+        await db.execute(
+            text("INSERT INTO user_groups (user_id, group_id) VALUES (:uid, :gid)"),
+            {"uid": user.id, "gid": group.id},
+        )
+        await db.commit()
+
+    token = create_access_token(data={"sub": "sensorsonly"})
+    rsp = await async_client.get("/api/v1/zigbee/sensors", headers={"Authorization": f"Bearer {token}"})
+
+    assert rsp.status_code == 200, rsp.text
