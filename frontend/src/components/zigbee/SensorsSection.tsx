@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader } from '../Card';
 import { ConfirmModal } from '../ConfirmModal';
 import { SensorCard } from './SensorCard';
 import { SensorFormModal } from './SensorFormModal';
+import { DeviceReportingModal } from './DeviceReportingModal';
 
 interface Props {
   /** Set when the operator pressed "add" on a row in the coordinator card. */
@@ -26,6 +27,7 @@ export function SensorsSection({ adoptDevice, onAdoptHandled }: Props) {
   const [editing, setEditing] = useState<ZigbeeSensor | null>(null);
   const [adopting, setAdopting] = useState(false);
   const [unbinding, setUnbinding] = useState<ZigbeeSensor | null>(null);
+  const [configuring, setConfiguring] = useState<ZigbeeSensor | null>(null);
 
   const mayRead = hasPermission('smart_sensors:read');
   const { data: status } = useQuery({ queryKey: ['zigbee-status'], queryFn: api.getZigbeeStatus });
@@ -89,8 +91,13 @@ export function SensorsSection({ adoptDevice, onAdoptHandled }: Props) {
                 sensor={sensor}
                 onEdit={setEditing}
                 onUnbind={setUnbinding}
+                onConfigure={setConfiguring}
                 canEdit={hasPermission('smart_sensors:update')}
                 canDelete={hasPermission('smart_sensors:delete')}
+                // The permission the settings endpoint actually checks -- both
+                // classes ride the plug one. Gating on smart_sensors:update
+                // would offer an action that returns 403.
+                canConfigure={hasPermission('smart_plugs:update')}
               />
             ))}
           </div>
@@ -106,6 +113,13 @@ export function SensorsSection({ adoptDevice, onAdoptHandled }: Props) {
           />
         )}
         {editing && <SensorFormModal sensor={editing} initialDevice={null} onClose={() => setEditing(null)} />}
+        {configuring && (
+          <DeviceReportingModal
+            ieee={configuring.ieee}
+            deviceName={configuring.name}
+            onClose={() => setConfiguring(null)}
+          />
+        )}
         {unbinding && (
           /* The confirmation is the only place a person learns that unbinding
              is not the same as taking the device off the network. */

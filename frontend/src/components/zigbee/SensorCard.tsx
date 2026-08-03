@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { Battery, Pencil, Plug, Trash2, WifiOff } from 'lucide-react';
+import { Battery, Pencil, Plug, SlidersHorizontal, Trash2, WifiOff } from 'lucide-react';
 
 import type { SensorMeasurement, ZigbeeSensor } from '../../api/client';
 import { formatRelativeTime } from '../../utils/date';
@@ -8,8 +8,10 @@ interface Props {
   sensor: ZigbeeSensor;
   onEdit: (sensor: ZigbeeSensor) => void;
   onUnbind: (sensor: ZigbeeSensor) => void;
+  onConfigure: (sensor: ZigbeeSensor) => void;
   canEdit: boolean;
   canDelete: boolean;
+  canConfigure: boolean;
 }
 
 /** Kept out of the readings list: they describe the device, not the room. */
@@ -29,7 +31,7 @@ const DEVICE_KEYS = ['battery', 'battery_voltage'];
  * The last two differ in subject. A sensor can be answering while its battery
  * reading is stale, because that one reports every three hours.
  */
-export function SensorCard({ sensor, onEdit, onUnbind, canEdit, canDelete }: Props) {
+export function SensorCard({ sensor, onEdit, onUnbind, onConfigure, canEdit, canDelete, canConfigure }: Props) {
   const { t } = useTranslation();
 
   const readings = Object.entries(sensor.measurements).filter(([key]) => !DEVICE_KEYS.includes(key));
@@ -72,6 +74,16 @@ export function SensorCard({ sensor, onEdit, onUnbind, canEdit, canDelete }: Pro
             </span>
           ) : null}
 
+          {canConfigure && (
+            <button
+              type="button"
+              onClick={() => onConfigure(sensor)}
+              aria-label={t('settings.zigbee.reporting.title')}
+              className="p-1 text-bambu-gray hover:text-white"
+            >
+              <SlidersHorizontal className="w-4 h-4" />
+            </button>
+          )}
           {canEdit && (
             <button
               type="button"

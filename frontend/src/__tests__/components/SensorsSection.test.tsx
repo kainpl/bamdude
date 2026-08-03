@@ -78,4 +78,36 @@ describe('SensorsSection', () => {
     expect(await screen.findByText(/stays on the Zigbee network/i)).toBeInTheDocument();
     expect(screen.getByText(/separate action/i)).toBeInTheDocument();
   });
+
+  it('opens the reporting settings for a sensor', async () => {
+    stub(UP, [sensor()]);
+    vi.spyOn(api, 'getDeviceSettings').mockResolvedValue({
+      ieee: 'aa:bb',
+      kind: 'sensor',
+      name: 'SONOFF',
+      adopted: true,
+      editable: { temperature: ['max_interval'] },
+      units: { temperature: '°C' },
+      desired: { temperature: { min_interval: 30, max_interval: 900, reportable_change: 0.1 } },
+      applied: {
+        temperature: {
+          state: 'ok',
+          verification: 'verified',
+          values: { min_interval: 30, max_interval: 900, reportable_change: 0.1 },
+          actual: null,
+          at: null,
+          describes_desired: true,
+        },
+      },
+      poll_seconds: 30,
+      poll_supported: false,
+      stale_after_seconds: 21600,
+    });
+
+    render(<SensorsSection adoptDevice={null} onAdoptHandled={() => {}} />);
+    await screen.findByText('Майстерня');
+    await userEvent.click(screen.getByLabelText(/Reporting settings/i));
+
+    expect(await screen.findByRole('button', { name: /farm defaults/i })).toBeInTheDocument();
+  });
 });

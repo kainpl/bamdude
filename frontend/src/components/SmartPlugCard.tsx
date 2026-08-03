@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
-import { Plug, Power, PowerOff, Loader2, Trash2, Settings2, Thermometer, Clock, Wifi, WifiOff, Edit2, Bell, Calendar, LayoutGrid, ExternalLink, Home, Radio, Eye, Globe } from 'lucide-react';
+import { Plug, Power, PowerOff, Loader2, Trash2, Settings2, Thermometer, Clock, Wifi, WifiOff, Edit2, Bell, Calendar, LayoutGrid, ExternalLink, Home, Radio, Eye, Globe, SlidersHorizontal } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import type { SmartPlug, SmartPlugUpdate } from '../api/client';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
+import { DeviceReportingModal } from './zigbee/DeviceReportingModal';
+import { useAuth } from '../contexts/AuthContext';
 import { ZigbeeStatusBadge } from './zigbee/ZigbeeStatusBadge';
 import { useToast } from '../contexts/ToastContext';
 
@@ -19,7 +21,9 @@ export function SmartPlugCard({ plug, onEdit }: SmartPlugCardProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const { hasPermission } = useAuth();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [configuring, setConfiguring] = useState(false);
   const [showPowerOnConfirm, setShowPowerOnConfirm] = useState(false);
   const [showPowerOffConfirm, setShowPowerOffConfirm] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -170,6 +174,20 @@ export function SmartPlugCard({ plug, onEdit }: SmartPlugCardProps) {
                 rebinding read as an unimplemented feature. */}
             <div className="flex flex-col items-end gap-1 flex-shrink-0">
               <div className="flex items-center gap-1">
+                {/* Radio settings, so only for the class that has a radio.
+                    Gated on smart_plugs:update because that is the permission
+                    the settings endpoint checks -- for sensors too. */}
+                {plug.plug_type === 'zigbee' && plug.zigbee_ieee && hasPermission('smart_plugs:update') && (
+                  <button
+                    type="button"
+                    onClick={() => setConfiguring(true)}
+                    title={t('settings.zigbee.reporting.title')}
+                    aria-label={t('settings.zigbee.reporting.title')}
+                    className="p-1.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
+                  >
+                    <SlidersHorizontal className="w-4 h-4" />
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => onEdit(plug)}
@@ -532,6 +550,14 @@ export function SmartPlugCard({ plug, onEdit }: SmartPlugCardProps) {
           )}
         </CardContent>
       </Card>
+
+      {configuring && plug.zigbee_ieee && (
+        <DeviceReportingModal
+          ieee={plug.zigbee_ieee}
+          deviceName={plug.name}
+          onClose={() => setConfiguring(false)}
+        />
+      )}
 
       {/* Delete Confirmation */}
       {showDeleteConfirm && (

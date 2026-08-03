@@ -87,6 +87,23 @@ describe('SmartPlugCard', () => {
       expect(screen.getByText('192.168.1.200')).toBeInTheDocument();
     });
 
+    it('offers the reporting settings only for a Zigbee plug', async () => {
+      // A Tasmota plug has no radio settings to change: the whole vocabulary
+      // belongs to the Zigbee driver.
+      //
+      // Async because the button is permission-gated and the signed-in user
+      // arrives a tick after the first paint -- a synchronous assertion here
+      // would fail for a reason that has nothing to do with the plug type.
+      const zigbee = createMockPlug({ plug_type: 'zigbee', zigbee_ieee: 'aa:bb' });
+      const { unmount } = render(<SmartPlugCard plug={zigbee} onEdit={mockOnEdit} />);
+      expect(await screen.findByLabelText(/Reporting settings/i)).toBeInTheDocument();
+      unmount();
+
+      render(<SmartPlugCard plug={createMockPlug({ plug_type: 'tasmota' })} onEdit={mockOnEdit} />);
+      await waitFor(() => expect(screen.getByText('Test Plug')).toBeInTheDocument());
+      expect(screen.queryByLabelText(/Reporting settings/i)).not.toBeInTheDocument();
+    });
+
     it('shows power ON/OFF buttons', () => {
       const plug = createMockPlug();
       render(<SmartPlugCard plug={plug} onEdit={mockOnEdit} />);
