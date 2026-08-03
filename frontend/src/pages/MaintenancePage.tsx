@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useSearchParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { byLocationName, compareLocationNames } from '../utils/locationOrder';
+import { buildLocationIndex, readStoredLocationFilter } from '../utils/locationTree';
 import {
   Wrench,
   Loader2,
@@ -1426,7 +1427,7 @@ export function MaintenancePage() {
   type SortOption = 'upcoming' | 'name' | 'hours' | 'location';
   const [search, setSearch] = useState<string>(() => localStorage.getItem('maintenanceSearch') || '');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(() => (localStorage.getItem('maintenanceStatusFilter') as StatusFilter) || 'all');
-  const [locationFilter, setLocationFilter] = useState<string>(() => localStorage.getItem('maintenanceLocationFilter') || 'all');
+  const [locationFilter, setLocationFilter] = useState<string>(() => readStoredLocationFilter(localStorage.getItem('maintenanceLocationFilter')));
   const [sortBy, setSortBy] = useState<SortOption>(() => (localStorage.getItem('maintenanceSortBy') as SortOption) || 'upcoming');
   const [sortAsc, setSortAsc] = useState<boolean>(() => localStorage.getItem('maintenanceSortAsc') === 'true');
   const [hideOffline, setHideOffline] = useState<boolean>(() => localStorage.getItem('maintenanceHideOffline') === 'true');
@@ -1472,6 +1473,11 @@ export function MaintenancePage() {
     queryKey: ['maintenanceOverview'],
     queryFn: api.getMaintenanceOverview,
   });
+
+  // From the locations themselves rather than from the rows on screen: a parent
+  // with no printers directly on it must still be selectable.
+  const { data: locationRows } = useQuery({ queryKey: ['printer-locations'], queryFn: api.getPrinterLocations });
+  const locationIndex = useMemo(() => buildLocationIndex(locationRows?.locations ?? []), [locationRows]);
 
   const { data: types } = useQuery({
     queryKey: ['maintenanceTypes'],
@@ -1606,12 +1612,9 @@ export function MaintenancePage() {
   const totalDue = overview?.reduce((sum, p) => sum + p.due_count, 0) || 0;
   const totalWarning = overview?.reduce((sum, p) => sum + p.warning_count, 0) || 0;
 
-  const availableLocations = (() => {
-    if (!overview) return [] as string[];
-    const set = new Set<string>();
-    overview.forEach(p => { if (p.printer_location) set.add(p.printer_location.name); });
-    return Array.from(set).sort(compareLocationNames);
-  })();
+  const availableLocations = [...(locationRows?.locations ?? [])]
+    .sort((a, b) => compareLocationNames(a.path, b.path))
+    .map((row) => ({ id: row.id, label: row.name, depth: row.depth, path: row.path }));
 
   // Filter + sort the Status-tab overviews.
   const visibleOverviews = (() => {
@@ -1624,7 +1627,11 @@ export function MaintenancePage() {
         const loc = (p.printer_location?.name || '').toLowerCase();
         if (!name.includes(term) && !model.includes(term) && !loc.includes(term)) return false;
       }
-      if (locationFilter !== 'all' && (p.printer_location?.name || '') !== locationFilter) return false;
+      // By id and by subtree, so picking a workshop keeps its shelves.
+      if (locationFilter !== 'all') {
+        const wanted = locationIndex.descendantsOf(Number(locationFilter));
+        if (!p.printer_location || !wanted.has(p.printer_location.id)) return false;
+      }
       if (statusFilter !== 'all') {
         if (statusFilter === 'due' && p.due_count === 0) return false;
         if (statusFilter === 'warning' && p.warning_count === 0) return false;
@@ -1654,7 +1661,7 @@ export function MaintenancePage() {
         sorted.sort((a, b) => b.total_print_hours - a.total_print_hours);
         break;
       case 'location':
-        sorted.sort(byLocationName(p => p.printer_location?.name));
+        sorted.sort(byLocationName(p => p.printer_location?.path));
         break;
     }
     if (!sortAsc && sortBy !== 'upcoming') sorted.reverse();
@@ -1667,7 +1674,7 @@ export function MaintenancePage() {
     if (sortBy !== 'location' || availableLocations.length === 0) return null;
     const groups: Record<string, typeof visibleOverviews> = {};
     visibleOverviews.forEach(p => {
-      const key = p.printer_location?.name || t('printers.ungrouped');
+      const key = p.printer_location?.path || t('printers.ungrouped');
       (groups[key] ??= []).push(p);
     });
     return Object.entries(groups);

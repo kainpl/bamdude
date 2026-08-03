@@ -49,3 +49,15 @@ export function buildLocationIndex(rows: LocationNode[]): LocationIndex {
     pathOf: (id: number) => paths.get(id) ?? '',
   };
 }
+
+/** A filter value that survived the move from names to ids.
+ *
+ * Before locations became a tree the stored filter was a NAME. Left alone it
+ * parses as NaN, matches no subtree, and the page comes up empty after an
+ * upgrade with nothing saying why — so anything that is not a number is read
+ * as "all".
+ */
+export function readStoredLocationFilter(raw: string | null): string {
+  if (!raw || raw === 'all') return 'all';
+  return Number.isFinite(Number(raw)) ? raw : 'all';
+}

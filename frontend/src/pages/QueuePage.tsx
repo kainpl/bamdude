@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Calendar, LayoutGrid, Loader2 } from 'lucide-react';
 import { api } from '../api/client';
 import { byLocationName, compareLocationNames } from '../utils/locationOrder';
+import { buildLocationIndex, readStoredLocationFilter } from '../utils/locationTree';
 import type { PrinterQueue, PrintQueueItem } from '../api/client';
 import { QueueCard } from '../components/QueueCard';
 import { QueueStatsBar } from '../components/Queue/QueueStatsBar';
@@ -46,7 +47,7 @@ export function QueuePage() {
 
   const [search, setSearch] = useState<string>(() => localStorage.getItem('queueSearch') || '');
   const [statusFilter, setStatusFilter] = useState<string>(() => localStorage.getItem('queueStatusFilter') || 'all');
-  const [locationFilter, setLocationFilter] = useState<string>(() => localStorage.getItem('queueLocationFilter') || 'all');
+  const [locationFilter, setLocationFilter] = useState<string>(() => readStoredLocationFilter(localStorage.getItem('queueLocationFilter')));
   const [hideOffline, setHideOffline] = useState<boolean>(() => localStorage.getItem('queueHideOffline') === 'true');
 
   // Bumped on every printerStatus cache update so the offline filter recomputes
@@ -147,13 +148,18 @@ export function QueuePage() {
   // Grid classes for the cards view
   const gridClasses = 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3';
 
-  // Distinct printer locations for the filter dropdown
-  const availableLocations = useMemo(() => {
-    if (!queues) return [] as string[];
-    const set = new Set<string>();
-    queues.forEach(q => { if (q.printer_location) set.add(q.printer_location.name); });
-    return Array.from(set).sort(compareLocationNames);
-  }, [queues]);
+  // The locations themselves, not the distinct values on screen: a parent with
+  // no queues directly on it has to be selectable, and a name stopped being an
+  // identity the moment "Shelf 1" could exist under two workshops.
+  const { data: locationRows } = useQuery({ queryKey: ['printer-locations'], queryFn: api.getPrinterLocations });
+  const locationIndex = useMemo(() => buildLocationIndex(locationRows?.locations ?? []), [locationRows]);
+  const availableLocations = useMemo(
+    () =>
+      [...(locationRows?.locations ?? [])]
+        .sort((a, b) => compareLocationNames(a.path, b.path))
+        .map((row) => ({ id: row.id, label: row.name, depth: row.depth, path: row.path })),
+    [locationRows],
+  );
 
   // Filter + sort queues
   const sortedQueues = useMemo(() => {
@@ -161,10 +167,12 @@ export function QueuePage() {
     const term = search.trim().toLowerCase();
     const filtered = queues.filter(q => {
       if (statusFilter !== 'all' && q.status !== statusFilter) return false;
-      // `.name`, not the row: comparing the object to the picked name is never
-      // equal, so the filter used to empty the page instead of narrowing it.
-      // TypeScript cannot catch it — `PrinterLocation | ''` overlaps `string`.
-      if (locationFilter !== 'all' && (q.printer_location?.name || '') !== locationFilter) return false;
+      // By id and by subtree: picking a workshop keeps everything beneath it,
+      // and a name is no longer an identity now that it can exist twice.
+      if (locationFilter !== 'all') {
+        const wanted = locationIndex.descendantsOf(Number(locationFilter));
+        if (!q.printer_location || !wanted.has(q.printer_location.id)) return false;
+      }
       if (term) {
         const name = (q.printer_name || '').toLowerCase();
         const model = (q.printer_model || '').toLowerCase();
@@ -197,14 +205,14 @@ export function QueuePage() {
         filtered.sort((a, b) => (a.printer_model || '').localeCompare(b.printer_model || ''));
         break;
       case 'location':
-        filtered.sort(byLocationName(q => q.printer_location?.name));
+        filtered.sort(byLocationName(q => q.printer_location?.path));
         break;
     }
 
     if (!sortAsc) filtered.reverse();
     return filtered;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- statusCacheVersion is intentional: it forces recompute when WS / poll updates printer status cache; queryClient is stable
-  }, [queues, search, statusFilter, locationFilter, hideOffline, sortBy, sortAsc, statusCacheVersion]);
+  }, [queues, search, statusFilter, locationFilter, locationIndex, hideOffline, sortBy, sortAsc, statusCacheVersion]);
 
   const hasActiveFilters = search.trim() !== '' || statusFilter !== 'all' || locationFilter !== 'all';
 
@@ -213,7 +221,7 @@ export function QueuePage() {
     if (sortBy !== 'location') return null;
     const groups: Record<string, PrinterQueue[]> = {};
     sortedQueues.forEach(q => {
-      const loc = q.printer_location?.name || t('queueCard.ungrouped');
+      const loc = q.printer_location?.path || t('queueCard.ungrouped');
       if (!groups[loc]) groups[loc] = [];
       groups[loc].push(q);
     });

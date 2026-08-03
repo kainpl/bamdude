@@ -4,6 +4,7 @@ import { ZigbeeStatusBadge } from '../components/zigbee/ZigbeeStatusBadge';
 import { useTranslation } from 'react-i18next';
 import { PrinterLocationSelect } from '../components/PrinterLocationSelect';
 import { compareLocationNames } from '../utils/locationOrder';
+import { buildLocationIndex } from '../utils/locationTree';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
 import {
@@ -8144,6 +8145,18 @@ export function PrintersPage() {
     return unsubscribe;
   }, [queryClient]);
 
+  // From the locations themselves rather than from the printers on screen: a
+  // parent with no printers directly on it must still be selectable.
+  const { data: locationRows } = useQuery({ queryKey: ['printer-locations'], queryFn: api.getPrinterLocations });
+  const locationIndex = useMemo(() => buildLocationIndex(locationRows?.locations ?? []), [locationRows]);
+  const availableLocations = useMemo(
+    () =>
+      [...(locationRows?.locations ?? [])]
+        .sort((a, b) => compareLocationNames(a.path, b.path))
+        .map((row) => ({ id: row.id, label: row.name, depth: row.depth, path: row.path })),
+    [locationRows],
+  );
+
   // Filter printers by search term, status, and location (#852).
   const filteredPrinters = useMemo(() => {
     if (!printers) return [];
@@ -8160,7 +8173,11 @@ export function PrintersPage() {
     }
 
     if (locationFilter !== 'all') {
-      result = result.filter(p => (p.location?.name || '') === locationFilter);
+      // By id and by subtree: picking a workshop keeps the printers on its
+      // shelves, and a name is no longer an identity now that "Shelf 1" can
+      // exist under two workshops.
+      const wanted = locationIndex.descendantsOf(Number(locationFilter));
+      result = result.filter(p => p.location != null && wanted.has(p.location.id));
     }
 
     if (statusFilter !== 'all') {
@@ -8184,7 +8201,7 @@ export function PrintersPage() {
 
     return result;
   // eslint-disable-next-line react-hooks/exhaustive-deps -- statusCacheVersion is intentional: it forces recompute when WebSocket updates printer status cache
-  }, [printers, search, statusFilter, locationFilter, queryClient, statusCacheVersion]);
+  }, [printers, search, statusFilter, locationFilter, locationIndex, queryClient, statusCacheVersion]);
 
   // Modifier-aware single-printer selection. Behaves like a file-manager:
   //
@@ -8199,11 +8216,6 @@ export function PrintersPage() {
   //   Plain checkbox click   — toggle this printer (fast path for one-off
   //                            picks; equivalent to Ctrl-click).
   //
-  // Derive unique locations for the location filter dropdown
-  const availableLocations = useMemo(() => {
-    if (!printers) return [];
-    return [...new Set(printers.map(p => p.location?.name || '').filter(Boolean))].sort(compareLocationNames);
-  }, [printers]);
 
   const sortedPrinters = useMemo(() => {
     const sorted = [...filteredPrinters];
@@ -8218,8 +8230,8 @@ export function PrintersPage() {
       case 'location':
         // Sort by location, with ungrouped printers last
         sorted.sort((a, b) => {
-          const locA = a.location?.name || '';
-          const locB = b.location?.name || '';
+          const locA = a.location?.path || '';
+          const locB = b.location?.path || '';
           if (!locA && locB) return 1;
           if (locA && !locB) return -1;
           return compareLocationNames(locA, locB) || a.name.localeCompare(b.name);
@@ -8327,7 +8339,7 @@ export function PrintersPage() {
 
     const groups: Record<string, typeof sortedPrinters> = {};
     sortedPrinters.forEach(printer => {
-      const location = printer.location?.name || t('printers.ungrouped');
+      const location = printer.location?.path || t('printers.ungrouped');
       if (!groups[location]) groups[location] = [];
       groups[location].push(printer);
     });
@@ -8402,7 +8414,10 @@ export function PrintersPage() {
           fullWidth={inMenu}
           options={[
             { value: 'all', label: t('printers.filter.allLocations') },
-            ...availableLocations.map((loc) => ({ value: loc, label: loc })),
+            ...availableLocations.map((loc) => ({
+              value: String(loc.id),
+              label: ' '.repeat((loc.depth - 1) * 3) + loc.label,
+            })),
           ]}
         />
       )}

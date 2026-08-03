@@ -23,7 +23,10 @@ interface MaintenanceToolbarProps {
 
   locationFilter: string;
   onLocationFilterChange: (value: string) => void;
-  availableLocations: string[];
+  /** The tree, flattened: `depth` drives the indent and `path` the title.
+   *  Ids, not names — a name stopped being an identity when "Shelf 1"
+   *  became possible under two workshops. */
+  availableLocations: { id: number; label: string; depth: number; path: string }[];
 
   sortBy: SortOption;
   onSortByChange: (value: SortOption) => void;
@@ -161,7 +164,10 @@ export function MaintenanceToolbar({
           >
             <option value="all">{t('printers.filter.allLocations')}</option>
             {availableLocations.map((loc) => (
-              <option key={loc} value={loc}>{loc}</option>
+              <option key={loc.id} value={String(loc.id)} title={loc.path}>
+                {' '.repeat((loc.depth - 1) * 3)}
+                {loc.label}
+              </option>
             ))}
           </select>
         )}
