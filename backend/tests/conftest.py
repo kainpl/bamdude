@@ -166,6 +166,7 @@ async def test_engine():
         smart_plug_power_history,
         smart_sensor,
         smart_sensor_history,
+        smart_sensor_threshold,
         spool,
         spool_assignment,
         spool_catalog,

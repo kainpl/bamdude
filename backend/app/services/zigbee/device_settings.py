@@ -115,6 +115,38 @@ async def resolve_reporting(db, info: DeviceInfo) -> dict[str, dict]:
     return resolved
 
 
+async def resolve_max_interval(db, ieee: str, kind: str) -> int:
+    """The longest silence this device promised for one quantity, resolved
+    WITHOUT the radio.
+
+    ``resolve_reporting`` needs a live ``DeviceInfo`` to know which targets a
+    device has. The alert sweep runs from a background loop that may have no
+    radio at all — a downed dongle must not stop the farm noticing that a
+    sensor went quiet — so the quantity is named by the caller and only the
+    three layers are applied.
+    """
+    from backend.app.services.zigbee.measurements import BY_KEY
+
+    measurement = BY_KEY.get(kind)
+    if measurement is None:
+        return 0
+    # Seeded with max_interval alone on purpose: ``_overlay`` skips a field the
+    # base does not already carry, so the other two are not introduced here.
+    resolved = {kind: {"max_interval": measurement.default_max_interval}}
+
+    raw = await get_setting(db, GLOBAL_REPORTING_KEY)
+    if raw:
+        try:
+            _overlay(resolved, json.loads(raw))
+        except (ValueError, TypeError):
+            logger.warning("%s is not valid JSON — using the layer beneath", GLOBAL_REPORTING_KEY)
+
+    row = await load_device_row(db, ieee)
+    if row is not None:
+        _overlay(resolved, row.reporting)
+    return int(resolved[kind]["max_interval"])
+
+
 async def resolve_poll_seconds(db, ieee: str) -> int:
     row = await load_device_row(db, ieee)
     if row is not None and row.poll_seconds:
