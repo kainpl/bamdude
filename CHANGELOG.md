@@ -32,6 +32,8 @@ All notable changes to BamDude will be documented in this file.
 
 - **Filtering the queue list by location no longer empties it.** Picking a place on the Queues page matched nothing at all, so every queue disappeared instead of the list narrowing to that place. Sorting and grouping by location were unaffected.
 
+- **A sensor's recorded readings are no longer sent one by one.** A single sensor records around a hundred and fifty readings an hour, so a week of them was tens of thousands of points handed to the browser at once. They are now grouped into short intervals, the same way plug power already was.
+
 - **Lists of locations are now in alphabetical order.** They were ordered by character code, which is not the alphabet: Ґ, Є, І and Ї sort before А, and anything typed in lower case fell to the very end — so a farm with places called "Ірпінь" and "Ангар" saw what looked like no order at all. This covers every location list: the filters on the printers, queues and maintenance pages, the picker in the printer and auto-queue dialogs, and the list under Settings. Numbered halls also count properly now — "Цех 2" comes before "Цех 10", not after it.
 
 ### Added

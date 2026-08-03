@@ -3,7 +3,10 @@
 The same shape and bounds as ``ams-history``, so a reader who knows one knows
 the other. The window reaches a week while retention keeps a month, and the gap
 is deliberate: thirty days of five-second readings is half a million points for
-one plug, useful only aggregated — and aggregation is not part of this stage.
+one plug, which no chart can draw at any bucket width worth naming.
+
+Both endpoints aggregate. They differ in what an empty bucket means, and each
+says so in its own docstring — the two must not be tidied into one shape.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -20,6 +23,7 @@ from backend.app.models.smart_plug_power_history import SmartPlugPowerHistory
 from backend.app.models.smart_sensor import SmartSensor
 from backend.app.models.smart_sensor_history import SmartSensorHistory
 from backend.app.models.user import User
+from backend.app.services.zigbee.measurements import BY_KEY
 
 router = APIRouter(tags=["measurement-history"])
 
@@ -131,25 +135,75 @@ async def get_sensor_history(
     _: User | None = RequirePermission(Permission.SMART_SENSORS_READ),
 ):
     """One quantity at a time — they have different units and ranges, and a
-    single series is what a chart draws."""
+    single series is what a chart draws.
+
+    Bucketed like the plug endpoint above, for the same reason: one sensor
+    writes some fifty temperature and a hundred humidity readings an hour, so a
+    week is seventeen thousand points and a day already exceeds one per pixel.
+
+    Two differences from that endpoint, both deliberate.
+
+    Empty buckets are NOT sent. The plug endpoint fills them with null so
+    ``connectNulls={false}`` breaks the line where the plug consumed nothing. A
+    sensor is silent on a schedule, not for want of an event: a break every
+    minute would claim gaps that did not happen.
+
+    The statistics are over the READINGS. Averaging into buckets first loses the
+    peak, which is the one number the smoothed line cannot show.
+    """
+    # The registry is the list of quantities. Matching nothing and returning an
+    # empty series would read as "not recorded yet", hiding the caller's bug.
+    if kind not in BY_KEY:
+        raise HTTPException(status_code=400, detail=f"Unknown quantity: {kind}.")
     if await db.get(SmartSensor, sensor_id) is None:
         raise HTTPException(status_code=404, detail="No such sensor.")
 
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
-    rows = (
-        (
-            await db.execute(
-                select(SmartSensorHistory)
-                .where(
-                    SmartSensorHistory.sensor_id == sensor_id,
-                    SmartSensorHistory.sensor_kind == kind,
-                    SmartSensorHistory.recorded_at >= since,
-                )
-                .order_by(SmartSensorHistory.recorded_at)
-            )
-        )
-        .scalars()
-        .all()
+    bucket = bucket_seconds_for(hours)
+    window = (
+        SmartSensorHistory.sensor_id == sensor_id,
+        SmartSensorHistory.sensor_kind == kind,
+        SmartSensorHistory.recorded_at >= since,
     )
 
-    return {"points": [{"recorded_at": row.recorded_at.isoformat(), "value": row.value} for row in rows]}
+    # One expression for both engines, exactly as above: SQLAlchemy renders
+    # extract('epoch') as STRFTIME('%s', ...) on SQLite and EXTRACT(epoch FROM
+    # ...) on PostgreSQL.
+    bucket_index = func.floor(func.extract("epoch", SmartSensorHistory.recorded_at) / bucket)
+
+    rows = (
+        await db.execute(
+            select(bucket_index.label("bucket"), func.avg(SmartSensorHistory.value).label("value"))
+            .where(*window)
+            .group_by(bucket_index)
+            .order_by(bucket_index)
+        )
+    ).all()
+
+    stats = (
+        await db.execute(
+            select(
+                func.min(SmartSensorHistory.value),
+                func.avg(SmartSensorHistory.value),
+                func.max(SmartSensorHistory.value),
+            ).where(*window)
+        )
+    ).one()
+
+    points = [
+        {
+            # int(): SQLite returns the bucket index as a float.
+            "recorded_at": datetime.fromtimestamp(int(row.bucket) * bucket, tz=timezone.utc).isoformat(),
+            "value": round(float(row.value), 1),
+        }
+        for row in rows
+        if row.value is not None
+    ]
+
+    return {
+        "points": points,
+        "bucket_seconds": bucket,
+        "min_value": round(stats[0], 1) if stats[0] is not None else None,
+        "avg_value": round(stats[1], 1) if stats[1] is not None else None,
+        "max_value": round(stats[2], 1) if stats[2] is not None else None,
+    }
