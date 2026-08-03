@@ -62,6 +62,10 @@ function provider(over: Partial<NotificationProvider> = {}): NotificationProvide
     last_error_at: null,
     created_at: '2026-08-04T10:00:00Z',
     updated_at: '2026-08-04T10:00:00Z',
+    // Last, so an override actually overrides. Spread first and the explicit
+    // fields below would win, which is a fixture that quietly ignores its own
+    // argument.
+    ...over,
   } as NotificationProvider;
 }
 
