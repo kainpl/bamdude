@@ -2386,6 +2386,20 @@ export interface ZigbeeDevice {
   nwk: number | null;
   manufacturer: string | null;
   model: string | null;
+  /** What BamDude can do with it. The set is closed: plugs and sensors, and
+   *  anything else is removed from the network rather than listed. */
+  kind: 'coordinator' | 'plug' | 'sensor' | 'unsupported';
+  /** Which quantities a sensor reports. Empty for a plug -- a relay with a
+   *  temperature cluster is still a relay, and the backend says so. */
+  measurements: string[];
+  /** The hardware's own name, recorded when it paired. Null until the row
+   *  exists. NOT the name an operator gives the plug or sensor. */
+  name: string | null;
+  /** Whether a plug or sensor row already points at this device. Computed from
+   *  those tables, so it covers sensors too -- checking the plug list alone
+   *  reported every adopted sensor as free. */
+  adopted: boolean;
+  /** Kept beside `kind` because the plug picker filters on it. */
   is_coordinator: boolean;
   is_plug: boolean;
   has_metering: boolean;

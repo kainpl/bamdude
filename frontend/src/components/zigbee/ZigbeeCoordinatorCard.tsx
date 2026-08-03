@@ -158,6 +158,25 @@ export function ZigbeeCoordinatorCard() {
   const boundName = (ieee: string) =>
     plugs?.find((p) => p.zigbee_ieee && p.zigbee_ieee.toLowerCase() === ieee.toLowerCase())?.name;
 
+  /** What this device is, in its own terms.
+   *
+   *  A sensor was being labelled with a relay's vocabulary -- "switching only",
+   *  because it carries neither metering cluster. That is not a lesser plug, it
+   *  is a different device, and the backend has said which since the sensor
+   *  cycle. */
+  const capability = (device: ZigbeeDevice) => {
+    if (device.kind === 'sensor') {
+      const what = device.measurements
+        .map((key) => t(`settings.zigbee.measurement.${key}`, { defaultValue: key }))
+        .join(', ');
+      return t('settings.zigbee.capabilitySensor', { what });
+    }
+    if (device.kind === 'unsupported') return t('settings.zigbee.capabilityUnsupported');
+    return device.has_metering || device.has_electrical_measurement
+      ? t('settings.zigbee.capabilityEnergy')
+      : t('settings.zigbee.capabilitySwitchOnly');
+  };
+
   return (
     <Card className="mb-6">
       <CardHeader>
@@ -349,21 +368,21 @@ export function ZigbeeCoordinatorCard() {
                   >
                     <div className="min-w-0">
                       <p className="text-sm text-white truncate">
-                        {device.model || device.ieee}
+                        {device.name || device.model || device.ieee}
                         {device.manufacturer ? <span className="text-bambu-gray"> · {device.manufacturer}</span> : null}
                       </p>
                       <p className="text-xs text-bambu-gray truncate">
                         {device.ieee}
                         {' · '}
-                        {device.has_metering || device.has_electrical_measurement
-                          ? t('settings.zigbee.capabilityEnergy')
-                          : t('settings.zigbee.capabilitySwitchOnly')}
+                        {capability(device)}
                       </p>
                       {/* Which devices are still free is otherwise invisible
-                          without cross-checking the plug list by hand. */}
-                      {bound ? (
+                          without cross-checking the plug list by hand -- and
+                          that cross-check knew nothing of sensors, so every
+                          adopted one read as free. `adopted` covers both. */}
+                      {bound || device.adopted ? (
                         <p className="text-xs text-bambu-green truncate">
-                          {t('settings.zigbee.boundTo', { name: bound })}
+                          {bound ? t('settings.zigbee.boundTo', { name: bound }) : t('settings.zigbee.inUse')}
                         </p>
                       ) : null}
                     </div>

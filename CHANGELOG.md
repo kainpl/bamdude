@@ -22,6 +22,8 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **A paired sensor is no longer described as if it were a plug.** The list of paired Zigbee devices labelled every entry with a relay's vocabulary, so a temperature sensor read as "switching only" — a lesser plug rather than a different device. It now says what the device measures. A sensor you have already added also reads as in use: that was worked out by searching the list of plugs, which knows nothing about sensors, so every adopted one looked free to take. And where the device's own name is known it is shown instead of the model number.
+
 - **A Zigbee device's saved settings no longer show a confirmation that belongs to the previous ones.** Saving does not wait for the device — a battery sensor is asleep almost all of the time, so the new configuration reaches it whenever it next wakes. Until then the answer showed the *earlier* configuration's "confirmed", which reads as confirmation of what you just saved. Each outcome now says which values it is about and when it was recorded, so settings still on their way are visibly still on their way. Attempts that reached nothing are recorded too: "we last tried these and heard nothing" is what explains a device running something other than what is on screen.
 
 - **Filtering the queue list by location no longer empties it.** Picking a place on the Queues page matched nothing at all, so every queue disappeared instead of the list narrowing to that place. Sorting and grouping by location were unaffected.

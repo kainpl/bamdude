@@ -14,9 +14,28 @@ import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { ZigbeeCoordinatorCard } from '../../components/zigbee/ZigbeeCoordinatorCard';
 import { api } from '../../api/client';
-import type { ZigbeeStatus } from '../../api/client';
+import type { ZigbeeDevice, ZigbeeStatus } from '../../api/client';
 
 const DISABLED: ZigbeeStatus = { state: 'disabled', reason: null, coordinator: null, network: null };
+const UP: ZigbeeStatus = { state: 'up', reason: null, coordinator: null, network: null };
+
+function device(overrides: Partial<ZigbeeDevice> = {}): ZigbeeDevice {
+  return {
+    ieee: 'aa:bb:cc:dd:ee:ff:00:11',
+    nwk: 123,
+    manufacturer: 'SONOFF',
+    model: 'S60ZBTPF',
+    kind: 'plug',
+    measurements: [],
+    name: null,
+    adopted: false,
+    is_coordinator: false,
+    is_plug: true,
+    has_metering: true,
+    has_electrical_measurement: true,
+    ...overrides,
+  };
+}
 
 function stub(status: ZigbeeStatus) {
   vi.spyOn(api, 'getZigbeeStatus').mockResolvedValue(status);
@@ -118,5 +137,54 @@ describe('ZigbeeCoordinatorCard', () => {
     render(<ZigbeeCoordinatorCard />);
 
     expect(await screen.findByRole('button', { name: /pair a device/i })).toBeDisabled();
+  });
+
+  describe('the paired list describes each device in its own terms', () => {
+    it('a sensor is named by what it measures, not by a relay vocabulary', async () => {
+      // It carries neither metering cluster, so the plug wording called it
+      // "switching only" -- a lesser relay rather than a different device.
+      stub(UP);
+      vi.spyOn(api, 'getZigbeeDevices').mockResolvedValue({
+        devices: [
+          device({
+            kind: 'sensor',
+            model: 'SNZB-02DR2',
+            measurements: ['temperature', 'humidity'],
+            is_plug: false,
+            has_metering: false,
+            has_electrical_measurement: false,
+          }),
+        ],
+      });
+
+      render(<ZigbeeCoordinatorCard />);
+
+      expect(await screen.findByText(/measures temperature, humidity/i)).toBeInTheDocument();
+      expect(screen.queryByText(/switching only/i)).not.toBeInTheDocument();
+    });
+
+    it('an adopted sensor does not read as free', async () => {
+      // "In use" was computed by searching the plug list, which knows nothing
+      // of sensors -- so every adopted one looked available to take.
+      stub(UP);
+      vi.spyOn(api, 'getZigbeeDevices').mockResolvedValue({
+        devices: [device({ kind: 'sensor', measurements: ['temperature'], is_plug: false, adopted: true })],
+      });
+
+      render(<ZigbeeCoordinatorCard />);
+
+      expect(await screen.findByText(/already added/i)).toBeInTheDocument();
+    });
+
+    it('the hardware name wins over the model when it is known', async () => {
+      stub(UP);
+      vi.spyOn(api, 'getZigbeeDevices').mockResolvedValue({
+        devices: [device({ name: 'SONOFF SNZB-02DR2', model: 'SNZB-02DR2' })],
+      });
+
+      render(<ZigbeeCoordinatorCard />);
+
+      expect(await screen.findByText(/SONOFF SNZB-02DR2/)).toBeInTheDocument();
+    });
   });
 });

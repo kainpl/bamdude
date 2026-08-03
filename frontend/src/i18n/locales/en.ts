@@ -1581,12 +1581,25 @@ export default {
       pairingJoining: 'A device is joining…',
       pairingPaired: '{{name}} paired.',
       pairingRejected:
-        '{{name}} was rejected and removed from the network: it has no On/Off cluster, so BamDude could not switch it.',
+        '{{name}} was rejected and removed from the network: BamDude can neither switch it nor read anything from it. Smart plugs and sensors only.',
       pairedDevices: 'Paired devices',
       noPairedDevices: 'Nothing paired yet.',
       boundTo: 'bound to {{name}}',
+      // A sensor is adopted too, and its entity is not a plug -- so this says
+      // "in use" without claiming to know by what.
+      inUse: 'already added',
       capabilityEnergy: 'switching + energy',
       capabilitySwitchOnly: 'switching only',
+      capabilitySensor: 'measures {{what}}',
+      capabilityUnsupported: 'not supported',
+      measurement: {
+        temperature: 'temperature',
+        humidity: 'humidity',
+        co2: 'CO₂',
+        pm25: 'PM2.5',
+        battery: 'battery',
+        battery_voltage: 'battery voltage',
+      },
       removeDevice: 'Remove device',
       removeDeviceConfirm:
         'Remove {{name}} from the Zigbee network? It will stop responding until you pair it again by hand.',
