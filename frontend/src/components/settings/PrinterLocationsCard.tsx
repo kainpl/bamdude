@@ -69,9 +69,10 @@ export function PrinterLocationsCard() {
   const locations = [...(data?.locations ?? [])].sort(byLocationName((loc) => loc.path));
 
   return (
-    <div className="bg-bambu-dark-secondary rounded-xl p-4">
-      <h3 className="text-white mb-3">{t('printers.locations.title')}</h3>
-
+    // No heading and no card chrome of its own: the page wraps this in a Card
+    // that already carries the title, the way ArchivedPrintersPanel is wrapped.
+    // Keeping one here printed "Locations" twice, one line apart.
+    <div>
       {locations.length === 0 && <p className="text-sm text-bambu-gray mb-3">{t('printers.locations.empty')}</p>}
 
       <ul className="space-y-2 mb-3">
