@@ -6,7 +6,7 @@ import { LineChart, Loader2, Thermometer, WifiOff } from 'lucide-react';
 import { api } from '../../api/client';
 import type { ZigbeeSensor } from '../../api/client';
 import { formatRelativeTime } from '../../utils/date';
-import { roomReadings } from '../../utils/sensorReadings';
+import { formatReading, roomReadings } from '../../utils/sensorReadings';
 import { iconFor } from './measurementIcons';
 import { SensorHistoryModal } from './SensorHistoryModal';
 import { ZigbeeStatusBadge } from './ZigbeeStatusBadge';
@@ -119,7 +119,7 @@ function SensorRow({ sensor, onChart }: { sensor: ZigbeeSensor; onChart: () => v
                   )}`}
                 >
                   <Icon className="w-3 h-3 text-bambu-gray" />
-                  {reading.value == null ? '—' : `${reading.value} ${reading.unit}`}
+                  {reading.value == null ? '—' : `${formatReading(reading.value)} ${reading.unit}`}
                 </span>
               );
             })}

@@ -12,6 +12,22 @@ export function roomReadings(sensor: ZigbeeSensor): [string, SensorMeasurement][
 }
 
 /**
+ * A reading as a person reads it: tenths at most.
+ *
+ * Every quantity arrives as `raw * scale` — hundredths of a degree times 0.01 —
+ * and binary floating point turns that into 23.400000000000002 often enough to
+ * be seen. A tenth is also all these sensors resolve to, so nothing is lost.
+ *
+ * A trailing zero is dropped: a limit of 41 should not read as 41.0, which
+ * looks like a measurement rather than a round number. Used for the axis ticks
+ * too, where recharts picks the values itself and picks them badly.
+ */
+export function formatReading(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '—';
+  return String(Number(value.toFixed(1)));
+}
+
+/**
  * The sensors a location's group header shows: the ones bound to that location
  * or to any of its ancestors, nearest first.
  *

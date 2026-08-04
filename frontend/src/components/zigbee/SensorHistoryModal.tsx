@@ -7,7 +7,7 @@ import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YA
 import { api } from '../../api/client';
 import type { ZigbeeSensor } from '../../api/client';
 import { applyTimeFormat, type TimeFormat } from '../../utils/date';
-import { roomReadings } from '../../utils/sensorReadings';
+import { formatReading, roomReadings } from '../../utils/sensorReadings';
 import { sensorBucketLabelKey, sensorChartPoints } from '../../utils/sensorChart';
 
 interface Props {
@@ -171,7 +171,7 @@ export function SensorHistoryModal({ isOpen, onClose, sensor }: Props) {
                   // the heater chart starts there; a room sits between 21 and
                   // 26 °C and on that scale is a flat line.
                   domain={['auto', 'auto']}
-                  tickFormatter={(v) => `${v}${unit}`}
+                  tickFormatter={(v) => `${formatReading(v)}${unit}`}
                 />
                 <Tooltip
                   contentStyle={{
@@ -191,7 +191,7 @@ export function SensorHistoryModal({ isOpen, onClose, sensor }: Props) {
                   }
                   formatter={(value) =>
                     t(sensorBucketLabelKey(data?.bucket_seconds ?? 300), {
-                      value: Number(value),
+                      value: formatReading(Number(value)),
                       unit,
                       minutes,
                     })
@@ -227,7 +227,7 @@ function Stat({
 }) {
   return (
     <span style={{ color }}>
-      {label} <span className="text-white">{value == null ? '—' : `${value} ${unit}`}</span>
+      {label} <span className="text-white">{value == null ? '—' : `${formatReading(value)} ${unit}`}</span>
     </span>
   );
 }

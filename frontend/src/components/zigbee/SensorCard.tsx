@@ -3,7 +3,7 @@ import { Battery, BellRing, LineChart, Pencil, Plug, SlidersHorizontal, Trash2, 
 
 import type { SensorMeasurement, ZigbeeSensor } from '../../api/client';
 import { formatRelativeTime } from '../../utils/date';
-import { roomReadings } from '../../utils/sensorReadings';
+import { formatReading, roomReadings } from '../../utils/sensorReadings';
 
 interface Props {
   sensor: ZigbeeSensor;
@@ -75,7 +75,7 @@ export function SensorCard({
               // at a three-hour interval "2 hours ago" is normal, not a signal.
               title={
                 voltage?.value != null
-                  ? t('settings.zigbee.sensors.batteryVoltage', { volts: voltage.value })
+                  ? t('settings.zigbee.sensors.batteryVoltage', { volts: formatReading(voltage.value) })
                   : undefined
               }
             >
@@ -171,7 +171,7 @@ function Reading({ name, reading, muted }: { name: string; reading: SensorMeasur
     <li className="flex items-center justify-between gap-3 text-sm">
       <span className="text-bambu-gray">{t(`settings.zigbee.measurement.${name}`, { defaultValue: name })}</span>
       <span className={dim ? 'text-bambu-gray' : 'text-white'}>
-        {reading.value == null ? '—' : `${reading.value} ${reading.unit}`}
+        {reading.value == null ? '—' : `${formatReading(reading.value)} ${reading.unit}`}
       </span>
       {/* Always shown, stale or not: "2 min ago" is as much a fact as "14 min
           ago". Staleness changes the emphasis, not the presence of the time. */}

@@ -8,7 +8,7 @@ import type { ZigbeeSensor } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatRelativeTime } from '../../utils/date';
 import { buildLocationIndex } from '../../utils/locationTree';
-import { roomReadings, sensorsForGroup } from '../../utils/sensorReadings';
+import { formatReading, roomReadings, sensorsForGroup } from '../../utils/sensorReadings';
 import { iconFor } from './measurementIcons';
 import { SensorHistoryModal } from './SensorHistoryModal';
 
@@ -126,7 +126,7 @@ function Chip({ sensor, onOpen }: { sensor: ZigbeeSensor; onOpen: () => void }) 
             className={`inline-flex items-center gap-1 ${reading.stale ? 'text-bambu-gray' : 'text-white'}`}
           >
             <Icon className="w-3.5 h-3.5 text-bambu-gray" />
-            {reading.value == null ? '—' : `${reading.value} ${reading.unit}`}
+            {reading.value == null ? '—' : `${formatReading(reading.value)} ${reading.unit}`}
           </span>
         );
       })}

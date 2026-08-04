@@ -71,7 +71,7 @@ function sensor(over: Partial<ZigbeeSensor> = {}): ZigbeeSensor {
     quirk_applied: true,
     unreachable: false,
     present: true,
-    measurements: { temperature: reading(23.4, '°C'), humidity: reading(41, '%') },
+    measurements: { temperature: reading(23.400000000000002, '°C'), humidity: reading(41, '%') },
     ...over,
   };
 }

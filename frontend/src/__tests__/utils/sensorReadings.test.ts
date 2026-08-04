@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { buildLocationIndex } from '../../utils/locationTree';
 import type { LocationNode } from '../../utils/locationTree';
-import { roomReadings, sensorsForGroup } from '../../utils/sensorReadings';
+import { formatReading, roomReadings, sensorsForGroup } from '../../utils/sensorReadings';
 import type { ZigbeeSensor } from '../../api/client';
 
 // Workshop(1) -> Shelf 1(2) -> Box(4);  Workshop -> Shelf 2(3);  Hall(5)
@@ -109,5 +109,39 @@ describe('sensorsForGroup', () => {
     // sensor and no sensor look identical, which is the news worth showing.
     const gone = at(1, 'Workshop', { present: false, measurements: {} });
     expect(sensorsForGroup([gone], 1, INDEX)).toEqual([gone]);
+  });
+});
+
+describe('formatReading', () => {
+  it('trims the float noise a conversion leaves behind', () => {
+    // Hundredths of a degree times 0.01. This is what the screen was showing.
+    expect(formatReading(23.400000000000002)).toBe('23.4');
+    expect(formatReading(41.199999999999996)).toBe('41.2');
+  });
+
+  it('keeps tenths and rounds past them', () => {
+    expect(formatReading(23.46)).toBe('23.5');
+    expect(formatReading(23.44)).toBe('23.4');
+    expect(formatReading(-5.04)).toBe('-5');
+  });
+
+  it('does not promise anything about an exact midpoint', () => {
+    // 23.45 is not 23.45 in binary — it is a hair below, so it rounds down
+    // here and would with Math.round too. Getting 23.5 needs decimal
+    // arithmetic, which is not worth carrying to draw a thermometer.
+    expect(formatReading(23.45)).toBe('23.4');
+  });
+
+  it('drops a trailing zero', () => {
+    // "41.0" reads as a measurement; 41 reads as the round number it is.
+    expect(formatReading(41)).toBe('41');
+    expect(formatReading(41.0001)).toBe('41');
+  });
+
+  it('says nothing rather than zero when there is no reading', () => {
+    // A fabricated 0 is worse than a missing one — the rule plug power follows.
+    expect(formatReading(null)).toBe('—');
+    expect(formatReading(undefined)).toBe('—');
+    expect(formatReading(Number.NaN)).toBe('—');
   });
 });
