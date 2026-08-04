@@ -105,7 +105,7 @@ describe('library print count', () => {
     // so "fileManager.printedTimes_one" on screen is the failure mode.
     render(<FileManagerPage />);
 
-    expect(await screen.findByRole('button', { name: 'Printed once' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Printed 1 time' })).toBeInTheDocument();
   });
 
   it('says nothing for a file that has never been printed', async () => {
@@ -122,7 +122,7 @@ describe('library print count', () => {
     // invisible one: both open an archive view, and it looks right.
     render(<FileManagerPage />);
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Printed once' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Printed 1 time' }));
 
     await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/archives?file=3&fileName=Cube'));
   });

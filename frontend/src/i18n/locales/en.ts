@@ -3991,7 +3991,10 @@ export default {
       truncated: 'Truncated',
     },
     allTypes: 'All types',
-    printedTimes_one: 'Printed once',
+    // "{{count}} time", not "once": Ukrainian's _one form covers 21, 31, 41 …
+    // as well as 1, so it must carry the number — and the parity gate requires
+    // both locales to use the same placeholders in the same leaf.
+    printedTimes_one: 'Printed {{count}} time',
     printedTimes_other: 'Printed {{count}} times',
     unprintedOnly: 'Not printed',
     ascending: 'Ascending',
