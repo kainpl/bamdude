@@ -53,6 +53,7 @@ from backend.app.schemas.calibration_mode import derive_mode, mode_to_bool
 from backend.app.services.auto_queue_eligibility import find_eligible_printer
 from backend.app.services.auto_queue_threemf import extract_auto_queue_requirements
 from backend.app.services.filament_requirements import overrides_for_plate
+from backend.app.services.library_helpers import project_for_library_file
 
 logger = logging.getLogger(__name__)
 
@@ -219,13 +220,8 @@ async def add_to_auto_queue(
         if not result.scalar_one_or_none():
             raise HTTPException(404, "Project not found")
 
-    # Inherit project from library file if not set explicitly. m044:
-    # multi-project file → first project as fallback (auto-queue items
-    # are single-project by design; operator passes ``project_id`` to
-    # disambiguate).
-    effective_project_id = data.project_id
-    if effective_project_id is None and library_file is not None and library_file.projects:
-        effective_project_id = library_file.projects[0].id
+    # One rule, shared with the queue and direct-print routes.
+    effective_project_id = project_for_library_file(data.project_id, library_file)
 
     # Resolve plate IDs to fan out (one row per plate)
     plate_ids: list[int | None]

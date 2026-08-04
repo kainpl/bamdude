@@ -69,6 +69,7 @@ from backend.app.services.archive import ThreeMFParser
 from backend.app.services.library_helpers import (
     compute_file_tags,
     detect_file_type,
+    project_for_library_file,
     skip_objects_supported_from_metadata,
 )
 from backend.app.services.library_trash import library_trash_service
@@ -4322,8 +4323,11 @@ async def print_library_file(
     if body is None:
         body = FilePrintRequest()
 
-    # Get the library file
-    result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
+    # Get the library file. m044: eager-load the M2M projects so the project
+    # fallback below does not lazy-fetch inside the request.
+    result = await db.execute(
+        select(LibraryFile).options(selectinload(LibraryFile.projects)).where(LibraryFile.id == file_id)
+    )
     lib_file = result.scalar_one_or_none()
 
     if not lib_file:
@@ -4411,7 +4415,7 @@ async def print_library_file(
             execute_swap_macros=body.execute_swap_macros,
             swap_macro_events=body.swap_macro_events,
             created_by_id=current_user.id if current_user else None,
-            project_id=body.project_id,
+            project_id=project_for_library_file(body.project_id, lib_file),
         )
         return {
             "status": "queued",
@@ -4431,7 +4435,10 @@ async def print_library_file(
             printer_id=printer_id,
             printer_name=printer.name,
             options=body.model_dump(exclude_none=True, exclude={"cleanup_library_after_dispatch"}),
-            project_id=body.project_id,
+            # The same rule the queue and auto-queue routes apply: a file that
+            # already sits in a project prints into that project, whichever
+            # page the print was started from.
+            project_id=project_for_library_file(body.project_id, lib_file),
             requested_by_user_id=current_user.id if current_user else None,
             requested_by_username=current_user.username if current_user else None,
             cleanup_library_after_dispatch=body.cleanup_library_after_dispatch,

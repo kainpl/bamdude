@@ -35,6 +35,7 @@ from backend.app.schemas.print_queue import (
     PrintQueueItemUpdate,
     PrintQueueReorder,
 )
+from backend.app.services.library_helpers import project_for_library_file
 from backend.app.services.notification_service import notification_service
 from backend.app.utils.filename import InvalidFilenameError, validate_print_filename
 from backend.app.utils.printer_models import is_gcode_compatible
@@ -536,16 +537,9 @@ async def add_to_queue(
         if not project_result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Project not found")
 
-    # Fallback: if the caller didn't pass a project_id but the source is a
-    # library file that's already linked to one or more projects, inherit
-    # the first one. Queue items stay single-project by design — for a
-    # multi-project file the operator should pass ``project_id`` explicitly
-    # to disambiguate. m044: was previously a single FK, now a list, so we
-    # pick ``[0]`` for the fallback (deterministic — pivot rows are read in
-    # insertion order via the relationship).
-    effective_project_id = data.project_id
-    if effective_project_id is None and library_file and library_file.projects:
-        effective_project_id = library_file.projects[0].id
+    # One rule, shared with the auto-queue and direct-print routes — it used to
+    # be written out here and there, and the third place never got a copy.
+    effective_project_id = project_for_library_file(data.project_id, library_file)
 
     # For quantity > 1, group copies under a shared batch_id
     batch_id = str(uuid.uuid4()) if data.quantity > 1 else None
