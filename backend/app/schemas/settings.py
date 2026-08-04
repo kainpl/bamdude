@@ -25,7 +25,9 @@ class AppSettings(BaseModel):
         ge=1,
         description="Days since the design's most recent print before its 3MF copies are eligible for cleanup. Minimum 1.",
     )
-    default_filament_cost: float = Field(default=25.0, description="Default filament cost per kg")
+    # 0 = unset. There is no sensible default price of plastic, and a
+    # plausible figure reads as an answer while a blank reads as a blank.
+    default_filament_cost: float = Field(default=0.0, description="Default filament cost per kg (0 = unset)")
     currency: str = Field(default="USD", description="Currency for cost tracking")
     energy_cost_per_kwh: float = Field(default=0.15, description="Electricity cost per kWh for energy tracking")
     energy_tracking_mode: str = Field(

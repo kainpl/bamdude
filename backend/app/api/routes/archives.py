@@ -35,6 +35,7 @@ from backend.app.schemas.archive import (
 )
 from backend.app.schemas.plate_objects import PlateObjectsResponse
 from backend.app.services.archive import ArchiveService, resolve_display_stem
+from backend.app.services.filament_cost import default_rate_per_kg
 from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.http import build_content_disposition
@@ -1546,7 +1547,6 @@ async def rescan_archive(
     _: User | None = RequirePermission(Permission.ARCHIVES_UPDATE_ALL),
 ):
     """Rescan the 3MF file and update metadata."""
-    from backend.app.api.routes.settings import get_setting
     from backend.app.services.archive import ThreeMFParser
 
     result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
@@ -1592,8 +1592,7 @@ async def rescan_archive(
     # displayed cost still reflects the whole print.
 
     if archive.filament_used_grams and archive.filament_type:
-        default_cost_setting = await get_setting(db, "default_filament_cost")
-        default_cost_per_kg = float(default_cost_setting) if default_cost_setting else 25.0
+        default_cost_per_kg = await default_rate_per_kg(db)
         usage_result = await db.execute(
             select(
                 func.sum(SpoolUsageHistory.cost),
@@ -1609,12 +1608,15 @@ async def rescan_archive(
             if untracked_grams > 0 and default_cost_per_kg > 0:
                 total_cost += (untracked_grams / 1000.0) * default_cost_per_kg
             archive.cost = float(Decimal(str(total_cost)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-        else:
+        elif default_cost_per_kg > 0:
             archive.cost = float(
                 Decimal(str((archive.filament_used_grams / 1000) * default_cost_per_kg)).quantize(
                     Decimal("0.01"), rounding=ROUND_HALF_UP
                 )
             )
+        else:
+            # No rate set: say nothing rather than 0.00, which reads as free.
+            archive.cost = None
 
     await db.commit()
     await db.refresh(archive)
@@ -1628,14 +1630,11 @@ async def recalculate_all_costs(
 ):
     """Recalculate costs for all archives based on filament usage and prices."""
 
-    from backend.app.api.routes.settings import get_setting
-
     result = await db.execute(select(PrintArchive))
     archives = list(result.scalars().all())
 
     # Get default filament cost from settings
-    default_cost_setting = await get_setting(db, "default_filament_cost")
-    default_cost_per_kg = float(default_cost_setting) if default_cost_setting else 25.0
+    default_cost_per_kg = await default_rate_per_kg(db)
 
     # Pre-fetch all usage costs and tracked weight by archive_id. Tracked
     # weight tops up the cost at the default rate for any filament grams not
@@ -1676,7 +1675,7 @@ async def recalculate_all_costs(
             fallback_cost = usage_result.scalar()
             if fallback_cost is not None and fallback_cost > 0:
                 new_cost = round(fallback_cost, 2)
-            elif archive.filament_used_grams:
+            elif archive.filament_used_grams and default_cost_per_kg > 0:
                 new_cost = round((archive.filament_used_grams / 1000) * default_cost_per_kg, 2)
             else:
                 new_cost = None

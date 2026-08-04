@@ -1950,6 +1950,17 @@ class ArchiveService:
 
         return duplicates
 
+    async def _default_rate_cost(self, filament_grams: float | None) -> float | None:
+        """What this much filament costs at the farm's rate, or None.
+
+        None when the operator has never set a rate: the alternative is 0.00,
+        which reads as "this print was free" rather than "nobody said what
+        filament costs here". See ``services/filament_cost``.
+        """
+        from backend.app.services.filament_cost import cost_of, default_rate_per_kg
+
+        return cost_of(filament_grams, await default_rate_per_kg(self.db))
+
     async def archive_print(
         self,
         printer_id: int | None,
@@ -2247,17 +2258,12 @@ class ArchiveService:
         started_at = datetime.now(timezone.utc) if status == "printing" else None
         completed_at = datetime.now(timezone.utc) if status in ("completed", "failed") else None
 
-        # Calculate initial cost estimate from default setting.
+        # Calculate initial cost estimate from the farm-wide rate.
         # This is a placeholder - usage_tracker.on_print_complete() will overwrite
-        # archive.cost with the actual cost from spool.cost_per_kg later.
-        cost = None
-        filament_grams = metadata.get("filament_used_grams")
-        if filament_grams:
-            from backend.app.api.routes.settings import get_setting
-
-            default_cost_setting = await get_setting(self.db, "default_filament_cost")
-            default_cost_per_kg = float(default_cost_setting) if default_cost_setting else 25.0
-            cost = round((filament_grams / 1000) * default_cost_per_kg, 2)
+        # archive.cost with the actual cost from spool.cost_per_kg later. With no
+        # rate set it stays None rather than becoming 0.00, which would claim the
+        # print was free.
+        cost = await self._default_rate_cost(metadata.get("filament_used_grams"))
 
         # Calculate quantity from printable objects count
         # printable_objects is a dict of {identify_id: name} for non-skipped objects
@@ -2534,11 +2540,9 @@ class ArchiveService:
             # after the 3MF lands.  Mirrors the logic in archive_print().
             filament_grams = metadata.get("filament_used_grams")
             if filament_grams:
-                from backend.app.api.routes.settings import get_setting
-
-                default_cost_setting = await get_setting(self.db, "default_filament_cost")
-                default_cost_per_kg = float(default_cost_setting) if default_cost_setting else 25.0
-                archive.cost = round((filament_grams / 1000) * default_cost_per_kg, 2)
+                recovered = await self._default_rate_cost(filament_grams)
+                if recovered is not None:
+                    archive.cost = recovered
 
             printable_objects = metadata.get("printable_objects")
             if printable_objects and isinstance(printable_objects, dict):

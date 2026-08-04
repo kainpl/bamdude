@@ -2150,7 +2150,11 @@ def _build_plan_item_response(
     secs = int(secs) if isinstance(secs, (int, float)) else None
     objs = meta.get("printable_objects")
     obj_count = len(objs) if isinstance(objs, dict) else None
-    cost_per_copy = round(grams / 1000 * default_cost_per_kg, 2) if grams is not None else None
+    # None, not 0.00: with no farm rate set there is nothing to say about
+    # what a copy costs, and a zero reads as "free".
+    cost_per_copy = (
+        round(grams / 1000 * default_cost_per_kg, 2) if grams is not None and default_cost_per_kg > 0 else None
+    )
 
     total_grams = round(grams * row.copies, 2) if grams is not None else None
     total_secs = secs * row.copies if secs is not None else None
@@ -2183,14 +2187,11 @@ def _build_plan_item_response(
 
 
 async def _get_default_filament_cost(db: AsyncSession) -> float:
-    """Same fallback semantics the archive service uses — 25.0/kg when unset."""
-    from backend.app.api.routes.settings import get_setting
+    """The farm's rate, or 0.0 when unset — the same answer everything else
+    gets. See ``services/filament_cost``."""
+    from backend.app.services.filament_cost import default_rate_per_kg
 
-    raw = await get_setting(db, "default_filament_cost")
-    try:
-        return float(raw) if raw is not None else 25.0
-    except (TypeError, ValueError):
-        return 25.0
+    return await default_rate_per_kg(db)
 
 
 async def _load_print_plan(db: AsyncSession, project_id: int) -> PrintPlanResponse:
