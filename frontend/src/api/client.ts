@@ -8651,6 +8651,9 @@ export interface LibraryFileListItem {
   source_type?: string | null;
   source_url?: string | null;
   notes_count: number;
+  // Successful completions only — the backend increments it on completion, so
+  // 0 means "never finished a print", not "never attempted one".
+  print_count: number;
   // #1268 — user-authored tags (M2M). DISTINCT from ``file_tags`` above,
   // which is the computed system-badge array. OPTIONAL because legacy msw
   // mocks build partial file shapes; read sites use ``file.tags ?? []``.

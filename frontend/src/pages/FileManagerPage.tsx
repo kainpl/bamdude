@@ -37,6 +37,7 @@ import {
   Image,
   User,
   Box,
+  History,
   RefreshCw,
   Lock,
   FolderSymlink,
@@ -1263,6 +1264,24 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
                 <SkipObjectsIcon className="w-3 h-3 text-bambu-green/70" />
               )}
             </span>
+          )}
+          {/* How many times this file actually finished a print. The count
+              itself is the button, exactly like the object count beside it,
+              and it opens the same archive view the filename above already
+              opens — this is the label that affordance never had. Nothing is
+              drawn at zero: most of a library is unprinted, and a badge on
+              nearly every card would be noise. */}
+          {file.print_count > 0 && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onOpenArchives(file); }}
+              aria-label={t('fileManager.printedTimes', { count: file.print_count })}
+              title={t('fileManager.printedTimes', { count: file.print_count })}
+              className="flex items-center gap-1 hover:text-bambu-green transition-colors"
+            >
+              <History className="w-3 h-3" />
+              {file.print_count}
+            </button>
           )}
         </div>
         {file.sliced_for_model && (
@@ -3171,6 +3190,20 @@ export function FileManagerPage() {
                           {file.skip_objects_supported && (
                             <SkipObjectsIcon className="w-3 h-3 text-bambu-green/70" />
                           )}
+                        </button>
+                      )}
+                      {/* Print count — same chip as the grid card, in the row
+                          where per-file facts already live. */}
+                      {file.print_count > 0 && (
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); handleOpenArchives(file); }}
+                          aria-label={t('fileManager.printedTimes', { count: file.print_count })}
+                          title={t('fileManager.printedTimes', { count: file.print_count })}
+                          className="flex items-center gap-1 text-[11px] text-bambu-gray hover:text-bambu-green transition-colors"
+                        >
+                          <History className="w-3 h-3" />
+                          {file.print_count}
                         </button>
                       )}
                       {/* #1268 — user-authored tag chips, inline in the same
