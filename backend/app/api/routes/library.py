@@ -2035,6 +2035,7 @@ async def list_files(
                 source_type=f.source_type,
                 source_url=f.source_url,
                 notes_count=notes_counts.get(f.id, 0),
+                print_count=f.print_count,
                 tags=[TagSummary(id=t.id, name=t.name) for t in f.tags],
             )
         )

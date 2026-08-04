@@ -326,6 +326,9 @@ class FileListResponse(BaseModel):
     # Number of notes attached (gh#3) - drives the card icon variant
     # (MessageSquarePlus when 0, MessageSquare when >0).
     notes_count: int = 0
+    # Successful completions only — the increment in ``_bump_library_file_usage``
+    # is gated on status, so a file attempted and failed reads as 0.
+    print_count: int = 0
     # #1268 — user-authored tags (M2M). DISTINCT from ``file_tags`` above,
     # which is the computed system-badge array (m036).
     tags: list["TagSummary"] = []
