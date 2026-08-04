@@ -1610,6 +1610,10 @@ export function FileManagerPage() {
   // Filter and sort state (persist sort preferences to localStorage)
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<string>('all');
+  // Deliberately NOT persisted, unlike the grid/list view mode: this is a
+  // question, not a preference. Restored silently it would show a partial
+  // library on the next visit with nothing on screen explaining why.
+  const [unprintedOnly, setUnprintedOnly] = useState(false);
   // Tag chip-row — additive on top of `filterType`. AND across selected
   // tags so the user can express "sliced multi-plate 3MFs" by activating
   // both `sliced` and `multiplate`. Persisted to localStorage so a
@@ -1809,6 +1813,11 @@ export function FileManagerPage() {
     if (filterType !== 'all') {
       result = result.filter((f) => f.file_type === filterType);
     }
+    // Successful completions only — a file attempted and failed still counts
+    // as unprinted here, which is the agreed meaning of the number.
+    if (unprintedOnly) {
+      result = result.filter((f) => !f.print_count);
+    }
     // Tag chip-row filter — every selected tag must be present (AND).
     // ``file_tags`` defaults to ``[]`` on the server side so older rows
     // before m036 (impossible in practice — backfill runs on upgrade)
@@ -1849,7 +1858,7 @@ export function FileManagerPage() {
     });
 
     return result;
-  }, [files, searchQuery, filterType, filterTags, filterUsername, sortField, sortDirection]);
+  }, [files, searchQuery, filterType, unprintedOnly, filterTags, filterUsername, sortField, sortDirection]);
 
   // Check if disk space is low
   const isDiskSpaceLow = useMemo(() => {
@@ -2683,6 +2692,21 @@ export function FileManagerPage() {
                 ))}
               </select>
 
+              {/* A toggle, not a fourth select: the question is binary, and a
+                  two-option dropdown is heavier than its answer. */}
+              <button
+                type="button"
+                onClick={() => setUnprintedOnly((on) => !on)}
+                aria-pressed={unprintedOnly}
+                className={`h-9 px-3 text-sm rounded-lg border transition-colors ${
+                  unprintedOnly
+                    ? 'bg-bambu-green/20 border-bambu-green text-bambu-green'
+                    : 'bg-bambu-dark border-bambu-dark-tertiary text-bambu-gray hover:text-white'
+                }`}
+              >
+                {t('fileManager.unprintedOnly')}
+              </button>
+
               {/* Username filter with autocomplete - only when auth is enabled */}
               {authEnabled && (
                 <div className="relative h-9">
@@ -2712,7 +2736,7 @@ export function FileManagerPage() {
               )}
 
               {/* Results count */}
-              {(searchQuery || filterType !== 'all' || filterUsername) && (
+              {(searchQuery || filterType !== 'all' || filterUsername || unprintedOnly) && (
                 <span className="h-9 flex items-center text-sm text-bambu-gray hidden sm:inline-flex">
                   {t('fileManager.resultsCount', { showing: filteredAndSortedFiles.length, total: files.length })}
                 </span>
@@ -3012,7 +3036,7 @@ export function FileManagerPage() {
               <p className="text-bambu-gray text-center max-w-md mb-6">
                 {t('fileManager.noMatchingFilesDescription')}
               </p>
-              <Button variant="secondary" onClick={() => { setSearchQuery(''); setFilterType('all'); }}>
+              <Button variant="secondary" onClick={() => { setSearchQuery(''); setFilterType('all'); setUnprintedOnly(false); }}>
                 {t('fileManager.clearFilters')}
               </Button>
             </div>

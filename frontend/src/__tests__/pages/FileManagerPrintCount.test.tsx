@@ -126,4 +126,52 @@ describe('library print count', () => {
 
     await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/archives?file=3&fileName=Cube'));
   });
+
+  it('narrows to files that have never been printed', async () => {
+    render(<FileManagerPage />);
+    await screen.findByText('Benchy');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Not printed' }));
+
+    expect(await screen.findByText('bracket.stl')).toBeInTheDocument();
+    expect(screen.queryByText('Benchy')).not.toBeInTheDocument();
+    expect(screen.queryByText('Cube')).not.toBeInTheDocument();
+  });
+
+  it('combines with the type filter rather than replacing it', async () => {
+    // "unprinted AND sliced" is the real question — what have I prepared and
+    // never actually run.
+    render(<FileManagerPage />);
+    await screen.findByText('Benchy');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Not printed' }));
+    await userEvent.selectOptions(screen.getByDisplayValue('All types'), 'gcode');
+
+    // bracket.stl is unprinted but not gcode; Benchy and Cube are gcode but
+    // printed. Nothing survives both — which proves they compose rather than
+    // the later one replacing the earlier.
+    expect(await screen.findByText('No matching files')).toBeInTheDocument();
+  });
+
+  it('is cleared by the clear-filters button', async () => {
+    // The button promises a reset; leaving one filter on leaves the library
+    // looking empty with nothing on screen saying why.
+    render(<FileManagerPage />);
+    await screen.findByText('Benchy');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Not printed' }));
+    await userEvent.selectOptions(screen.getByDisplayValue('All types'), 'gcode');
+    await userEvent.click(await screen.findByRole('button', { name: 'Clear filters' }));
+
+    expect(await screen.findByText('Benchy')).toBeInTheDocument();
+  });
+
+  it('shows the chip in list view too', async () => {
+    // The tests above all render the grid, so without this the second
+    // insertion site is unverified.
+    localStorage.setItem('library-view-mode', 'list');
+    render(<FileManagerPage />);
+
+    expect(await screen.findByRole('button', { name: 'Printed 4 times' })).toBeInTheDocument();
+  });
 });
