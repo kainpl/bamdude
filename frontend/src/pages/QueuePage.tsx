@@ -7,7 +7,6 @@ import { api } from '../api/client';
 import { byLocationName, compareLocationNames } from '../utils/locationOrder';
 import { buildLocationIndex, readStoredLocationFilter } from '../utils/locationTree';
 import { groupByLocation } from '../utils/locationGroups';
-import { LocationConditions } from '../components/zigbee/LocationConditions';
 import type { PrinterQueue, PrintQueueItem } from '../api/client';
 import { QueueCard } from '../components/QueueCard';
 import { QueueStatsBar } from '../components/Queue/QueueStatsBar';
@@ -315,7 +314,6 @@ export function QueuePage() {
                   <span className="w-2 h-2 rounded-full bg-bambu-green" />
                   {group.label}
                   <span className="text-sm font-normal text-bambu-gray">({group.items.length})</span>
-                  <LocationConditions locationId={group.locationId} />
                 </h2>
                 {renderGrid(group.items)}
               </div>

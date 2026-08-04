@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Droplets, Gauge, LineChart, Thermometer, WifiOff, Wind } from 'lucide-react';
+import { LineChart, WifiOff } from 'lucide-react';
 
 import { api } from '../../api/client';
 import type { ZigbeeSensor } from '../../api/client';
@@ -9,22 +9,13 @@ import { useAuth } from '../../contexts/AuthContext';
 import { formatRelativeTime } from '../../utils/date';
 import { buildLocationIndex } from '../../utils/locationTree';
 import { roomReadings, sensorsForGroup } from '../../utils/sensorReadings';
+import { iconFor } from './measurementIcons';
 import { SensorHistoryModal } from './SensorHistoryModal';
 
 interface Props {
   /** The group's location. Null for the "no location" group, which shows nothing. */
   locationId: number | null;
 }
-
-// Not exported: a component file may not export non-components, and this is not
-// wanted anywhere else. The FALLBACK is the point — a quantity added to
-// measurements.py later appears with a default icon instead of vanishing.
-const ICONS: Record<string, typeof Thermometer> = {
-  temperature: Thermometer,
-  humidity: Droplets,
-  co2: Wind,
-  pm25: Wind,
-};
 
 /**
  * What the sensors say about the place this group stands in.
@@ -128,7 +119,7 @@ function Chip({ sensor, onOpen }: { sensor: ZigbeeSensor; onOpen: () => void }) 
     >
       {sensor.unreachable && <WifiOff className="w-3.5 h-3.5 text-bambu-gray" />}
       {readings.map(([key, reading]) => {
-        const Icon = ICONS[key] ?? Gauge;
+        const Icon = iconFor(key);
         return (
           <span
             key={key}

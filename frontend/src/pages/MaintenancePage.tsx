@@ -5,7 +5,6 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { byLocationName, compareLocationNames } from '../utils/locationOrder';
 import { buildLocationIndex, readStoredLocationFilter } from '../utils/locationTree';
 import { groupByLocation } from '../utils/locationGroups';
-import { LocationConditions } from '../components/zigbee/LocationConditions';
 import {
   Wrench,
   Loader2,
@@ -1741,7 +1740,6 @@ export function MaintenancePage() {
                   <h2 className="text-lg font-semibold text-bambu-green flex items-center gap-2 flex-wrap">
                     {group.label}
                     <span className="text-bambu-gray text-sm font-normal">({group.items.length})</span>
-                    <LocationConditions locationId={group.locationId} />
                   </h2>
                   <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start">
                     {group.items.map((printerOverview) => (
