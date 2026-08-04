@@ -16,7 +16,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse as FastAPIFileResponse
-from sqlalchemy import distinct, func, select, update
+from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -71,6 +71,7 @@ from backend.app.services.library_helpers import (
     detect_file_type,
     skip_objects_supported_from_metadata,
 )
+from backend.app.services.library_trash import library_trash_service
 from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing
 from backend.app.services.print_plan import inherit_folder_projects, sync_plan_for_file, sync_plan_for_folder
 from backend.app.services.stl_thumbnail import MIN_USABLE_STL_BYTES, generate_stl_thumbnail
@@ -1233,46 +1234,39 @@ async def delete_folder(
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
 
-    # External folders: only remove DB records, never delete files from external path
-    is_ext = folder.is_external
+    await _trash_folder_contents(db, folder_id)
 
-    # Get all files in this folder and subfolders to delete from disk
-    async def get_all_file_ids(fid: int) -> list[int]:
-        """Recursively get all file IDs in a folder tree."""
-        file_ids = []
-
-        # Get files in this folder
-        files_result = await db.execute(
-            select(LibraryFile.id, LibraryFile.file_path, LibraryFile.thumbnail_path, LibraryFile.is_external).where(
-                LibraryFile.folder_id == fid
-            )
-        )
-        for fid_val, file_path, thumb_path, file_is_ext in files_result.all():
-            file_ids.append(fid_val)
-            # Only delete non-external files from disk
-            if not is_ext and not file_is_ext:
-                try:
-                    if file_path and os.path.exists(file_path):
-                        os.remove(file_path)
-                    if thumb_path and os.path.exists(thumb_path):
-                        os.remove(thumb_path)
-                except OSError as e:
-                    logger.warning("Failed to delete file: %s", e)
-
-        # Get child folders and recurse
-        children_result = await db.execute(select(LibraryFolder.id).where(LibraryFolder.parent_id == fid))
-        for (child_id,) in children_result.all():
-            file_ids.extend(await get_all_file_ids(child_id))
-
-        return file_ids
-
-    await get_all_file_ids(folder_id)
-
-    # Delete folder (cascade will handle files and subfolders)
+    # The folder row itself goes; folders have no trash of their own. Its files
+    # were detached above, so the CASCADE has nothing left to take.
     await db.delete(folder)
     await db.commit()
 
     return {"status": "success", "message": "Folder deleted"}
+
+
+async def _trash_folder_contents(db: AsyncSession, folder_id: int) -> int:
+    """Send every file in a folder tree to the trash. Returns how many.
+
+    Depth first, and it must run BEFORE the folder row is deleted:
+    ``library_files.folder_id`` is ``ON DELETE CASCADE``, so a file trashed
+    while still attached would be deleted along with its folder and the trip to
+    the trash would be theatre. ``trash_or_purge`` detaches each one.
+
+    Does not commit -- the caller owns the transaction, and a folder delete has
+    to be one.
+    """
+    trashed = 0
+
+    children = (await db.execute(select(LibraryFolder.id).where(LibraryFolder.parent_id == folder_id))).all()
+    for (child_id,) in children:
+        trashed += await _trash_folder_contents(db, child_id)
+
+    files = (await db.execute(LibraryFile.active().where(LibraryFile.folder_id == folder_id))).scalars().all()
+    for file in files:
+        await library_trash_service.trash_or_purge(db, file, detach_folder=True)
+        trashed += 1
+
+    return trashed
 
 
 # ============ M2M project unlink (m044) ============
@@ -4716,29 +4710,14 @@ async def delete_file(
             },
         )
 
-    if file.is_external:
-        # External files bypass the trash — just drop the DB row + our thumbnail
-        # + clean up dependents. The on-disk file is outside BamDude's control.
-        try:
-            abs_thumb_path = to_absolute_path(file.thumbnail_path)
-            if abs_thumb_path and abs_thumb_path.exists():
-                abs_thumb_path.unlink()
-        except OSError as e:
-            logger.warning("Failed to delete thumbnail from disk: %s", e)
-        await db.execute(
-            update(PrintArchive).where(PrintArchive.library_file_id == file.id).values(library_file_id=None)
-        )
-        for qi in queue_items:
-            await db.delete(qi)
-        await db.delete(file)
-        await db.commit()
-        return {"status": "success", "message": "File deleted", "trashed": False}
-
-    # Managed file: soft-delete. Bytes + thumbnail + queue refs stay; the
-    # sweeper cleans up after the retention window, restore reverses this.
-    file.deleted_at = datetime.now(timezone.utc)
+    # One definition of what deleting a file means, shared with the bulk and
+    # folder routes -- they used to disagree, and three of the four destroyed
+    # the file outright.
+    trashed = await library_trash_service.trash_or_purge(db, file)
     await db.commit()
-    return {"status": "success", "message": "File moved to trash", "trashed": True}
+    if trashed:
+        return {"status": "success", "message": "File moved to trash", "trashed": True}
+    return {"status": "success", "message": "File deleted", "trashed": False}
 
 
 # ============ File Content Endpoints ============
@@ -5087,7 +5066,9 @@ async def bulk_delete(
 
     # Delete files first
     for file_id in data.file_ids:
-        result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
+        # active(): a row already in the trash is not deleted again. Managing
+        # it is what the trash endpoints are for.
+        result = await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
         file = result.scalar_one_or_none()
         if file:
             # Ownership check
@@ -5107,25 +5088,7 @@ async def bulk_delete(
                 skipped_files += 1
                 continue
 
-            try:
-                if not file.is_external:
-                    abs_file_path = to_absolute_path(file.file_path)
-                    if abs_file_path and abs_file_path.exists():
-                        abs_file_path.unlink()
-                abs_thumb_path = to_absolute_path(file.thumbnail_path)
-                if abs_thumb_path and abs_thumb_path.exists():
-                    abs_thumb_path.unlink()
-            except OSError as e:
-                logger.warning("Failed to delete file from disk: %s", e)
-
-            # Archives keep the SET NULL behaviour; queue items cascade-delete.
-            await db.execute(
-                update(PrintArchive).where(PrintArchive.library_file_id == file.id).values(library_file_id=None)
-            )
-            for qi in queue_items:
-                await db.delete(qi)
-
-            await db.delete(file)
+            await library_trash_service.trash_or_purge(db, file)
             deleted_files += 1
 
     # Delete folders (cascade will handle contents)
@@ -5138,17 +5101,15 @@ async def bulk_delete(
         result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))
         folder = result.scalar_one_or_none()
         if folder:
-            # Count files that will be deleted
-            file_count_result = await db.execute(
-                select(func.count(LibraryFile.id)).where(LibraryFile.folder_id == folder_id)
-            )
-            deleted_files += file_count_result.scalar() or 0
+            # Same door, same answer as DELETE /folders/{id}: the files inside
+            # go to the trash, detached so the CASCADE cannot take them.
+            deleted_files += await _trash_folder_contents(db, folder_id)
             await db.delete(folder)
             deleted_folders += 1
 
     await db.commit()
 
-    return BulkDeleteResponse(deleted_files=deleted_files, deleted_folders=deleted_folders)
+    return BulkDeleteResponse(deleted_files=deleted_files, deleted_folders=deleted_folders, skipped_files=skipped_files)
 
 
 # ============ Stats Endpoint ============

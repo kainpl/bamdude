@@ -408,6 +408,10 @@ class BulkDeleteResponse(BaseModel):
 
     deleted_files: int
     deleted_folders: int
+    # What the caller asked for and did not get. Files skipped for ownership or
+    # because a queue item is mid-print were previously counted nowhere, so the
+    # interface reported them as deleted.
+    skipped_files: int = 0
 
 
 # ============ Queue Operations ============

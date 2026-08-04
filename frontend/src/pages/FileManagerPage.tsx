@@ -1922,13 +1922,24 @@ export function FileManagerPage() {
 
   const bulkDeleteMutation = useMutation({
     mutationFn: (fileIds: number[]) => api.bulkDeleteLibrary(fileIds, []),
-    onSuccess: (_, fileIds) => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
       queryClient.invalidateQueries({ queryKey: ['library-stats'] });
       queryClient.invalidateQueries({ queryKey: ['library-trash'] });
       queryClient.invalidateQueries({ queryKey: ['library-trash-count'] });
-      showToast(t('fileManager.toast.filesDeleted', { count: fileIds.length }), 'success');
+      // What happened, not what was asked for. A file whose queue item is
+      // mid-print is skipped by the backend, and counting the request reported
+      // it as deleted.
+      showToast(
+        result.skipped_files
+          ? t('fileManager.toast.filesDeletedWithSkipped', {
+              count: result.deleted_files,
+              skipped: result.skipped_files,
+            })
+          : t('fileManager.toast.filesDeleted', { count: result.deleted_files }),
+        'success',
+      );
       setSelectedFiles([]);
       setDeleteConfirm(null);
     },
