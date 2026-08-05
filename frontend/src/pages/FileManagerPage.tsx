@@ -1744,6 +1744,33 @@ export function FileManagerPage() {
     );
   }, []);
 
+  // Is anything narrowing the library right now? Five independent filters, two
+  // of which are easy to forget: the computed-tag chip row survives reloads in
+  // localStorage, and the user-tag filter is applied SERVER-side, so it empties
+  // the listing itself rather than the client-side view of it.
+  const anyFilterActive =
+    searchQuery.trim() !== '' ||
+    filterType !== 'all' ||
+    unprintedOnly ||
+    filterTags.length > 0 ||
+    filterUsername.trim() !== '' ||
+    selectedTagIds.length > 0;
+
+  /**
+   * One definition of what "clear filters" means, because the button used to
+   * carry its own partial one inline — search and type only — and quietly left
+   * three filters running. `filterTags` needs no localStorage handling here:
+   * its effect writes on every change, so the persisted copy follows the state.
+   */
+  const clearAllFilters = useCallback(() => {
+    setSearchQuery('');
+    setFilterType('all');
+    setUnprintedOnly(false);
+    setFilterTags([]);
+    setFilterUsername('');
+    setSelectedTagIds([]);
+  }, []);
+
   const allFilesRecursive = settings?.library_all_files_recursive ?? false;
   // #1268: when a folder is selected and the user has typed a search query,
   // ask the server to expand the result to every descendant folder so the
@@ -2736,7 +2763,7 @@ export function FileManagerPage() {
               )}
 
               {/* Results count */}
-              {(searchQuery || filterType !== 'all' || filterUsername || unprintedOnly) && (
+              {anyFilterActive && (
                 <span className="h-9 flex items-center text-sm text-bambu-gray hidden sm:inline-flex">
                   {t('fileManager.resultsCount', { showing: filteredAndSortedFiles.length, total: files.length })}
                 </span>
@@ -2999,7 +3026,13 @@ export function FileManagerPage() {
                 <p className="text-sm text-bambu-gray">{t('fileManager.loadingFiles')}</p>
               </div>
             </div>
-          ) : files?.length === 0 ? (
+          ) : /* An EMPTY LISTING is not the same as an empty library. The
+                 user-tag filter is applied server-side, so a filter that
+                 matches nothing comes back as zero rows — and this branch used
+                 to answer that with "No files yet" and an Upload button, which
+                 is both wrong and a dead end: the reset lives in the branch
+                 below, so the only way out was to know about the tag pill. */
+          files?.length === 0 && !anyFilterActive ? (
             <div className="flex-1 flex flex-col items-center justify-center">
               <div className="p-4 bg-bambu-dark rounded-2xl mb-4">
                 <FileBox className="w-12 h-12 text-bambu-gray/50" />
@@ -3036,7 +3069,7 @@ export function FileManagerPage() {
               <p className="text-bambu-gray text-center max-w-md mb-6">
                 {t('fileManager.noMatchingFilesDescription')}
               </p>
-              <Button variant="secondary" onClick={() => { setSearchQuery(''); setFilterType('all'); setUnprintedOnly(false); }}>
+              <Button variant="secondary" onClick={clearAllFilters}>
                 {t('fileManager.clearFilters')}
               </Button>
             </div>
