@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, Select, String, Text, func, select
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, Select, String, Text, func, select
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -194,10 +194,32 @@ class LibraryTag(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(64), nullable=False)
-    name_key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    # Uniqueness is COMPOSITE with ``is_system`` — see __table_args__. A plain
+    # unique name_key would let a pre-existing user tag named after a system one
+    # block the m128 seed, leaving only bad options: rename somebody's data, or
+    # prefix every system row forever.
+    name_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    # System tags are handed out by the system: computed from the file, never
+    # editable, never detachable. ``code`` is the stable identifier
+    # (``3mf``, ``sliced``, …) that ``compute_file_tags`` emits; NULL on user
+    # tags. The DISPLAY name stays in i18n — storing the rendered string here
+    # would make system tags untranslatable — so ``name`` holds the English
+    # label as a fallback for non-UI consumers (API clients, the Telegram bot).
+    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    code: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
     files: Mapped[list["LibraryFile"]] = relationship(secondary="library_file_tags", back_populates="tags")
+
+    __table_args__ = (
+        # Indexes rather than UniqueConstraints: an index can be added to an
+        # existing SQLite table with plain DDL, a table constraint cannot.
+        Index("ix_library_tags_name_key_is_system", "name_key", "is_system", unique=True),
+        # Nullable is fine — SQLite and PostgreSQL both treat NULLs as distinct
+        # in a unique index, so every user tag carries NULL while no two system
+        # rows can share a code.
+        Index("ix_library_tags_code", "code", unique=True),
+    )
 
 
 class LibraryFileTag(Base):

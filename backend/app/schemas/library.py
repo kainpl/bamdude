@@ -250,6 +250,10 @@ class TagResponse(BaseModel):
     id: int
     name: str
     file_count: int
+    # Handed out by the system, not editable. ``code`` is the stable identifier
+    # the frontend styles and translates by; NULL on user tags.
+    is_system: bool = False
+    code: str | None = None
     created_at: datetime
     updated_at: datetime
 

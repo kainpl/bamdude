@@ -117,6 +117,8 @@ async def list_tags(
             id=t.id,
             name=t.name,
             file_count=int(count),
+            is_system=t.is_system,
+            code=t.code,
             created_at=t.created_at,
             updated_at=t.updated_at,
         )
@@ -144,7 +146,15 @@ async def create_tag(
         await db.rollback()
         raise HTTPException(status_code=409, detail="Tag with this name already exists") from None
     await db.refresh(tag)
-    return TagResponse(id=tag.id, name=tag.name, file_count=0, created_at=tag.created_at, updated_at=tag.updated_at)
+    return TagResponse(
+        id=tag.id,
+        name=tag.name,
+        file_count=0,
+        is_system=tag.is_system,
+        code=tag.code,
+        created_at=tag.created_at,
+        updated_at=tag.updated_at,
+    )
 
 
 @router.patch("/{tag_id}", response_model=TagResponse)
@@ -185,6 +195,8 @@ async def update_tag(
         id=tag.id,
         name=tag.name,
         file_count=int(file_count or 0),
+        is_system=tag.is_system,
+        code=tag.code,
         created_at=tag.created_at,
         updated_at=tag.updated_at,
     )
