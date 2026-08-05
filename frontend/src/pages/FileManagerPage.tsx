@@ -2878,12 +2878,80 @@ export function FileManagerPage() {
               </span>
             )}
 
-            {/* The computed chip row that used to live here is gone. It asked
-                the same question as the tag pill row below — "show me files
-                marked X" — but answered it with a client-side predicate over
-                the loaded page, its own state and its own localStorage key.
-                Since m128 both kinds of tag are rows in one catalog, so one
-                row and one server-side filter serve both. */}
+            {/* THE tag filter row — both kinds, one mechanism. System pills
+                first in their own colours, then a divider, then the user's own
+                in green. Every one of them toggles the same `selectedTagIds`,
+                which the server AND-filters through `tag_ids`; there is no
+                client-side tag predicate any more. Active = filled with an X. */}
+            {(systemTagPills.length > 0 || userTagPills.length > 0) && (
+              // A row OF the filter panel, like the chip row it replaces —
+              // same top border as the selection row below it. A tag filter
+              // floating under the panel is a filter outside the filters.
+              <div className="flex items-center gap-1.5 flex-wrap pt-2 border-t border-bambu-dark-tertiary">
+                <span className="text-xs text-bambu-gray mr-1 inline-flex items-center gap-1">
+                  <TagIcon className="w-3.5 h-3.5" />
+                  {t('fileManager.tags.filterLabel')}
+                </span>
+                {systemTagPills.map((tag) => {
+                  const active = selectedTagIds.includes(tag.id);
+                  const style = tag.code ? getTagStyle(tag.code) : null;
+                  // Second argument matters: a code this frontend has no
+                  // translation for falls back to the backend's English name
+                  // instead of rendering the key at the user.
+                  const label = tag.code ? t(`library.tags.${tag.code}`, tag.name) : tag.name;
+                  return (
+                    <button
+                      key={tag.id}
+                      type="button"
+                      onClick={() => toggleTagFilter(tag.id)}
+                      className={`text-xs px-2 py-0.5 rounded font-medium transition-colors inline-flex items-center gap-1 ${
+                        active
+                          ? `${style?.bg ?? 'bg-bambu-gray/70'} ${style?.text ?? 'text-white'}`
+                          : 'bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray'
+                      }`}
+                    >
+                      {label}
+                      {active && <X className="w-3 h-3" />}
+                    </button>
+                  );
+                })}
+                {systemTagPills.length > 0 && userTagPills.length > 0 && (
+                  // The two groups answer differently shaped questions — what a
+                  // file IS versus what somebody called it — and without a break
+                  // they read as one undifferentiated wall.
+                  <span aria-hidden className="text-bambu-gray/30 px-1 select-none">
+                    |
+                  </span>
+                )}
+                {userTagPills.map((tag) => {
+                  const active = selectedTagIds.includes(tag.id);
+                  return (
+                    <button
+                      key={tag.id}
+                      type="button"
+                      onClick={() => toggleTagFilter(tag.id)}
+                      className={`text-xs px-2 py-0.5 rounded-full font-medium transition-colors inline-flex items-center gap-1 ${
+                        active
+                          ? 'bg-bambu-green text-white'
+                          : 'bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-green/60'
+                      }`}
+                    >
+                      {tag.name}
+                      {active && <X className="w-3 h-3" />}
+                    </button>
+                  );
+                })}
+                {selectedTagIds.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTagIds([])}
+                    className="text-xs px-2 py-0.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
+                  >
+                    {t('fileManager.tags.clearAll')}
+                  </button>
+                )}
+              </div>
+            )}
 
             {/* Selection row - rendered inside the same panel as a second row. */}
             {filteredAndSortedFiles.length > 0 && (
@@ -2992,78 +3060,6 @@ export function FileManagerPage() {
               )}
               </div>
             )}
-            </div>
-          )}
-
-          {/* THE tag filter row — both kinds, one mechanism. System pills
-              first in their own colours, then a divider, then the user's own
-              in green. Every one of them toggles the same `selectedTagIds`,
-              which the server AND-filters through `tag_ids`; there is no
-              client-side tag predicate any more. Active = filled with an X. */}
-          {(systemTagPills.length > 0 || userTagPills.length > 0) && (
-            <div className="flex items-center gap-1.5 flex-wrap mb-3">
-              <span className="text-xs text-bambu-gray mr-1 inline-flex items-center gap-1">
-                <TagIcon className="w-3.5 h-3.5" />
-                {t('fileManager.tags.filterLabel')}
-              </span>
-              {systemTagPills.map((tag) => {
-                const active = selectedTagIds.includes(tag.id);
-                const style = tag.code ? getTagStyle(tag.code) : null;
-                // Second argument matters: a code this frontend has no
-                // translation for falls back to the backend's English name
-                // instead of rendering the key at the user.
-                const label = tag.code ? t(`library.tags.${tag.code}`, tag.name) : tag.name;
-                return (
-                  <button
-                    key={tag.id}
-                    type="button"
-                    onClick={() => toggleTagFilter(tag.id)}
-                    className={`text-xs px-2 py-0.5 rounded font-medium transition-colors inline-flex items-center gap-1 ${
-                      active
-                        ? `${style?.bg ?? 'bg-bambu-gray/70'} ${style?.text ?? 'text-white'}`
-                        : 'bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray'
-                    }`}
-                  >
-                    {label}
-                    {active && <X className="w-3 h-3" />}
-                  </button>
-                );
-              })}
-              {systemTagPills.length > 0 && userTagPills.length > 0 && (
-                // The two groups answer differently shaped questions — what a
-                // file IS versus what somebody called it — and without a break
-                // they read as one undifferentiated wall.
-                <span aria-hidden className="text-bambu-gray/30 px-1 select-none">
-                  |
-                </span>
-              )}
-              {userTagPills.map((tag) => {
-                const active = selectedTagIds.includes(tag.id);
-                return (
-                  <button
-                    key={tag.id}
-                    type="button"
-                    onClick={() => toggleTagFilter(tag.id)}
-                    className={`text-xs px-2 py-0.5 rounded-full font-medium transition-colors inline-flex items-center gap-1 ${
-                      active
-                        ? 'bg-bambu-green text-white'
-                        : 'bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-green/60'
-                    }`}
-                  >
-                    {tag.name}
-                    {active && <X className="w-3 h-3" />}
-                  </button>
-                );
-              })}
-              {selectedTagIds.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setSelectedTagIds([])}
-                  className="text-xs px-2 py-0.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
-                >
-                  {t('fileManager.tags.clearAll')}
-                </button>
-              )}
             </div>
           )}
 

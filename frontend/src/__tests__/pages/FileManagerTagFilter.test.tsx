@@ -78,26 +78,33 @@ describe('the unified tag filter row', () => {
     );
   });
 
+  /**
+   * Re-queried on every call, never captured once. The row lives inside the
+   * filter panel, which re-renders on each refetch — a held reference goes
+   * stale and clicks on it land on a detached node, silently doing nothing.
+   */
   const tagRow = async () => (await screen.findByText('Filtering by:')).parentElement!;
+  const clickPill = async (name: string) =>
+    userEvent.click(within(await tagRow()).getByRole('button', { name }));
 
   it('filters by a system tag through the server', async () => {
     // This is the whole point of the merge. The same question used to be a
     // client-side predicate over the loaded page, which is why it needed its
     // own state, its own localStorage key and its own clear button.
     render(<FileManagerPage />);
-    const row = await tagRow();
+    await tagRow();
 
-    await userEvent.click(within(row).getByRole('button', { name: '3MF' }));
+    await clickPill('3MF');
 
     await waitFor(() => expect(tagIdsSeen.at(-1)).toEqual(['1']));
   });
 
   it('combines a system tag with a user tag', async () => {
     render(<FileManagerPage />);
-    const row = await tagRow();
+    await tagRow();
 
-    await userEvent.click(within(row).getByRole('button', { name: '3MF' }));
-    await userEvent.click(within(row).getByRole('button', { name: 'kid-safe' }));
+    await clickPill('3MF');
+    await clickPill('kid-safe');
 
     await waitFor(() => expect(tagIdsSeen.at(-1)?.sort()).toEqual(['1', '3']));
   });
