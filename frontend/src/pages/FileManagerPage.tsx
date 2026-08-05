@@ -3464,7 +3464,6 @@ export function FileManagerPage() {
       <LibraryTagsModal
         open={showTagsModal}
         onClose={() => setShowTagsModal(false)}
-        onPickTag={(tagId) => { if (!selectedTagIds.includes(tagId)) toggleTagFilter(tagId); }}
       />
       <BulkTagsPickerModal
         open={showBulkTagsModal}
