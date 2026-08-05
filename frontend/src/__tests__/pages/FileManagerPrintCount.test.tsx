@@ -166,12 +166,23 @@ describe('library print count', () => {
     expect(await screen.findByText('Benchy')).toBeInTheDocument();
   });
 
-  it('shows the chip in list view too', async () => {
+  it('shows the chip in list view too, under the file name', async () => {
     // The tests above all render the grid, so without this the second
     // insertion site is unverified.
+    //
+    // The position is asserted, not just the presence: these counts used to sit
+    // in the tag badge row to the right, and "it renders somewhere" passes
+    // either way. A tag says what KIND of file this is and the toolbar filters
+    // on it; a count describes this one file. They are not the same kind of
+    // fact and do not belong in the same row.
     localStorage.setItem('library-view-mode', 'list');
     render(<FileManagerPage />);
 
-    expect(await screen.findByRole('button', { name: 'Printed 4 times' })).toBeInTheDocument();
+    // Accessible name is the button's own text; the title attribute only fills
+    // in when there is no content.
+    const name = await screen.findByRole('button', { name: 'Benchy' });
+    const chip = screen.getByRole('button', { name: 'Printed 4 times' });
+
+    expect(name.parentElement).toContainElement(chip);
   });
 });

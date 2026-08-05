@@ -3174,6 +3174,41 @@ export function FileManagerPage() {
                         >
                           {file.print_name || file.filename}
                         </button>
+                        {/* Per-file facts sit UNDER the name, the way the
+                            archive list carries its small print — they describe
+                            this one file, whereas the badge row to the right is
+                            the shared tag vocabulary. Keeping them there put
+                            two different kinds of thing in one row. */}
+                        {((file.object_count != null && file.object_count > 0) || file.print_count > 0) && (
+                          <div className="flex items-center gap-2 mt-0.5">
+                            {file.object_count != null && file.object_count > 0 && (
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); setPreviewFileId(file.id); }}
+                                className="flex items-center gap-1 text-[11px] text-bambu-gray hover:text-bambu-green transition-colors"
+                                title={t('library.plateObjects.open')}
+                              >
+                                <Box className="w-3 h-3" />
+                                {file.object_count}
+                                {file.skip_objects_supported && (
+                                  <SkipObjectsIcon className="w-3 h-3 text-bambu-green/70" />
+                                )}
+                              </button>
+                            )}
+                            {file.print_count > 0 && (
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); handleOpenArchives(file); }}
+                                aria-label={t('fileManager.printedTimes', { count: file.print_count })}
+                                title={t('fileManager.printedTimes', { count: file.print_count })}
+                                className="flex items-center gap-1 text-[11px] text-bambu-gray hover:text-bambu-green transition-colors"
+                              >
+                                <History className="w-3 h-3" />
+                                {file.print_count}
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
                     {/* Uploaded By - only show when auth is enabled */}
@@ -3194,42 +3229,17 @@ export function FileManagerPage() {
                         left-to-right (the row already scans LTR with
                         the rest of the table columns, so the format
                         chip leads from the left here, opposite of the
-                        grid card's right-anchored layout). */}
+                        grid card's right-anchored layout).
+
+                        Tags ONLY. The object and print counts used to sit here
+                        too, on the argument that this was "where per-file facts
+                        live" — but that conflated two things: a tag says what
+                        KIND of file this is (shared vocabulary, and the chip row
+                        above filters on it), while a count describes this one
+                        file and nothing else. They now read under the name, the
+                        way the archive list carries its small print. */}
                     <div className="flex items-center gap-1 flex-wrap">
                       <FileTagBadges tags={file.file_tags} compact direction="ltr" />
-                      {/* Object count + preview, mirroring the grid card. The
-                          list has no object column of its own, and adding one
-                          would mean re-cutting the grid template for every
-                          row — the badge row is already where per-file facts
-                          live. */}
-                      {file.object_count != null && file.object_count > 0 && (
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); setPreviewFileId(file.id); }}
-                          className="flex items-center gap-1 text-[11px] text-bambu-gray hover:text-bambu-green transition-colors"
-                          title={t('library.plateObjects.open')}
-                        >
-                          <Box className="w-3 h-3" />
-                          {file.object_count}
-                          {file.skip_objects_supported && (
-                            <SkipObjectsIcon className="w-3 h-3 text-bambu-green/70" />
-                          )}
-                        </button>
-                      )}
-                      {/* Print count — same chip as the grid card, in the row
-                          where per-file facts already live. */}
-                      {file.print_count > 0 && (
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); handleOpenArchives(file); }}
-                          aria-label={t('fileManager.printedTimes', { count: file.print_count })}
-                          title={t('fileManager.printedTimes', { count: file.print_count })}
-                          className="flex items-center gap-1 text-[11px] text-bambu-gray hover:text-bambu-green transition-colors"
-                        >
-                          <History className="w-3 h-3" />
-                          {file.print_count}
-                        </button>
-                      )}
                       {/* #1268 — user-authored tag chips, inline in the same
                           cell (NOT a new subgrid column). Green pills, click
                           toggles the cross-cutting filter. */}
