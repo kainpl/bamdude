@@ -1,16 +1,19 @@
-"""Creating a print-queue item — one definition, two callers.
+"""Creating a print-queue item — one definition.
 
-The single-item route (``POST /print-queue/``) and the file manager's bulk add
-both need every gate performed here: the queue must exist and be unpaused, the
-caller must own what they are queueing, the filename must survive FAT32, and a
-G-code 3MF sliced for one printer model must not be queued to a printer that
-cannot run it (#2578).
+Every gate lives here: the queue must exist and be unpaused, the caller must own
+what they are queueing, the filename must survive FAT32, the file must actually
+be sliced, and a G-code 3MF sliced for one printer model must not be queued to a
+printer that cannot run it (#2578).
 
-A bulk path that re-implemented any of it would drift from this one, and the
-drift would surface as prints that fail at dispatch rather than as an error
-somebody sees. The bulk caller converts these ``HTTPException``s into per-item
-errors; that is why they stay exceptions rather than becoming a result type —
-otherwise the single route would have to translate them back.
+Extracted when a second, bulk route needed the same gates. That route is gone —
+the file manager now opens the scheduling dialog once per file, so the only
+caller is ``POST /queue/`` (the router's prefix is ``/queue``; the module is
+named ``print_queue`` and the path is not). The extraction stays anyway: it is
+where the gates are, and a caller that re-implemented any of them would drift,
+with the drift surfacing as prints that fail at dispatch rather than as an error
+somebody sees.
+
+``HTTPException`` is the raised form because the route re-raises it unchanged.
 """
 
 import json
