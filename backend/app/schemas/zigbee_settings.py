@@ -37,20 +37,3 @@ class TargetState(BaseModel):
 
     state: str
     verification: str
-
-
-class DeviceSettingsResponse(BaseModel):
-    ieee: str
-    kind: str
-    name: str | None
-    adopted: bool
-    # Which fields may be changed, per target. A relay has only one of them,
-    # and saying so here keeps that peculiarity out of every consumer.
-    editable: dict[str, list[str]]
-    desired: dict[str, TargetSettings]
-    applied: dict[str, TargetState]
-    poll_seconds: int
-    # False for a device that sleeps between reports. Polling one is not merely
-    # useless: it is timeouts on a shared radio and a flattened battery.
-    poll_supported: bool
-    stale_after_seconds: int

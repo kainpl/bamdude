@@ -257,12 +257,6 @@ def _transform_virtual_printer(row: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
-def _transform_project_bom(row: dict[str, Any]) -> dict[str, Any]:
-    """Rename columns: quantity_printed -> quantity_acquired, notes -> remarks."""
-    # Renames are handled by the rename parameter, so this is a no-op safety net.
-    return row
-
-
 def _make_queue_transform(printer_queue_map: dict[int, int]) -> Callable:
     """Return a transform that sets queue_id from the printer_id."""
 

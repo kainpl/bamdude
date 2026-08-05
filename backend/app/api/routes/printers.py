@@ -1051,22 +1051,6 @@ async def disconnect_printer(
     return {"connected": False}
 
 
-@router.post("/test")
-async def test_printer_connection(
-    ip_address: str,
-    serial_number: str,
-    access_code: str,
-    _=RequirePermission(Permission.PRINTERS_CREATE),
-):
-    """Test connection to a printer without saving."""
-    result = await printer_manager.test_connection(
-        ip_address=ip_address,
-        serial_number=serial_number,
-        access_code=access_code,
-    )
-    return result
-
-
 @router.post("/diagnostic", response_model=PrinterDiagnosticResult)
 async def diagnose_connection(
     req: DiagnosticRequest,
@@ -2153,77 +2137,6 @@ async def stop_drying(
 # ============================================
 # Print Options (AI Detection) Endpoints
 # ============================================
-
-
-@router.post("/{printer_id}/print-options")
-async def set_print_option(
-    printer_id: int,
-    module_name: str,
-    enabled: bool,
-    print_halt: bool = True,
-    sensitivity: str = "medium",
-    _=RequirePermission(Permission.PRINTERS_CONTROL),
-    db: AsyncSession = Depends(get_db),
-):
-    """Set an AI detection / print option on the printer.
-
-    Valid module_name values:
-    - spaghetti_detector: Spaghetti detection
-    - first_layer_inspector: First layer inspection
-    - printing_monitor: AI print quality monitoring
-    - buildplate_marker_detector: Build plate marker detection
-    - allow_skip_parts: Allow skipping failed parts
-    """
-    result = await db.execute(select(Printer).where(Printer.id == printer_id))
-    printer = result.scalar_one_or_none()
-    if not printer:
-        raise HTTPException(404, "Printer not found")
-
-    # re-Connect MQTT if stalled
-    if not await printer_manager.ensure_fresh_connection_for_printer(printer):
-        raise HTTPException(500, "Can`t re-connect printer MQTT")
-
-    client = printer_manager.get_client(printer_id)
-    if not client or not client.state.connected:
-        raise HTTPException(400, "Printer not connected")
-
-    # Validate module_name
-    valid_modules = [
-        "spaghetti_detector",
-        "first_layer_inspector",
-        "printing_monitor",
-        "buildplate_marker_detector",
-        "allow_skip_parts",
-        "pileup_detector",
-        "clump_detector",
-        "airprint_detector",
-        "auto_recovery_step_loss",
-    ]
-    if module_name not in valid_modules:
-        raise HTTPException(400, f"Invalid module_name. Must be one of: {valid_modules}")
-
-    # Validate sensitivity
-    valid_sensitivities = ["low", "medium", "high", "never_halt"]
-    if sensitivity not in valid_sensitivities:
-        raise HTTPException(400, f"Invalid sensitivity. Must be one of: {valid_sensitivities}")
-
-    success = client.set_xcam_option(
-        module_name=module_name,
-        enabled=enabled,
-        print_halt=print_halt,
-        sensitivity=sensitivity,
-    )
-
-    if not success:
-        raise HTTPException(500, "Failed to send command to printer")
-
-    return {
-        "success": True,
-        "module_name": module_name,
-        "enabled": enabled,
-        "print_halt": print_halt,
-        "sensitivity": sensitivity,
-    }
 
 
 # ============================================

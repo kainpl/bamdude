@@ -281,18 +281,6 @@ class ProjectPageResponse(BaseModel):
     thumbnails: list[ProjectPageImage] = []
 
 
-class ProjectPageUpdate(BaseModel):
-    """Update project page data in 3MF file."""
-
-    title: str | None = None
-    description: str | None = None
-    designer: str | None = None
-    license: str | None = None
-    copyright: str | None = None
-    profile_title: str | None = None
-    profile_description: str | None = None
-
-
 class ReprintRequest(BaseModel):
     """Request body for reprinting an archive."""
 

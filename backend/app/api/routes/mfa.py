@@ -1637,43 +1637,6 @@ async def delete_oidc_provider_icon(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/oidc/providers/{provider_id}/icon/refresh", response_model=OIDCProviderResponse)
-async def refresh_oidc_provider_icon(
-    provider_id: int,
-    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
-    db: AsyncSession = Depends(get_db),
-) -> OIDCProviderResponse:
-    """Refetch the icon from the stored ``icon_url`` (admin only).
-
-    Used when:
-
-    - The IdP changed its icon and the admin wants BamDude to pick up
-      the new bytes.
-    - An upgrade left the provider with an ``icon_url`` but no cached
-      bytes (covered automatically by ``update_oidc_provider`` too, but
-      this gives the UI an explicit "Refresh" button).
-
-    Failure to refetch returns 400 *before* commit, so the previously
-    cached bytes survive intact.
-    """
-    result = await db.execute(select(OIDCProvider).where(OIDCProvider.id == provider_id))
-    provider = result.scalar_one_or_none()
-    if provider is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
-    if not provider.icon_url:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Provider has no icon_url to refresh",
-        )
-    icon_data, icon_content_type, icon_etag = await _fetch_icon_or_400(provider.icon_url)
-    provider.icon_data = icon_data
-    provider.icon_content_type = icon_content_type
-    provider.icon_etag = icon_etag
-    await db.commit()
-    await db.refresh(provider)
-    return OIDCProviderResponse.model_validate(provider)
-
-
 @router.delete("/oidc/providers/{provider_id}")
 async def delete_oidc_provider(
     provider_id: int,

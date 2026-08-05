@@ -4,7 +4,6 @@ import logging
 import zipfile
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
-from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
@@ -1540,89 +1539,6 @@ async def retry_archive_download(
     }
 
 
-@router.post("/{archive_id}/rescan", response_model=ArchiveResponse)
-async def rescan_archive(
-    archive_id: int,
-    db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.ARCHIVES_UPDATE_ALL),
-):
-    """Rescan the 3MF file and update metadata."""
-    from backend.app.services.archive import ThreeMFParser
-
-    result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
-    archive = result.scalar_one_or_none()
-    if not archive:
-        raise HTTPException(404, "Archive not found")
-
-    file_path = settings.base_dir / archive.file_path
-    if not file_path.is_file():
-        raise HTTPException(404, "Archive file not found")
-
-    # Parse the 3MF file
-    parser = ThreeMFParser(file_path)
-    metadata = parser.parse()
-
-    # Update fields from metadata
-    if metadata.get("filament_type"):
-        archive.filament_type = metadata["filament_type"]
-    if metadata.get("filament_color"):
-        archive.filament_color = metadata["filament_color"]
-    if metadata.get("print_time_seconds"):
-        archive.print_time_seconds = metadata["print_time_seconds"]
-    if metadata.get("filament_used_grams"):
-        archive.filament_used_grams = metadata["filament_used_grams"]
-    if metadata.get("layer_height"):
-        archive.layer_height = metadata["layer_height"]
-    if metadata.get("nozzle_diameter"):
-        archive.nozzle_diameter = metadata["nozzle_diameter"]
-    if metadata.get("bed_temperature"):
-        archive.bed_temperature = metadata["bed_temperature"]
-    if metadata.get("bed_type"):
-        archive.bed_type = metadata["bed_type"]
-    if metadata.get("nozzle_temperature"):
-        archive.nozzle_temperature = metadata["nozzle_temperature"]
-    if metadata.get("makerworld_url"):
-        archive.makerworld_url = metadata["makerworld_url"]
-    if metadata.get("designer"):
-        archive.designer = metadata["designer"]
-
-    # Calculate cost: prefer spool usage history, fallback to default setting.
-    # When spool-based costs exist but don't cover every filament gram used
-    # (#1344), top up the untracked weight at the global default rate so the
-    # displayed cost still reflects the whole print.
-
-    if archive.filament_used_grams and archive.filament_type:
-        default_cost_per_kg = await default_rate_per_kg(db)
-        usage_result = await db.execute(
-            select(
-                func.sum(SpoolUsageHistory.cost),
-                func.sum(SpoolUsageHistory.weight_used),
-            ).where(SpoolUsageHistory.archive_id == archive.id)
-        )
-        usage_cost_row = usage_result.one()
-        usage_cost = usage_cost_row[0]
-        tracked_grams = float(usage_cost_row[1] or 0)
-        if usage_cost is not None and usage_cost > 0:
-            total_cost = float(usage_cost)
-            untracked_grams = max(0.0, archive.filament_used_grams - tracked_grams)
-            if untracked_grams > 0 and default_cost_per_kg > 0:
-                total_cost += (untracked_grams / 1000.0) * default_cost_per_kg
-            archive.cost = float(Decimal(str(total_cost)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-        elif default_cost_per_kg > 0:
-            archive.cost = float(
-                Decimal(str((archive.filament_used_grams / 1000) * default_cost_per_kg)).quantize(
-                    Decimal("0.01"), rounding=ROUND_HALF_UP
-                )
-            )
-        else:
-            # No rate set: say nothing rather than 0.00, which reads as free.
-            archive.cost = None
-
-    await db.commit()
-    await db.refresh(archive)
-    return archive
-
-
 @router.post("/recalculate-costs")
 async def recalculate_all_costs(
     db: AsyncSession = Depends(get_db),
@@ -1685,56 +1601,6 @@ async def recalculate_all_costs(
 
     await db.commit()
     return {"message": f"Recalculated costs for {updated} archives", "updated": updated}
-
-
-@router.post("/rescan-all")
-async def rescan_all_archives(
-    db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.ARCHIVES_UPDATE_ALL),
-):
-    """Rescan all archives and update their metadata."""
-    from backend.app.services.archive import ThreeMFParser
-
-    result = await db.execute(select(PrintArchive))
-    archives = list(result.scalars().all())
-
-    updated = 0
-    errors = []
-
-    for archive in archives:
-        try:
-            file_path = settings.base_dir / archive.file_path
-            if not file_path.is_file():
-                errors.append({"id": archive.id, "error": "File not found"})
-                continue
-
-            parser = ThreeMFParser(file_path)
-            metadata = parser.parse()
-
-            if metadata.get("filament_type"):
-                archive.filament_type = metadata["filament_type"]
-            if metadata.get("filament_color"):
-                archive.filament_color = metadata["filament_color"]
-            if metadata.get("print_time_seconds"):
-                archive.print_time_seconds = metadata["print_time_seconds"]
-            if metadata.get("filament_used_grams"):
-                archive.filament_used_grams = metadata["filament_used_grams"]
-            if metadata.get("layer_height"):
-                archive.layer_height = metadata["layer_height"]
-            if metadata.get("nozzle_diameter"):
-                archive.nozzle_diameter = metadata["nozzle_diameter"]
-            if metadata.get("makerworld_url"):
-                archive.makerworld_url = metadata["makerworld_url"]
-            if metadata.get("designer"):
-                archive.designer = metadata["designer"]
-
-            updated += 1
-        except Exception as e:
-            logger.exception("Failed to rescan archive %s: %s", archive.id, e)
-            errors.append({"id": archive.id, "error": "Failed to parse 3MF file"})
-
-    await db.commit()
-    return {"updated": updated, "errors": errors}
 
 
 @router.get("/{archive_id}/duplicates")
@@ -3947,96 +3813,6 @@ async def download_source_3mf_for_slicer_with_token(
         filename=filename if filename.endswith(".3mf") else f"{filename}.3mf",
         media_type="application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
     )
-
-
-@router.post("/upload-source")
-async def upload_source_3mf_by_name(
-    file: UploadFile = File(...),
-    print_name: str = Query(None, description="Match archive by print name"),
-    db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.ARCHIVES_UPDATE_ALL),
-):
-    """Upload source 3MF and match to archive by print name.
-
-    This endpoint is designed for slicer post-processing scripts.
-    It finds the most recent archive matching the print name and attaches the source.
-    """
-    if not file.filename or not file.filename.endswith(".3mf"):
-        raise HTTPException(400, "File must be a .3mf file")
-
-    # Derive print name from filename if not provided
-    if not print_name:
-        # Remove .3mf extension and common suffixes
-        print_name = _safe_filename(file.filename).rsplit(".3mf", 1)[0]
-        # Remove _source suffix if present
-        if print_name.endswith("_source"):
-            print_name = print_name[:-7]
-
-    # Find matching archive - try exact match first, then fuzzy
-    result = await db.execute(
-        select(PrintArchive)
-        .where(PrintArchive.print_name == print_name)
-        .order_by(PrintArchive.created_at.desc())
-        .limit(1)
-    )
-    archive = result.scalar_one_or_none()
-
-    if not archive:
-        # Try matching filename without .gcode.3mf
-        result = await db.execute(
-            select(PrintArchive)
-            .where(PrintArchive.filename.like(f"{print_name}%"))
-            .order_by(PrintArchive.created_at.desc())
-            .limit(1)
-        )
-        archive = result.scalar_one_or_none()
-
-    if not archive:
-        # Try case-insensitive partial match on print_name
-        result = await db.execute(
-            select(PrintArchive)
-            .where(PrintArchive.print_name.ilike(f"%{print_name}%"))
-            .order_by(PrintArchive.created_at.desc())
-            .limit(1)
-        )
-        archive = result.scalar_one_or_none()
-
-    if not archive:
-        raise HTTPException(404, f"No archive found matching '{print_name}'")
-
-    # Save the source 3MF file - preserve original filename (sanitized).
-    # #1531: route through the helper so fallback archives (file_path="")
-    # don't 500 by resolving to a path outside the data volume.
-    source_filename = _safe_filename(file.filename)
-    source_path = _resolve_source_3mf_path(archive, source_filename)
-
-    # Delete old source file if exists
-    if archive.source_3mf_path:
-        old_source_path = settings.base_dir / archive.source_3mf_path
-        if old_source_path.exists():
-            old_source_path.unlink()
-
-    content = await file.read()
-    # #1401: same zip-header check as the other upload routes — the
-    # match-by-name endpoint is used by slicer post-processing scripts,
-    # so a misconfigured script is exactly how a bad 3MF would slip in.
-    from backend.app.api.routes.library import validate_print_file_upload
-
-    validate_print_file_upload(file.filename, content)
-    source_path.write_bytes(content)
-
-    # Update archive with source path
-    archive.source_3mf_path = str(source_path.relative_to(settings.base_dir))
-    await db.commit()
-    await db.refresh(archive)
-
-    return {
-        "status": "uploaded",
-        "archive_id": archive.id,
-        "archive_name": archive.print_name or archive.filename,
-        "source_3mf_path": archive.source_3mf_path,
-        "filename": source_filename,
-    }
 
 
 @router.delete("/{archive_id}/source")

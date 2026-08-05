@@ -1373,6 +1373,21 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     # create_task wrapper, #1648); the lifespan shutdown cancels any pending task.
     prev_connected = _printer_last_connected.get(printer_id)
     _printer_last_connected[printer_id] = state.connected
+
+    # The MQTT relay gets BOTH edges, unlike the notification above. An
+    # integrator subscribed to `.../online` is asking "is it reachable now",
+    # which only makes sense as a pair — and the reason there is no online
+    # notification (a print-failure report already covers the human case)
+    # says nothing about a machine consumer.
+    if prev_connected is not None and prev_connected != state.connected:
+        try:
+            relay_info = printer_manager.get_printer(printer_id)
+            if relay_info:
+                emit = mqtt_relay.on_printer_online if state.connected else mqtt_relay.on_printer_offline
+                await emit(printer_id, relay_info.name, relay_info.serial_number)
+        except Exception:
+            pass  # A relay failure must never break the status callback.
+
     if prev_connected is True and not state.connected:
         existing = _printer_offline_notify_tasks.get(printer_id)
         if existing is None or existing.done():

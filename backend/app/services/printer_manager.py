@@ -907,10 +907,6 @@ class PrinterManager:
         """Get the MQTT client for a printer."""
         return self._clients.get(printer_id)
 
-    def get_connected_at(self, printer_id: int) -> float | None:
-        """Get the unix timestamp of when the printer was last connected."""
-        return self._connected_at.get(printer_id)
-
     async def ensure_fresh_connection(self, printer_id: int) -> bool:
         """Reconnect if MQTT connection exceeded the printer's mqtt_connection_timeout.
 

@@ -133,17 +133,6 @@ class PlateDetector:
                 paths.append(path)
         return paths
 
-    def _get_next_reference_slot(self, printer_id: int) -> Path:
-        """Get the path for the next reference image slot (cycles through slots)."""
-        _get_calibration_dir().mkdir(parents=True, exist_ok=True)
-        # Find first empty slot, or use oldest (slot 0) and shift others
-        for i in range(self.MAX_REFERENCES):
-            path = _get_calibration_dir() / f"printer_{printer_id}_ref_{i}.jpg"
-            if not path.exists():
-                return path
-        # All slots full - return slot 0 (will be overwritten, but we rotate first)
-        return _get_calibration_dir() / f"printer_{printer_id}_ref_0.jpg"
-
     def _rotate_references(self, printer_id: int) -> None:
         """Rotate references: delete oldest (0), shift others down."""
         # Delete slot 0

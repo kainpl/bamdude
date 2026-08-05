@@ -41,11 +41,6 @@ def get_bot() -> Bot | None:
     return _bot
 
 
-def get_dispatcher() -> Dispatcher | None:
-    """Get the dispatcher instance."""
-    return _dispatcher
-
-
 async def _get_bot_token() -> str | None:
     """Read bot token from the first enabled Telegram notification provider."""
     from sqlalchemy import select

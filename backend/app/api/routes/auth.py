@@ -254,13 +254,6 @@ async def set_advanced_auth_enabled(db: AsyncSession, enabled: bool) -> None:
     await db.execute(stmt)
 
 
-async def is_setup_completed(db: AsyncSession) -> bool:
-    """Check if setup has been completed."""
-    result = await db.execute(select(Settings).where(Settings.key == "setup_completed"))
-    setting = result.scalar_one_or_none()
-    return setting and setting.value.lower() == "true"
-
-
 async def set_setup_completed(db: AsyncSession, completed: bool) -> None:
     """Set setup completed status."""
     from sqlalchemy import func

@@ -2078,12 +2078,11 @@ export default {
     webhookEndpoints: 'Кінцеві точки вебхуків',
     webhookApiKeyHint: 'Використовуйте ваш API ключ у заголовку X-API-Key.',
     webhook: {
-      getAllStatus: 'Отримати стан усіх принтерів',
-      getSpecificStatus: 'Отримати стан конкретного принтера',
-      addToQueue: 'Додати до черги друку',
-      pausePrint: 'Призупинити друк',
-      resumePrint: 'Продовжити друк',
-      stopPrint: 'Зупинити друк'
+      queueStatus: 'Стан черги всіх принтерів, або одного через ?printer_id=',
+      printerStatus: 'Стан одного принтера',
+      startNext: 'Запустити наступний друк із черги',
+      stopPrint: 'Зупинити поточний друк',
+      cancelPrint: 'Скасувати поточний або призупинений друк'
     },
     apiBrowser: 'API браузер',
     apiBrowserDescription: 'Досліджуйте та тестуйте всі доступні API ендпоінти.',

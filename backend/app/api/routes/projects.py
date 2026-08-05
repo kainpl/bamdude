@@ -758,26 +758,6 @@ async def list_project_archives(
     return [archive_to_response(a) for a in archives]
 
 
-@router.get("/{project_id}/queue")
-async def list_project_queue(
-    project_id: int,
-    db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
-):
-    """List queue items in a project."""
-    # Verify project exists
-    result = await db.execute(select(Project).where(Project.id == project_id))
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    # Get queue items
-    query = select(PrintQueueItem).where(PrintQueueItem.project_id == project_id).order_by(PrintQueueItem.position)
-    result = await db.execute(query)
-    items = result.scalars().all()
-
-    return items
-
-
 @router.post("/{project_id}/add-archives")
 async def add_archives_to_project(
     project_id: int,

@@ -2063,12 +2063,11 @@ export default {
     webhookEndpoints: 'Webhook Endpoints',
     webhookApiKeyHint: 'Use your API key in the X-API-Key header.',
     webhook: {
-      getAllStatus: 'Get all printer status',
-      getSpecificStatus: 'Get specific printer status',
-      addToQueue: 'Add to print queue',
-      pausePrint: 'Pause print',
-      resumePrint: 'Resume print',
-      stopPrint: 'Stop print'
+      queueStatus: 'Queue status for every printer, or one with ?printer_id=',
+      printerStatus: 'Status of one printer',
+      startNext: 'Start the next queued print',
+      stopPrint: 'Stop the running print',
+      cancelPrint: 'Cancel the running or paused print'
     },
     apiBrowser: 'API Browser',
     apiBrowserDescription: 'Explore and test all available API endpoints.',

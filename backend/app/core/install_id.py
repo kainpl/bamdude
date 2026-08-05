@@ -69,14 +69,3 @@ def get_install_id() -> str | None:
     except OSError as e:
         logger.debug("install_id create failed: %s", e)
     return None
-
-
-def reset_install_id() -> str | None:
-    """Forget the current id and mint a fresh one (used by opt-out / reset)."""
-    global _cached
-    _cached = None
-    try:
-        _path().unlink(missing_ok=True)
-    except OSError as e:
-        logger.debug("install_id reset failed: %s", e)
-    return get_install_id()

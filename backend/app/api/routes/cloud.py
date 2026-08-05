@@ -109,19 +109,6 @@ async def mark_cloud_token_invalid(user_id: int | None) -> None:
         logger.exception("Could not record the Bambu Cloud token as invalid")
 
 
-async def _clear_cloud_token_invalid(db: AsyncSession, user: User | None) -> None:
-    """Clear the rejected-token flag - called on every fresh login and logout."""
-    from sqlalchemy import update
-
-    if user is not None:
-        await db.execute(update(User).where(User.id == user.id).values(cloud_token_invalid_at=None))
-        return
-    result = await db.execute(select(Settings).where(Settings.key == CLOUD_TOKEN_INVALID_KEY))
-    row = result.scalar_one_or_none()
-    if row:
-        await db.delete(row)
-
-
 def _normalise_region(region: str | None) -> str:
     """Treat NULL/empty/unknown as 'global' for legacy rows that predate the region column."""
     return region if region in ("global", "china") else "global"

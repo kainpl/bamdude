@@ -943,20 +943,6 @@ async def get_current_active_user(current_user: Annotated[User, Depends(get_curr
     return current_user
 
 
-def require_role(required_role: str):
-    """Dependency factory for role-based access control."""
-
-    async def role_checker(current_user: Annotated[User, Depends(get_current_user)]) -> User:
-        if current_user.role != required_role:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Requires {required_role} role",
-            )
-        return current_user
-
-    return role_checker
-
-
 def generate_api_key() -> tuple[str, str, str]:
     """Generate a new API key.
 

@@ -4788,20 +4788,6 @@ class BambuMQTTClient:
         # The correct nozzle data comes from push_status response.
         return True
 
-    def _request_accessories(self):
-        """Request accessories info (nozzle type, etc.) from printer."""
-        if self._client:
-            self._sequence_id += 1
-            message = {
-                "system": {
-                    "sequence_id": str(self._sequence_id),
-                    "command": "get_accessories",
-                    "accessory_type": "none",
-                }
-            }
-            logger.debug("[%s] Requesting accessories info", self.serial_number)
-            self._client.publish(self.topic_publish, json.dumps(message), qos=1)
-
     def _prime_kprofile_request(self):
         """Send a priming K-profile request on connect.
 
@@ -6576,27 +6562,6 @@ class BambuMQTTClient:
         """
         return self.send_gcode(f"M140 S{target}")
 
-    def set_nozzle_temperature(self, target: int, nozzle: int = 0) -> bool:
-        """Set the nozzle target temperature.
-
-        Args:
-            target: Target temperature in Celsius (0 to turn off)
-            nozzle: Nozzle index (0 for right/default, 1 for left on H2D)
-
-        Returns:
-            True if command was sent, False otherwise
-        """
-        # Use M104 for non-blocking
-        # Always use T parameter for H2D compatibility
-        result = self.send_gcode(f"M104 T{nozzle} S{target}")
-        # H2D quirk: left nozzle (nozzle=1) target isn't reported in MQTT
-        # Track it locally so we can display it correctly
-        if result and nozzle == 1:
-            self.state.temperatures["nozzle_target"] = float(target)
-            self.state.temperatures["_nozzle_target_set_time"] = time.time()
-            logger.info("[%s] Tracking LEFT nozzle target locally: %s°C", self.serial_number, target)
-        return result
-
     def set_chamber_temperature(self, target: int) -> bool:
         """Set the chamber target temperature.
 
@@ -6641,35 +6606,6 @@ class BambuMQTTClient:
         self._client.publish(self.topic_publish, json.dumps(command), qos=1)
         logger.info("[%s] Set print speed mode to %s", self.serial_number, mode)
         return True
-
-    def set_fan_speed(self, fan: int, speed: int) -> bool:
-        """Set fan speed.
-
-        Args:
-            fan: Fan index (1=part cooling, 2=auxiliary, 3=chamber)
-            speed: Speed 0-255 (0=off, 255=full)
-
-        Returns:
-            True if command was sent, False otherwise
-        """
-        if fan not in (1, 2, 3):
-            logger.warning("[%s] Invalid fan index: %s", self.serial_number, fan)
-            return False
-
-        speed = max(0, min(255, speed))  # Clamp to 0-255
-        return self.send_gcode(f"M106 P{fan} S{speed}")
-
-    def set_part_fan(self, speed: int) -> bool:
-        """Set part cooling fan speed (0-255)."""
-        return self.set_fan_speed(1, speed)
-
-    def set_aux_fan(self, speed: int) -> bool:
-        """Set auxiliary fan speed (0-255)."""
-        return self.set_fan_speed(2, speed)
-
-    def set_chamber_fan(self, speed: int) -> bool:
-        """Set chamber fan speed (0-255)."""
-        return self.set_fan_speed(3, speed)
 
     def set_airduct_mode(self, mode: str) -> bool:
         """Set air conditioning mode (cooling or heating).
@@ -6773,45 +6709,6 @@ class BambuMQTTClient:
         / H2D / H2S / X1 where Z-home moves the bed UP — upstream #1052.
         """
         return self.send_gcode("G28")
-
-    def move_axis(self, axis: str, distance: float, speed: int = 3000) -> bool:
-        """Move an axis by a relative distance.
-
-        Args:
-            axis: Axis to move ("X", "Y", or "Z")
-            distance: Distance to move in mm (positive or negative)
-            speed: Movement speed in mm/min
-
-        Returns:
-            True if command was sent, False otherwise
-        """
-        axis = axis.upper()
-        if axis not in ("X", "Y", "Z"):
-            logger.warning("[%s] Invalid axis: %s", self.serial_number, axis)
-            return False
-
-        # G91 = relative mode, G0 = rapid move, G90 = back to absolute
-        gcode = f"G91\nG0 {axis}{distance:.2f} F{speed}\nG90"
-        return self.send_gcode(gcode)
-
-    def disable_motors(self) -> bool:
-        """Disable all stepper motors.
-
-        Warning: This will cause the printer to lose its position.
-        A homing operation will be required before printing.
-
-        Returns:
-            True if command was sent, False otherwise
-        """
-        return self.send_gcode("M18")
-
-    def enable_motors(self) -> bool:
-        """Enable all stepper motors.
-
-        Returns:
-            True if command was sent, False otherwise
-        """
-        return self.send_gcode("M17")
 
     def ams_load_filament(self, tray_id: int, extruder_id: int | None = None) -> bool:
         """Load filament from a specific AMS tray.
@@ -7624,50 +7521,3 @@ class BambuMQTTClient:
         }
         self._client.publish(self.topic_publish, json.dumps(payload), qos=1)
         return True, seq
-
-    def set_timelapse(self, enable: bool) -> bool:
-        """Enable or disable timelapse recording.
-
-        Args:
-            enable: True to enable, False to disable
-
-        Returns:
-            True if command was sent, False otherwise
-        """
-        if not self._client or not self.state.connected:
-            logger.warning("[%s] Cannot set timelapse: not connected", self.serial_number)
-            return False
-
-        command = {"pushing": {"command": "pushall", "sequence_id": "0"}}
-        # First send the timelapse setting
-        timelapse_cmd = {
-            "print": {"command": "gcode_line", "param": f"M981 S{1 if enable else 0} P20000", "sequence_id": "0"}
-        }
-        self._client.publish(self.topic_publish, json.dumps(timelapse_cmd), qos=1)
-        # Request status update
-        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
-        logger.info("[%s] Set timelapse %s", self.serial_number, "enabled" if enable else "disabled")
-        return True
-
-    def set_liveview(self, enable: bool) -> bool:
-        """Enable or disable live view / camera streaming.
-
-        Args:
-            enable: True to enable, False to disable
-
-        Returns:
-            True if command was sent, False otherwise
-        """
-        if not self._client or not self.state.connected:
-            logger.warning("[%s] Cannot set liveview: not connected", self.serial_number)
-            return False
-
-        command = {
-            "xcam": {"command": "ipcam_record_set", "control": "enable" if enable else "disable", "sequence_id": "0"}
-        }
-        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
-        # Request status update
-        pushall = {"pushing": {"command": "pushall", "sequence_id": "0"}}
-        self._client.publish(self.topic_publish, json.dumps(pushall), qos=1)
-        logger.info("[%s] Set liveview %s", self.serial_number, "enabled" if enable else "disabled")
-        return True

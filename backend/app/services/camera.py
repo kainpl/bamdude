@@ -319,12 +319,6 @@ def is_chamber_image_model(model: str | None) -> bool:
     return not supports_rtsp(model)
 
 
-def build_camera_url(ip_address: str, access_code: str, model: str | None) -> str:
-    """Build the RTSPS URL for the printer camera (RTSP models only)."""
-    port = get_camera_port(model)
-    return f"rtsps://bblp:{access_code}@{ip_address}:{port}/streaming/live/1"
-
-
 def _create_chamber_auth_payload(access_code: str) -> bytes:
     """Create the 80-byte authentication payload for chamber image protocol.
 

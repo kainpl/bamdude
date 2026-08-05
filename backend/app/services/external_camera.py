@@ -84,19 +84,6 @@ def _sanitize_camera_url(url: str, allowed_schemes: tuple[str, ...] = ("http", "
         return None
 
 
-def _validate_camera_url(url: str, allowed_schemes: tuple[str, ...] = ("http", "https", "rtsp")) -> bool:
-    """Validate camera URL format (legacy wrapper).
-
-    Args:
-        url: URL to validate
-        allowed_schemes: Tuple of allowed URL schemes
-
-    Returns:
-        True if URL is valid, False otherwise
-    """
-    return _sanitize_camera_url(url, allowed_schemes) is not None
-
-
 def list_usb_cameras() -> list[dict]:
     """List available USB cameras (V4L2 devices on Linux).
 

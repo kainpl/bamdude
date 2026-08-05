@@ -221,6 +221,25 @@ class SmartPlugManager:
                     continue
                 if not energy:
                     continue
+
+                # Relay the reading before the lifetime-counter gate below: a
+                # plug that reports watts but keeps no cumulative counter is
+                # skipped for snapshots and still worth publishing. Hourly, so
+                # this is a heartbeat rather than a firehose — the report-driven
+                # history writer is where per-report data lives.
+                try:
+                    from backend.app.services.mqtt_relay import mqtt_relay
+
+                    await mqtt_relay.on_smart_plug_energy(
+                        plug_id=plug.id,
+                        plug_name=plug.name,
+                        power=float(energy.get("power") or 0.0),
+                        energy_today=float(energy.get("today") or 0.0),
+                        energy_total=float(energy.get("total") or 0.0),
+                    )
+                except Exception:
+                    pass  # A relay failure must not cost us the snapshot.
+
                 lifetime = energy.get("total")
                 if lifetime is None:
                     # No lifetime counter configured for this plug — a figure

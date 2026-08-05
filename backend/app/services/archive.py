@@ -545,30 +545,6 @@ class ThreeMFParser:
         ]
         return max(temps) if temps else None
 
-    def _extract_settings_from_content(self, content: str):
-        """Extract print settings from config content."""
-        settings_map = {
-            "layer_height": ("layer_height", float),
-            "nozzle_diameter": ("nozzle_diameter", float),
-            "bed_temperature": ("bed_temperature", int),
-            "nozzle_temperature": ("nozzle_temperature", int),
-        }
-
-        for key, (search_key, converter) in settings_map.items():
-            if key not in self.metadata:
-                try:
-                    # Try JSON format
-                    if f'"{search_key}"' in content:
-                        start = content.find(f'"{search_key}"')
-                        value_start = content.find(":", start) + 1
-                        value_end = content.find(",", value_start)
-                        if value_end == -1:
-                            value_end = content.find("}", value_start)
-                        value = content[value_start:value_end].strip().strip('"')
-                        self.metadata[key] = converter(value)
-                except (ValueError, TypeError):
-                    pass  # Skip settings with unconvertible values
-
     def _parse_3dmodel(self, zf: zipfile.ZipFile):
         """Parse 3D/3dmodel.model for MakerWorld metadata."""
         try:

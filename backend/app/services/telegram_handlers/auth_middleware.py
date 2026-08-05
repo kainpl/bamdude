@@ -17,11 +17,6 @@ NS = "telegram_ui"
 _notified_chats: set[int] = set()
 
 
-def clear_chat_cache() -> None:
-    """Clear the notified chats cache (call when chats are updated)."""
-    _notified_chats.clear()
-
-
 class TelegramAuthMiddleware(BaseMiddleware):
     """Middleware that checks if the chat is authorized before processing updates."""
 

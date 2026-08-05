@@ -68,10 +68,6 @@ def set_app_log_handler(handler: TimedRotatingFileHandler) -> None:
     _handler = handler
 
 
-def get_app_log_handler() -> TimedRotatingFileHandler | None:
-    return _handler
-
-
 def update_log_retention(days: int) -> None:
     """Update the live handler's ``backupCount`` so future rotations
     keep ``days`` historical files. Old archives beyond the new limit

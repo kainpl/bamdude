@@ -675,38 +675,6 @@ class SensorReportListener:
             )
 
 
-def _sensor_reporting_accepted(ieee: str, cluster_id: int, result) -> bool:
-    """Whether the device accepted every attribute in this result.
-
-    The plug version takes a plug id; a sensor has no row and no id, and
-    "Zigbee plug 0 refused reporting" would name a device that does not exist in
-    exactly the place the log is read to find out what happened.
-
-    Returns a verdict rather than only warning: a device that answers "no" was
-    being recorded as ``ok`` while the refusal went to the log alone, so the API
-    claimed a configuration the device had declined.
-    """
-    if not isinstance(result, dict):
-        logger.debug(
-            "Zigbee sensor %s: unexpected configure_reporting result for cluster 0x%04X: %r", ieee, cluster_id, result
-        )
-        return True
-    accepted = True
-    for attr, status in result.items():
-        if status == foundation.Status.SUCCESS:
-            continue
-        accepted = False
-        logger.warning(
-            "Zigbee sensor %s: device refused reporting for %s on cluster 0x%04X (status=%s). "
-            "Its readings will only update when something else reads it.",
-            ieee,
-            getattr(attr, "name", attr),
-            cluster_id,
-            status,
-        )
-    return accepted
-
-
 def _attribute_ids(cluster) -> dict[str, int]:
     """Map attribute name to id from the cluster's own definitions."""
     ids: dict[str, int] = {}

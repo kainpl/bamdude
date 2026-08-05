@@ -43,23 +43,3 @@ SWAP_PROFILES: dict[str, dict[str, Any]] = {
         "description": "JobOx swap mechanism for the full-size A1.",
     },
 }
-
-
-def profile_applies_to_model(profile_id: str, model: str | None) -> bool:
-    """Return True if ``profile_id`` lists ``model`` as an applicable model."""
-    profile = SWAP_PROFILES.get(profile_id)
-    if profile is None or not model:
-        return False
-    return model in profile["models"]
-
-
-def list_profiles_for_model(model: str | None) -> list[dict[str, Any]]:
-    """Return the catalog entries whose ``models`` list contains ``model``.
-
-    Output is shaped for the frontend dropdown: ``[{"id", "label",
-    "description", "models"}, ...]``. Returns an empty list for an unknown
-    model, which the UI reads as "no swap variant available".
-    """
-    if not model:
-        return []
-    return [{"id": pid, **profile} for pid, profile in SWAP_PROFILES.items() if model in profile["models"]]

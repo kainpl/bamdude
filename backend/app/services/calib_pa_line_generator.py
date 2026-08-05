@@ -49,7 +49,6 @@ from backend.app.services.calib_pa_pattern_generator import (
     DEFAULT_TRAVEL_SPEED_MM_MIN,
     DigitMode,
     Vec2,
-    _convert_number_to_string,
     _draw_box,
     _draw_number,
     _DrawBoxOpts,
@@ -123,19 +122,6 @@ def _number_label_x(box_x: float) -> float:
     """X start for K-value digits inside the glyph box (BS line 485 —
     box_x + 3 + m_line_width)."""
     return box_x + 3.0 + LINE_WIDTH
-
-
-def _max_label_width(p: PALineParams) -> float:
-    """Longest K-string drawn × digit segment length (informational —
-    used by callers needing the rendered tab width). BS doesn't expose
-    this either; PA Pattern computes a similar quantity to size its
-    tab. PA Line uses a fixed-width filled box ``number_spacing*8`` mm
-    wide regardless."""
-    most_chars = 0
-    for i in range(0, p.count, 2):
-        s = _convert_number_to_string(p.start_pa + i * p.step_pa)
-        most_chars = max(most_chars, len(s))
-    return most_chars * 2.0 + (most_chars - 1) * 1.0  # SEG + GAP
 
 
 def generate_pa_line_layer(params: PALineParams) -> str:

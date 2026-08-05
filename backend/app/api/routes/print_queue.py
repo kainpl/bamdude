@@ -44,67 +44,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/queue", tags=["queue"])
 
 
-def _extract_filament_types_from_3mf(file_path: Path, plate_id: int | None = None) -> list[str]:
-    """Extract unique filament types from a 3MF file.
-
-    Args:
-        file_path: Path to the 3MF file
-        plate_id: Optional plate index to filter for (for multi-plate files)
-
-    Returns:
-        List of unique filament types (e.g., ["PLA", "PETG"])
-    """
-    types: set[str] = set()
-
-    try:
-        with zipfile.ZipFile(file_path, "r") as zf:
-            if "Metadata/slice_info.config" not in zf.namelist():
-                return []
-
-            content = zf.read("Metadata/slice_info.config").decode()
-            root = ET.fromstring(content)
-
-            if plate_id is not None:
-                # Find the plate element with matching index
-                for plate_elem in root.findall(".//plate"):
-                    plate_index = None
-                    for meta in plate_elem.findall("metadata"):
-                        if meta.get("key") == "index":
-                            try:
-                                plate_index = int(meta.get("value", "0"))
-                            except ValueError:
-                                pass  # Skip plate with unparseable index
-                            break
-
-                    if plate_index == plate_id:
-                        for filament_elem in plate_elem.findall("filament"):
-                            filament_type = filament_elem.get("type", "")
-                            used_g = filament_elem.get("used_g", "0")
-                            try:
-                                used_grams = float(used_g)
-                            except (ValueError, TypeError):
-                                used_grams = 0
-                            if used_grams > 0 and filament_type:
-                                types.add(filament_type)
-                        break
-            else:
-                # No plate_id specified - extract all filaments with used_g > 0
-                for filament_elem in root.findall(".//filament"):
-                    filament_type = filament_elem.get("type", "")
-                    used_g = filament_elem.get("used_g", "0")
-                    try:
-                        used_grams = float(used_g)
-                    except (ValueError, TypeError):
-                        used_grams = 0
-                    if used_grams > 0 and filament_type:
-                        types.add(filament_type)
-
-    except Exception as e:
-        logger.warning("Failed to extract filament types from %s: %s", file_path, e)
-
-    return sorted(types)
-
-
 def _extract_print_time_from_3mf(file_path: Path, plate_id: int | None = None) -> int | None:
     """Extract print time (prediction) from a 3MF file.
 
@@ -168,12 +107,6 @@ def _extract_print_time_from_3mf(file_path: Path, plate_id: int | None = None) -
 _PLATE_META_CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
 _PLATE_META_LOCK = Lock()
 _PLATE_META_MAX = 512
-
-
-def clear_plate_metadata_cache() -> None:
-    """Drop all cached per-plate metadata (used by tests)."""
-    with _PLATE_META_LOCK:
-        _PLATE_META_CACHE.clear()
 
 
 def _plate_metadata_cached(file_path: Path, plate_id: int | None) -> tuple[int | None, float, str | None]:

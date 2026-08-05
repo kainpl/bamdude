@@ -242,12 +242,6 @@ class BackupCodesResponse(BaseModel):
     message: str
 
 
-class EmailOTPEnableRequest(BaseModel):
-    """No body required — email is taken from the authenticated user's profile."""
-
-    pass
-
-
 class TwoFAVerifyRequest(BaseModel):
     pre_auth_token: str = Field(..., max_length=128)
     # TOTP/email codes are 6 digits; backup codes are 8 uppercase alphanumeric chars.

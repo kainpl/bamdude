@@ -521,26 +521,6 @@ class MQTTRelayService:
             },
         )
 
-    async def on_maintenance_acknowledged(
-        self,
-        printer_id: int,
-        printer_name: str,
-        maintenance_type: str,
-    ):
-        """Publish maintenance alert acknowledged event."""
-        if not self.enabled or not self.connected:
-            return
-
-        self._publish(
-            f"{self.topic_prefix}/maintenance/acknowledged",
-            {
-                "printer_id": printer_id,
-                "printer_name": printer_name,
-                "maintenance_type": maintenance_type,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            },
-        )
-
     async def on_maintenance_reset(
         self,
         printer_id: int,
@@ -610,28 +590,6 @@ class MQTTRelayService:
     # =========================================================================
     # Filament/Spoolman Events
     # =========================================================================
-
-    async def on_filament_low(
-        self,
-        spool_id: int,
-        spool_name: str,
-        remaining_weight: float,
-        remaining_percent: float,
-    ):
-        """Publish filament inventory low event."""
-        if not self.enabled or not self.connected:
-            return
-
-        self._publish(
-            f"{self.topic_prefix}/filament/low",
-            {
-                "spool_id": spool_id,
-                "spool_name": spool_name,
-                "remaining_weight": remaining_weight,
-                "remaining_percent": remaining_percent,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            },
-        )
 
     # =========================================================================
     # Smart Plug Events

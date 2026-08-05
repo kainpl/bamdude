@@ -63,10 +63,6 @@ class PrinterMaintenanceBase(BaseModel):
     enabled: bool = True
 
 
-class PrinterMaintenanceCreate(PrinterMaintenanceBase):
-    pass
-
-
 class PrinterMaintenanceUpdate(BaseModel):
     custom_interval_hours: float | None = None
     custom_interval_type: str | None = Field(default=None, pattern="^(hours|days)$")
@@ -92,10 +88,6 @@ class PrinterMaintenanceResponse(BaseModel):
 # Maintenance History schemas
 class MaintenanceHistoryBase(BaseModel):
     notes: str | None = None
-
-
-class MaintenanceHistoryCreate(MaintenanceHistoryBase):
-    pass
 
 
 class MaintenanceHistoryResponse(MaintenanceHistoryBase):
