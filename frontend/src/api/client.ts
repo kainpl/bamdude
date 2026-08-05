@@ -7927,6 +7927,12 @@ export const api = {
     }>(`/background-dispatch/${jobId}`, {
       method: 'DELETE',
     }),
+  queueLibraryFiles: (items: BulkQueueRequestItem[], destination: BulkQueueDestination) =>
+    request<BulkQueueOutcome>('/library/files/queue', {
+      method: 'POST',
+      body: JSON.stringify({ items, destination }),
+    }),
+
   getLibraryFilePlates: (fileId: number) =>
     request<LibraryFilePlatesResponse>(`/library/files/${fileId}/plates`),
 
@@ -8663,6 +8669,45 @@ export interface LibraryFileListItem {
 // #1268 — user-authored library tags. Cross-cutting labels applied to
 // files, DISTINCT from the computed ``file_tags`` system badges and from
 // archive CSV tags. See backend/app/api/routes/library_tags.py.
+/** One selected file, and which of its plates to queue (all of them if omitted). */
+export interface BulkQueueRequestItem {
+  file_id: number;
+  plate_ids?: number[];
+}
+
+/**
+ * Where a batch goes. `printers` binds each print to a queue NOW — `each` puts
+ * a copy on every chosen printer, `spread` distributes them round-robin. `auto`
+ * hands the batch to the router, which decides later.
+ */
+export interface BulkQueueDestination {
+  kind: 'printers' | 'auto';
+  printer_ids?: number[];
+  mode?: 'each' | 'spread';
+}
+
+export interface BulkQueueEntry {
+  file_id: number;
+  filename: string;
+  plate_id: number | null;
+  printer_id: number | null;
+  queue_item_id: number;
+}
+
+export interface BulkQueueFailure {
+  file_id: number;
+  filename: string;
+  plate_id: number | null;
+  printer_id: number | null;
+  error: string;
+}
+
+/** Every requested (file, plate, printer) appears in exactly one of the two. */
+export interface BulkQueueOutcome {
+  added: BulkQueueEntry[];
+  errors: BulkQueueFailure[];
+}
+
 export interface LibraryTagSummary {
   id: number;
   name: string;

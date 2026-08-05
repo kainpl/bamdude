@@ -83,6 +83,7 @@ import { getTagStyle, isSliced, isSliceable, isMultiPlate } from '../lib/fileTag
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
 import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
 import { FileTagsPopover, type TagsPopoverAnchor } from '../components/FileTagsPopover';
+import { BulkQueueModal } from '../components/BulkQueueModal';
 import { libraryTagsQueryKey } from '../utils/libraryTagsQuery';
 
 type SortField = 'name' | 'date' | 'size' | 'type';
@@ -1558,6 +1559,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
           desktop. stopPropagation keeps the click off the card body. */}
       <button
         type="button"
+        data-select-file
         onClick={(e) => { e.stopPropagation(); onSelect(file.id); }}
         aria-pressed={isSelected}
         aria-label={t('fileManager.selectFile', { defaultValue: 'Select file' })}
@@ -1608,6 +1610,7 @@ export function FileManagerPage() {
   const [showNewFolderModal, setShowNewFolderModal] = useState(false);
   const [showExternalFolderModal, setShowExternalFolderModal] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
+  const [showBulkQueue, setShowBulkQueue] = useState(false);
   // Single-file Move and Tags, reachable from the ⋮ menu without first ticking
   // a checkbox. `moveFile` reuses MoveFilesModal with a one-id list.
   const [moveFile, setMoveFile] = useState<LibraryFileListItem | null>(null);
@@ -3035,6 +3038,23 @@ export function FileManagerPage() {
                         <span className="hidden sm:inline">{t('fileManager.schedulePrint')}</span>
                       </Button>
                     )}
+                    {/* Gated on > 0, deliberately unlike Print and Schedule
+                        above, which are gated on === 1 because they act on one
+                        file. Acting on many is this one's entire purpose.
+                        Hidden rather than disabled: a button that opens a
+                        window saying "nothing here can be queued" spends two
+                        clicks on what its absence says for free. */}
+                    {selectedSlicedFiles.length > 0 && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setShowBulkQueue(true)}
+                        disabled={!hasPermission('queue:create')}
+                      >
+                        <Clock className="w-4 h-4 sm:mr-1" />
+                        <span className="hidden sm:inline">{t('fileManager.bulkQueue.action')}</span>
+                      </Button>
+                    )}
                     <Button
                       variant="secondary"
                       size="sm"
@@ -3220,6 +3240,7 @@ export function FileManagerPage() {
                         click no longer toggles selection). */}
                     <button
                       type="button"
+                      data-select-file
                       onClick={(e) => { e.stopPropagation(); handleFileSelect(file.id); }}
                       aria-pressed={selectedFiles.includes(file.id)}
                       aria-label={t('fileManager.selectFile', { defaultValue: 'Select file' })}
@@ -3555,6 +3576,13 @@ export function FileManagerPage() {
           }}
           isLoading={moveFilesMutation.isPending}
           t={t}
+        />
+      )}
+
+      {showBulkQueue && (
+        <BulkQueueModal
+          files={files?.filter((f) => selectedFiles.includes(f.id)) ?? []}
+          onClose={() => setShowBulkQueue(false)}
         />
       )}
 

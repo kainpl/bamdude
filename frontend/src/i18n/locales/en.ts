@@ -4001,6 +4001,22 @@ export default {
       title: 'Description',
       truncated: 'Truncated',
     },
+    bulkQueue: {
+      action: 'Queue',
+      title: 'Add to queue',
+      toPrinters: 'Printers',
+      toAuto: 'Auto-queue',
+      modeEach: 'on each',
+      modeSpread: 'spread',
+      spreadHint: 'Spread pins each print to a printer now, round-robin. The auto-queue decides later, when one is actually free.',
+      notSliced: 'not sliced',
+      plates_one: '{{count}} plate',
+      plates_other: '{{count}} plates',
+      submit_one: 'Add {{count}} print',
+      submit_other: 'Add {{count}} prints',
+      queued_one: '{{count}} print queued',
+      queued_other: '{{count}} prints queued',
+    },
     allTypes: 'All types',
     // "{{count}} time", not "once": Ukrainian's _one form covers 21, 31, 41 …
     // as well as 1, so it must carry the number — and the parity gate requires
