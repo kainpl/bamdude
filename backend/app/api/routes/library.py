@@ -20,6 +20,7 @@ from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.api.routes.auto_queue import add_to_auto_queue
 from backend.app.api.routes.cloud import resolve_api_key_cloud_owner
 from backend.app.core.auth import (
     require_ownership_permission,
@@ -35,16 +36,17 @@ from backend.app.models.library_project_links import library_file_projects, libr
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.project import Project
 from backend.app.models.user import User
+from backend.app.schemas.auto_queue import AutoQueueItemCreate
 from backend.app.schemas.library import (
-    AddToQueueError,
-    AddToQueueRequest,
-    AddToQueueResponse,
-    AddToQueueResult,
     BatchThumbnailRequest,
     BatchThumbnailResponse,
     BatchThumbnailResult,
     BulkDeleteRequest,
     BulkDeleteResponse,
+    BulkQueueError,
+    BulkQueueRequest,
+    BulkQueueResponse,
+    BulkQueueResult,
     ExternalFolderCreate,
     FileDuplicate,
     FileListResponse,
@@ -65,6 +67,7 @@ from backend.app.schemas.library import (
     ZipExtractResult,
 )
 from backend.app.schemas.plate_objects import PlateObjectsResponse
+from backend.app.schemas.print_queue import PrintQueueItemCreate
 from backend.app.services.archive import ThreeMFParser
 from backend.app.services.library_helpers import (
     detect_file_type,
@@ -75,6 +78,7 @@ from backend.app.services.library_helpers import (
 from backend.app.services.library_trash import library_trash_service
 from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing
 from backend.app.services.print_plan import inherit_folder_projects, sync_plan_for_file, sync_plan_for_folder
+from backend.app.services.queue_add import add_items_to_printer_queue
 from backend.app.services.stl_thumbnail import MIN_USABLE_STL_BYTES, generate_stl_thumbnail
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.filename import InvalidFilenameError, validate_print_filename
@@ -3715,95 +3719,138 @@ def is_sliced_file(filename: str) -> bool:
     return lower.endswith(".gcode") or ".gcode." in lower
 
 
-@router.post("/files/add-to-queue", response_model=AddToQueueResponse)
-async def add_files_to_queue(
-    request: AddToQueueRequest,
+@router.post("/files/queue", response_model=BulkQueueResponse)
+async def queue_files(
+    request: BulkQueueRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(require_permission(Permission.QUEUE_CREATE)),
 ):
-    """Add library files to the print queue.
+    """Queue several library files at once.
 
-    Only sliced files (.gcode or .gcode.3mf) can be added to the queue.
-    The archive will be created automatically when the print starts.
+    Replaces a route that could not work at all: it built
+    ``PrintQueueItem(printer_id=None)``, but ``printer_id`` is a read-only
+    property and ``queue_id`` is NOT NULL, so every file came back as an error
+    naming our own model. It was a port of upstream's flat queue, where an item
+    could sit unassigned — here there is no printer-less tier, and "queue this"
+    always means somebody's queue.
+
+    Every requested (file, plate, printer) combination lands in exactly one of
+    the two lists, so a caller reporting "N queued" can be trusted.
+
+    Committed per combination rather than as one transaction: the advisory lock
+    that guards the position is transaction-scoped and keyed per queue, so a
+    single transaction over a large batch would block every other append to
+    those queues for its whole run — and one bad file would roll back all the
+    good ones.
     """
-    added: list[AddToQueueResult] = []
-    errors: list[AddToQueueError] = []
+    added: list[BulkQueueResult] = []
+    errors: list[BulkQueueError] = []
 
-    # Get all requested files. Eager-load M2M projects so the per-item
-    # "first project as queue project_id" fallback below doesn't lazy-load.
-    result = await db.execute(
-        select(LibraryFile).where(LibraryFile.id.in_(request.file_ids)).options(selectinload(LibraryFile.projects))
-    )
+    result = await db.execute(select(LibraryFile).where(LibraryFile.id.in_([i.file_id for i in request.items])))
     files = {f.id: f for f in result.scalars().all()}
 
-    # Get max position for queue ordering
-    pos_result = await db.execute(select(func.coalesce(func.max(PrintQueueItem.position), 0)))
-    max_position = pos_result.scalar() or 0
+    # (file, plate) pairs in the order the caller listed them — which is the
+    # order the operator sees on screen.
+    pairs: list[tuple[int, int | None]] = []
+    for item in request.items:
+        for plate_id in item.plate_ids or [None]:
+            pairs.append((item.file_id, plate_id))
 
-    for file_id in request.file_ids:
-        lib_file = files.get(file_id)
-
-        if not lib_file:
-            errors.append(AddToQueueError(file_id=file_id, filename="(not found)", error="File not found"))
-            continue
-
-        # Validate file is sliced
-        if not is_sliced_file(lib_file.filename):
-            errors.append(
-                AddToQueueError(
-                    file_id=file_id,
-                    filename=lib_file.filename,
-                    error="Not a sliced file. Only .gcode or .gcode.3mf files can be printed.",
-                )
+    def _reject(file_id: int, plate_id: int | None, printer_id: int | None, message: str) -> None:
+        lib = files.get(file_id)
+        errors.append(
+            BulkQueueError(
+                file_id=file_id,
+                filename=lib.filename if lib else "(not found)",
+                plate_id=plate_id,
+                printer_id=printer_id,
+                error=message,
             )
-            continue
+        )
 
+    async def _to_printer(file_id: int, plate_id: int | None, printer_id: int) -> str | None:
+        """Queue one combination. Returns an error message, or None on success."""
         try:
-            # Verify file exists on disk
-            file_path = Path(app_settings.base_dir) / lib_file.file_path
-
-            if not file_path.exists():
-                errors.append(
-                    AddToQueueError(file_id=file_id, filename=lib_file.filename, error="File not found on disk")
-                )
-                continue
-
-            # Create queue item referencing library file (archive created at print start).
-            # Queue items stay single-project. m044: a file may belong to
-            # multiple projects — pick the first as a fallback so project
-            # stats still count the item when bulk-added from File Manager
-            # with no explicit project context. Operators wanting a
-            # specific project should pass it via the per-printer queue
-            # add flow instead of bulk-add.
-            max_position += 1
-            inherited_project_id = lib_file.projects[0].id if lib_file.projects else None
-            queue_item = PrintQueueItem(
-                printer_id=None,  # Unassigned
-                library_file_id=file_id,
-                project_id=inherited_project_id,
-                position=max_position,
-                status="pending",
-                created_by_id=current_user.id if current_user else None,
+            items, _queue = await add_items_to_printer_queue(
+                db,
+                PrintQueueItemCreate(queue_id=printer_id, library_file_id=file_id, plate_id=plate_id),
+                current_user,
             )
-            db.add(queue_item)
-
-            await db.flush()  # Get queue_item.id
-
-            added.append(
-                AddToQueueResult(
-                    file_id=file_id,
-                    filename=lib_file.filename,
-                    queue_item_id=queue_item.id,
-                )
+        except HTTPException as exc:
+            return str(exc.detail)
+        added.append(
+            BulkQueueResult(
+                file_id=file_id,
+                filename=files[file_id].filename,
+                plate_id=plate_id,
+                printer_id=printer_id,
+                queue_item_id=items[0].id,
             )
+        )
+        return None
 
-        except Exception as e:
-            logger.exception("Error adding file %s to queue", file_id)
-            errors.append(AddToQueueError(file_id=file_id, filename=lib_file.filename, error=str(e)))
+    printer_ids = request.destination.printer_ids
+    if request.destination.kind == "printers" and not printer_ids:
+        raise HTTPException(400, "Pick at least one printer, or send the batch to the auto-queue")
 
-    await db.commit()
+    spread_cursor = 0
+    for file_id, plate_id in pairs:
+        lib_file = files.get(file_id)
+        if not lib_file:
+            _reject(file_id, plate_id, None, "File not found")
+            continue
+        # Checked here rather than left to the queue service so the reason names
+        # the file, not a downstream failure.
+        if not is_sliced_file(lib_file.filename):
+            _reject(file_id, plate_id, None, "Not a sliced file. Only .gcode or .gcode.3mf files can be printed.")
+            continue
 
-    return AddToQueueResponse(added=added, errors=errors)
+        if request.destination.kind == "auto":
+            try:
+                created = await add_to_auto_queue(
+                    AutoQueueItemCreate(library_file_id=file_id, plate_id=plate_id),
+                    db,
+                    current_user,
+                )
+                added.append(
+                    BulkQueueResult(
+                        file_id=file_id,
+                        filename=lib_file.filename,
+                        plate_id=plate_id,
+                        printer_id=None,
+                        queue_item_id=created.id,
+                    )
+                )
+            except HTTPException as exc:
+                _reject(file_id, plate_id, None, str(exc.detail))
+            continue
+
+        if request.destination.mode == "each":
+            for printer_id in printer_ids:
+                message = await _to_printer(file_id, plate_id, printer_id)
+                if message:
+                    _reject(file_id, plate_id, printer_id, message)
+            continue
+
+        # spread — try printers round-robin from where the last pair left off.
+        # A printer that cannot run this file (cross-model gate) is SKIPPED
+        # rather than recorded: the operator asked for N prints across these
+        # machines, and refusing on the first ineligible one would report a
+        # failure for a request that could be satisfied. Only when every
+        # selected printer has refused does the pair become an error — dropping
+        # it silently is the one outcome that must never happen.
+        last_error = "No printer selected"
+        for offset in range(len(printer_ids)):
+            printer_id = printer_ids[(spread_cursor + offset) % len(printer_ids)]
+            message = await _to_printer(file_id, plate_id, printer_id)
+            if message is None:
+                spread_cursor = (spread_cursor + offset + 1) % len(printer_ids)
+                break
+            last_error = message
+        else:
+            _reject(file_id, plate_id, None, last_error)
+
+    return BulkQueueResponse(added=added, errors=errors)
 
 
 @router.get("/files/{file_id}/plates")
