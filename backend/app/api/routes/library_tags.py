@@ -133,8 +133,18 @@ async def create_tag(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.LIBRARY_UPDATE_ALL),
 ) -> TagResponse:
-    """Create a tag. Case-insensitive dup → 409."""
+    """Create a tag. Case-insensitive dup → 409; a system name → 400."""
     key = _name_key(payload.name)
+    # The composite unique index deliberately ALLOWS a user tag to share a
+    # name_key with a system one — that is what lets an install where somebody
+    # already created a tag called "sliced" migrate at all. So the refusal has
+    # to be an explicit check here, and it says WHY: a bare 409 would send the
+    # user hunting for a duplicate they cannot see in their own catalog.
+    clash = (
+        await db.execute(select(LibraryTag).where(LibraryTag.name_key == key, LibraryTag.is_system.is_(True)))
+    ).scalar_one_or_none()
+    if clash is not None:
+        raise HTTPException(status_code=400, detail=f"'{clash.name}' is a system tag name and cannot be reused")
     tag = LibraryTag(name=payload.name.strip(), name_key=key)
     db.add(tag)
     try:
@@ -168,6 +178,8 @@ async def update_tag(
     tag = (await db.execute(select(LibraryTag).where(LibraryTag.id == tag_id))).scalar_one_or_none()
     if tag is None:
         raise HTTPException(status_code=404, detail="Tag not found")
+    if tag.is_system:
+        raise HTTPException(status_code=400, detail="System tags cannot be renamed")
 
     new_key = _name_key(payload.name)
     if new_key != tag.name_key:
@@ -219,6 +231,11 @@ async def delete_tag(
     tag = (await db.execute(select(LibraryTag).where(LibraryTag.id == tag_id))).scalar_one_or_none()
     if tag is None:
         raise HTTPException(status_code=404, detail="Tag not found")
+    if tag.is_system:
+        # Deleting one would strip that badge from every file at once, and
+        # nothing would put it back — the tags are derived at creation and
+        # never re-derived.
+        raise HTTPException(status_code=400, detail="System tags cannot be deleted")
     await db.delete(tag)
     await db.commit()
 
@@ -262,10 +279,24 @@ async def bulk_assign(
     # Validate tag ids exist. Unknown tag_ids are silently dropped from
     # the operation rather than raising — matches the bulk-trash shape
     # and keeps a partial-success result usable.
+    #
+    # System tags are dropped the same way: they are derived from the file, so
+    # attaching or detaching one by hand would make the association disagree
+    # with the ``file_tags`` cache the badges render from. Silently, since a
+    # client sending a mixed selection should still get its user tags applied.
     tag_ids: list[int] = []
     if payload.tag_ids:
         tag_ids = list(
-            (await db.execute(select(LibraryTag.id).where(LibraryTag.id.in_(payload.tag_ids)))).scalars().all()
+            (
+                await db.execute(
+                    select(LibraryTag.id).where(
+                        LibraryTag.id.in_(payload.tag_ids),
+                        LibraryTag.is_system.is_(False),
+                    )
+                )
+            )
+            .scalars()
+            .all()
         )
 
     added = 0
@@ -305,8 +336,21 @@ async def bulk_assign(
         )
         removed = int(result.rowcount or 0)
     elif payload.action == "replace":
-        # Strip everything currently on these files, then INSERT the new set.
-        del_result = await db.execute(delete(LibraryFileTag).where(LibraryFileTag.file_id.in_(file_ids)))
+        # Strip the USER tags currently on these files, then INSERT the new set.
+        #
+        # Scoped deliberately. This used to delete every association on the
+        # selected files, which was harmless while all of them were user tags —
+        # and became a silent data loss the moment system tags became rows: the
+        # badges would keep rendering off the untouched ``file_tags`` cache
+        # while the file vanished from every filter. "Replace my labels" was
+        # never a request to un-say what the file IS.
+        user_tag_ids = select(LibraryTag.id).where(LibraryTag.is_system.is_(False))
+        del_result = await db.execute(
+            delete(LibraryFileTag).where(
+                LibraryFileTag.file_id.in_(file_ids),
+                LibraryFileTag.tag_id.in_(user_tag_ids),
+            )
+        )
         removed = int(del_result.rowcount or 0)
         if tag_ids:
             await db.execute(
