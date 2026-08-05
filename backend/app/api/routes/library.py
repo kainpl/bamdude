@@ -2031,7 +2031,14 @@ async def list_files(
                 source_url=f.source_url,
                 notes_count=notes_counts.get(f.id, 0),
                 print_count=f.print_count,
-                tags=[TagSummary(id=t.id, name=t.name) for t in f.tags],
+                # USER tags only. ``LibraryFile.tags`` spans both kinds since
+                # m128 — system tags are rows in the same association table —
+                # but the frontend renders this field as green user pills, so
+                # leaking them here would put a second "3MF" pill on every card
+                # beside the badge that already says it. System tags reach the
+                # client through ``file_tags`` above: associations serve
+                # queries, the column serves rendering.
+                tags=[TagSummary(id=t.id, name=t.name) for t in f.tags if not t.is_system],
             )
         )
 

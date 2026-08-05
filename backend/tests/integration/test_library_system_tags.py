@@ -266,6 +266,37 @@ async def test_every_library_file_construction_syncs_its_tags():
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+async def test_the_listing_returns_only_user_tags(async_client: AsyncClient, db_session, system_tags):
+    """``LibraryFile.tags`` now spans BOTH kinds, because system tags are rows in
+    the same association table. The listing must still hand back only the
+    user-authored ones.
+
+    Two reasons, and the first is immediate: the frontend renders ``file.tags``
+    as green user pills, so leaking system tags here puts a second "3MF" pill on
+    every card beside the badge that already says it. The second is that the
+    row would carry 2-5 extra objects duplicating what ``file_tags`` said one
+    field earlier — associations serve queries, the column serves rendering.
+    """
+    from backend.app.models.library import LibraryFileTag
+
+    user_tag = await _tag(db_session, name="kid-safe", name_key="kid-safe")
+    f = await _file(db_session, filename="cube.gcode.3mf")
+    from backend.app.services.library_helpers import sync_system_tags
+
+    await sync_system_tags(db_session, f)
+    db_session.add(LibraryFileTag(file_id=f.id, tag_id=user_tag.id))
+    await db_session.commit()
+
+    rows = (await async_client.get("/api/v1/library/files")).json()
+    row = next(r for r in rows if r["filename"] == "cube.gcode.3mf")
+
+    assert [t["name"] for t in row["tags"]] == ["kid-safe"]
+    # The system tags are still there — in the field built for them.
+    assert "gcode" in row["file_tags"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 async def test_an_uploaded_file_gets_its_system_tags(async_client: AsyncClient, db_session, system_tags, tmp_path):
     """The one path that can be driven end to end — upload."""
     from backend.app.models.library import LibraryFile
