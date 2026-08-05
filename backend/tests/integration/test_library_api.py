@@ -563,8 +563,26 @@ class TestLibraryFilesAPI:
         assert r.status_code == 404
 
 
+async def _printer_queue_for(db_session, printer):
+    """The printer's own queue. ``PrinterQueue.id == printer_id`` — the
+    invariant the scheduler relies on."""
+    from backend.app.models.printer_queue import PrinterQueue
+
+    queue = PrinterQueue(printer_id=printer.id)
+    db_session.add(queue)
+    await db_session.commit()
+    await db_session.refresh(queue)
+    return queue
+
+
 class TestLibraryAddToQueueAPI:
-    """Integration tests for /api/v1/library/files/add-to-queue endpoint."""
+    """Integration tests for /api/v1/library/files/queue.
+
+    The endpoint these were written against could not create a queue entry at
+    all; it is replaced. What they check — that a missing file and a non-sliced
+    file are each REPORTED rather than silently dropped — is unchanged, so they
+    move to the new route rather than being deleted.
+    """
 
     @pytest.fixture
     async def printer_factory(self, db_session):
@@ -625,10 +643,13 @@ class TestLibraryAddToQueueAPI:
     @pytest.mark.integration
     async def test_add_to_queue_file_not_found(self, async_client: AsyncClient, printer_factory, db_session):
         """Verify error for non-existent file."""
-        await printer_factory()
-
-        data = {"file_ids": [9999]}
-        response = await async_client.post("/api/v1/library/files/add-to-queue", json=data)
+        printer = await printer_factory()
+        queue = await _printer_queue_for(db_session, printer)
+        data = {
+            "items": [{"file_id": 9999}],
+            "destination": {"kind": "printers", "printer_ids": [queue.id], "mode": "each"},
+        }
+        response = await async_client.post("/api/v1/library/files/queue", json=data)
         assert response.status_code == 200
         result = response.json()
         assert len(result["added"]) == 0
@@ -641,15 +662,19 @@ class TestLibraryAddToQueueAPI:
         self, async_client: AsyncClient, printer_factory, library_file_factory, db_session
     ):
         """Verify non-sliced file cannot be added to queue."""
-        await printer_factory()
         lib_file = await library_file_factory(
             filename="model.stl",
             file_path="/test/path/model.stl",
             file_type="stl",
         )
 
-        data = {"file_ids": [lib_file.id]}
-        response = await async_client.post("/api/v1/library/files/add-to-queue", json=data)
+        printer = await printer_factory()
+        queue = await _printer_queue_for(db_session, printer)
+        data = {
+            "items": [{"file_id": lib_file.id}],
+            "destination": {"kind": "printers", "printer_ids": [queue.id], "mode": "each"},
+        }
+        response = await async_client.post("/api/v1/library/files/queue", json=data)
         assert response.status_code == 200
         result = response.json()
         assert len(result["added"]) == 0
