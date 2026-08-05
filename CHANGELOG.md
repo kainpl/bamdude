@@ -20,6 +20,10 @@ All notable changes to BamDude will be documented in this file.
 >
 > **Why.** Queue entries are supposed to disappear when their print finishes. When a print ended in a way BamDude did not see — a connection dropped at the wrong moment, a swap macro wrongly reported as failed — the entry stayed behind, still claiming to be printing. Those leftovers never clear on their own, and they make a queue show work that printed hours ago. The causes are fixed in this release; this clears what they already left behind. There is no way to tell a leftover entry from a real one after the fact, which is exactly why we ask you to empty the queues first rather than guessing on your behalf.
 
+### Changed
+
+- **Groundwork for one tag system.** The automatic file badges — `3MF`, `SLICED`, `MULTI-PLATE` and the rest — are now stored the same way as the tags you create yourself, and marked as system-assigned so they cannot be renamed, deleted, or taken off a file. Nothing changes on screen yet; the merged tag filter and the reworked tag dialog follow.
+
 ### Fixed
 
 - **"Clear filters" left three of the five filters running.** It reset the search box and the file-type dropdown, but the tag chip row, the user-tag filter and the "filter by user" box carried on narrowing the library — so the button promised a reset and handed back a list that was still partial, with nothing on screen explaining why. Worse, the tag chip row survives a reload, so a filter cleared that way came back the next time the page was opened. The user-tag filter had a sharper version of the same problem: it is applied by the server, so when it matched nothing the library reported itself as empty and offered to upload files, and the button that would have undone it was not on screen at all. All five now clear together, and a library emptied by a filter says so and offers the way back.
