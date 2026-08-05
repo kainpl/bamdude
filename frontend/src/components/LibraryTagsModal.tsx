@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Tag, Plus, Loader2, Pencil, Trash2, X } from 'lucide-react';
@@ -33,11 +33,18 @@ export function LibraryTagsModal({ open, onClose, onPickTag }: LibraryTagsModalP
   const [name, setName] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<LibraryTag | null>(null);
 
-  const { data: tags = [], isLoading } = useQuery({
+  const { data: catalog = [], isLoading } = useQuery({
     queryKey: libraryTagsQueryKey,
     queryFn: api.getLibraryTags,
     enabled: open,
   });
+  // USER tags only, for now. The catalog carries system tags too since m128,
+  // and every row here offers a rename and a delete — both of which the
+  // backend refuses on a system tag with a 400. Showing them would be a dialog
+  // full of buttons that error. The frontend phase of the tags cycle gives
+  // them their own read-only section with counts; until then they are absent,
+  // which is what this dialog looked like before m128.
+  const tags = useMemo(() => catalog.filter((tag) => !tag.is_system), [catalog]);
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: libraryTagsQueryKey });

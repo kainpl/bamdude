@@ -8672,6 +8672,13 @@ export interface LibraryTag {
   id: number;
   name: string;
   file_count: number;
+  /** System tags (m128) are handed out by the backend from the file itself and
+   *  cannot be renamed, deleted or attached by hand. The catalog returns both
+   *  kinds, so every consumer has to say which it wants. */
+  is_system: boolean;
+  /** Stable identifier a system tag is styled and translated by (`3mf`,
+   *  `sliced`, …); null on user tags. */
+  code: string | null;
   created_at: string;
   updated_at: string;
 }

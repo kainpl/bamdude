@@ -1724,6 +1724,12 @@ export function FileManagerPage() {
     queryKey: libraryTagsQueryKey,
     queryFn: api.getLibraryTags,
   });
+  // The catalog carries BOTH kinds since m128. This row is the user-tag filter
+  // and shows only theirs; the computed system badges have their own chip row
+  // above. Merging the two into one row is the frontend phase of the tags
+  // cycle — until then, showing system tags here would simply be a second copy
+  // of a filter the page already has.
+  const userTagCatalog = useMemo(() => tagCatalog.filter((tag) => !tag.is_system), [tagCatalog]);
   const tagsById = useMemo(() => {
     const m = new Map<number, string>();
     for (const tag of tagCatalog) m.set(tag.id, tag.name);
@@ -2294,7 +2300,7 @@ export function FileManagerPage() {
   }, [selectedFolderId, folders]);
 
   return (
-    <div className="p-4 md:p-6 min-h-[calc(100vh-64px)] lg:h-[calc(100vh-64px)] flex flex-col">
+    <div className="p-4 md:p-6 min-h-[calc(100vh)] lg:h-[calc(100vh)] flex flex-col">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
         <div className="flex items-center gap-3">
@@ -2982,13 +2988,13 @@ export function FileManagerPage() {
               computed-tag chip-row (SYSTEM B) above. Green chips = catalog
               tags; active = filled with an X. Hidden entirely when the
               catalog is empty. Server-side AND filter. */}
-          {tagCatalog.length > 0 && (
+          {userTagCatalog.length > 0 && (
             <div className="flex items-center gap-1.5 flex-wrap mb-3">
               <span className="text-xs text-bambu-gray mr-1 inline-flex items-center gap-1">
                 <TagIcon className="w-3.5 h-3.5" />
                 {t('fileManager.tags.filterLabel')}
               </span>
-              {tagCatalog.map((tag) => {
+              {userTagCatalog.map((tag) => {
                 const active = selectedTagIds.includes(tag.id);
                 return (
                   <button
