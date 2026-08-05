@@ -97,5 +97,190 @@ async def test_the_catalog_still_reports_a_plain_user_tag(async_client: AsyncCli
     assert row["code"] is None
 
 
-# Kept so the unused import is not a lint error before the sync tests land.
-_ = select
+# ---------------------------------------------------------------------------
+# sync_system_tags — the single writer of both representations
+# ---------------------------------------------------------------------------
+
+
+async def _system_codes_of(db_session, file_id: int) -> list[str]:
+    """The file's system tags, read THROUGH the association — never from the
+    cache, or the test would be asking the cache whether the cache is right."""
+    from backend.app.models.library import LibraryFileTag, LibraryTag
+
+    rows = await db_session.execute(
+        select(LibraryTag.code)
+        .join(LibraryFileTag, LibraryFileTag.tag_id == LibraryTag.id)
+        .where(LibraryFileTag.file_id == file_id, LibraryTag.is_system.is_(True))
+    )
+    return list(rows.scalars().all())
+
+
+@pytest.fixture
+async def system_tags(db_session):
+    """The eleven catalog rows the migration seeds.
+
+    Spelled out here rather than imported from the service: importing it would
+    prove only that the service agrees with itself, and this list is the
+    contract the migration also has to satisfy.
+    """
+    from backend.app.models.library import LibraryTag
+
+    codes = ["3mf", "gcode", "stl", "obj", "step", "project", "geometry", "multiplate", "swap", "sliced", "makerworld"]
+    for code in codes:
+        db_session.add(LibraryTag(name=code.upper(), name_key=code, is_system=True, code=code))
+    await db_session.commit()
+    return codes
+
+
+async def _file(db_session, **kwargs):
+    from backend.app.models.library import LibraryFile
+
+    defaults = {"filename": "cube.gcode.3mf", "file_path": "/tmp/c", "file_size": 1, "file_type": "gcode"}
+    defaults.update(kwargs)
+    row = LibraryFile(**defaults)
+    db_session.add(row)
+    await db_session.flush()
+    return row
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_sync_writes_both_representations(db_session, system_tags):
+    """The cache and the rows are written by one function, in one place, at one
+    moment — which is the whole reason keeping both is safe."""
+    from backend.app.services.library_helpers import sync_system_tags
+
+    f = await _file(db_session)
+
+    codes = await sync_system_tags(db_session, f)
+    await db_session.commit()
+
+    assert set(f.file_tags) == set(codes)
+    assert set(await _system_codes_of(db_session, f.id)) == set(codes)
+    assert "gcode" in codes and "3mf" in codes
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_sync_refuses_a_file_with_no_id(db_session, system_tags):
+    """Associations key off file.id. Writing the cache and silently skipping the
+    rows is the exact drift the single-writer design exists to prevent, so this
+    fails loudly instead."""
+    from backend.app.models.library import LibraryFile
+    from backend.app.services.library_helpers import sync_system_tags
+
+    unflushed = LibraryFile(filename="a.stl", file_path="/tmp/a", file_size=1, file_type="stl")
+
+    with pytest.raises(ValueError):
+        await sync_system_tags(db_session, unflushed)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_sync_is_idempotent(db_session, system_tags):
+    """The m128 backfill depends on this, and it is the only exercise the
+    reconcile branch gets — no runtime path re-derives tags today."""
+    from backend.app.services.library_helpers import sync_system_tags
+
+    f = await _file(db_session)
+    await sync_system_tags(db_session, f)
+    await db_session.commit()
+    first = sorted(await _system_codes_of(db_session, f.id))
+
+    await sync_system_tags(db_session, f)
+    await db_session.commit()
+
+    assert sorted(await _system_codes_of(db_session, f.id)) == first
+    assert first  # not vacuously equal because both are empty
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_sync_drops_a_stale_system_tag(db_session, system_tags):
+    """The reconcile half. Nothing re-derives tags at runtime today, but the
+    backfill runs against rows whose codes may have moved on."""
+    from backend.app.models.library import LibraryFileTag, LibraryTag
+    from backend.app.services.library_helpers import sync_system_tags
+
+    f = await _file(db_session, filename="a.stl", file_type="stl")
+    stale = (await db_session.execute(select(LibraryTag.id).where(LibraryTag.code == "makerworld"))).scalar_one()
+    db_session.add(LibraryFileTag(file_id=f.id, tag_id=stale))
+    await db_session.commit()
+
+    await sync_system_tags(db_session, f)
+    await db_session.commit()
+
+    assert "makerworld" not in await _system_codes_of(db_session, f.id)
+    assert "stl" in await _system_codes_of(db_session, f.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_sync_leaves_user_tags_alone(db_session, system_tags):
+    """The reconcile deletes stale SYSTEM associations. If it filtered on the
+    wrong thing it would quietly strip every label the user applied by hand, and
+    nothing on screen would say so."""
+    from backend.app.models.library import LibraryFileTag
+    from backend.app.services.library_helpers import sync_system_tags
+
+    user_tag = await _tag(db_session, name="kid-safe", name_key="kid-safe")
+    f = await _file(db_session)
+    db_session.add(LibraryFileTag(file_id=f.id, tag_id=user_tag.id))
+    await db_session.commit()
+
+    await sync_system_tags(db_session, f)
+    await db_session.commit()
+
+    rows = (
+        (await db_session.execute(select(LibraryFileTag.tag_id).where(LibraryFileTag.file_id == f.id))).scalars().all()
+    )
+    assert user_tag.id in rows
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_every_library_file_construction_syncs_its_tags():
+    """Six near-identical call sites, and a missed one produces a file that
+    looks completely normal and is simply absent from every tag filter.
+
+    A source guard rather than six end-to-end tests: three of the six sit deep
+    inside routes (external scan, slicer output, ZIP extraction) that cannot be
+    driven honestly in a unit test, and a path with NO test is exactly the one
+    that gets left behind. This fails when a new construction site appears
+    without a sync beside it.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    for rel in ("backend/app/api/routes/library.py", "backend/app/services/calibration_service.py"):
+        source = (root / rel).read_text(encoding="utf-8")
+        for match in re.finditer(r"LibraryFile\(", source):
+            following = source[match.end() : match.end() + 3000]
+            assert "sync_system_tags" in following, (
+                f"{rel}: a LibraryFile is constructed at offset {match.start()} with no "
+                "sync_system_tags within the next 3000 characters — that file would carry "
+                "no system tags and vanish from every tag filter."
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_an_uploaded_file_gets_its_system_tags(async_client: AsyncClient, db_session, system_tags, tmp_path):
+    """The one path that can be driven end to end — upload."""
+    from backend.app.models.library import LibraryFile
+
+    payload = tmp_path / "cube.stl"
+    payload.write_bytes(b"solid cube\nendsolid cube\n")
+    with payload.open("rb") as fh:
+        response = await async_client.post(
+            "/api/v1/library/files?generate_stl_thumbnails=false",
+            files={"file": ("cube.stl", fh, "application/octet-stream")},
+        )
+    assert response.status_code in (200, 201), response.text
+
+    file_id = (await db_session.execute(select(LibraryFile.id).where(LibraryFile.filename == "cube.stl"))).scalar_one()
+    cached = (await db_session.execute(select(LibraryFile.file_tags).where(LibraryFile.id == file_id))).scalar_one()
+
+    assert "stl" in cached
+    assert set(await _system_codes_of(db_session, file_id)) == set(cached)

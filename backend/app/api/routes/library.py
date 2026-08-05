@@ -67,10 +67,10 @@ from backend.app.schemas.library import (
 from backend.app.schemas.plate_objects import PlateObjectsResponse
 from backend.app.services.archive import ThreeMFParser
 from backend.app.services.library_helpers import (
-    compute_file_tags,
     detect_file_type,
     project_for_library_file,
     skip_objects_supported_from_metadata,
+    sync_system_tags,
 )
 from backend.app.services.library_trash import library_trash_service
 from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing
@@ -450,13 +450,6 @@ async def save_3mf_bytes_to_library(
         filename=filename,
         file_path=_stored_file_path(file_path, is_external_upload),
         file_type=file_type,
-        file_tags=compute_file_tags(
-            filename=filename,
-            file_type=file_type,
-            file_metadata=metadata or None,
-            source_type=source_type,
-            swap_compatible=swap_compatible,
-        ),
         skip_objects_supported=skip_objects_supported_from_metadata(metadata or None),
         file_size=len(content),
         file_hash=file_hash,
@@ -469,6 +462,9 @@ async def save_3mf_bytes_to_library(
     )
     db.add(library_file)
     await db.flush()
+    # After the flush, never in the constructor: the system-tag associations key
+    # off ``library_file.id``. Writes the ``file_tags`` cache too — one writer.
+    await sync_system_tags(db, library_file)
     # Inherit folder projects + plant matching plan rows. Caller is
     # responsible for ``selectinload(LibraryFolder.projects)`` on the
     # passed folder so this doesn't trip async lazy-load.
@@ -1730,13 +1726,6 @@ async def scan_external_folder(
                 filename=filename,
                 file_path=file_path_str,
                 file_type=file_type,
-                file_tags=compute_file_tags(
-                    filename=filename,
-                    file_type=file_type,
-                    file_metadata=file_metadata,
-                    source_type=None,
-                    swap_compatible=False,
-                ),
                 skip_objects_supported=skip_objects_supported_from_metadata(file_metadata),
                 file_size=stat.st_size,
                 file_hash=None,  # Skip hashing external files for performance
@@ -1744,6 +1733,12 @@ async def scan_external_folder(
                 file_metadata=_without_print_name(file_metadata),
             )
             db.add(db_file)
+            # Flushed per row rather than once after the scan: the associations
+            # key off the id, and holding every new row unflushed to save a
+            # round trip would make a mid-scan failure lose the whole batch's
+            # tags rather than just its own.
+            await db.flush()
+            await sync_system_tags(db, db_file)
             added += 1
 
     # Remove DB entries for files that no longer exist on disk.
@@ -2774,13 +2769,6 @@ async def slice_and_persist(
         # both ``gcode`` AND ``3mf`` tags so the composite badge restores
         # the visual distinction in the UI.
         file_type="gcode",
-        file_tags=compute_file_tags(
-            filename=out_filename,
-            file_type="gcode",
-            file_metadata=metadata,
-            source_type="sliced",
-            swap_compatible=False,
-        ),
         skip_objects_supported=skip_objects_supported_from_metadata(metadata),
         file_size=len(sliced_bytes),
         file_hash=hashlib.sha256(sliced_bytes).hexdigest(),
@@ -2791,6 +2779,7 @@ async def slice_and_persist(
     )
     db.add(new_file)
     await db.flush()
+    await sync_system_tags(db, new_file)
     # Inherit target folder's projects + plant matching plan rows so a
     # sliced ``.gcode.3mf`` lands in the project's plan automatically.
     # ``slice_and_persist`` doesn't load the folder itself — fetch with
@@ -3238,13 +3227,6 @@ async def upload_file(
             filename=filename,
             file_path=_stored_file_path(file_path, is_external_upload),
             file_type=file_type,
-            file_tags=compute_file_tags(
-                filename=filename,
-                file_type=file_type,
-                file_metadata=metadata if metadata else None,
-                source_type=None,
-                swap_compatible=swap_compatible,
-            ),
             skip_objects_supported=skip_objects_supported_from_metadata(metadata if metadata else None),
             file_size=len(content),
             file_hash=file_hash,
@@ -3255,6 +3237,7 @@ async def upload_file(
         )
         db.add(library_file)
         await db.flush()
+        await sync_system_tags(db, library_file)
         # Inherit the target folder's projects + plant matching print-plan
         # rows so a 3MF dropped into a project-tagged folder shows up in
         # the project's plan automatically.
@@ -3504,13 +3487,6 @@ async def extract_zip_file(
                         filename=filename,
                         file_path=to_relative_path(file_path),
                         file_type=file_type,
-                        file_tags=compute_file_tags(
-                            filename=filename,
-                            file_type=file_type,
-                            file_metadata=metadata if metadata else None,
-                            source_type=None,
-                            swap_compatible=False,
-                        ),
                         skip_objects_supported=skip_objects_supported_from_metadata(metadata if metadata else None),
                         file_size=len(file_content),
                         file_hash=file_hash,
@@ -3520,6 +3496,7 @@ async def extract_zip_file(
                     )
                     db.add(library_file)
                     await db.flush()
+                    await sync_system_tags(db, library_file)
                     # Inherit target folder's projects → matching plan rows
                     # so a 3MF unzipped into a project-tagged folder lands
                     # in the project's plan automatically. Re-fetch the

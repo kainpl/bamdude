@@ -129,6 +129,75 @@ def compute_file_tags(
     return tags
 
 
+async def sync_system_tags(db, file) -> list[str]:
+    """Derive this file's system tags and write BOTH representations.
+
+    The only writer of either. ``file_tags`` is the cache the hot path reads
+    (the badge row, ``isSliced`` on the frontend, preview-tab visibility in
+    ``routes/library.py``); the association rows in ``library_file_tags`` are
+    what the catalog counts and the ``tag_ids`` filter queries. One function
+    writing both at one moment is what makes keeping two representations safe —
+    the moment there is a second writer they can disagree, and a file whose
+    badges say "STL" while every filter says it does not exist is a bug nobody
+    reports because nothing looks broken.
+
+    In practice this is always an insert: nothing re-derives ``file_tags`` for
+    an existing file today, and renaming one does not either. It is written as a
+    reconcile anyway, because the m128 backfill calls it and because a future
+    re-derive path would otherwise become a second definition of what a system
+    tag means.
+
+    Returns the codes, so a caller that needs them does not recompute.
+    """
+    from sqlalchemy import delete, select
+
+    from backend.app.models.library import LibraryFileTag, LibraryTag
+
+    codes = compute_file_tags(
+        filename=file.filename,
+        file_type=file.file_type,
+        file_metadata=file.file_metadata,
+        source_type=file.source_type,
+        swap_compatible=bool(file.swap_compatible),
+    )
+    file.file_tags = codes
+
+    if file.id is None:
+        # Writing the cache and silently skipping the rows is exactly the drift
+        # this function exists to prevent, so fail rather than half-succeed.
+        raise ValueError("sync_system_tags needs a flushed file — associations key off file.id")
+
+    wanted = dict(
+        (await db.execute(select(LibraryTag.code, LibraryTag.id).where(LibraryTag.is_system.is_(True)))).all()
+    )
+    wanted_ids = {wanted[code] for code in codes if code in wanted}
+
+    current_ids = set(
+        (
+            await db.execute(
+                select(LibraryFileTag.tag_id)
+                .join(LibraryTag, LibraryTag.id == LibraryFileTag.tag_id)
+                .where(LibraryFileTag.file_id == file.id, LibraryTag.is_system.is_(True))
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    stale = current_ids - wanted_ids
+    if stale:
+        # Scoped to this file AND to the ids we resolved as system — a broader
+        # delete would strip the labels the user applied by hand.
+        await db.execute(
+            delete(LibraryFileTag).where(LibraryFileTag.file_id == file.id, LibraryFileTag.tag_id.in_(stale))
+        )
+    missing = wanted_ids - current_ids
+    if missing:
+        await db.execute(LibraryFileTag.__table__.insert(), [{"file_id": file.id, "tag_id": tid} for tid in missing])
+
+    return codes
+
+
 def skip_objects_supported_from_metadata(file_metadata: dict | None) -> bool:
     """Whether per-object skipping will work for a file, from stored metadata.
 

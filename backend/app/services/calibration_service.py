@@ -243,7 +243,7 @@ async def _persist_calibration_slice_to_library(
     """
     from backend.app.api.routes.library import get_library_files_dir, to_relative_path
     from backend.app.models.library import LibraryFile
-    from backend.app.services.library_helpers import compute_file_tags, skip_objects_supported_from_metadata
+    from backend.app.services.library_helpers import skip_objects_supported_from_metadata, sync_system_tags
 
     unique_name = f"{uuid.uuid4().hex}.gcode.3mf"
     out_path = (
@@ -266,13 +266,6 @@ async def _persist_calibration_slice_to_library(
         filename=filename,
         file_path=to_relative_path(out_path),
         file_type="gcode",
-        file_tags=compute_file_tags(
-            filename=filename,
-            file_type="gcode",
-            file_metadata=metadata,
-            source_type="sliced",
-            swap_compatible=False,
-        ),
         skip_objects_supported=skip_objects_supported_from_metadata(metadata),
         file_size=len(content),
         file_hash=hashlib.sha256(content).hexdigest(),
@@ -283,6 +276,8 @@ async def _persist_calibration_slice_to_library(
     )
     async with async_session() as db:
         db.add(new_file)
+        await db.flush()
+        await sync_system_tags(db, new_file)
         await db.commit()
         await db.refresh(new_file)
         return new_file.id
