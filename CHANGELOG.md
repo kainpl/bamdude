@@ -22,7 +22,11 @@ All notable changes to BamDude will be documented in this file.
 
 ### Changed
 
-- **Groundwork for one tag system.** The automatic file badges — `3MF`, `SLICED`, `MULTI-PLATE` and the rest — are now stored the same way as the tags you create yourself, and marked as system-assigned so they cannot be renamed, deleted, or taken off a file. Nothing changes on screen yet; the merged tag filter and the reworked tag dialog follow.
+- **One set of tags, and a tag dialog that behaves.** The automatic badges — `3MF`, `SLICED`, `MULTI-PLATE` and the rest — and the tags you create yourself are now one thing, sharing one row of filters: "every sliced file tagged kid-safe" is one question instead of two, and the filtering is done by the server rather than over whatever happened to be on screen. Automatic tags are shown but locked; BamDude assigns them from the file itself, so they cannot be renamed, deleted or taken off a file, and they are no longer offered where tags are applied by hand.
+
+    Managing tags no longer means fighting the dialog. Renaming happens in the row instead of a window on top of a window. Deleting says how many files it will affect **before** you agree, and several can go at once. Clicking a row no longer applies a filter and closes the window on you — which is what used to happen when you missed the small delete icon.
+
+    **Move** and **Tags** are on a single file's menu now, so moving one file no longer starts with ticking its checkbox. Tagging one file shows what is already on it, and a tick applies immediately.
 
 ### Fixed
 

@@ -82,6 +82,7 @@ import { SkipObjectsIcon } from '../components/SkipObjectsModal';
 import { getTagStyle, isSliced, isSliceable, isMultiPlate } from '../lib/fileTags';
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
 import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
+import { FileTagsPopover } from '../components/FileTagsPopover';
 import { libraryTagsQueryKey } from '../utils/libraryTagsQuery';
 
 type SortField = 'name' | 'date' | 'size' | 'type';
@@ -914,6 +915,10 @@ interface FileCardProps {
   onLink?: (file: LibraryFileListItem) => void;
   onGenerateThumbnail?: (file: LibraryFileListItem) => void;
   onPlateGallery?: (file: LibraryFileListItem) => void;
+  /** Move this one file — the toolbar's Move, without the checkbox dance. */
+  onMove?: (file: LibraryFileListItem) => void;
+  /** Per-file tag popover; the anchor is where the entry was clicked. */
+  onTags?: (file: LibraryFileListItem, anchor: { x: number; y: number }) => void;
   /** #1268 — click a user-tag chip to toggle it in the filter rail. */
   onTagClick?: (tagId: number) => void;
   thumbnailVersion?: number;
@@ -930,7 +935,7 @@ interface FileCardProps {
   t: TFunction;
 }
 
-function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onSlice, useSlicerApi, onPreview3d, onDownload, onRename, onGenerateThumbnail, onDelete }: {
+function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onSlice, useSlicerApi, onPreview3d, onDownload, onRename, onGenerateThumbnail, onMove, onTags, onDelete }: {
   file: LibraryFileListItem;
   t: TFunction;
   hasPermission: (permission: Permission) => boolean;
@@ -943,6 +948,8 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   onDownload: (id: number) => void;
   onRename: (f: LibraryFileListItem) => void;
   onGenerateThumbnail: (f: LibraryFileListItem) => void;
+  onMove?: (f: LibraryFileListItem) => void;
+  onTags?: (f: LibraryFileListItem, anchor: { x: number; y: number }) => void;
   onDelete: (id: number) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -1065,6 +1072,36 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
               <Pencil className="w-3.5 h-3.5" />
               {t('common.rename')}
             </button>
+            {/* Move and Tags — the two actions that used to exist only in the
+                multi-select toolbar, so moving one file meant ticking its
+                checkbox first. Same permission gate as Rename above, so a
+                *_own user sees them on their own files only. */}
+            {onMove && (
+              <button
+                className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${canModify('library', 'update', file.created_by_id) ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
+                onClick={() => { if (canModify('library', 'update', file.created_by_id)) { onMove(file); setOpen(false); } }}
+                disabled={!canModify('library', 'update', file.created_by_id)}
+              >
+                <MoveRight className="w-3.5 h-3.5" />
+                {t('common.move')}
+              </button>
+            )}
+            {onTags && (
+              <button
+                className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${canModify('library', 'update', file.created_by_id) ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
+                onClick={(e) => {
+                  if (!canModify('library', 'update', file.created_by_id)) return;
+                  // The popover anchors where the entry was clicked, so it
+                  // opens beside the file rather than in the middle of nowhere.
+                  onTags(file, { x: e.clientX, y: e.clientY });
+                  setOpen(false);
+                }}
+                disabled={!canModify('library', 'update', file.created_by_id)}
+              >
+                <TagIcon className="w-3.5 h-3.5" />
+                {t('fileManager.tags.tagAction')}
+              </button>
+            )}
             {(file.file_type === 'stl' || file.file_type === 'obj') && (
               <button
                 className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${canModify('library', 'update', file.created_by_id) ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
@@ -1091,7 +1128,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, useSlicerApi, onPreview3d, onRename, onLink, onGenerateThumbnail, onPlateGallery, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, useSlicerApi, onPreview3d, onRename, onLink, onGenerateThumbnail, onPlateGallery, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   const [showActions, setShowActions] = useState(false);
   // Portal-rendered dropdown — the card root has `overflow-hidden` for the
   // thumbnail crop, which clips an absolute-positioned menu against the card
@@ -1431,6 +1468,35 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
                   {t('common.rename')}
                 </button>
               )}
+              {/* Move and Tags — same pair as the list menu, same gate. */}
+              {onMove && (
+                <button
+                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
+                    canModify('library', 'update', file.created_by_id) ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                  }`}
+                  onClick={() => { if (canModify('library', 'update', file.created_by_id)) { onMove(file); setShowActions(false); } }}
+                  disabled={!canModify('library', 'update', file.created_by_id)}
+                >
+                  <MoveRight className="w-3.5 h-3.5" />
+                  {t('common.move')}
+                </button>
+              )}
+              {onTags && (
+                <button
+                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
+                    canModify('library', 'update', file.created_by_id) ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                  }`}
+                  onClick={(e) => {
+                    if (!canModify('library', 'update', file.created_by_id)) return;
+                    onTags(file, { x: e.clientX, y: e.clientY });
+                    setShowActions(false);
+                  }}
+                  disabled={!canModify('library', 'update', file.created_by_id)}
+                >
+                  <TagIcon className="w-3.5 h-3.5" />
+                  {t('fileManager.tags.tagAction')}
+                </button>
+              )}
               {onGenerateThumbnail && (file.file_type === 'stl' || file.file_type === 'obj') && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
@@ -1516,6 +1582,12 @@ export function FileManagerPage() {
   const [showNewFolderModal, setShowNewFolderModal] = useState(false);
   const [showExternalFolderModal, setShowExternalFolderModal] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
+  // Single-file Move and Tags, reachable from the ⋮ menu without first ticking
+  // a checkbox. `moveFile` reuses MoveFilesModal with a one-id list.
+  const [moveFile, setMoveFile] = useState<LibraryFileListItem | null>(null);
+  const [tagsPopover, setTagsPopover] = useState<{ file: LibraryFileListItem; anchor: { x: number; y: number } } | null>(
+    null,
+  );
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [droppedFiles, setDroppedFiles] = useState<File[]>([]);
   const [isPageDragging, setIsPageDragging] = useState(false);
@@ -3076,6 +3148,8 @@ export function FileManagerPage() {
                     onLink={setLinkFile}
                     onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
                     onPlateGallery={setGalleryFile}
+                    onMove={setMoveFile}
+                    onTags={(f, anchor) => setTagsPopover({ file: f, anchor })}
                     onTagClick={toggleTagFilter}
                     thumbnailVersion={thumbnailVersions[file.id]}
                     isRegeneratingThumbnail={regeneratingFileId === file.id}
@@ -3375,6 +3449,8 @@ export function FileManagerPage() {
                             onDownload={handleDownload}
                         onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
                         onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
+                        onMove={setMoveFile}
+                        onTags={(f, anchor) => setTagsPopover({ file: f, anchor })}
                         onDelete={(id) => setDeleteConfirm({ type: 'file', id })}
                       />
                     </div>
@@ -3441,6 +3517,31 @@ export function FileManagerPage() {
           onMove={(folderId) => moveFilesMutation.mutate({ fileIds: selectedFiles, folderId })}
           isLoading={moveFilesMutation.isPending}
           t={t}
+        />
+      )}
+
+      {/* Same dialog, one file. Reusing it rather than building a single-file
+          twin keeps one definition of "where can this go". */}
+      {moveFile && folders && (
+        <MoveFilesModal
+          folders={folders}
+          selectedFiles={[moveFile.id]}
+          currentFolderId={selectedFolderId}
+          onClose={() => setMoveFile(null)}
+          onMove={(folderId) => {
+            moveFilesMutation.mutate({ fileIds: [moveFile.id], folderId });
+            setMoveFile(null);
+          }}
+          isLoading={moveFilesMutation.isPending}
+          t={t}
+        />
+      )}
+
+      {tagsPopover && (
+        <FileTagsPopover
+          file={tagsPopover.file}
+          anchor={tagsPopover.anchor}
+          onClose={() => setTagsPopover(null)}
         />
       )}
 
