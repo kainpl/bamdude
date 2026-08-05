@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
   Plus, Loader2, Trash2, Archive, RotateCcw, Edit2, Package,
-  Search, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
+  Search,
   TrendingDown, Layers, Printer, AlertTriangle, X, Clock, LayoutGrid, TableProperties, Columns,
   ArrowUp, ArrowDown, ArrowUpDown, Group, ChevronDown, Check, RefreshCw, Disc3, Copy, Eraser,
   TrendingUp, Lock, Sparkles, Upload, Download, MapPin,
@@ -14,6 +14,7 @@ import { ForecastPanel } from '../components/ForecastPanel';
 import { api, ApiError } from '../api/client';
 import type { InventorySpool, SpoolAssignment, SpoolCatalogEntry } from '../api/client';
 import { Button } from '../components/Button';
+import { PaginationBar } from '../components/PaginationBar';
 import { SpoolFormModal, type SpoolFormMode } from '../components/SpoolFormModal';
 import { SpoolCsvImportModal } from '../components/SpoolCsvImportModal';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -1465,6 +1466,26 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     try { localStorage.setItem('bamdude-inventory-pageSize', String(size)); } catch { /* ignore */ }
   };
 
+  /**
+   * The table and the cards used to carry two copies of this control, already
+   * drifted apart (one had button tooltips, the other didn't) — now one shared
+   * component, the same one the archives page uses. `pageIndex` is 0-based here
+   * and the bar counts from 1, like the number it puts on screen; the two
+   * conversions live here so nothing downstream has to remember which is which.
+   */
+  const paginationBar = (variant: 'card' | 'bare') => (
+    <PaginationBar
+      page={safePageIndex + 1}
+      totalPages={totalPages}
+      perPage={pageSize}
+      total={totalDisplayItems}
+      items={totalDisplayItems !== 1 ? t('inventory.spools') : t('inventory.spool')}
+      variant={variant}
+      onPageChange={(p) => setPageIndex(p - 1)}
+      onPerPageChange={handlePageSizeChange}
+    />
+  );
+
   const clearAllFilters = () => {
     setArchiveFilter('active');
     setUsageFilter('all');
@@ -2108,16 +2129,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                 );
               })}
             </div>
-            {/* Pagination for cards */}
-            <PaginationBar
-              pageIndex={safePageIndex}
-              pageSize={pageSize}
-              totalRows={totalDisplayItems}
-              totalPages={totalPages}
-              onPageChange={setPageIndex}
-              onPageSizeChange={handlePageSizeChange}
-              t={t}
-            />
+            {/* Pagination for cards — bare, since a grid has no card of its
+                own for a footer to sit in. */}
+            {paginationBar('bare')}
           </>
         ) : (
           <EmptyFilterState
@@ -2336,71 +2350,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               </table>
             </div>
 
-            {/* Pagination inside card footer. Extra right padding keeps the
-                last-page button clear of the fixed bottom-right bug-report
-                bubble (BugReportBubble, ~64px corner footprint). */}
-            <div className="flex items-center justify-between py-3 pl-4 pr-14 bg-bambu-dark-tertiary/50 border-t border-bambu-dark-tertiary text-sm">
-              <span className="text-bambu-gray">
-                {showAll
-                  ? `${totalDisplayItems} ${totalDisplayItems !== 1 ? t('inventory.spools') : t('inventory.spool')}`
-                  : <>{t('inventory.showing')} {safePageIndex * effectivePageSize + 1} {t('inventory.to')}{' '}
-                    {Math.min((safePageIndex + 1) * effectivePageSize, totalDisplayItems)}{' '}
-                    {t('inventory.of')} {totalDisplayItems} {t('inventory.spools')}</>
-                }
-              </span>
-
-              <div className="flex items-center gap-2">
-                <span className="text-bambu-gray">{t('inventory.show')}</span>
-                <select
-                  value={pageSize}
-                  onChange={(e) => handlePageSizeChange(Number(e.target.value))}
-                  className="px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:outline-none focus:border-bambu-green"
-                >
-                  {[12, 24, 48, 96].map((n) => (
-                    <option key={n} value={n}>{n}</option>
-                  ))}
-                  <option value={-1}>{t('inventory.all')}</option>
-                </select>
-
-                {!showAll && (
-                  <>
-                    <button
-                      onClick={() => setPageIndex(0)}
-                      disabled={safePageIndex === 0}
-                      className="p-1.5 rounded text-bambu-gray hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                      title="First page"
-                    >
-                      <ChevronsLeft className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => setPageIndex((p) => Math.max(0, p - 1))}
-                      disabled={safePageIndex === 0}
-                      className="p-1.5 rounded text-bambu-gray hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                    >
-                      <ChevronLeft className="w-4 h-4" />
-                    </button>
-                    <span className="text-bambu-gray px-2 whitespace-nowrap">
-                      {t('inventory.page')} {safePageIndex + 1} {t('inventory.of')} {totalPages}
-                    </span>
-                    <button
-                      onClick={() => setPageIndex((p) => Math.min(totalPages - 1, p + 1))}
-                      disabled={safePageIndex >= totalPages - 1}
-                      className="p-1.5 rounded text-bambu-gray hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                    >
-                      <ChevronRight className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => setPageIndex(totalPages - 1)}
-                      disabled={safePageIndex >= totalPages - 1}
-                      className="p-1.5 rounded text-bambu-gray hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                      title="Last page"
-                    >
-                      <ChevronsRight className="w-4 h-4" />
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
+            {paginationBar('card')}
           </div>
           </>
         ) : (
@@ -2527,83 +2477,6 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         onClose={() => setLocationsModalOpen(false)}
         onPickLocation={(id) => setStorageLocationFilter(String(id))}
       />
-    </div>
-  );
-}
-
-/* Pagination bar (reused for cards view) */
-function PaginationBar({
-  pageIndex, pageSize, totalRows, totalPages, onPageChange, onPageSizeChange, t,
-}: {
-  pageIndex: number;
-  pageSize: number;
-  totalRows: number;
-  totalPages: number;
-  onPageChange: (page: number) => void;
-  onPageSizeChange: (size: number) => void;
-  t: (key: string) => string;
-}) {
-  const isShowAll = pageSize === -1;
-  if (totalPages <= 1 && !isShowAll) return null;
-  const effectiveSize = isShowAll ? totalRows || 1 : pageSize;
-  return (
-    <div className="flex items-center justify-between pt-2 pr-14 text-sm">
-      <span className="text-bambu-gray">
-        {isShowAll
-          ? `${totalRows} ${totalRows !== 1 ? t('inventory.spools') : t('inventory.spool')}`
-          : <>{t('inventory.showing')} {pageIndex * effectiveSize + 1} {t('inventory.to')}{' '}
-              {Math.min((pageIndex + 1) * effectiveSize, totalRows)}{' '}
-              {t('inventory.of')} {totalRows} {t('inventory.spools')}</>
-        }
-      </span>
-      <div className="flex items-center gap-2">
-        <span className="text-bambu-gray">{t('inventory.show')}</span>
-        <select
-          value={pageSize}
-          onChange={(e) => onPageSizeChange(Number(e.target.value))}
-          className="px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:outline-none focus:border-bambu-green"
-        >
-          {[12, 24, 48, 96].map((n) => (
-            <option key={n} value={n}>{n}</option>
-          ))}
-          <option value={-1}>{t('inventory.all')}</option>
-        </select>
-        {!isShowAll && (
-          <>
-            <button
-              onClick={() => onPageChange(0)}
-              disabled={pageIndex === 0}
-              className="p-1.5 rounded text-bambu-gray hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            >
-              <ChevronsLeft className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => onPageChange(Math.max(0, pageIndex - 1))}
-              disabled={pageIndex === 0}
-              className="p-1.5 rounded text-bambu-gray hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <span className="text-bambu-gray px-2 whitespace-nowrap">
-              {t('inventory.page')} {pageIndex + 1} {t('inventory.of')} {totalPages}
-            </span>
-            <button
-              onClick={() => onPageChange(Math.min(totalPages - 1, pageIndex + 1))}
-              disabled={pageIndex >= totalPages - 1}
-              className="p-1.5 rounded text-bambu-gray hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            >
-              <ChevronRight className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => onPageChange(totalPages - 1)}
-              disabled={pageIndex >= totalPages - 1}
-              className="p-1.5 rounded text-bambu-gray hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            >
-              <ChevronsRight className="w-4 h-4" />
-            </button>
-          </>
-        )}
-      </div>
     </div>
   );
 }

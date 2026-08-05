@@ -106,6 +106,12 @@ export default {
     left: 'Ліворуч',
     right: 'Праворуч',
     showingRange: '{{from}}-{{to}} з {{total}}',
+    showingRangeItems: '{{from}}-{{to}} з {{total}} {{items}}',
+    pageOf: 'Сторінка {{page}} з {{total}}',
+    firstPage: 'Перша сторінка',
+    previousPage: 'Попередня сторінка',
+    nextPage: 'Наступна сторінка',
+    lastPage: 'Остання сторінка',
     show: 'Показати',
     total: 'всього',
     history: 'Історія',
@@ -1031,6 +1037,10 @@ export default {
       matchAnyColor: 'Збіг з БУДЬ-ЯКИМ вибраним кольором',
       matchAllColors: 'Збіг з УСІМА вибраними кольорами',
       archivesAutoCreated: 'Архіви створюються автоматично після завершення друку',
+      archiveCount_one: 'архівний запис',
+      archiveCount_few: 'архівні записи',
+      archiveCount_many: 'архівних записів',
+      archiveCount_other: 'архівних записів',
       unknownPrinter: 'Невідомий',
       slicedFor: 'Нарізано для {{model}}',
       noPrinter: 'Без принтера',
@@ -1056,7 +1066,8 @@ export default {
       printTime: 'Час друку',
       estimated: 'Орієнтовно',
       actual: 'Фактично',
-      accuracy: 'Точність'
+      accuracy: 'Точність',
+      sortBy: 'Сортувати за'
     }
   },
 

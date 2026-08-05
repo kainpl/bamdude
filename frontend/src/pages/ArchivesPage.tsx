@@ -46,14 +46,15 @@ import {
   FolderKanban,
   ChevronLeft,
   ChevronRight,
-  ChevronsLeft,
-  ChevronsRight,
   Settings,
   User,
   Play,
   Zap,
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
+  ArrowUp,
+  ArrowDown,
+  ArrowUpDown,
   DownloadCloud,
   Cog,
   Archive as ArchiveIcon,
@@ -70,6 +71,7 @@ import { useIsMobile } from '../hooks/useIsMobile';
 import type { Archive, ProjectListItem, ArchiveListParams } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
+import { PaginationBar } from '../components/PaginationBar';
 import { ModelViewerModal } from '../components/ModelViewerModal';
 import { PrintModal } from '../components/PrintModal';
 import { SliceModal } from '../components/SliceModal';
@@ -2778,7 +2780,8 @@ function ArchiveListRow({
   );
 }
 
-type SortOption = 'date-desc' | 'date-asc' | 'name-asc' | 'name-desc' | 'size-desc' | 'size-asc';
+type SortOption = 'date-desc' | 'date-asc' | 'name-asc' | 'name-desc' | 'size-desc' | 'size-asc' | 'printer-asc' | 'printer-desc';
+type SortField = 'date' | 'name' | 'size' | 'printer';
 type ViewMode = 'grid' | 'list' | 'calendar';
 type Collection = 'all' | 'recent' | 'this-week' | 'this-month' | 'favorites' | 'printed' | 'failed' | 'duplicates';
 
@@ -2887,12 +2890,13 @@ export function ArchivesPage() {
   const [sortBy, setSortBy] = useState<SortOption>(() =>
     (localStorage.getItem('archiveSortBy') as SortOption) || 'date-desc'
   );
-  // Derived field+direction split for the two-control sort UI (select + toggle).
-  // Keeps `sortBy` as the single source-of-truth so localStorage and the
-  // backend query param stay backward-compatible.
-  const sortField = sortBy.split('-')[0] as 'date' | 'name' | 'size';
+  // Derived field+direction split. The list view sorts by clicking a column
+  // header; the select+toggle pair survives only for the grid, which has no
+  // headers. Both write `sortBy`, which stays the single source of truth so
+  // localStorage and the backend query param remain backward-compatible.
+  const sortField = sortBy.split('-')[0] as SortField;
   const sortDir = sortBy.split('-')[1] as 'asc' | 'desc';
-  const setSortField = (field: 'date' | 'name' | 'size') => {
+  const setSortField = (field: SortField) => {
     setSortBy(`${field}-${sortDir}` as SortOption);
     setPage(1);
   };
@@ -2900,6 +2904,57 @@ export function ArchivesPage() {
     const next = sortDir === 'asc' ? 'desc' : 'asc';
     setSortBy(`${sortField}-${next}` as SortOption);
     setPage(1);
+  };
+
+  /**
+   * Which way a column sorts the first time it is clicked. Not one rule for
+   * all three: a print history opened by date wants the newest print, and the
+   * biggest file is the one worth finding — only a name is naturally read A→Z.
+   * Clicking the column that is already sorted flips it.
+   */
+  const FIRST_CLICK_DIR: Record<SortField, 'asc' | 'desc'> = {
+    date: 'desc',
+    name: 'asc',
+    size: 'desc',
+    printer: 'asc',
+  };
+  const sortByColumn = (field: SortField) => {
+    if (field === sortField) {
+      toggleSortDir();
+      return;
+    }
+    setSortBy(`${field}-${FIRST_CLICK_DIR[field]}` as SortOption);
+    setPage(1);
+  };
+
+  /**
+   * A list-view column header that sorts, styled like the spool table's.
+   *
+   * A called function, not a nested `<SortHeader />` component: a component
+   * declared inside a render is a new type every time, so React remounts the
+   * button instead of updating it — and this button loses focus the moment it
+   * is used, which is the one interaction it exists for.
+   */
+  const sortHeader = (field: SortField, label: string) => {
+    const isActive = sortField === field;
+    return (
+      <button
+        type="button"
+        onClick={() => sortByColumn(field)}
+        className={`inline-flex items-center gap-1 select-none hover:text-bambu-green transition-colors ${
+          isActive ? 'text-bambu-green' : ''
+        }`}
+      >
+        {label}
+        {isActive ? (
+          sortDir === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />
+        ) : (
+          // Shown faint on every sortable column: a control that only appears
+          // once used cannot tell you it was there to be used.
+          <ArrowUpDown className="w-3 h-3 opacity-30" />
+        )}
+      </button>
+    );
   };
   const [collection, setCollection] = useState<Collection>(() =>
     (localStorage.getItem('archiveCollection') as Collection) || 'all'
@@ -2970,6 +3025,29 @@ export function ArchivesPage() {
 
   const archives = archivesResponse?.data;
   const paginationMeta = archivesResponse?.meta;
+
+  /**
+   * How many per page and which page, in one control under the rows — the grid
+   * and the list each render it at their own end, so it is always the last
+   * thing after the rows rather than something to scroll back up for. Same
+   * component as the spools table (`components/PaginationBar`).
+   */
+  const paginationBar = (variant: 'card' | 'bare') =>
+    paginationMeta ? (
+      <PaginationBar
+        page={paginationMeta.current_page}
+        totalPages={paginationMeta.last_page}
+        perPage={perPage}
+        total={paginationMeta.total}
+        items={t('archives.page.archiveCount', { count: paginationMeta.total })}
+        variant={variant}
+        onPageChange={setPage}
+        onPerPageChange={(size) => {
+          setPerPage(size);
+          setPage(1);
+        }}
+      />
+    ) : null;
 
   const { data: printers } = useQuery({
     // Include archived printers so history for a retired printer stays
@@ -3357,15 +3435,9 @@ export function ArchivesPage() {
           {viewMode === 'calendar' && (
             <p className="text-bambu-gray text-sm">{t('archives.calendarView')}</p>
           )}
-          {(viewMode === 'grid' || viewMode === 'list') && paginationMeta && (
-            <p className="text-bambu-gray text-sm">
-              {t('common.showingRange', {
-                from: ((paginationMeta.current_page - 1) * paginationMeta.per_page) + 1,
-                to: Math.min(paginationMeta.current_page * paginationMeta.per_page, paginationMeta.total),
-                total: paginationMeta.total,
-              })}
-            </p>
-          )}
+          {/* The range used to be reported here, three screen-heights from the
+              page controls and from the page-size selector. All three now live
+              in one PaginationBar under the rows. */}
         </div>
         <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
           {/* View mode toggle - matches PrintersPage card-size selector style */}
@@ -3515,25 +3587,6 @@ export function ArchivesPage() {
           )}
         </div>
       </div>
-
-      {/* Pagination row - only rendered when there are multiple pages */}
-      {(viewMode === 'grid' || viewMode === 'list') && paginationMeta && paginationMeta.last_page > 1 && (
-        <div className="flex items-center justify-end gap-2 mb-4">
-          <button onClick={() => setPage(1)} disabled={page <= 1} className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary">
-            <ChevronsLeft className="w-4 h-4" />
-          </button>
-          <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary">
-            <ChevronLeft className="w-4 h-4" />
-          </button>
-          <span className="text-sm text-bambu-gray">{paginationMeta.current_page} / {paginationMeta.last_page}</span>
-          <button onClick={() => setPage(p => Math.min(paginationMeta.last_page, p + 1))} disabled={page >= paginationMeta.last_page} className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary">
-            <ChevronRight className="w-4 h-4" />
-          </button>
-          <button onClick={() => setPage(paginationMeta.last_page)} disabled={page >= paginationMeta.last_page} className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary">
-            <ChevronsRight className="w-4 h-4" />
-          </button>
-        </div>
-      )}
 
       {/* Filters (hidden in log/calendar views) */}
       {(viewMode === 'grid' || viewMode === 'list') && (
@@ -3704,87 +3757,84 @@ export function ArchivesPage() {
             )}
             </div>
 
-            {/* Third row: per-page on the left, sort (field + direction) on the right */}
-            <div className="flex items-center justify-between gap-2 mt-3">
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs text-bambu-gray">{t('common.show')}</span>
-                <select
-                  className="h-9 px-3 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-bambu-gray focus:border-bambu-green focus:outline-none"
-                  value={perPage}
-                  onChange={(e) => { setPerPage(Number(e.target.value)); setPage(1); }}
-                >
-                  {[12, 24, 48, 96].map((n) => (
-                    <option key={n} value={n}>{n}</option>
-                  ))}
-                  <option value={-1}>{t('common.all')}</option>
-                </select>
-              </div>
-              <div className="flex items-center gap-1">
-                <select
-                  className="h-9 min-w-[7rem] px-3 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                  value={sortField}
-                  onChange={(e) => setSortField(e.target.value as 'date' | 'name' | 'size')}
-                >
-                  <option value="date">{t('common.date')}</option>
-                  <option value="name">{t('common.name')}</option>
-                  <option value="size">{t('fileManager.size')}</option>
-                </select>
-                <button
-                  onClick={toggleSortDir}
-                  className="h-9 w-9 flex items-center justify-center bg-bambu-dark border border-bambu-dark-tertiary rounded-lg hover:border-bambu-green transition-colors"
-                  title={sortDir === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
-                >
-                  {sortDir === 'asc' ? (
-                    <ArrowUpNarrowWide className="w-4 h-4 text-bambu-gray" />
-                  ) : (
-                    <ArrowDownWideNarrow className="w-4 h-4 text-bambu-gray" />
+            {/* Third row: colours on the left, sort on the right. The colours
+                used to own a whole row of their own below this one, and page
+                size used to own the left of this one — both were a row of
+                vertical space each for one control. The sort control survives
+                only for the grid, which has no column headers to click; in the
+                list view the headers themselves sort. */}
+            {(uniqueColors.length > 0 || viewMode === 'grid') && (
+            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 mt-3">
+              {uniqueColors.length > 0 && (
+                <div className="flex items-center gap-3 flex-wrap">
+                  <span className="text-xs text-bambu-gray">{t('archives.page.colors')}</span>
+                  {filterColors.size > 1 && (
+                    <button
+                      onClick={() => { setColorFilterMode(m => m === 'or' ? 'and' : 'or'); setPage(1); }}
+                      className={`px-2 py-0.5 text-xs rounded transition-colors ${
+                        colorFilterMode === 'and'
+                          ? 'bg-bambu-green text-white'
+                          : 'bg-bambu-dark-tertiary text-bambu-gray hover:text-white'
+                      }`}
+                      title={colorFilterMode === 'or' ? t('archives.page.matchAnyColor') : t('archives.page.matchAllColors')}
+                    >
+                      {colorFilterMode.toUpperCase()}
+                    </button>
                   )}
-                </button>
-              </div>
-            </div>
-          {/* Color Filter */}
-          {uniqueColors.length > 0 && (
-            <div className="flex items-center gap-3 mt-4 pt-4 border-t border-bambu-dark-tertiary">
-              <span className="text-xs text-bambu-gray">{t('archives.page.colors')}</span>
-              {filterColors.size > 1 && (
-                <button
-                  onClick={() => { setColorFilterMode(m => m === 'or' ? 'and' : 'or'); setPage(1); }}
-                  className={`px-2 py-0.5 text-xs rounded transition-colors ${
-                    colorFilterMode === 'and'
-                      ? 'bg-bambu-green text-white'
-                      : 'bg-bambu-dark-tertiary text-bambu-gray hover:text-white'
-                  }`}
-                  title={colorFilterMode === 'or' ? t('archives.page.matchAnyColor') : t('archives.page.matchAllColors')}
-                >
-                  {colorFilterMode.toUpperCase()}
-                </button>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {uniqueColors.map((color) => (
+                      <button
+                        key={color}
+                        onClick={() => toggleColor(color)}
+                        className={`w-6 h-6 rounded-full border-2 transition-all ${
+                          filterColors.has(color)
+                            ? 'border-bambu-green scale-110'
+                            : 'border-white/20 hover:border-white/40'
+                        }`}
+                        style={{ backgroundColor: color }}
+                        title={color}
+                      />
+                    ))}
+                  </div>
+                  {filterColors.size > 0 && (
+                    <button
+                      onClick={clearColorFilter}
+                      className="text-xs text-bambu-gray hover:text-white flex items-center gap-1"
+                    >
+                      <X className="w-3 h-3" />
+                      {t('archives.page.clear')}
+                    </button>
+                  )}
+                </div>
               )}
-              <div className="flex items-center gap-1.5 flex-wrap">
-                {uniqueColors.map((color) => (
+              {viewMode === 'grid' && (
+                <div className="flex items-center gap-1 ml-auto">
+                  <select
+                    className="h-9 min-w-[7rem] px-3 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    value={sortField}
+                    aria-label={t('archives.list.sortBy')}
+                    onChange={(e) => setSortField(e.target.value as SortField)}
+                  >
+                    <option value="date">{t('common.date')}</option>
+                    <option value="name">{t('common.name')}</option>
+                    <option value="size">{t('fileManager.size')}</option>
+                    <option value="printer">{t('archives.list.printer')}</option>
+                  </select>
                   <button
-                    key={color}
-                    onClick={() => toggleColor(color)}
-                    className={`w-6 h-6 rounded-full border-2 transition-all ${
-                      filterColors.has(color)
-                        ? 'border-bambu-green scale-110'
-                        : 'border-white/20 hover:border-white/40'
-                    }`}
-                    style={{ backgroundColor: color }}
-                    title={color}
-                  />
-                ))}
-              </div>
-              {filterColors.size > 0 && (
-                <button
-                  onClick={clearColorFilter}
-                  className="text-xs text-bambu-gray hover:text-white flex items-center gap-1"
-                >
-                  <X className="w-3 h-3" />
-                  {t('archives.page.clear')}
-                </button>
+                    onClick={toggleSortDir}
+                    className="h-9 w-9 flex items-center justify-center bg-bambu-dark border border-bambu-dark-tertiary rounded-lg hover:border-bambu-green transition-colors"
+                    title={sortDir === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
+                  >
+                    {sortDir === 'asc' ? (
+                      <ArrowUpNarrowWide className="w-4 h-4 text-bambu-gray" />
+                    ) : (
+                      <ArrowDownWideNarrow className="w-4 h-4 text-bambu-gray" />
+                    )}
+                  </button>
+                </div>
               )}
             </div>
-          )}
+            )}
         </div>
       )}
 
@@ -3810,6 +3860,7 @@ export function ArchivesPage() {
           />
         </Card>
       ) : viewMode === 'grid' ? (
+        <>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
           {archives?.map((archive) => (
             <ArchiveCard
@@ -3830,6 +3881,11 @@ export function ArchivesPage() {
             />
           ))}
         </div>
+        {/* Bare under a grid of cards — there is no card of its own to sit in.
+            Same control as the list view's footer, same place: where the rows
+            end. */}
+        {paginationBar('bare')}
+        </>
       ) : viewMode === 'list' ? (
         <Card>
           {/* One outer grid owns the column tracks; the header and every
@@ -3846,11 +3902,14 @@ export function ArchivesPage() {
                 left/right alignment). */}
             <div className="col-span-full grid grid-cols-subgrid px-4 py-3 text-xs text-bambu-gray font-medium text-center">
               <div></div>
-              <div>{t('archives.list.name')}</div>
-              <div>{t('archives.list.printer')}</div>
+              <div>{sortHeader('name', t('archives.list.name'))}</div>
+              <div>{sortHeader('printer', t('archives.list.printer'))}</div>
+              {/* Print time carries no header control: the sort runs on the
+                  server, which has no ordering for it. A clickable header that
+                  did nothing would be worse than a plain one. */}
               <div>{t('archives.list.printTime')}</div>
-              <div>{t('archives.list.date')}</div>
-              <div>{t('archives.list.size')}</div>
+              <div>{sortHeader('date', t('archives.list.date'))}</div>
+              <div>{sortHeader('size', t('archives.list.size'))}</div>
               <div>{t('archives.list.actions')}</div>
             </div>
             {/* List Items */}
@@ -3870,6 +3929,7 @@ export function ArchivesPage() {
               />
             ))}
           </div>
+          {paginationBar('card')}
         </Card>
       ) : null}
 

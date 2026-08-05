@@ -881,3 +881,85 @@ class TestArchiveDeleteImpact:
         db_session.expire_all()
         refreshed = await db_session.get(PrintQueueItem, item_id)
         assert refreshed.status == "cancelled"
+
+
+class TestArchiveSortByPrinter:
+    """`?sort_by=printer-asc|printer-desc`, added so the list view's Printer
+    column can be clicked like the others.
+
+    Ordering by printer is the only sort that has to leave the archive table to
+    answer, which is where the two failure modes live: dropping the rows that
+    have no printer, and ordering by an id instead of by the name on screen.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_orders_by_printer_name_not_by_id(self, async_client: AsyncClient, archive_factory, printer_factory):
+        # Ids ascend while names descend, so an id-ordered list is the exact
+        # reverse of a correct one — nothing subtle to miss.
+        first = await printer_factory(name="Zulu")
+        second = await printer_factory(name="Alpha")
+        await archive_factory(first.id, print_name="on-zulu")
+        await archive_factory(second.id, print_name="on-alpha")
+
+        response = await async_client.get("/api/v1/archives/?sort_by=printer-asc")
+
+        assert response.status_code == 200
+        assert [a["print_name"] for a in response.json()["data"]] == ["on-alpha", "on-zulu"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_reverses_on_descending(self, async_client: AsyncClient, archive_factory, printer_factory):
+        # Three, created in an order that is neither the ascending nor the
+        # descending answer. Two rows would let this pass on the insertion
+        # order alone: the archives share a created_at to the second, so the
+        # date fallback has no tiebreaker and can return either arrangement.
+        mike = await printer_factory(name="Mike")
+        zulu = await printer_factory(name="Zulu")
+        alpha = await printer_factory(name="Alpha")
+        await archive_factory(mike.id, print_name="on-mike")
+        await archive_factory(zulu.id, print_name="on-zulu")
+        await archive_factory(alpha.id, print_name="on-alpha")
+
+        response = await async_client.get("/api/v1/archives/?sort_by=printer-desc")
+
+        assert [a["print_name"] for a in response.json()["data"]] == ["on-zulu", "on-mike", "on-alpha"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_keeps_archives_that_have_no_printer(
+        self, async_client: AsyncClient, archive_factory, printer_factory
+    ):
+        """An external print, or one whose printer was deleted, still has to be
+        in a list that is merely being re-ordered — a join would silently drop
+        it, and the row count is the only thing that would show it."""
+        printer = await printer_factory(name="Alpha")
+        await archive_factory(printer.id, print_name="on-alpha")
+        await archive_factory(None, print_name="orphan", sliced_for_model="P1S")
+
+        response = await async_client.get("/api/v1/archives/?sort_by=printer-asc")
+
+        names = [a["print_name"] for a in response.json()["data"]]
+        assert sorted(names) == ["on-alpha", "orphan"]
+        assert response.json()["meta"]["total"] == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_printerless_archive_sorts_by_what_it_displays(
+        self, async_client: AsyncClient, archive_factory, printer_factory
+    ):
+        """With no printer the column shows `sliced_for_model`, so that is what
+        it sorts by — otherwise those rows would all collapse to one end
+        regardless of what the operator can see in them."""
+        printer = await printer_factory(name="Mike")
+        await archive_factory(printer.id, print_name="on-mike")
+        await archive_factory(None, print_name="sliced-for-a1", sliced_for_model="A1")
+        await archive_factory(None, print_name="sliced-for-x1", sliced_for_model="X1C")
+
+        response = await async_client.get("/api/v1/archives/?sort_by=printer-asc")
+
+        assert [a["print_name"] for a in response.json()["data"]] == [
+            "sliced-for-a1",
+            "on-mike",
+            "sliced-for-x1",
+        ]

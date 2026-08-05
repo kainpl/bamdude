@@ -106,6 +106,12 @@ export default {
     left: 'Left',
     right: 'Right',
     showingRange: 'Showing {{from}}-{{to}} of {{total}}',
+    showingRangeItems: 'Showing {{from}}-{{to}} of {{total}} {{items}}',
+    pageOf: 'Page {{page}} of {{total}}',
+    firstPage: 'First page',
+    previousPage: 'Previous page',
+    nextPage: 'Next page',
+    lastPage: 'Last page',
     show: 'Show',
     total: 'total',
     history: 'History',
@@ -1023,6 +1029,9 @@ export default {
       matchAllColors: 'Match ALL selected colors',
       // Empty state
       archivesAutoCreated: 'Archives are created automatically when prints complete',
+      // Just the noun — the count is placed by the pagination bar's own phrase.
+      archiveCount_one: 'archive',
+      archiveCount_other: 'archives',
       // Printer name fallbacks
       unknownPrinter: 'Unknown',
       slicedFor: 'Sliced for {{model}}',
@@ -1050,7 +1059,8 @@ export default {
       printTime: 'Print time',
       estimated: 'Estimated',
       actual: 'Actual',
-      accuracy: 'Accuracy'
+      accuracy: 'Accuracy',
+      sortBy: 'Sort by'
     }
   },
 

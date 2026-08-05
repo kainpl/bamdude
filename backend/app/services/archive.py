@@ -2818,6 +2818,17 @@ class ArchiveService:
             order_clause = PrintArchive.file_size.desc()
         elif sort_by == "size-asc":
             order_clause = PrintArchive.file_size.asc()
+        elif sort_by in ("printer-asc", "printer-desc"):
+            # A correlated subquery rather than a join: an archive can have no
+            # printer at all (an external print, or one whose printer was
+            # deleted), and an inner join would drop those rows from a list that
+            # is only being re-ordered. COALESCE rather than a NULLS clause,
+            # whose support differs between our two backends — and it falls back
+            # to the same value the row DISPLAYS (`sliced_for_model`), so the
+            # order matches the column on screen instead of an id nobody sees.
+            printer_name = select(Printer.name).where(Printer.id == PrintArchive.printer_id).scalar_subquery()
+            printer_sort = func.coalesce(printer_name, PrintArchive.sliced_for_model, "")
+            order_clause = printer_sort.asc() if sort_by == "printer-asc" else printer_sort.desc()
 
         # Total count (same filters, no limit/offset)
         count_query = select(func.count()).select_from(PrintArchive).where(*filters)
