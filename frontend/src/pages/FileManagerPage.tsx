@@ -82,7 +82,7 @@ import { SkipObjectsIcon } from '../components/SkipObjectsModal';
 import { getTagStyle, isSliced, isSliceable, isMultiPlate } from '../lib/fileTags';
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
 import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
-import { FileTagsPopover } from '../components/FileTagsPopover';
+import { FileTagsPopover, type TagsPopoverAnchor } from '../components/FileTagsPopover';
 import { libraryTagsQueryKey } from '../utils/libraryTagsQuery';
 
 type SortField = 'name' | 'date' | 'size' | 'type';
@@ -918,7 +918,7 @@ interface FileCardProps {
   /** Move this one file — the toolbar's Move, without the checkbox dance. */
   onMove?: (file: LibraryFileListItem) => void;
   /** Per-file tag popover; the anchor is where the entry was clicked. */
-  onTags?: (file: LibraryFileListItem, anchor: { x: number; y: number }) => void;
+  onTags?: (file: LibraryFileListItem, anchor: TagsPopoverAnchor) => void;
   /** #1268 — click a user-tag chip to toggle it in the filter rail. */
   onTagClick?: (tagId: number) => void;
   thumbnailVersion?: number;
@@ -935,6 +935,30 @@ interface FileCardProps {
   t: TFunction;
 }
 
+/**
+ * The box of the card or row that owns `trigger`, for anchoring the tag
+ * popover.
+ *
+ * Measured from the ⋮ TRIGGER rather than from the clicked menu entry: the menu
+ * is portal-rendered at the document root, so a menu item has no DOM ancestry
+ * back to its file. Falls back to the trigger's own box if the marker is
+ * missing, which puts the panel beside the button instead of nowhere.
+ */
+function anchorFrom(
+  trigger: HTMLElement | null,
+  selector: string,
+  placement: 'card' | 'row',
+): TagsPopoverAnchor {
+  const el = trigger?.closest(selector) ?? trigger;
+  const r = el?.getBoundingClientRect();
+  return {
+    rect: r
+      ? { top: r.top, right: r.right, bottom: r.bottom, height: r.height }
+      : { top: 0, right: 0, bottom: 0, height: 0 },
+    placement,
+  };
+}
+
 function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onSlice, useSlicerApi, onPreview3d, onDownload, onRename, onGenerateThumbnail, onMove, onTags, onDelete }: {
   file: LibraryFileListItem;
   t: TFunction;
@@ -949,7 +973,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   onRename: (f: LibraryFileListItem) => void;
   onGenerateThumbnail: (f: LibraryFileListItem) => void;
   onMove?: (f: LibraryFileListItem) => void;
-  onTags?: (f: LibraryFileListItem, anchor: { x: number; y: number }) => void;
+  onTags?: (f: LibraryFileListItem, anchor: TagsPopoverAnchor) => void;
   onDelete: (id: number) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -1089,11 +1113,12 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
             {onTags && (
               <button
                 className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${canModify('library', 'update', file.created_by_id) ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
-                onClick={(e) => {
+                onClick={() => {
                   if (!canModify('library', 'update', file.created_by_id)) return;
-                  // The popover anchors where the entry was clicked, so it
-                  // opens beside the file rather than in the middle of nowhere.
-                  onTags(file, { x: e.clientX, y: e.clientY });
+                  // Anchored to the ROW, not the pointer: this menu is
+                  // portal-rendered away from the row it belongs to, so the
+                  // cursor is nowhere near the file being tagged.
+                  onTags(file, anchorFrom(triggerRef.current, '[data-file-row]', 'row'));
                   setOpen(false);
                 }}
                 disabled={!canModify('library', 'update', file.created_by_id)}
@@ -1168,6 +1193,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
 
   return (
     <div
+      data-file-card
       className={`group relative bg-bambu-dark-secondary rounded-lg border transition-all overflow-hidden ${
         isSelected
           ? 'border-bambu-green ring-1 ring-bambu-green'
@@ -1486,9 +1512,9 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
                     canModify('library', 'update', file.created_by_id) ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
                   }`}
-                  onClick={(e) => {
+                  onClick={() => {
                     if (!canModify('library', 'update', file.created_by_id)) return;
-                    onTags(file, { x: e.clientX, y: e.clientY });
+                    onTags(file, anchorFrom(triggerRef.current, '[data-file-card]', 'card'));
                     setShowActions(false);
                   }}
                   disabled={!canModify('library', 'update', file.created_by_id)}
@@ -1585,9 +1611,7 @@ export function FileManagerPage() {
   // Single-file Move and Tags, reachable from the ⋮ menu without first ticking
   // a checkbox. `moveFile` reuses MoveFilesModal with a one-id list.
   const [moveFile, setMoveFile] = useState<LibraryFileListItem | null>(null);
-  const [tagsPopover, setTagsPopover] = useState<{ file: LibraryFileListItem; anchor: { x: number; y: number } } | null>(
-    null,
-  );
+  const [tagsPopover, setTagsPopover] = useState<{ file: LibraryFileListItem; anchor: TagsPopoverAnchor } | null>(null);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [droppedFiles, setDroppedFiles] = useState<File[]>([]);
   const [isPageDragging, setIsPageDragging] = useState(false);
@@ -3187,6 +3211,7 @@ export function FileManagerPage() {
                 {filteredAndSortedFiles.map((file) => (
                   <div
                     key={file.id}
+                    data-file-row
                     className={`grid grid-cols-subgrid col-span-full gap-4 px-4 py-3 items-center border-b border-bambu-dark-tertiary last:border-b-0 hover:bg-bambu-dark/50 transition-colors ${
                       selectedFiles.includes(file.id) ? 'bg-bambu-green/10' : ''
                     }`}

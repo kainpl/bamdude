@@ -8,12 +8,41 @@ import { api, type LibraryFileListItem } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { libraryTagsQueryKey } from '../utils/libraryTagsQuery';
 
+export interface TagsPopoverAnchor {
+  /** The card's or row's box on screen, at the moment the menu entry was hit. */
+  rect: { top: number; right: number; bottom: number; height: number };
+  placement: 'card' | 'row';
+}
+
 interface FileTagsPopoverProps {
   file: LibraryFileListItem;
-  /** Where the menu entry was clicked, so the panel opens next to the file. */
-  anchor: { x: number; y: number };
+  anchor: TagsPopoverAnchor;
   onClose: () => void;
 }
+
+const PANEL_WIDTH = 240;
+
+/**
+ * Anchored to the FILE, not to the pointer.
+ *
+ * Clicking the ⋮ entry used to open the panel at the cursor, which in list view
+ * put it in the middle of nowhere — the menu itself is portal-rendered well
+ * away from the row it belongs to.
+ *
+ * Both placements pin the RIGHT edge to the file's right edge, so the panel
+ * always grows leftwards into the page rather than off it. They differ
+ * vertically:
+ *
+ * - **card** — bottom edge on the card's bottom edge, so the panel's
+ *   bottom-right corner sits in the card's bottom-right corner and it opens
+ *   upwards over the card it belongs to.
+ * - **row** — top edge at the row's lower quarter, so it opens downwards from
+ *   the row without covering the name being tagged.
+ *
+ * Expressed with `bottom`/`top` rather than a computed offset because the panel
+ * has no fixed height: pinning the edge lets the browser do the arithmetic that
+ * would otherwise need the height measured after a first paint.
+ */
 
 /**
  * Tags for ONE file — a checkbox list, not the bulk modal.
@@ -88,11 +117,13 @@ export function FileTagsPopover({ file, anchor, onClose }: FileTagsPopoverProps)
         aria-label={t('fileManager.tags.title')}
         style={{
           position: 'fixed',
-          // Clamped so a click near the bottom-right edge does not open the
-          // panel off-screen.
-          top: Math.min(anchor.y, Math.max(0, window.innerHeight - 320)),
-          left: Math.min(anchor.x, Math.max(0, window.innerWidth - 260)),
-          width: 240,
+          width: PANEL_WIDTH,
+          // Never past the left edge on a narrow viewport, where a card can be
+          // narrower than the panel itself.
+          right: Math.max(8, window.innerWidth - anchor.rect.right),
+          ...(anchor.placement === 'card'
+            ? { bottom: Math.max(8, window.innerHeight - anchor.rect.bottom) }
+            : { top: anchor.rect.top + anchor.rect.height * 0.75 }),
         }}
         className="z-[70] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl p-2"
         onClick={(e) => e.stopPropagation()}

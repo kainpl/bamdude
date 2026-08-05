@@ -167,6 +167,30 @@ describe('per-file actions', () => {
     expect(assigned[0]).toEqual({ file_ids: [1], tag_ids: [3], action: 'add' });
   });
 
+  it('anchors the popover to the card, not the pointer', async () => {
+    // In list view the ⋮ menu is portal-rendered far from its row, so the
+    // cursor is nowhere near the file — the panel used to open there. Both
+    // placements pin the RIGHT edge to the file's right edge; the card adds a
+    // bottom edge so it grows up and left into the card it belongs to.
+    //
+    // jsdom reports every box as 0×0, so the arithmetic itself cannot be
+    // checked here. What CAN be checked is that the panel is positioned off
+    // the file's box at all, rather than off clientX/clientY — which is the
+    // regression in question.
+    render(<FileManagerPage />);
+    await screen.findByText('Benchy');
+
+    await openMenuOf('Benchy');
+    await userEvent.click(await screen.findByRole('button', { name: /^Tag$/ }));
+
+    const panel = await screen.findByRole('dialog', { name: /tags/i });
+    expect(panel).toHaveStyle({ position: 'fixed' });
+    // Grid mode → bottom-anchored. A pointer-anchored panel sets `top`/`left`.
+    expect(panel.style.bottom).not.toBe('');
+    expect(panel.style.right).not.toBe('');
+    expect(panel.style.left).toBe('');
+  });
+
   it('unticking removes the tag', async () => {
     render(<FileManagerPage />);
     await screen.findByText('Benchy');
