@@ -79,7 +79,7 @@ import { formatFileSize } from '../utils/file';
 import { FileTagBadges } from '../components/FileTagBadges';
 import { PlateObjectsPreviewModal } from '../components/PlateObjectsPreviewModal';
 import { SkipObjectsIcon } from '../components/SkipObjectsModal';
-import { KNOWN_FILE_TAGS, getTagStyle, isSliced, isSliceable, isMultiPlate } from '../lib/fileTags';
+import { getTagStyle, isSliced, isSliceable, isMultiPlate } from '../lib/fileTags';
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
 import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
 import { libraryTagsQueryKey } from '../utils/libraryTagsQuery';
@@ -1614,26 +1614,13 @@ export function FileManagerPage() {
   // question, not a preference. Restored silently it would show a partial
   // library on the next visit with nothing on screen explaining why.
   const [unprintedOnly, setUnprintedOnly] = useState(false);
-  // Tag chip-row — additive on top of `filterType`. AND across selected
-  // tags so the user can express "sliced multi-plate 3MFs" by activating
-  // both `sliced` and `multiplate`. Persisted to localStorage so a
-  // power-user's filter survives page reloads.
-  const [filterTags, setFilterTags] = useState<string[]>(() => {
-    try {
-      const raw = localStorage.getItem('library-filter-tags');
-      const parsed = raw ? JSON.parse(raw) : [];
-      return Array.isArray(parsed) ? parsed.filter((t) => typeof t === 'string') : [];
-    } catch {
-      return [];
-    }
-  });
-  useEffect(() => {
-    try {
-      localStorage.setItem('library-filter-tags', JSON.stringify(filterTags));
-    } catch {
-      /* private mode / quota — silently skip */
-    }
-  }, [filterTags]);
+  // `filterTags` used to live here: a client-side AND-predicate over the
+  // computed badges, persisted to localStorage. Both kinds of tag are rows in
+  // one catalog since m128, so `selectedTagIds` below now carries them all and
+  // the server does the filtering. The stale `library-filter-tags` key is left
+  // alone rather than deleted on startup — it is inert once nothing reads it,
+  // and reaching into a user's browser storage to tidy up is a bigger action
+  // than the tidiness is worth.
   const [filterUsername, setFilterUsername] = useState('');
   const [sortField, setSortField] = useState<SortField>(() => {
     const saved = localStorage.getItem('library-sort-field');
@@ -1724,12 +1711,20 @@ export function FileManagerPage() {
     queryKey: libraryTagsQueryKey,
     queryFn: api.getLibraryTags,
   });
-  // The catalog carries BOTH kinds since m128. This row is the user-tag filter
-  // and shows only theirs; the computed system badges have their own chip row
-  // above. Merging the two into one row is the frontend phase of the tags
-  // cycle — until then, showing system tags here would simply be a second copy
-  // of a filter the page already has.
-  const userTagCatalog = useMemo(() => tagCatalog.filter((tag) => !tag.is_system), [tagCatalog]);
+  // The catalog carries BOTH kinds since m128, and the filter row shows both.
+  //
+  // A system tag nobody's library uses is noise, so it is offered only when
+  // something carries it. The count is GLOBAL, from the catalog — the row this
+  // replaced derived it from the loaded page, so pills vanished as you
+  // narrowed, which made switching from one to another impossible: the second
+  // was already off the screen.
+  const systemTagPills = useMemo(
+    () => tagCatalog.filter((tag) => tag.is_system && tag.file_count > 0),
+    [tagCatalog],
+  );
+  // User tags are offered always. Asymmetric on purpose: somebody created that
+  // one deliberately, and an empty tag is precisely the one worth seeing.
+  const userTagPills = useMemo(() => tagCatalog.filter((tag) => !tag.is_system), [tagCatalog]);
   const tagsById = useMemo(() => {
     const m = new Map<number, string>();
     for (const tag of tagCatalog) m.set(tag.id, tag.name);
@@ -1758,21 +1753,20 @@ export function FileManagerPage() {
     searchQuery.trim() !== '' ||
     filterType !== 'all' ||
     unprintedOnly ||
-    filterTags.length > 0 ||
     filterUsername.trim() !== '' ||
     selectedTagIds.length > 0;
 
   /**
    * One definition of what "clear filters" means, because the button used to
    * carry its own partial one inline — search and type only — and quietly left
-   * three filters running. `filterTags` needs no localStorage handling here:
-   * its effect writes on every change, so the persisted copy follows the state.
+   * three filters running. Four filters now rather than five: the computed-tag
+   * predicate folded into `selectedTagIds` when both kinds of tag became rows
+   * in one catalog.
    */
   const clearAllFilters = useCallback(() => {
     setSearchQuery('');
     setFilterType('all');
     setUnprintedOnly(false);
-    setFilterTags([]);
     setFilterUsername('');
     setSelectedTagIds([]);
   }, []);
@@ -1851,16 +1845,10 @@ export function FileManagerPage() {
     if (unprintedOnly) {
       result = result.filter((f) => !f.print_count);
     }
-    // Tag chip-row filter — every selected tag must be present (AND).
-    // ``file_tags`` defaults to ``[]`` on the server side so older rows
-    // before m036 (impossible in practice — backfill runs on upgrade)
-    // would simply not match and silently drop. That's intentional: a
-    // user with a tag chip active expects to see only tagged rows.
-    if (filterTags.length > 0) {
-      result = result.filter((f) =>
-        filterTags.every((tag) => (f.file_tags ?? []).includes(tag)),
-      );
-    }
+    // No tag predicate here any more: BOTH kinds of tag are filtered by the
+    // server through ``tag_ids``, so by the time this list arrives it has
+    // already been narrowed. Re-applying it client-side would be a second,
+    // weaker copy of the same rule.
 
     // Apply username filter
     if (filterUsername.trim()) {
@@ -1891,7 +1879,7 @@ export function FileManagerPage() {
     });
 
     return result;
-  }, [files, searchQuery, filterType, unprintedOnly, filterTags, filterUsername, sortField, sortDirection]);
+  }, [files, searchQuery, filterType, unprintedOnly, filterUsername, sortField, sortDirection]);
 
   // Check if disk space is low
   const isDiskSpaceLow = useMemo(() => {
@@ -2818,60 +2806,12 @@ export function FileManagerPage() {
               </span>
             )}
 
-            {/* Tag chip-row — additive multi-select on top of the type
-                dropdown. Each chip toggles AND-membership so users can
-                express "sliced multi-plate 3MFs" by activating both
-                ``sliced`` and ``multiplate``. Only renders the chips
-                whose tag actually appears on at least one of the loaded
-                files — keeps the row tight on installs that don't use
-                e.g. MakerWorld. */}
-            {(() => {
-              const presentTags = new Set<string>();
-              for (const f of files ?? []) {
-                for (const tag of f.file_tags ?? []) presentTags.add(tag);
-              }
-              const visibleChips = KNOWN_FILE_TAGS.filter((t) => presentTags.has(t));
-              if (visibleChips.length === 0) return null;
-              return (
-                <div className="flex items-center gap-1 flex-wrap pt-2 border-t border-bambu-dark-tertiary">
-                  <span className="text-xs text-bambu-gray mr-1">{t('library.tagFilter')}:</span>
-                  {visibleChips.map((tag) => {
-                    const active = filterTags.includes(tag);
-                    const style = getTagStyle(tag);
-                    const label = style ? t(`library.tags.${tag}`, style.label) : tag.toUpperCase();
-                    return (
-                      <button
-                        key={tag}
-                        type="button"
-                        onClick={() =>
-                          setFilterTags((current) =>
-                            current.includes(tag)
-                              ? current.filter((c) => c !== tag)
-                              : [...current, tag],
-                          )
-                        }
-                        className={`text-xs px-2 py-0.5 rounded font-medium transition-colors ${
-                          active
-                            ? `${style?.bg ?? 'bg-bambu-gray/70'} ${style?.text ?? 'text-white'}`
-                            : 'bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray'
-                        }`}
-                      >
-                        {label}
-                      </button>
-                    );
-                  })}
-                  {filterTags.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => setFilterTags([])}
-                      className="text-xs px-2 py-0.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
-                    >
-                      {t('library.tagFilterClear')}
-                    </button>
-                  )}
-                </div>
-              );
-            })()}
+            {/* The computed chip row that used to live here is gone. It asked
+                the same question as the tag pill row below — "show me files
+                marked X" — but answered it with a client-side predicate over
+                the loaded page, its own state and its own localStorage key.
+                Since m128 both kinds of tag are rows in one catalog, so one
+                row and one server-side filter serve both. */}
 
             {/* Selection row - rendered inside the same panel as a second row. */}
             {filteredAndSortedFiles.length > 0 && (
@@ -2983,18 +2923,49 @@ export function FileManagerPage() {
             </div>
           )}
 
-          {/* #1268 user-tag filter rail — SYSTEM C. Intentionally its own
-              block below the toolbar panel and VISUALLY SEPARATE from the
-              computed-tag chip-row (SYSTEM B) above. Green chips = catalog
-              tags; active = filled with an X. Hidden entirely when the
-              catalog is empty. Server-side AND filter. */}
-          {userTagCatalog.length > 0 && (
+          {/* THE tag filter row — both kinds, one mechanism. System pills
+              first in their own colours, then a divider, then the user's own
+              in green. Every one of them toggles the same `selectedTagIds`,
+              which the server AND-filters through `tag_ids`; there is no
+              client-side tag predicate any more. Active = filled with an X. */}
+          {(systemTagPills.length > 0 || userTagPills.length > 0) && (
             <div className="flex items-center gap-1.5 flex-wrap mb-3">
               <span className="text-xs text-bambu-gray mr-1 inline-flex items-center gap-1">
                 <TagIcon className="w-3.5 h-3.5" />
                 {t('fileManager.tags.filterLabel')}
               </span>
-              {userTagCatalog.map((tag) => {
+              {systemTagPills.map((tag) => {
+                const active = selectedTagIds.includes(tag.id);
+                const style = tag.code ? getTagStyle(tag.code) : null;
+                // Second argument matters: a code this frontend has no
+                // translation for falls back to the backend's English name
+                // instead of rendering the key at the user.
+                const label = tag.code ? t(`library.tags.${tag.code}`, tag.name) : tag.name;
+                return (
+                  <button
+                    key={tag.id}
+                    type="button"
+                    onClick={() => toggleTagFilter(tag.id)}
+                    className={`text-xs px-2 py-0.5 rounded font-medium transition-colors inline-flex items-center gap-1 ${
+                      active
+                        ? `${style?.bg ?? 'bg-bambu-gray/70'} ${style?.text ?? 'text-white'}`
+                        : 'bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray'
+                    }`}
+                  >
+                    {label}
+                    {active && <X className="w-3 h-3" />}
+                  </button>
+                );
+              })}
+              {systemTagPills.length > 0 && userTagPills.length > 0 && (
+                // The two groups answer differently shaped questions — what a
+                // file IS versus what somebody called it — and without a break
+                // they read as one undifferentiated wall.
+                <span aria-hidden className="text-bambu-gray/30 px-1 select-none">
+                  |
+                </span>
+              )}
+              {userTagPills.map((tag) => {
                 const active = selectedTagIds.includes(tag.id);
                 return (
                   <button

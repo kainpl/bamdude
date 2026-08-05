@@ -100,39 +100,31 @@ describe('clear filters', () => {
     );
   });
 
-  /**
-   * The chips AND together, so SLICED + GEO matches nothing — which is what
-   * puts the empty state, and therefore the Clear filters button, on screen.
-   * Narrowing to one file would leave the grid rendered and the button absent.
-   */
-  const activateImpossibleChipPair = async () => {
-    await userEvent.click(screen.getByRole('button', { name: 'SLICED' }));
-    await userEvent.click(screen.getByRole('button', { name: 'GEO' }));
-  };
-
-  it('clears the computed-tag chip filter', async () => {
+  it('clears a system tag from the filter row', async () => {
+    // Replaces two tests written against the computed chip row, which is gone:
+    // both kinds of tag now go through `selectedTagIds`, so what they guarded
+    // — that clear resets the tag filter, and that nothing comes back from
+    // localStorage — is asserted in "turns the server-side tag filter off
+    // again" below and in FileManagerTagFilter.test.tsx respectively. What was
+    // NOT covered is the new half: a system pill is a filter too, and a reset
+    // that only knew about user tags would leave it on.
+    server.use(
+      http.get('/api/v1/library/tags', () =>
+        HttpResponse.json([
+          { id: 9, name: '3MF', file_count: 2, is_system: true, code: '3mf' },
+          USER_TAG,
+        ]),
+      ),
+    );
     render(<FileManagerPage />);
     await screen.findByText('Benchy');
 
-    await activateImpossibleChipPair();
+    await userEvent.click(screen.getByRole('button', { name: '3MF' }));
+    await waitFor(() => expect(tagIdsSeen.at(-1)).toEqual(['9']));
 
     await userEvent.click(await screen.findByRole('button', { name: 'Clear filters' }));
 
-    expect(await screen.findByText('Benchy')).toBeInTheDocument();
-    expect(screen.getByText('bracket.stl')).toBeInTheDocument();
-  });
-
-  it('does not let the chip filter come back from localStorage', async () => {
-    // It is persisted, so a reset that only touched React state would look
-    // right until the next reload and then quietly re-narrow the library.
-    render(<FileManagerPage />);
-    await screen.findByText('Benchy');
-
-    await activateImpossibleChipPair();
-    await userEvent.click(await screen.findByRole('button', { name: 'Clear filters' }));
-    await screen.findByText('bracket.stl');
-
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('library-filter-tags') || '[]')).toEqual([]));
+    await waitFor(() => expect(tagIdsSeen.at(-1)).toEqual([]));
   });
 
   it('clears the username filter', async () => {
