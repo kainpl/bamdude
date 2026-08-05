@@ -67,6 +67,7 @@ export function PrintModal({
   archiveName,
   queueItem,
   initialSelectedPrinterIds,
+  sequence,
   onClose,
   onSuccess,
   projectId,
@@ -1063,6 +1064,17 @@ export function PrintModal({
             <div className="flex items-center gap-2">
               <TitleIcon className="w-5 h-5 text-bambu-green" />
               <h2 className="text-lg font-semibold text-white">{modalConfig.title}</h2>
+              {/* Only thing that says a run over several files is under way —
+                  every dialog in it is otherwise identical. */}
+              {sequence && (
+                <span
+                  className="px-2 py-0.5 rounded-full bg-bambu-dark text-xs text-bambu-gray tabular-nums"
+                  title={t('printModal.fileOfTotal', sequence)}
+                  aria-label={t('printModal.fileOfTotal', sequence)}
+                >
+                  {sequence.current}/{sequence.total}
+                </span>
+              )}
             </div>
             <Button variant="ghost" size="sm" onClick={onClose} disabled={isSubmitting}>
               <X className="w-5 h-5" />

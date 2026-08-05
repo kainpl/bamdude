@@ -83,7 +83,7 @@ import { getTagStyle, isSliced, isSliceable, isMultiPlate } from '../lib/fileTag
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
 import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
 import { FileTagsPopover, type TagsPopoverAnchor } from '../components/FileTagsPopover';
-import { BulkQueueModal } from '../components/BulkQueueModal';
+import { QueueSequencer } from '../components/QueueSequencer';
 import { libraryTagsQueryKey } from '../utils/libraryTagsQuery';
 
 type SortField = 'name' | 'date' | 'size' | 'type';
@@ -1610,7 +1610,6 @@ export function FileManagerPage() {
   const [showNewFolderModal, setShowNewFolderModal] = useState(false);
   const [showExternalFolderModal, setShowExternalFolderModal] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
-  const [showBulkQueue, setShowBulkQueue] = useState(false);
   // Single-file Move and Tags, reachable from the ⋮ menu without first ticking
   // a checkbox. `moveFile` reuses MoveFilesModal with a one-id list.
   const [moveFile, setMoveFile] = useState<LibraryFileListItem | null>(null);
@@ -1625,7 +1624,14 @@ export function FileManagerPage() {
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'file' | 'folder' | 'bulk'; id: number; count?: number } | null>(null);
   const [printFile, setPrintFile] = useState<LibraryFileListItem | null>(null);
   const [printMultiFile, setPrintMultiFile] = useState<LibraryFileListItem | null>(null);
-  const [scheduleFile, setScheduleFile] = useState<LibraryFileListItem | null>(null);
+  // The files still to be scheduled, in the order they were selected. One entry
+  // is an ordinary Schedule-print open; several is a run through the same
+  // dialog, one file at a time (QueueSequencer). `fromSelection` says whether
+  // the run may write back to the selection when it ends — a run started from
+  // one file's ⋮ menu must not touch what happens to be ticked.
+  const [queueSequence, setQueueSequence] = useState<
+    { files: LibraryFileListItem[]; fromSelection: boolean } | null
+  >(null);
   const [sliceFile, setSliceFile] = useState<LibraryFileListItem | null>(null);
   const [renameItem, setRenameItem] = useState<{ type: 'file' | 'folder'; id: number; name: string } | null>(null);
   const [thumbnailVersions, setThumbnailVersions] = useState<Record<number, number>>({});
@@ -2252,6 +2258,14 @@ export function FileManagerPage() {
     if (!files) return [];
     return files.filter((f) => selectedFiles.includes(f.id) && isSliced(f));
   }, [files, selectedFiles]);
+
+  // Schedule one file from its own ⋮ menu — a run of length 1, which renders
+  // exactly as the dialog always did (the counter only appears for several
+  // files) and leaves the selection alone, like Move and Tags do from there.
+  const scheduleOne = useCallback(
+    (file: LibraryFileListItem) => setQueueSequence({ files: [file], fromSelection: false }),
+    [],
+  );
 
   // Handlers
   const handleFileSelect = useCallback((id: number) => {
@@ -3023,36 +3037,22 @@ export function FileManagerPage() {
                         <span className="hidden sm:inline">{t('common.print')}</span>
                       </Button>
                     )}
-                    {selectedSlicedFiles.length === 1 && (
+                    {/* Gated on > 0, unlike Print above: the Schedule dialog
+                        takes one file, so several files are the same dialog
+                        several times over (QueueSequencer). Hidden rather than
+                        disabled when nothing selected is sliced — a button that
+                        opens a window saying "nothing here can be queued"
+                        spends two clicks on what its absence says for free. */}
+                    {selectedSlicedFiles.length > 0 && (
                       <Button
                         variant="secondary"
                         size="sm"
-                        // Note: Schedule dialog (PrintModal) is designed for single file at a time
-                        // but supports scheduling to multiple printers. This provides more control
-                        // over scheduling options compared to the previous bulk queue mutation.
-                        onClick={() => setScheduleFile(selectedSlicedFiles[0])}
+                        onClick={() => setQueueSequence({ files: selectedSlicedFiles, fromSelection: true })}
                         disabled={!hasPermission('queue:create')}
                         title={!hasPermission('queue:create') ? t('fileManager.noPermissionAddToQueue') : undefined}
                       >
                         <Clock className="w-4 h-4 sm:mr-1" />
                         <span className="hidden sm:inline">{t('fileManager.schedulePrint')}</span>
-                      </Button>
-                    )}
-                    {/* Gated on > 0, deliberately unlike Print and Schedule
-                        above, which are gated on === 1 because they act on one
-                        file. Acting on many is this one's entire purpose.
-                        Hidden rather than disabled: a button that opens a
-                        window saying "nothing here can be queued" spends two
-                        clicks on what its absence says for free. */}
-                    {selectedSlicedFiles.length > 0 && (
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        onClick={() => setShowBulkQueue(true)}
-                        disabled={!hasPermission('queue:create')}
-                      >
-                        <Clock className="w-4 h-4 sm:mr-1" />
-                        <span className="hidden sm:inline">{t('fileManager.bulkQueue.action')}</span>
                       </Button>
                     )}
                     <Button
@@ -3178,7 +3178,7 @@ export function FileManagerPage() {
                     onDownload={handleDownload}
                     onAddToQueue={(id) => {
                       const file = files?.find(f => f.id === id);
-                      if (file) setScheduleFile(file);
+                      if (file) scheduleOne(file);
                     }}
                     onPrint={setPrintFile}
                     onSlice={setSliceFile}
@@ -3451,7 +3451,7 @@ export function FileManagerPage() {
                             <Printer className="w-4 h-4" />
                           </button>
                           <button
-                            onClick={() => hasPermission('queue:create') && setScheduleFile(file)}
+                            onClick={() => hasPermission('queue:create') && scheduleOne(file)}
                             className={`p-1.5 rounded transition-colors ${
                               hasPermission('queue:create')
                                 ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
@@ -3484,7 +3484,7 @@ export function FileManagerPage() {
                         hasPermission={hasPermission}
                         canModify={canModify}
                         onPrint={setPrintFile}
-                        onSchedule={setScheduleFile}
+                        onSchedule={scheduleOne}
                         onSlice={setSliceFile}
                         useSlicerApi={settings?.use_slicer_api ?? false}
                         onPreview3d={setViewerFile}
@@ -3576,13 +3576,6 @@ export function FileManagerPage() {
           }}
           isLoading={moveFilesMutation.isPending}
           t={t}
-        />
-      )}
-
-      {showBulkQueue && (
-        <BulkQueueModal
-          files={files?.filter((f) => selectedFiles.includes(f.id)) ?? []}
-          onClose={() => setShowBulkQueue(false)}
         />
       )}
 
@@ -3702,15 +3695,15 @@ export function FileManagerPage() {
         />
       )}
 
-      {scheduleFile && (
-        <PrintModal
-          mode="add-to-queue"
-          libraryFileId={scheduleFile.id}
-          archiveName={scheduleFile.print_name || scheduleFile.filename}
-          onClose={() => setScheduleFile(null)}
-          onSuccess={() => {
-            setScheduleFile(null);
-            setSelectedFiles([]);
+      {queueSequence && (
+        <QueueSequencer
+          files={queueSequence.files}
+          onDone={(remaining) => {
+            const { fromSelection } = queueSequence;
+            setQueueSequence(null);
+            // What is left over stays ticked: the selection is the record of
+            // what still has to be distributed. Everything queued → empty.
+            if (fromSelection) setSelectedFiles(remaining.map((f) => f.id));
             queryClient.invalidateQueries({ queryKey: ['library-files'] });
             queryClient.invalidateQueries({ queryKey: ['queue'] });
             queryClient.invalidateQueries({ queryKey: ['archives'] });

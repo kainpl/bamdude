@@ -30,7 +30,11 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
-- **Queueing several files at once now works.** Adding files to a queue from the library was wired to a route that could not create a queue entry at all — it reported a failure for every file, and had no button anywhere in the interface to call it, which is how it went unnoticed. It is replaced: a selection can go onto one printer's queue, onto several — either a copy on each or spread across them — or into the auto-queue, with multi-plate files queued plate by plate. A file sliced for a printer model that cannot run it is reported rather than quietly queued to fail later; when the batch is being spread, that printer is skipped and the next one used instead.
+- **Queueing several files at once now works.** Adding files to a queue from the library was wired to a route that could not create a queue entry at all — it reported a failure for every file, and had no button anywhere in the interface to call it, which is how it went unnoticed.
+
+    Select any number of sliced files and press **Schedule** — the usual scheduling window opens for the first of them, marked `1/3`, then for the next one, and so on. Each file gets the full set of choices it always had: a printer or several, the auto-queue, which plates, filament mapping, print options, quantity and when to start. Close the window at any point and the run stops there; whatever you did not get to stays selected, so it is clear what is left.
+
+    A file sliced for a printer model that cannot run it is still refused rather than quietly queued to fail later. So is a file that was never sliced: an `.stl` could be added to a queue through the API and would only fail once the printer was already being handed the job.
 
 - **"Clear filters" left three of the five filters running.** It reset the search box and the file-type dropdown, but the tag chip row, the user-tag filter and the "filter by user" box carried on narrowing the library — so the button promised a reset and handed back a list that was still partial, with nothing on screen explaining why. Worse, the tag chip row survives a reload, so a filter cleared that way came back the next time the page was opened. The user-tag filter had a sharper version of the same problem: it is applied by the server, so when it matched nothing the library reported itself as empty and offered to upload files, and the button that would have undone it was not on screen at all. All five now clear together, and a library emptied by a filter says so and offers the way back.
 

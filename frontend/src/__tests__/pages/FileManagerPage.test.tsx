@@ -528,7 +528,11 @@ describe('FileManagerPage', () => {
       });
     });
 
-    it('hides schedule print button when multiple files are selected', async () => {
+    it('keeps the schedule print button when several files are selected', async () => {
+      // This used to assert the opposite. The dialog takes one file, so a
+      // multi-file selection used to have nothing to open — now it opens the
+      // same dialog once per file (QueueSequencer), and hiding the button
+      // would take away the only way to start that.
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
@@ -536,12 +540,10 @@ describe('FileManagerPage', () => {
         expect(screen.getByText('Select All')).toBeInTheDocument();
       });
 
-      // Select all files
       await user.click(screen.getByText('Select All'));
 
       await waitFor(() => {
-        // Schedule button should not be present when multiple files are selected
-        expect(screen.queryByText(/Schedule/)).not.toBeInTheDocument();
+        expect(screen.getByText(/Schedule/)).toBeInTheDocument();
       });
     });
   });

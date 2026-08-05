@@ -1,7 +1,6 @@
 """Pydantic schemas for library (File Manager) functionality."""
 
 from datetime import datetime
-from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -423,66 +422,6 @@ class BulkDeleteResponse(BaseModel):
 
 
 # ============ Queue Operations ============
-
-
-class BulkQueueItem(BaseModel):
-    """One selected file, and which of its plates to queue.
-
-    ``plate_ids`` omitted means the whole file — one queue entry for a
-    single-plate file, one per chosen plate for a multi-plate one.
-    """
-
-    file_id: int
-    plate_ids: list[int] | None = None
-
-
-class BulkQueueDestination(BaseModel):
-    """Where a batch goes.
-
-    ``printers`` binds each print to a specific queue now; ``auto`` hands the
-    batch to the router, which decides later — when a printer is actually free
-    and its loaded filament is known.
-    """
-
-    kind: Literal["printers", "auto"]
-    printer_ids: list[int] = Field(default_factory=list)
-    # each   — a copy of every file on every selected printer.
-    # spread — the files distributed round-robin across them.
-    mode: Literal["each", "spread"] = "each"
-
-
-class BulkQueueRequest(BaseModel):
-    items: list[BulkQueueItem] = Field(..., min_length=1)
-    destination: BulkQueueDestination
-
-
-class BulkQueueResult(BaseModel):
-    """One queue entry that now exists."""
-
-    file_id: int
-    filename: str
-    plate_id: int | None = None
-    # None for the auto-queue: the whole point is that no printer is chosen yet.
-    printer_id: int | None = None
-    queue_item_id: int
-
-
-class BulkQueueError(BaseModel):
-    """One combination that did not become a queue entry, and why."""
-
-    file_id: int
-    filename: str
-    plate_id: int | None = None
-    printer_id: int | None = None
-    error: str
-
-
-class BulkQueueResponse(BaseModel):
-    """Every requested (file, plate, printer) appears in exactly one list, so a
-    caller can always reconcile what it asked for against what happened."""
-
-    added: list[BulkQueueResult]
-    errors: list[BulkQueueError]
 
 
 class ZipExtractResult(BaseModel):

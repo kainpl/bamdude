@@ -576,12 +576,13 @@ async def _printer_queue_for(db_session, printer):
 
 
 class TestLibraryAddToQueueAPI:
-    """Integration tests for /api/v1/library/files/queue.
+    """Queueing a library file is refused when it cannot be printed.
 
-    The endpoint these were written against could not create a queue entry at
-    all; it is replaced. What they check — that a missing file and a non-sliced
-    file are each REPORTED rather than silently dropped — is unchanged, so they
-    move to the new route rather than being deleted.
+    Written against ``/library/files/add-to-queue``, which could not create a
+    queue entry at all; moved to its bulk replacement; and moved again when the
+    bulk route was replaced by opening the Schedule dialog once per file. What
+    they check has survived all three: a missing file and a non-sliced file are
+    each REFUSED, not accepted and left to fail at dispatch.
     """
 
     @pytest.fixture
@@ -645,16 +646,12 @@ class TestLibraryAddToQueueAPI:
         """Verify error for non-existent file."""
         printer = await printer_factory()
         queue = await _printer_queue_for(db_session, printer)
-        data = {
-            "items": [{"file_id": 9999}],
-            "destination": {"kind": "printers", "printer_ids": [queue.id], "mode": "each"},
-        }
-        response = await async_client.post("/api/v1/library/files/queue", json=data)
-        assert response.status_code == 200
-        result = response.json()
-        assert len(result["added"]) == 0
-        assert len(result["errors"]) == 1
-        assert result["errors"][0]["file_id"] == 9999
+        response = await async_client.post(
+            "/api/v1/queue/",
+            json={"queue_id": queue.id, "library_file_id": 9999},
+        )
+        assert response.status_code == 400
+        assert "not found" in response.json()["detail"].lower()
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -670,16 +667,12 @@ class TestLibraryAddToQueueAPI:
 
         printer = await printer_factory()
         queue = await _printer_queue_for(db_session, printer)
-        data = {
-            "items": [{"file_id": lib_file.id}],
-            "destination": {"kind": "printers", "printer_ids": [queue.id], "mode": "each"},
-        }
-        response = await async_client.post("/api/v1/library/files/queue", json=data)
-        assert response.status_code == 200
-        result = response.json()
-        assert len(result["added"]) == 0
-        assert len(result["errors"]) == 1
-        assert "sliced" in result["errors"][0]["error"].lower()
+        response = await async_client.post(
+            "/api/v1/queue/",
+            json={"queue_id": queue.id, "library_file_id": lib_file.id},
+        )
+        assert response.status_code == 400
+        assert "sliced" in response.json()["detail"].lower()
 
 
 class TestLibraryZipExtractAPI:

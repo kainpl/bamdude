@@ -56,6 +56,23 @@ def validate_print_filename(name: str) -> None:
         raise InvalidFilenameError(f"Filename exceeds {MAX_FILENAME_BYTES} bytes")
 
 
+def is_sliced_file(filename: str) -> bool:
+    """Whether this filename names something the printer can be handed.
+
+    Sliced files are ``.gcode`` and any ``.gcode.`` container (``.gcode.3mf``).
+    Lives here rather than in the library router because the queue service needs
+    the same answer, and a service importing a route module would be a circular
+    import as well as backwards.
+
+    ``BackgroundDispatchService._is_sliced_file`` looks like a duplicate and is
+    not: it accepts only ``.gcode.3mf`` exactly. Deliberately left alone — the
+    dispatcher is the last gate before FTP and its narrower rule is not this
+    one's to widen.
+    """
+    lower = filename.lower()
+    return lower.endswith(".gcode") or ".gcode." in lower
+
+
 def derive_remote_filename(filename: str) -> str:
     """Compute the SD-card filename used when uploading a sliced print file.
 

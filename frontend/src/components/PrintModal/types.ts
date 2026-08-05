@@ -29,6 +29,11 @@ export interface PrintModalProps {
   queueItem?: PrintQueueItem;
   /** Pre-select specific printers when opening the modal */
   initialSelectedPrinterIds?: number[];
+  /** Position of this dialog in a run over several files ("2 / 5"), rendered as
+   *  a badge beside the title. Display only — the modal does not know a run
+   *  exists and cannot advance one; QueueSequencer owns that. Omitted for a
+   *  single-file open, which must not look like step 1 of anything. */
+  sequence?: { current: number; total: number };
   /** Handler for closing the modal */
   onClose: () => void;
   /** Handler for successful operation */

@@ -31,7 +31,7 @@ from backend.app.models.user import User
 from backend.app.schemas.calibration_mode import mode_to_bool
 from backend.app.schemas.print_queue import PrintQueueItemCreate
 from backend.app.services.library_helpers import project_for_library_file
-from backend.app.utils.filename import InvalidFilenameError, validate_print_filename
+from backend.app.utils.filename import InvalidFilenameError, is_sliced_file, validate_print_filename
 from backend.app.utils.printer_models import is_gcode_compatible
 
 
@@ -106,6 +106,14 @@ async def add_items_to_printer_queue(
             validate_print_filename(library_file.filename)
         except InvalidFilenameError as e:
             raise HTTPException(400, str(e))
+
+        # Same reason, one step earlier: an STL has nothing to send. The
+        # dispatcher refuses it too, but by then the item has been sitting
+        # pending and the refusal reaches nobody. Held by the bulk library route
+        # until that route was replaced by the Schedule dialog; it belongs here,
+        # where every caller passes.
+        if not is_sliced_file(library_file.filename):
+            raise HTTPException(400, "Not a sliced file. Only .gcode or .gcode.3mf files can be printed.")
 
     # Cross-model safety gate (#2578): a G-code 3MF sliced for one model must not
     # be queued to a printer it can't run on. This is the per-printer tier — the

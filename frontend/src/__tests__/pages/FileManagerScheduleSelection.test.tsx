@@ -1,10 +1,9 @@
 /**
- * The bulk queue button exists only when it can do something.
+ * The Schedule button exists only when it can do something.
  *
  * An action that cannot apply to the current selection is hidden, not disabled:
- * a button that opens a window whose only content is "nothing here can be
- * queued" spends two clicks saying what the absence of the button says for
- * free.
+ * a button that opens a dialog for a file nothing can print spends two clicks
+ * saying what the absence of the button says for free.
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -64,7 +63,7 @@ async function selectFile(name: string) {
   await userEvent.click(control);
 }
 
-describe('the bulk queue button', () => {
+describe('the Schedule button over a selection', () => {
   beforeEach(() => {
     localStorage.clear();
   });
@@ -76,11 +75,11 @@ describe('the bulk queue button', () => {
 
     await selectFile('Benchy');
 
-    expect(await screen.findByRole('button', { name: /^Queue$/i })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /^Schedule$/i })).toBeInTheDocument();
   });
 
   it('stays away for a selection of only unsliced files', async () => {
-    // The other half. A button hidden unconditionally would pass this alone,
+    // The other half. A button rendered unconditionally would pass this alone,
     // which is why the pair is what makes either test mean anything.
     mockLibrary([SLICED, RAW]);
     render(<FileManagerPage />);
@@ -90,6 +89,41 @@ describe('the bulk queue button', () => {
 
     // Something IS selected — the toolbar is on screen, just without this button.
     expect(await screen.findByRole('button', { name: /Deselect|Clear/i })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Queue$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Schedule$/i })).not.toBeInTheDocument();
+  });
+
+  it('carries every sliced file in the selection into the run', async () => {
+    // The whole point of the merge: this used to be gated on exactly one file
+    // and a second button did the many-file case. One button, one dialog, N
+    // files — so the counter has to show the size of the selection.
+    mockLibrary([SLICED, { ...SLICED, id: 3, filename: 'cube.gcode.3mf', print_name: 'Cube' }, RAW]);
+    render(<FileManagerPage />);
+    await screen.findByText('Benchy');
+
+    await selectFile('Benchy');
+    await selectFile('Cube');
+    await selectFile('bracket.stl');
+    await userEvent.click(await screen.findByRole('button', { name: /^Schedule$/i }));
+
+    // Two, not three — the STL is in the selection but cannot be printed.
+    expect(await screen.findByText('1/2')).toBeInTheDocument();
+  });
+
+  it('leaves the undistributed files selected when the run is abandoned', async () => {
+    // Closing the dialog stops the run. What was never queued has to stay
+    // ticked — the selection is the only record on screen of what is left, and
+    // clearing it would quietly lose the operator's place.
+    mockLibrary([SLICED, { ...SLICED, id: 3, filename: 'cube.gcode.3mf', print_name: 'Cube' }]);
+    render(<FileManagerPage />);
+    await screen.findByText('Benchy');
+
+    await selectFile('Benchy');
+    await selectFile('Cube');
+    await userEvent.click(await screen.findByRole('button', { name: /^Schedule$/i }));
+    await screen.findByText('1/2');
+
+    await userEvent.click(screen.getByRole('button', { name: /cancel/i }));
+
+    expect(await screen.findByText('2 selected')).toBeInTheDocument();
   });
 });

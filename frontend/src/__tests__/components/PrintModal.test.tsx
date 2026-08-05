@@ -337,6 +337,40 @@ describe('PrintModal', () => {
     });
   });
 
+  describe('position in a run over several files', () => {
+    // QueueSequencer opens this same dialog once per selected file. The badge is
+    // the only thing that tells the operator a run is under way and how much of
+    // it is left — the dialog is otherwise identical every time.
+    it('shows the position when it is one of several', () => {
+      render(
+        <PrintModal
+          mode="add-to-queue"
+          libraryFileId={42}
+          archiveName="Test Print"
+          sequence={{ current: 2, total: 3 }}
+          onClose={mockOnClose}
+        />
+      );
+
+      expect(screen.getByText('2/3')).toBeInTheDocument();
+    });
+
+    it('shows nothing when opened on its own', () => {
+      // The other half: a badge rendered unconditionally would pass the test
+      // above while claiming every single-file open is step 1 of something.
+      render(
+        <PrintModal
+          mode="add-to-queue"
+          libraryFileId={42}
+          archiveName="Test Print"
+          onClose={mockOnClose}
+        />
+      );
+
+      expect(screen.queryByText(/^\d+\/\d+$/)).not.toBeInTheDocument();
+    });
+  });
+
   describe('dispatch-mode toggle (add-to-queue)', () => {
     it('shows the Specific/Auto toggle by default', () => {
       render(
