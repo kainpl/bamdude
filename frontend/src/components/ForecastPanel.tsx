@@ -1912,9 +1912,3 @@ function AddToCartModal({
     </div>
   );
 }
-
-// ── Column headers (re-exported for InventoryPage) ────────────────────────────
-
-export function ForecastColumnHeaders() {
-  return null;
-}

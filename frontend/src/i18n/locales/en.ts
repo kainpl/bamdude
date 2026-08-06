@@ -5480,11 +5480,6 @@ export default {
     printJob: 'Print Job',
     fileOfTotal: 'File {{current}} of {{total}}',
 
-    // FilamentOverride
-    filamentOverride: 'Filament Override',
-    filamentOverrideHint: 'Override the original filament choices with filaments available on the selected printers.',
-    originalFilament: 'Original',
-    resetToOriginal: 'Reset to original',
     forceColorMatch: 'Force color match'
   },
 

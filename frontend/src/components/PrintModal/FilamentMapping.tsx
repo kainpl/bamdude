@@ -46,9 +46,9 @@ export function FilamentMapping({
   const { loadedFilaments, filamentComparison, hasTypeMismatch, hasColorMismatch } =
     useFilamentMapping(filamentReqs, printerStatus, manualMappings);
 
-  // Per-slot sub-brand + material-disambiguated colour labels (#1718). Same
-  // shared hook the model-mode FilamentOverride uses so both panels render
-  // the same sliced-3MF identity. Falls back to the raw type / generic colour
+  // Per-slot sub-brand + material-disambiguated colour labels (#1718). Shared
+  // hook, extracted back when a second (model-mode) panel consumed it, so the
+  // sliced-3MF identity resolves in one place. Falls back to the raw type / generic colour
   // bucket when the SKU is unknown or the by-material lookup hasn't resolved —
   // never blanks out the required row.
   const filamentLabels = useFilamentLabels(filamentReqs?.filaments);
@@ -197,15 +197,14 @@ export function FilamentMapping({
             </button>
           </div>
           {filamentComparison.map((item, idx) => {
-            // #1717: expose the same per-slot force-color-match checkbox that
-            // FilamentOverride carries for model-mode dispatch. Rendered only
+            // #1717: per-slot force-color-match checkbox. Rendered only
             // when a handler is wired (onForceColorMatchChange). NOTE: BamDude's
             // specific-printer path pins an explicit ams_mapping at scheduling
             // time (PrintQueueItem has no force_color_match field), so this stays
             // dormant unless a caller opts in — see agent report / backend flag.
             const slotId = item.slot_id ?? 0;
             const canForceMatch = slotId > 0 && onForceColorMatchChange != null;
-            // #1718: same sub-brand + colour resolution as FilamentOverride.
+            // #1718: sub-brand + colour resolution via the shared hook.
             // Indexing is safe because ``useFilamentLabels`` mirrors the input
             // array shape; defensive fallback covers the empty-reqs render path
             // that shouldn't reach here anyway.
@@ -300,7 +299,7 @@ export function FilamentMapping({
                   </span>
                 )}
               </div>
-              {/* Force Color Match checkbox — matches FilamentOverride's layout. */}
+              {/* Force Color Match checkbox. */}
               {canForceMatch && (
                 <label className="inline-flex items-center gap-1.5 text-xs text-bambu-gray cursor-pointer select-none pl-5">
                   <input

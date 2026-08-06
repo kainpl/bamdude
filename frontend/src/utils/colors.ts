@@ -145,23 +145,6 @@ export function resolveSpoolColorName(colorName: string | null, rgba: string | n
 }
 
 /**
- * Build a hex string suitable for SVG `fill=` / props that take a single colour
- * value. Preserves the alpha byte when alpha < FF so a transparent spool renders
- * translucent rather than collapsing to solid black (#1545). Null / malformed
- * input falls back to `#808080`. Prefer `getSwatchStyle` for div backgrounds —
- * it paints a visible checkerboard under transparent fills.
- */
-export function spoolColorString(rgba: string | null | undefined): string {
-  if (!rgba) return '#808080';
-  const clean = rgba.replace(/^#/, '');
-  if (clean.length < 6) return '#808080';
-  if (clean.length >= 8 && clean.substring(6, 8).toLowerCase() !== 'ff') {
-    return `#${clean.substring(0, 8)}`;
-  }
-  return `#${clean.substring(0, 6)}`;
-}
-
-/**
  * Build an inline-style object for a simple filament swatch (div / button
  * background). Opaque colours return a plain `backgroundColor`; transparent
  * (alpha=00) returns a checkerboard so the swatch is visible instead of an

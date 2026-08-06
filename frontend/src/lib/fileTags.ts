@@ -45,8 +45,6 @@ export const TAG_STYLES: Record<string, TagStyle> = {
 export const UNKNOWN_TAG_BG = 'bg-bambu-gray/70';
 export const UNKNOWN_TAG_TEXT = 'text-white';
 
-export const KNOWN_FILE_TAGS = Object.keys(TAG_STYLES);
-
 export function getTagStyle(tag: string): TagStyle | null {
   return TAG_STYLES[tag] ?? null;
 }

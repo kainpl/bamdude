@@ -70,15 +70,6 @@ export interface LibraryFilePlatesResponse {
   embedded_process?: string | null;
 }
 
-export interface ViewerPlateSelectionState {
-  selected_plate_id: number | null;
-}
-
-export interface PlateAssignment {
-  object_id: string;
-  plate_id: number | null;
-}
-
 /** Read-only plate object preview — GET /{library|archives}/…/plate-objects.
  *
  * Deliberately has no `skipped` field. Nothing in the preview is skippable —

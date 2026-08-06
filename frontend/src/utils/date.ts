@@ -216,40 +216,6 @@ export function parseUTCDate(dateStr: string | null | undefined): Date | null {
 }
 
 /**
- * Format a UTC date string to a localized date/time string.
- *
- * @param dateStr - Date string from backend
- * @param options - Intl.DateTimeFormat options (defaults to showing date and time)
- * @returns Formatted date string in user's locale and timezone
- */
-export function formatDate(
-  dateStr: string | null | undefined,
-  options?: Intl.DateTimeFormatOptions,
-  timeFormat: TimeFormat = 'system',
-  dateFormat: DateFormat = 'system'
-): string {
-  const date = parseUTCDate(dateStr);
-  if (!date) return '';
-
-  // Explicit dateFormat: render as ``DATE TIME`` with both portions
-  // following user preference, ignore ``options``.
-  if (dateFormat !== 'system') {
-    return `${formatDateInput(date, dateFormat)} ${formatTimeInput(date, timeFormat)}`;
-  }
-
-  const defaultOptions: Intl.DateTimeFormatOptions = {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  };
-
-  const finalOptions = applyTimeFormat(options ?? defaultOptions, timeFormat);
-  return date.toLocaleString(undefined, finalOptions);
-}
-
-/**
  * Format a UTC date string to a localized date-only string.
  *
  * Two optional add-ons keep the call sites flexible:

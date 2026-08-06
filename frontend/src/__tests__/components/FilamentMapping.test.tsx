@@ -112,8 +112,8 @@ describe('FilamentMapping — FTS routing', () => {
   });
 
   it('renders the per-slot force-color-match checkbox when a handler is wired (#1717)', async () => {
-    // Component-level parity with FilamentOverride: when the caller passes
-    // onForceColorMatchChange the checkbox mounts and bubbles toggle events up.
+    // When the caller passes onForceColorMatchChange the checkbox mounts and
+    // bubbles toggle events up.
     server.use(
       http.get(
         '/api/v1/printers/:id/status',
@@ -227,8 +227,8 @@ describe('FilamentMapping — FTS routing', () => {
   });
 
   it('renders sub-brand + material-disambiguated colour on the required side (#1718)', async () => {
-    // Same fix as FilamentOverride: required-side label was rendering the
-    // raw 3MF type ("PLA") and the generic getColorName bucket ("Black").
+    // Required-side label was rendering the raw 3MF type ("PLA") and the
+    // generic getColorName bucket ("Black").
     // After the shared useFilamentLabels hook it must now resolve
     // tray_info_idx → "Bambu PLA Matte" and the material-disambiguated
     // colour catalogue → "Charcoal" — the Specific-Printer panel matched

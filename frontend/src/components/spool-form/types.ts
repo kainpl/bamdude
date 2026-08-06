@@ -1,5 +1,5 @@
 
-import type { Printer, SpoolKProfile } from '../../api/client';
+import type { Printer } from '../../api/client';
 
 // Catalog color display type (moved from component)
 export interface CatalogDisplayColor {
@@ -270,6 +270,3 @@ export function validateForm(
 }
 
 // Existing K-profile for a spool (from saved data)
-export interface SavedKProfile extends SpoolKProfile {
-  printer_serial?: string;
-}

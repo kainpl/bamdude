@@ -1,9 +1,9 @@
 /**
  * Tests for the shared filament-label resolution hook (#1718 round 3).
  *
- * Round 3 extracted the three-query resolution machinery out of
- * ``FilamentOverride`` so the printer-mode ``FilamentMapping`` could share
- * the same label logic without drift. Both panels are integration-tested
+ * Round 3 extracted the three-query resolution machinery out of the panel
+ * body so a second panel could share the same label logic without drift.
+ * ``FilamentMapping`` is integration-tested
  * already, but the hook deserves direct coverage so future edits don't break
  * a subtle contract (positional output alignment, fallback chain, query
  * dedup when the SKU is unknown).

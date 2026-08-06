@@ -3092,15 +3092,6 @@ export interface KProfilesResponse {
   fc_id_by_cali_idx?: Record<number, number>;
 }
 
-export interface KProfileNote {
-  // Stable identity since m065. `setting_id` is still accepted as a hint —
-  // the backend resolves it to `filament_calibration_id` via the printer's
-  // live K-profile list.
-  filament_calibration_id?: number | null;
-  setting_id?: string | null;
-  note: string;
-}
-
 export interface KProfileNotesResponse {
   notes: Record<number, string>;  // filament_calibration_id -> note
 }
@@ -3451,43 +3442,6 @@ export interface BackgroundDispatchResponse {
   dispatch_position: number | null;
   batch_id?: string | null;
   queued_copies?: number;
-}
-
-// Provider-specific config types for reference
-export interface CallMeBotConfig {
-  phone: string;
-  apikey: string;
-}
-
-export interface NtfyConfig {
-  server?: string;
-  topic: string;
-  auth_token?: string | null;
-}
-
-export interface PushoverConfig {
-  user_key: string;
-  app_token: string;
-  priority?: number;
-  /** Emergency priority (2) only: re-alert interval in seconds (30-10800). */
-  retry?: number;
-  /** Emergency priority (2) only: alert expiry in seconds (30-10800). */
-  expire?: number;
-}
-
-export interface TelegramConfig {
-  bot_token: string;
-  chat_id: string;
-}
-
-export interface EmailConfig {
-  smtp_server: string;
-  smtp_port?: number;
-  username: string;
-  password: string;
-  from_email: string;
-  to_email: string;
-  use_tls?: boolean;
 }
 
 // Notification Template types

@@ -5495,11 +5495,6 @@ export default {
     printJob: 'Завдання друку',
     fileOfTotal: 'Файл {{current}} з {{total}}',
 
-    // FilamentOverride
-    filamentOverride: 'Заміна філаменту',
-    filamentOverrideHint: 'Замініть оригінальний вибір філаменту на філаменти, доступні на обраних принтерах.',
-    originalFilament: 'Оригінал',
-    resetToOriginal: 'Скинути до оригіналу',
     forceColorMatch: 'Примусова відповідність кольору'
   },
 

@@ -194,14 +194,6 @@ export interface PlateInfo {
 }
 
 /**
- * Response from the archive plates API.
- */
-export interface PlatesResponse {
-  is_multi_plate: boolean;
-  plates: PlateInfo[];
-}
-
-/**
  * Props for the PrinterSelector component.
  */
 export interface PrinterSelectorProps {
@@ -247,8 +239,7 @@ export interface FilamentReqsData {
     nozzle_id?: number;
     /** Bambu SKU code from the 3MF (e.g. `GFA01` = Bambu PLA Matte, `P4d64437`
      *  = user custom). Used to resolve the "original" filament label in
-     *  FilamentOverride / FilamentMapping against the builtin + cloud
-     *  user-preset maps. #1718. */
+     *  FilamentMapping against the builtin + cloud user-preset maps. #1718. */
     tray_info_idx?: string;
   }>;
 }

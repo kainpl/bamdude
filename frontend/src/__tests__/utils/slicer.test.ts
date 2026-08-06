@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { openInSlicer, detectPlatform, buildDownloadUrl } from '../../utils/slicer';
+import { openInSlicer, detectPlatform } from '../../utils/slicer';
 
 describe('slicer utility', () => {
   let clickSpy: ReturnType<typeof vi.fn>;
@@ -112,10 +112,4 @@ describe('slicer utility', () => {
     });
   });
 
-  describe('buildDownloadUrl', () => {
-    it('prepends window.location.origin', () => {
-      const result = buildDownloadUrl('/api/v1/archives/1/file/test.3mf');
-      expect(result).toBe(`${window.location.origin}/api/v1/archives/1/file/test.3mf`);
-    });
-  });
 });

@@ -70,27 +70,3 @@ export function serializePreheatFilamentTargets(map: Record<string, number>): st
   }
   return JSON.stringify(out);
 }
-
-// Normalize a printer-reported tray_type to a map key. Mirrors the backend
-// `_normalize_filament_type` — split on space, uppercase.
-export function normalizePreheatFilamentType(trayType: string): string {
-  if (!trayType) return '';
-  return trayType.split(/\s+/)[0].toUpperCase();
-}
-
-// Pick the max chamber target across a list of loaded tray types, falling
-// back to `default` when a type isn't in the map. Returns 0 when nothing
-// is loaded, which short-circuits the chamber phase at dispatch.
-export function deriveChamberTargetForTrays(
-  trayTypes: readonly string[],
-  map: Record<string, number>,
-): number {
-  let best = 0;
-  for (const raw of trayTypes) {
-    const normalized = normalizePreheatFilamentType(raw);
-    if (!normalized) continue;
-    const target = map[normalized] ?? map.default ?? 0;
-    if (target > best) best = target;
-  }
-  return best;
-}

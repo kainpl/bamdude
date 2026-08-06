@@ -9,7 +9,6 @@ import {
   toDateTimeLocalValue,
   applyTimeFormat,
   parseUTCDate,
-  formatDate,
   formatDateOnly,
   formatDateTime,
   formatTimeOnly,
@@ -244,24 +243,6 @@ describe('parseUTCDate', () => {
     const result = parseUTCDate('2025-06-15T12:00:00');
     expect(result).toBeInstanceOf(Date);
     expect(result?.getUTCHours()).toBe(12);
-  });
-});
-
-describe('formatDate', () => {
-  it('returns empty string for null input', () => {
-    expect(formatDate(null)).toBe('');
-    expect(formatDate(undefined)).toBe('');
-  });
-
-  it('formats a valid date string', () => {
-    const result = formatDate('2025-06-15T12:00:00Z');
-    expect(result).toBeTruthy();
-    expect(result).toContain('2025');
-  });
-
-  it('accepts custom options', () => {
-    const result = formatDate('2025-06-15T12:00:00Z', { year: 'numeric' });
-    expect(result).toContain('2025');
   });
 });
 
