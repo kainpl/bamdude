@@ -91,3 +91,4 @@ bin/
 # Internal planning docs (specs, plans, design exploration). Local workflow
 # artifacts; not part of the public repo.
 docs/
+graphify-out/

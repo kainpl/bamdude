@@ -4,7 +4,7 @@
 
 # Force LF for shell scripts. With core.autocrlf=true (the Windows default)
 # a checkout rewrites them to CRLF, which turns the shebang into
-# `#!/bin/sh` — Linux then looks for an interpreter whose name ends in a
+# `#!/bin/sh\r` — Linux then looks for an interpreter whose name ends in a
 # carriage return and reports "no such file or directory". The repository
 # already stores LF; this makes the working copy match on every platform.
 #
@@ -12,3 +12,4 @@
 # entrypoint cannot exec, and install.sh copied from such a checkout fails
 # the same way. CI never saw it because Linux runners do not convert.
 *.sh text eol=lf
+graphify-out/graph.json merge=graphify
