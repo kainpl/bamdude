@@ -1081,22 +1081,16 @@ function PendingItemRow({
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1">
-            <p className="text-xs text-white truncate flex-1">{name}</p>
-            {isInBatch && batchAccent && (
-              <span className={`text-[9px] px-1 rounded ${batchAccent.badge} font-medium`}>
-                {t('queueCard.batch.label', { count: batchSize })}
-              </span>
-            )}
-            {item.manual_start && (
-              <span className="text-[9px] px-1 rounded bg-yellow-400/20 text-yellow-700 dark:text-yellow-400 font-medium">
-                M
-              </span>
-            )}
             {(() => {
               // Build-plate indicator so the operator knows which plate to mount
               // before walking to the printer (#1281). Icon-only to fit the
               // compact row; the label is on hover. Hidden when the 3MF carries
               // no curr_bed_type or the slicer used an unknown label.
+              //
+              // It sits before the name, not after it: the name takes flex-1, so
+              // a trailing icon is pushed against the hover-only action buttons
+              // and reads as a ragged right edge whenever the row is not hovered.
+              // Anchored to the number instead, it lines up down the column.
               const bed = getBedTypeInfo(item.bed_type);
               if (!bed) return null;
               return (
@@ -1108,6 +1102,17 @@ function PendingItemRow({
                 />
               );
             })()}
+            <p className="text-xs text-white truncate flex-1">{name}</p>
+            {isInBatch && batchAccent && (
+              <span className={`text-[9px] px-1 rounded ${batchAccent.badge} font-medium`}>
+                {t('queueCard.batch.label', { count: batchSize })}
+              </span>
+            )}
+            {item.manual_start && (
+              <span className="text-[9px] px-1 rounded bg-yellow-400/20 text-yellow-700 dark:text-yellow-400 font-medium">
+                M
+              </span>
+            )}
           </div>
           {item.waiting_reason && (
             <p className="text-[10px] text-yellow-700 dark:text-yellow-400 truncate">{item.waiting_reason}</p>
