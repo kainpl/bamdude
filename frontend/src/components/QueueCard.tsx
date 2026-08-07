@@ -1118,7 +1118,13 @@ function PendingItemRow({
             <p className="text-[10px] text-yellow-700 dark:text-yellow-400 truncate">{item.waiting_reason}</p>
           )}
         </div>
-        <div className="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+        {/* Row actions are always visible. They used to fade in on hover, which
+            is no affordance at all on a touch screen — there is nothing to hover
+            with, so start / reorder / remove were simply undiscoverable on a
+            phone or tablet. The buttons keep their own hover styling; it is only
+            the reveal that is gone. The same applies to the failed / cancelled /
+            skipped rows below. */}
+        <div className="flex items-center gap-0.5 flex-shrink-0">
           {item.manual_start && (
             <button
               onClick={onStart}
@@ -1408,7 +1414,7 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
                     <p className="text-[10px] text-red-700 dark:text-red-400 truncate">{item.error_message}</p>
                   )}
                 </div>
-                <div className="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                <div className="flex items-center gap-0.5 flex-shrink-0">
                   <button
                     onClick={() => retryMutation.mutate(item.id)}
                     disabled={retryMutation.isPending || !canUpdate}
@@ -1440,7 +1446,7 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
                     <p className="text-[10px] text-bambu-gray truncate">{item.error_message}</p>
                   )}
                 </div>
-                <div className="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                <div className="flex items-center gap-0.5 flex-shrink-0">
                   <button
                     onClick={() => retryMutation.mutate(item.id)}
                     disabled={retryMutation.isPending || !canUpdate}
@@ -1469,7 +1475,7 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
                 <div className="min-w-0 flex-1">
                   <p className="text-xs text-white truncate">{name}</p>
                 </div>
-                <div className="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                <div className="flex items-center gap-0.5 flex-shrink-0">
                   <button
                     onClick={() => unskipMutation.mutate(item.id)}
                     disabled={unskipMutation.isPending || !canUpdate}
