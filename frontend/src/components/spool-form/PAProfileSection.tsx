@@ -164,6 +164,14 @@ export function PAProfileSection({
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {/* Now that profiles are fetched per nozzle (#2618), one filament can
+              contribute two identically-named rows — the diameter is what tells
+              them apart. */}
+          {cal.nozzle_diameter && (
+            <span className="text-xs font-mono px-2 py-0.5 rounded bg-bambu-dark text-bambu-gray">
+              {cal.nozzle_diameter}mm
+            </span>
+          )}
           <span className="text-xs font-mono px-2 py-0.5 rounded bg-bambu-dark text-bambu-gray">
             K={cal.k_value.toFixed(3)}
           </span>

@@ -802,6 +802,17 @@ export function KProfilesView() {
     staleTime: 60000,  // Cache for 1 minute
   });
 
+  // The dropdown asks "which filament is this profile for", which is a question
+  // about the filament, not about a nozzle — so it takes the UNION of the 0.4mm
+  // list above and whatever the selected diameter returned. It used to read
+  // `allProfiles?.profiles || kprofiles?.profiles`, and an empty array is truthy
+  // in JS: on a printer with no 0.4mm profiles at all the intended fallback never
+  // fired and the dropdown was simply empty. Deduped by filament_id downstream.
+  const filamentSourceProfiles = React.useMemo(
+    () => [...(allProfiles?.profiles ?? []), ...(kprofiles?.profiles ?? [])],
+    [allProfiles?.profiles, kprofiles?.profiles],
+  );
+
   // Fetch builtin filament names for accurate filament_id → name resolution
   const { data: builtinFilaments } = useQuery({
     queryKey: ['builtinFilaments'],
@@ -1473,7 +1484,7 @@ export function KProfilesView() {
             profile={editingProfile}
             printerId={selectedPrinter}
             nozzleDiameter={nozzleDiameter}
-            existingProfiles={allProfiles?.profiles || kprofiles?.profiles}
+            existingProfiles={filamentSourceProfiles}
             builtinFilaments={enrichedBuiltinFilaments}
             isDualNozzle={isDualNozzle}
             initialNote={note}
@@ -1498,7 +1509,7 @@ export function KProfilesView() {
         <KProfileModal
           printerId={selectedPrinter}
           nozzleDiameter={nozzleDiameter}
-          existingProfiles={allProfiles?.profiles || kprofiles?.profiles}
+          existingProfiles={filamentSourceProfiles}
           builtinFilaments={enrichedBuiltinFilaments}
           isDualNozzle={isDualNozzle}
           onSaveNote={handleSaveNote}
@@ -1519,7 +1530,7 @@ export function KProfilesView() {
         <KProfileModal
           printerId={selectedPrinter}
           nozzleDiameter={nozzleDiameter}
-          existingProfiles={allProfiles?.profiles || kprofiles?.profiles}
+          existingProfiles={filamentSourceProfiles}
           builtinFilaments={enrichedBuiltinFilaments}
           isDualNozzle={isDualNozzle}
           onSaveNote={handleSaveNote}

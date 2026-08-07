@@ -393,6 +393,36 @@ export function filterFilamentsByNozzle<T extends { extruderId?: number }>(
 }
 
 /**
+ * List the distinct nozzle diameters the printer actually reports (#2618).
+ *
+ * Mirrors the backend `print_scheduler._installed_nozzle_diameters`: reads each
+ * `status.nozzles[].nozzle_diameter`, skips the empty-string / non-positive
+ * defaults that fill a NozzleInfo before MQTT has said anything, and dedupes
+ * (two 0.4 hotends are one diameter to ask about).
+ *
+ * Returns e.g. `['0.4']` or `['0.4', '0.6']`. An **empty array means "the
+ * printer has not told us its nozzle hardware"** — not "no nozzles". Callers
+ * that fetch per-diameter must fall back to their own default, exactly as the
+ * backend treats unknown as unknown rather than as a mismatch.
+ *
+ * Keeps the bare decimal string the status carries, so it can go straight into
+ * `getKProfiles` without a round trip through Number.
+ */
+export function installedNozzleDiameters(
+  status: { nozzles?: { nozzle_diameter?: string }[] } | null | undefined,
+): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const nozzle of status?.nozzles ?? []) {
+    const raw = (nozzle?.nozzle_diameter ?? '').trim();
+    if (!raw || !(parseFloat(raw) > 0) || seen.has(raw)) continue;
+    seen.add(raw);
+    result.push(raw);
+  }
+  return result;
+}
+
+/**
  * Detect Bambu Lab RFID-tagged spool by tray_uuid (32 hex) or tag_uid (16 hex).
  *
  * Permissive zero-string check: any non-zero non-empty value returns true. The

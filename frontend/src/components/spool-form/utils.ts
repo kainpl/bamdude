@@ -1,6 +1,52 @@
+import { api } from '../../api/client';
 import type { SlicerSetting, LocalPreset, BuiltinFilament } from '../../api/client';
-import type { ColorPreset, FilamentOption } from './types';
+import { installedNozzleDiameters } from '../../utils/amsHelpers';
+import type { CalibrationProfile, ColorPreset, FilamentOption } from './types';
 import { KNOWN_VARIANTS, DEFAULT_BRANDS, RECENT_COLORS_KEY, MAX_RECENT_COLORS } from './constants';
+
+/**
+ * Fetch a printer's K-profiles across every nozzle it actually has installed
+ * (#2618), flattened into the rows the PA-Profil picker renders.
+ *
+ * `getKProfiles` filters strictly by nozzle diameter and defaults to "0.4", so
+ * the single call this replaces could only ever see 0.4 mm profiles — on a
+ * dual-nozzle printer the 0.6 mm K value for the same filament was fetched by
+ * nothing and the picker reported "1 match" where there were two. The irony was
+ * that PAProfileSection already grouped profiles by nozzle; it simply never had
+ * a second nozzle to group.
+ *
+ * Falls back to "0.4" when the printer has reported no nozzle hardware, which is
+ * exactly the previous behaviour. Per-diameter failures are swallowed rather
+ * than failing the batch — a printer that doesn't answer the endpoint yields no
+ * rows, matching the try/catch each caller used to carry.
+ */
+export async function fetchPrinterCalibrations(
+  printerId: number,
+  status: { nozzles?: { nozzle_diameter?: string }[] } | null | undefined,
+): Promise<CalibrationProfile[]> {
+  const diameters = installedNozzleDiameters(status);
+  const toFetch = diameters.length > 0 ? diameters : ['0.4'];
+  const responses = await Promise.all(
+    toFetch.map(d => api.getKProfiles(printerId, d).catch(() => null)),
+  );
+  const calibrations: CalibrationProfile[] = [];
+  for (const res of responses) {
+    if (!res) continue;
+    for (const p of res.profiles) {
+      calibrations.push({
+        cali_idx: p.slot_id,
+        filament_id: p.filament_id,
+        setting_id: p.setting_id || '',
+        name: p.name,
+        k_value: parseFloat(p.k_value) || 0,
+        n_coef: parseFloat(p.n_coef) || 0,
+        extruder_id: p.extruder_id,
+        nozzle_diameter: p.nozzle_diameter,
+      });
+    }
+  }
+  return calibrations;
+}
 
 // Fallback filament presets when cloud is not available
 const FALLBACK_PRESETS: FilamentOption[] = [
