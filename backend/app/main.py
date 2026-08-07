@@ -848,6 +848,53 @@ def register_expected_print(
     )
 
 
+def withdraw_expected_print(printer_id: int, filename: str) -> None:
+    """Undo a registration whose print command never went out (upstream #2702 follow-up).
+
+    ``register_expected_print`` runs *before* the print command — it has to, so
+    the entry exists by the time the printer's first report arrives. Everything
+    between the two can still fail: a cancel, the strict-stagger refusal, a swap
+    macro, the calibration write, a dropped MQTT session, or ``start_print``
+    simply returning False.
+
+    Without this, that stale entry survives for the full
+    ``_EXPECTED_PRINT_TTL_SECONDS`` (two hours). And ``_expected_prints`` is a
+    **name-match adoption table**: ``on_print_start`` pops ``(printer_id,
+    filename)`` and attaches the print to that archive. So a leftover does not
+    merely leak — for two hours it adopts *the next print of the same file on
+    that printer* into the wrong archive, whichever way that print was started.
+    On a farm that repeats one file, that is a normal Tuesday.
+
+    The TTL sweeper stays as the backstop it was meant to be, rather than the
+    only mechanism. Removes every filename variant ``register_expected_print``
+    wrote, so a partial withdrawal cannot leave one of them behind to match on.
+    """
+    keys = [(printer_id, filename)]
+    if filename.endswith(".3mf"):
+        base = filename[:-4]
+        keys.append((printer_id, base))
+        keys.append((printer_id, f"{base}.gcode"))
+
+    archive_ids = {aid for key in keys if (aid := _expected_prints.pop(key, None)) is not None}
+    for key in keys:
+        _expected_print_creators.pop(key, None)
+        _expected_print_registered_at.pop(key, None)
+
+    # The AMS mapping is keyed by archive, not by filename, so it is only safe to
+    # drop once no variant still points at that archive.
+    for archive_id in archive_ids:
+        if archive_id not in _expected_prints.values():
+            _print_ams_mappings.pop(archive_id, None)
+
+    if archive_ids:
+        logging.getLogger(__name__).info(
+            "Withdrew expected print: printer=%s, file=%s, archive=%s (command never sent)",
+            printer_id,
+            filename,
+            ", ".join(str(a) for a in sorted(archive_ids)),
+        )
+
+
 def register_swap_config(printer_id: int, options: dict):
     """Register in-memory swap-macro config for the current print on *printer_id*.
 

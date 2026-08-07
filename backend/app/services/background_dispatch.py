@@ -883,7 +883,7 @@ class BackgroundDispatchService:
         raise RuntimeError(f"Unknown dispatch job kind: {job.kind}")
 
     async def _run_reprint_archive(self, job: PrintDispatchJob):
-        from backend.app.main import register_expected_print
+        from backend.app.main import register_expected_print, withdraw_expected_print
 
         job.outcome = {"success": False, "archive_id": None, "error": None, "cancelled": False}
 
@@ -923,6 +923,10 @@ class BackgroundDispatchService:
             # configured for this printer model).
             upload_file_path = file_path
             _patch_cleanup_dir = None
+            # Set at registration, cleared on a confirmed send, withdrawn in
+            # the finally. Initialised here so that finally cannot trip over an
+            # unbound name when the body fails before registration.
+            _unconfirmed_expected_print: tuple[int, str] | None = None
             inject_spec = await self._build_injection_spec(
                 job=job,
                 printer_model=printer_model,
@@ -1162,6 +1166,11 @@ class BackgroundDispatchService:
                     archive.id,
                     ams_mapping=job.options.get("ams_mapping"),
                 )
+                # Withdrawn in the ``finally`` unless the print command actually
+                # goes out — everything between here and ``start_print`` can still
+                # fail, and a leftover entry adopts the next print of this file
+                # into this archive for the next two hours.
+                _unconfirmed_expected_print = (job.printer_id, remote_filename)
 
                 plate_id = self._resolve_plate_id(file_path, job.options.get("plate_id"))
 
@@ -1234,6 +1243,10 @@ class BackgroundDispatchService:
                     nozzle_offset_cali=job.options.get("nozzle_offset_cali", False),
                     nozzle_mapping=job.options.get("nozzle_mapping"),
                 )
+
+                if started:
+                    # Confirmed send: the entry is now the printer's to resolve.
+                    _unconfirmed_expected_print = None
 
                 if not started:
                     await self._cleanup_sd_card_file(
@@ -1326,6 +1339,13 @@ class BackgroundDispatchService:
                 job.outcome = {"success": False, "archive_id": None, "error": str(e), "cancelled": False}
                 raise
             finally:
+                # An expected print whose command never went out must not linger.
+                # Same "every exit path" argument as the temp dir below, and the
+                # same single choke point: a raise, an early return, a cancel, or
+                # start_print returning False all land here.
+                if _unconfirmed_expected_print is not None:
+                    withdraw_expected_print(*_unconfirmed_expected_print)
+                    _unconfirmed_expected_print = None
                 # Patched-3MF temp dir must clean up on every exit path —
                 # cancel mid-upload otherwise leaks the temp into /tmp until
                 # process restart.
@@ -1375,7 +1395,7 @@ class BackgroundDispatchService:
             raise RuntimeError(f"Swap macro '{macro.name}' failed: {msg}")
 
     async def _run_print_library_file(self, job: PrintDispatchJob):
-        from backend.app.main import register_expected_print
+        from backend.app.main import register_expected_print, withdraw_expected_print
 
         # Seeded in case any early branch raises — keeps the outcome shape
         # consistent for queue-item callers awaiting completion_event.
@@ -1414,6 +1434,10 @@ class BackgroundDispatchService:
             # archive path above. See _maybe_inject_gcode → _build_injection_spec.
             upload_file_path = file_path
             _patch_cleanup_dir_lib = None
+            # Set at registration, cleared on a confirmed send, withdrawn in
+            # the finally. Initialised here so that finally cannot trip over an
+            # unbound name when the body fails before registration.
+            _unconfirmed_expected_print: tuple[int, str] | None = None
             inject_spec_lib = await self._build_injection_spec(
                 job=job,
                 printer_model=printer_model,
@@ -1680,6 +1704,11 @@ class BackgroundDispatchService:
                     archive.id,
                     ams_mapping=job.options.get("ams_mapping"),
                 )
+                # Withdrawn in the ``finally`` unless the print command actually
+                # goes out — everything between here and ``start_print`` can still
+                # fail, and a leftover entry adopts the next print of this file
+                # into this archive for the next two hours.
+                _unconfirmed_expected_print = (job.printer_id, remote_filename)
 
                 plate_id = self._resolve_plate_id(file_path, job.options.get("plate_id"))
 
@@ -1752,6 +1781,10 @@ class BackgroundDispatchService:
                     nozzle_offset_cali=job.options.get("nozzle_offset_cali", False),
                     nozzle_mapping=job.options.get("nozzle_mapping"),
                 )
+
+                if started:
+                    # Confirmed send: the entry is now the printer's to resolve.
+                    _unconfirmed_expected_print = None
 
                 if not started:
                     await self._cleanup_sd_card_file(
@@ -1875,6 +1908,13 @@ class BackgroundDispatchService:
                 job.outcome = {"success": False, "archive_id": archive.id, "error": str(e), "cancelled": False}
                 raise
             finally:
+                # An expected print whose command never went out must not linger.
+                # Same "every exit path" argument as the temp dir below, and the
+                # same single choke point: a raise, an early return, a cancel, or
+                # start_print returning False all land here.
+                if _unconfirmed_expected_print is not None:
+                    withdraw_expected_print(*_unconfirmed_expected_print)
+                    _unconfirmed_expected_print = None
                 # Patched-3MF temp dir must clean up on every exit path —
                 # cancel mid-upload otherwise leaks the temp into /tmp until
                 # process restart.
