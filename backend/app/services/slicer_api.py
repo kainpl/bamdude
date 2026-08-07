@@ -17,7 +17,9 @@ yet (inherits-chain resolver, sentinel-value strip, multi-filament input,
 """
 
 import asyncio
+import io
 import logging
+import zipfile
 from collections.abc import Callable
 from typing import NamedTuple
 
@@ -143,6 +145,77 @@ def _guess_model_content_type(filename: str) -> str:
     if lower.endswith(".step") or lower.endswith(".stp"):
         return "model/step"
     return "application/octet-stream"
+
+
+def _handle_slice_response(response: httpx.Response, *, export_3mf: bool) -> SliceResult:
+    """Turn a sidecar ``/slice`` response into a validated ``SliceResult``.
+
+    Shared by ``slice_with_profiles`` / ``slice_without_profiles``: the two had
+    byte-identical status handling, and a check added to one of them would
+    otherwise silently not apply to the other.
+
+    Beyond the status code, this refuses **HTTP 200 carrying a body that is not
+    a slice** (upstream #2671). A stock or misconfigured sidecar, a reverse
+    proxy interstitial, a truncated response, or an OrcaSlicer/BambuStudio CLI
+    that crashed without writing output all return 200 with a few bytes. Those
+    bytes used to be written out as a ``.gcode.3mf``, stored as a valid sliced
+    file — the 3MF parse failure was swallowed as "no thumbnail" — then queued
+    and FTP'd, so the failure surfaced at the printer rather than at the slice.
+
+    This is the same rule the rest of the pipeline already holds: ``archive.py``
+    ZIP-validates a 3MF after copying it, and the virtual printer's ``cmd_STOR``
+    ZIP-validates before ACKing an upload. The slice path was the one place that
+    took bytes on trust.
+
+    Raises:
+        SlicerInputError: 4xx from the sidecar, including a proxy's 413.
+        SlicerApiServerError: 5xx, or a 2xx whose body is not a valid 3MF.
+    """
+    if response.status_code >= 400:
+        # The toast-facing message is capped at 500 chars by
+        # _format_sidecar_error, which buries the real CLI cause when
+        # the slicer dumps a long stdout. Log the full body here so
+        # the backend console always has the un-truncated failure.
+        logger.error(
+            "slicer sidecar %d body (full): %s",
+            response.status_code,
+            response.text[:8000],
+        )
+    if response.status_code == 413:
+        # A 413 almost never comes from the slicer itself — it is a reverse
+        # proxy capping the multipart upload (model + profiles). Name the layer
+        # that actually has the setting, or the user tunes the wrong one.
+        raise SlicerInputError(
+            "The slice request was rejected as too large (HTTP 413). A reverse proxy "
+            "in front of the slicer sidecar is capping the request body — raise "
+            "'client_max_body_size' (nginx/SWAG) or the equivalent on the proxy that "
+            "sits directly in front of the sidecar, then reload it. If the sidecar is "
+            "behind Cloudflare, note its request-size cap."
+        )
+    if response.status_code >= 500:
+        raise SlicerApiServerError(f"Slicer CLI failed ({response.status_code}): {_format_sidecar_error(response)}")
+    if response.status_code >= 400:
+        raise SlicerInputError(f"Slicer rejected input ({response.status_code}): {_format_sidecar_error(response)}")
+
+    content = response.content
+    if export_3mf and not zipfile.is_zipfile(io.BytesIO(content)):
+        # Only a small body is worth quoting back; a large non-ZIP blob is
+        # noise in a toast and is already in the log above when it was a 4xx.
+        detail = _format_sidecar_error(response) if len(content) <= 500 else ""
+        raise SlicerApiServerError(
+            f"Slicer sidecar returned HTTP {response.status_code} but the body is not a valid "
+            f"3MF ({len(content)} bytes). This usually means a misconfigured sidecar, an "
+            f"OrcaSlicer/BambuStudio CLI crash producing no output, or a reverse proxy returning "
+            f"an error page or truncating the response — verify the sidecar URL and any proxy in "
+            f"front of it." + (f" Body: {detail}" if detail else "")
+        )
+
+    return SliceResult(
+        content=content,
+        print_time_seconds=_safe_int(response.headers.get("x-print-time-seconds")),
+        filament_used_g=_safe_float(response.headers.get("x-filament-used-g")),
+        filament_used_mm=_safe_float(response.headers.get("x-filament-used-mm")),
+    )
 
 
 class SlicerApiService:
@@ -354,27 +427,7 @@ class SlicerApiService:
                 except (asyncio.CancelledError, Exception):
                     pass  # Polling errors must not fail the slice.
 
-        if response.status_code >= 400:
-            # The toast-facing message is capped at 500 chars by
-            # _format_sidecar_error, which buries the real CLI cause when
-            # the slicer dumps a long stdout. Log the full body here so
-            # the backend console always has the un-truncated failure.
-            logger.error(
-                "slicer sidecar %d body (full): %s",
-                response.status_code,
-                response.text[:8000],
-            )
-        if response.status_code >= 500:
-            raise SlicerApiServerError(f"Slicer CLI failed ({response.status_code}): {_format_sidecar_error(response)}")
-        if response.status_code >= 400:
-            raise SlicerInputError(f"Slicer rejected input ({response.status_code}): {_format_sidecar_error(response)}")
-
-        return SliceResult(
-            content=response.content,
-            print_time_seconds=_safe_int(response.headers.get("x-print-time-seconds")),
-            filament_used_g=_safe_float(response.headers.get("x-filament-used-g")),
-            filament_used_mm=_safe_float(response.headers.get("x-filament-used-mm")),
-        )
+        return _handle_slice_response(response, export_3mf=export_3mf)
 
     async def slice_without_profiles(
         self,
@@ -440,27 +493,7 @@ class SlicerApiService:
                 except (asyncio.CancelledError, Exception):
                     pass
 
-        if response.status_code >= 400:
-            # The toast-facing message is capped at 500 chars by
-            # _format_sidecar_error, which buries the real CLI cause when
-            # the slicer dumps a long stdout. Log the full body here so
-            # the backend console always has the un-truncated failure.
-            logger.error(
-                "slicer sidecar %d body (full): %s",
-                response.status_code,
-                response.text[:8000],
-            )
-        if response.status_code >= 500:
-            raise SlicerApiServerError(f"Slicer CLI failed ({response.status_code}): {_format_sidecar_error(response)}")
-        if response.status_code >= 400:
-            raise SlicerInputError(f"Slicer rejected input ({response.status_code}): {_format_sidecar_error(response)}")
-
-        return SliceResult(
-            content=response.content,
-            print_time_seconds=_safe_int(response.headers.get("x-print-time-seconds")),
-            filament_used_g=_safe_float(response.headers.get("x-filament-used-g")),
-            filament_used_mm=_safe_float(response.headers.get("x-filament-used-mm")),
-        )
+        return _handle_slice_response(response, export_3mf=export_3mf)
 
 
 def _safe_int(value: str | None) -> int:
