@@ -1789,6 +1789,32 @@ class BambuMQTTClient:
                 elif cmd == "ams_filament_setting":
                     self._last_ams_cmd_time = 0.0
                     self._ams_cmd_unanswered = 0
+            # A K-profile query echoes the nozzle diameter it was ASKED for at
+            # the top level of its reply. ``_update_state`` reads a top-level
+            # ``nozzle_diameter`` as the installed hardware, so feeding these
+            # replies to it overwrites the real nozzle with whichever size was
+            # last queried (upstream #2663). ``git_backup`` sweeps
+            # 0.2/0.4/0.6/0.8 in turn, so the printer ended up recorded as 0.8
+            # until the next status push — and ``print_scheduler``'s nozzle
+            # mismatch gate (#1899) then refused to dispatch, failing prints
+            # with a bogus "printer has 0.8mm".
+            #
+            # Both query commands are guarded, not just the one upstream fixed:
+            # ``extrusion_cali_query_result`` publishes ``nozzle_diameter`` too
+            # (see its payload), so its reply carries the same echo. It has no
+            # caller today — Auto PA is parked for want of a lidar printer — but
+            # a guard that covers only the reachable half is a trap set for
+            # whoever wires it up.
+            #
+            # Neither reply carries status telemetry, so nothing is lost by
+            # skipping the state update. The nozzle comes from push_status
+            # alone, the same conclusion ``_handle_system_response`` reached
+            # about ``get_accessories``.
+            cali_query_reply = print_data.get("command") in (
+                "extrusion_cali_get",
+                "extrusion_cali_get_result",
+            )
+
             if "command" in print_data and print_data.get("command") == "extrusion_cali_get":
                 self._handle_kprofile_response(print_data)
                 # Also mirror the same payload into Plan-1 cali history
@@ -1800,7 +1826,8 @@ class BambuMQTTClient:
             if "command" in print_data and print_data.get("command") == "extrusion_cali_get_result":
                 self._handle_extrusion_cali_get_result(print_data)
 
-            self._update_state(print_data)
+            if not cali_query_reply:
+                self._update_state(print_data)
 
     def _handle_system_response(self, data: dict):
         """Handle system responses including accessories info.

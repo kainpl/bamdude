@@ -5242,3 +5242,68 @@ class TestStartCalibrationBitmask:
         c = self._client()
         assert c.start_calibration() is False
         c._client.publish.assert_not_called()
+
+
+class TestKProfileReplyDoesNotClobberNozzle:
+    """A K-profile query must not rewrite the installed nozzle (upstream #2663).
+
+    The reply echoes the diameter the query ASKED for. ``_update_state`` reads a
+    top-level ``nozzle_diameter`` as installed hardware, so without a guard the
+    last size queried wins — and ``git_backup`` queries 0.2/0.4/0.6/0.8 in turn,
+    leaving every printer recorded as 0.8 until its next status push. The #1899
+    dispatch gate then refuses the print.
+    """
+
+    @pytest.fixture
+    def mqtt_client(self):
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        return BambuMQTTClient(
+            ip_address="192.168.1.100",
+            serial_number="TEST123",
+            access_code="12345678",
+        )
+
+    def _install_real_nozzle(self, client, diameter="0.4"):
+        """Put a genuine nozzle size in state, as a status push would."""
+        client._process_message({"print": {"nozzle_diameter": diameter}})
+        assert client.state.nozzles[0].nozzle_diameter == diameter
+
+    def test_status_push_still_sets_the_nozzle(self, mqtt_client):
+        """The guard must not cost us the one message that IS authoritative."""
+        self._install_real_nozzle(mqtt_client, "0.6")
+
+    @pytest.mark.parametrize("command", ["extrusion_cali_get", "extrusion_cali_get_result"])
+    def test_cali_query_reply_leaves_the_nozzle_alone(self, mqtt_client, command):
+        self._install_real_nozzle(mqtt_client, "0.4")
+
+        mqtt_client._process_message(
+            {
+                "print": {
+                    "command": command,
+                    "sequence_id": "1",
+                    "nozzle_diameter": "0.8",
+                    "filaments": [],
+                }
+            }
+        )
+
+        assert mqtt_client.state.nozzles[0].nozzle_diameter == "0.4"
+
+    def test_a_full_backup_sweep_leaves_the_nozzle_alone(self, mqtt_client):
+        """git_backup's 0.2/0.4/0.6/0.8 sweep — the path that surfaced this."""
+        self._install_real_nozzle(mqtt_client, "0.4")
+
+        for size in ("0.2", "0.4", "0.6", "0.8"):
+            mqtt_client._process_message(
+                {
+                    "print": {
+                        "command": "extrusion_cali_get",
+                        "sequence_id": size,
+                        "nozzle_diameter": size,
+                        "filaments": [],
+                    }
+                }
+            )
+
+        assert mqtt_client.state.nozzles[0].nozzle_diameter == "0.4"
