@@ -1737,7 +1737,8 @@ export function MaintenancePage() {
             ) : groupedOverviews ? (
               groupedOverviews.map((group) => (
                 <div key={group.locationId ?? 'ungrouped'} className="space-y-3">
-                  <h2 className="text-lg font-semibold text-bambu-green flex items-center gap-2 flex-wrap">
+                  <h2 className="text-lg font-semibold text-white flex items-center gap-2 flex-wrap">
+                    <span className="w-2 h-2 rounded-full bg-bambu-green" />
                     {group.label}
                     <span className="text-bambu-gray text-sm font-normal">({group.items.length})</span>
                   </h2>
