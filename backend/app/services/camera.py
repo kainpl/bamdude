@@ -15,6 +15,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from backend.app.core.logging_filters import redact_url_credentials
+
 logger = logging.getLogger(__name__)
 
 # JPEG markers
@@ -619,7 +621,10 @@ async def capture_camera_frame_bytes(
             logger.info("Successfully captured camera frame bytes: %s bytes", len(stdout))
             return stdout
         else:
-            stderr_text = stderr.decode() if stderr else "Unknown error"
+            # ffmpeg echoes the RTSP input URL, which carries the access code.
+            # Redact before the slice — truncating first can cut the string short
+            # of the ``@`` the pattern anchors on and leave the code in the log.
+            stderr_text = redact_url_credentials(stderr.decode()) if stderr else "Unknown error"
             logger.error("ffmpeg frame bytes capture failed (code %s): %s", process.returncode, stderr_text[:200])
             return None
 

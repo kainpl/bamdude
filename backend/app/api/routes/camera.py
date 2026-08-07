@@ -18,6 +18,7 @@ from backend.app.core.auth import (
     create_camera_stream_token,
 )
 from backend.app.core.database import get_db
+from backend.app.core.logging_filters import redact_url_credentials
 from backend.app.core.permissions import Permission
 from backend.app.models.printer import Printer
 from backend.app.models.user import User
@@ -278,9 +279,19 @@ def _summarize_ffmpeg_stderr(text: str | None) -> str:
     any actual error message. Logging the full banner on every retry floods
     the log (hundreds of lines per failed stream). This filter drops the
     banner and caps output at the last 10 meaningful lines (upstream #925).
+
+    Credentials are masked **here** rather than at each ``logger`` call because
+    this is the one funnel every stderr log in this module passes through.
+    ffmpeg echoes the RTSP input URL back in its ``Input #0`` line, and that URL
+    carries the printer access code — we already redact it out of the *command*
+    before logging it (see ``_redacted_cmd``), and this closes the other way it
+    reached the file.
     """
     if not text:
         return ""
+    # Before the truncation below, never after: slicing first can cut the string
+    # short of the ``@`` the pattern anchors on and leave the password in.
+    text = redact_url_credentials(text) or ""
     banner_prefixes = (
         "ffmpeg version ",
         "  built with ",

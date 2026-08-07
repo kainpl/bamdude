@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
+from backend.app.core.logging_filters import URL_CREDENTIALS_PATTERN
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
@@ -184,8 +185,20 @@ def sanitize_log_content(content: str, sensitive_strings: dict[str, str] | None 
                 continue  # Skip very short strings to prevent over-redaction
             content = re.sub(re.escape(value), label, content)
 
-    # Replace credentials in URLs (e.g. http://user:pass@host, rtsps://bblp:code@host)
-    content = re.sub(r"((?:https?|rtsps?)://)[^/:@\s]+:[^/@\s]+@", r"\1[CREDENTIALS]@", content)
+    # Replace credentials in URLs (e.g. http://user:pass@host, rtsps://bblp:code@host).
+    #
+    # Shares its pattern with the log-pipeline redaction in ``core.logging_filters``
+    # so the two cannot drift. The bundle drops the username as well, where the
+    # live log keeps it for diagnosis — that is the only difference, and the
+    # named groups are what let one pattern serve both.
+    #
+    # The hand-rolled version this replaces was wrong twice over: its scheme
+    # allowlist was ``https?|rtsps?``, so **``ftp://`` and ``ftps://`` were never
+    # redacted at all** — and FTPS-to-printer carries the same ``bblp:<access
+    # code>``. And its secret class stopped at the FIRST ``@``, so a password
+    # containing one (legal, and plausible in an external camera URL) left its
+    # tail in the output.
+    content = URL_CREDENTIALS_PATTERN.sub(r"\g<scheme>[CREDENTIALS]@", content)
 
     # Replace email addresses
     content = re.sub(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", "[EMAIL]", content)

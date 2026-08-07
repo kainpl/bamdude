@@ -17,6 +17,8 @@ from urllib.parse import urlparse
 
 import aiohttp
 
+from backend.app.core.logging_filters import redact_url_credentials
+
 logger = logging.getLogger(__name__)
 
 
@@ -186,9 +188,11 @@ async def capture_frame(
         JPEG bytes or None on failure
     """
     if snapshot_url:
-        logger.debug("capture_frame using snapshot override url=%s...", snapshot_url[:50])
+        logger.debug("capture_frame using snapshot override url=%s...", redact_url_credentials(snapshot_url)[:50])
         return await _capture_snapshot(snapshot_url, timeout)
-    logger.debug("capture_frame called: type=%s, url=%s...", camera_type, url[:50] if url else "None")
+    logger.debug(
+        "capture_frame called: type=%s, url=%s...", camera_type, redact_url_credentials(url)[:50] if url else "None"
+    )
     if camera_type == "mjpeg":
         return await _capture_mjpeg_frame(url, timeout)
     elif camera_type == "rtsp":
@@ -275,7 +279,7 @@ async def _capture_usb_frame(device: str, timeout: int) -> bytes | None:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
 
         if process.returncode != 0:
-            logger.error("ffmpeg USB capture failed: %s", stderr.decode()[:200])
+            logger.error("ffmpeg USB capture failed: %s", redact_url_credentials(stderr.decode())[:200])
             return None
 
         if not stdout or len(stdout) < 100:
@@ -318,7 +322,7 @@ async def _capture_mjpeg_frame(url: str, timeout: int) -> bytes | None:
     """
     safe_url = _sanitize_camera_url(url, ("http", "https"))
     if not safe_url:
-        logger.error("Invalid MJPEG URL format: %s...", url[:50])
+        logger.error("Invalid MJPEG URL format: %s...", redact_url_credentials(url)[:50])
         return None
 
     jpeg_start = b"\xff\xd8"
@@ -445,7 +449,7 @@ async def _capture_rtsp_frame(url: str, timeout: int) -> bytes | None:
         )
 
         if process.returncode != 0:
-            logger.error("ffmpeg RTSP capture failed: %s", stderr.decode()[:200])
+            logger.error("ffmpeg RTSP capture failed: %s", redact_url_credentials(stderr.decode())[:200])
             return None
 
         if not stdout or len(stdout) < 100:
@@ -511,7 +515,7 @@ async def _capture_snapshot(url: str, timeout: int) -> bytes | None:
     # Sanitize URL - returns reconstructed URL from validated components
     safe_url = _sanitize_camera_url(url, ("http", "https"))
     if not safe_url:
-        logger.error("Invalid snapshot URL format: %s...", url[:50])
+        logger.error("Invalid snapshot URL format: %s...", redact_url_credentials(url)[:50])
         return None
 
     try:
@@ -566,7 +570,7 @@ async def test_connection(url: str, camera_type: str) -> dict:
     Returns:
         Dict with {success: bool, error?: str, resolution?: str}
     """
-    logger.info("Testing camera connection: type=%s, url=%s...", camera_type, url[:50])
+    logger.info("Testing camera connection: type=%s, url=%s...", camera_type, redact_url_credentials(url)[:50])
     try:
         frame = await capture_frame(url, camera_type, timeout=10)
         logger.info("Capture result: %s bytes", len(frame) if frame else 0)
@@ -707,7 +711,7 @@ async def _stream_mjpeg(url: str) -> AsyncGenerator[bytes, None]:
     # Sanitize URL - returns reconstructed URL from validated components
     safe_url = _sanitize_camera_url(url, ("http", "https"))
     if not safe_url:
-        logger.error("Invalid MJPEG stream URL: %s...", url[:50])
+        logger.error("Invalid MJPEG stream URL: %s...", redact_url_credentials(url)[:50])
         return
 
     try:
@@ -844,7 +848,7 @@ async def _stream_rtsp(
         await asyncio.sleep(0.1)
         if process.returncode is not None:
             stderr = await process.stderr.read()
-            logger.error("ffmpeg RTSP stream failed immediately: %s", stderr.decode()[:300])
+            logger.error("ffmpeg RTSP stream failed immediately: %s", redact_url_credentials(stderr.decode())[:300])
             return
 
         buffer = b""
@@ -957,7 +961,7 @@ async def _stream_usb(
         await asyncio.sleep(0.5)
         if process.returncode is not None:
             stderr = await process.stderr.read()
-            logger.error("ffmpeg USB stream failed immediately: %s", stderr.decode()[:300])
+            logger.error("ffmpeg USB stream failed immediately: %s", redact_url_credentials(stderr.decode())[:300])
             return
 
         buffer = b""
