@@ -1,9 +1,14 @@
 """Shared primitives for reading, parsing, and sanitizing the BamDude app log.
 
 Used by the service-layer log-health scanner (``log_health.py``) so it can
-reuse log reading and redaction without importing from the API layer. The
-support-bundle routes in ``routes/support.py`` keep their own (telemetry-aware)
-copies; this module is the canonical reader for the scanner.
+reuse log reading and redaction without importing from the API layer, and by the
+support-bundle routes in ``routes/support.py``, whose ``_sanitize_log_content``
+is now a thin alias for the one here.
+
+That alias replaced a byte-identical copy (2026-08-07). The duplication was not
+theoretical: the bundle a user emails us went through the copy, the scanner
+through this one, so the LDAP-DN redaction added for #2681 would have covered
+the scanner and missed the bundle. This module is the single sanitizer.
 """
 
 import logging
@@ -24,6 +29,32 @@ logger = logging.getLogger(__name__)
 # The trace_id is left as part of the message group — callers that need it can
 # parse it out; the log-health scanner does not.
 LOG_LINE_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2},\d{3})\s+(\w+)\s+\[([^\]]+)\]\s+(.*)$")
+
+# LDAP Distinguished Names carry PII — the leaf ``CN=`` is the user's real name
+# (upstream #2681), on par with the email address this file already redacts.
+#
+# This is the one redaction here that cannot be value-driven. Everything else is
+# enumerable from the database (printer names, serials, access codes) and gets
+# substituted by exact match; a DN is per-user, arrives from the directory, and
+# was never ours to list. So it has to be matched by SHAPE.
+#
+# Two RDN components minimum, comma-joined, each an ``attr=value`` whose attr is a
+# known LDAP attribute type. Requiring two is what stops an incidental
+# ``key=value`` elsewhere in a log line from being clobbered. It catches DNs
+# wherever they surface, not only the deliberate "auth successful" line: ldap3
+# exception strings and group DNs carry them too, which is why removing the log
+# statement is not on its own sufficient.
+#
+# The value class excludes ``<>;+`` because RFC 4514 requires those escaped inside
+# a DN value — so an unescaped one marks the END of the DN. Without that, the
+# final component (which has no trailing comma to stop it) greedily swallows the
+# rest of the line, e.g. ``… -> GroupName``.
+#
+# Bias is deliberately toward redaction: over-redacting a rare debug line to
+# ``[DN]`` is a recoverable annoyance, leaking somebody's real name into a file
+# they email us is not.
+_LDAP_RDN = r"(?:CN|OU|DC|UID|O|L|ST|C|SN|GN|DN|E|MAIL|STREET|GIVENNAME|SURNAME)=[^,\n<>;+]+"
+_LDAP_DN_PATTERN = re.compile(rf"(?i)\b{_LDAP_RDN}(?:\s*,\s*{_LDAP_RDN})+")
 
 
 class LogEntry(BaseModel):
@@ -158,6 +189,9 @@ def sanitize_log_content(content: str, sensitive_strings: dict[str, str] | None 
 
     # Replace email addresses
     content = re.sub(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", "[EMAIL]", content)
+
+    # Replace LDAP Distinguished Names — PII on par with email (#2681).
+    content = _LDAP_DN_PATTERN.sub("[DN]", content)
 
     # Replace Bambu Lab printer serial numbers (format: 00M/01D/01S/01P/03W + alphanumeric, 12-16 chars total)
     content = re.sub(r"\b0[0-3][A-Z0-9][A-Z0-9]{9,13}\b", "[SERIAL]", content, flags=re.IGNORECASE)

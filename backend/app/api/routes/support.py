@@ -33,6 +33,7 @@ from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.spool import Spool
 from backend.app.models.user import User
 from backend.app.services.discovery import is_running_in_docker
+from backend.app.services.log_reader import sanitize_log_content
 from backend.app.services.network_utils import get_network_interfaces
 from backend.app.services.printer_manager import printer_manager
 from backend.app.utils.http import build_content_disposition
@@ -1235,39 +1236,17 @@ async def _collect_support_info() -> dict:
 
 
 def _sanitize_log_content(content: str, sensitive_strings: dict[str, str] | None = None) -> str:
-    """Remove sensitive data from log content."""
-    # First, replace known sensitive values (database-aware exact matching)
-    # This catches printer names, usernames, and other arbitrary user-chosen strings
-    # that regex patterns cannot detect
-    if sensitive_strings:
-        # Sort by length descending to avoid partial matches (e.g. "My Printer 1" before "My Printer")
-        for value, label in sorted(sensitive_strings.items(), key=lambda x: len(x[0]), reverse=True):
-            if len(value) < 3:
-                continue  # Skip very short strings to prevent over-redaction
-            content = re.sub(re.escape(value), label, content)
+    """Remove sensitive data from log content — see ``log_reader.sanitize_log_content``.
 
-    # Replace credentials in URLs (e.g. http://user:pass@host, rtsps://bblp:code@host)
-    content = re.sub(r"((?:https?|rtsps?)://)[^/:@\s]+:[^/@\s]+@", r"\1[CREDENTIALS]@", content)
-
-    # Replace email addresses
-    content = re.sub(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", "[EMAIL]", content)
-
-    # Replace Bambu Lab printer serial numbers (format: 00M/01D/01S/01P/03W + alphanumeric, 12-16 chars total)
-    content = re.sub(r"\b0[0-3][A-Z0-9][A-Z0-9]{9,13}\b", "[SERIAL]", content, flags=re.IGNORECASE)
-
-    # Replace IPv4 addresses (skip firmware versions like 01.09.01.00 which have leading zeros)
-    content = re.sub(
-        r"\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\b",
-        "[IP]",
-        content,
-    )
-
-    # Replace paths with usernames
-    content = re.sub(r"/home/[^/\s]+/", "/home/[user]/", content)
-    content = re.sub(r"/Users/[^/\s]+/", "/Users/[user]/", content)
-    content = re.sub(r"/opt/[^/\s]+/", "/opt/[user]/", content)
-
-    return content
+    This used to be a byte-identical copy of that function, and the duplication
+    was live: the support bundle (three call sites below) went through *this*
+    one, while the log-health scanner went through the other. Adding the LDAP-DN
+    pattern for #2681 to only one of them would have left the bundle — the file a
+    user actually emails us — still carrying the DN, which is the entire point of
+    that redaction. Kept as a thin alias rather than deleted so the call sites and
+    their tests keep their local name.
+    """
+    return sanitize_log_content(content, sensitive_strings)
 
 
 def _get_log_content(max_bytes: int = 10 * 1024 * 1024, sensitive_strings: dict[str, str] | None = None) -> bytes:
