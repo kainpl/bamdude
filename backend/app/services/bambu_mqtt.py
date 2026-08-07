@@ -997,10 +997,25 @@ class BambuMQTTClient:
         # so that missing-serial / missing-firmware warnings fire only once per connection.
         self._ams_version_warned: set[tuple[int | str, str]] = set()
 
-        # K-profile command tracking
+        # K-profile command tracking.
+        #
+        # One entry per in-flight request, keyed by the ``sequence_id`` we send —
+        # NOT a single shared slot. Two concurrent requests used to collide: the
+        # second overwrote the first's expectation and Event, the first's answer
+        # arrived, failed the nozzle comparison, was discarded as a broadcast, and
+        # the first caller timed out through all its retries. That is the
+        # "Failed to get K-profiles after 3 attempts" seen in logs where the
+        # printer had in fact answered correctly both times.
+        #
+        # Concurrency is not hypothetical: the spool PA-Profil picker fetches
+        # every installed nozzle diameter in parallel, so a dual-nozzle printer
+        # issues two requests on this client every time that dialog opens.
+        #
+        # value: (event, expected_nozzle, profiles_or_None). Same shape as
+        # ``_ack_listeners`` below, deliberately — one idiom for "await a reply
+        # correlated by sequence_id" in this class.
         self._sequence_id: int = 0
-        self._pending_kprofile_response: asyncio.Event | None = None
-        self._kprofile_response_data: list | None = None
+        self._kprofile_waiters: dict[str, tuple[asyncio.Event, str, list | None]] = {}
 
         # GCode ACK listeners: sequence_id -> (threading.Event, result_dict)
         # Used by macro execute to wait for printer ACK before returning HTTP response
@@ -5900,26 +5915,38 @@ class BambuMQTTClient:
     def _handle_kprofile_response(self, data: dict):
         """Handle K-profile response from printer."""
         response_nozzle = data.get("nozzle_diameter")
-        response_seq_id = data.get("sequence_id", "?")
+        response_seq_id = str(data.get("sequence_id", "")) or None
         filaments = data.get("filaments", [])
-        expected_nozzle = getattr(self, "_expected_kprofile_nozzle", None)
-        has_pending_request = self._pending_kprofile_response is not None
+
+        # Correlate by the sequence_id we sent. Falling back to the nozzle only
+        # when the firmware did not echo one back keeps older firmware working
+        # without giving up per-request routing on the firmware that does — and
+        # the nozzle fallback is exactly what could not tell two concurrent
+        # requests apart, so it must stay the *fallback*, never the primary.
+        waiter_key: str | None = None
+        if response_seq_id and response_seq_id in self._kprofile_waiters:
+            waiter_key = response_seq_id
+        elif response_nozzle is not None:
+            for key, (_event, expected_nozzle, _data) in self._kprofile_waiters.items():
+                if expected_nozzle == response_nozzle:
+                    waiter_key = key
+                    break
+
+        has_pending_request = waiter_key is not None
 
         # Log all incoming responses when we have a pending request (for debugging)
         if has_pending_request:
             logger.info(
                 f"[{self.serial_number}] K-profile response: nozzle={response_nozzle}, "
-                f"seq_id={response_seq_id}, {len(filaments)} profiles, expected={expected_nozzle}"
+                f"seq_id={response_seq_id}, {len(filaments)} profiles, matched waiter={waiter_key}"
             )
-
-        # If we have a pending request, only accept responses with matching nozzle_diameter
-        # The printer broadcasts 0.4mm profiles constantly - we need to wait for the actual response
-        if has_pending_request and expected_nozzle and response_nozzle != expected_nozzle:
-            # Ignore this broadcast, keep waiting for matching response
+        elif self._kprofile_waiters:
+            # Unsolicited: the printer broadcasts 0.4mm profiles constantly, so a
+            # frame that matches no waiter is not an error — just not ours.
             logger.debug(
-                f"[{self.serial_number}] Ignoring broadcast: got nozzle={response_nozzle}, waiting for {expected_nozzle}"
+                f"[{self.serial_number}] Ignoring unmatched K-profile frame: "
+                f"nozzle={response_nozzle}, seq_id={response_seq_id}"
             )
-            return
 
         # If no pending request, this is just a broadcast - update state silently and return early
         if not has_pending_request:
@@ -5976,15 +6003,16 @@ class BambuMQTTClient:
                     logger.warning("Failed to parse K-profile: %s", e)
 
         self.state.kprofiles = profiles
-        self._kprofile_response_data = profiles
         self._maybe_notify_kprofiles_changed(profiles)
 
-        # Signal that we received the response (only if we were waiting for one)
-        # Use thread-safe method since MQTT callbacks run in a different thread
-        # Capture in local var to avoid TOCTOU race: asyncio thread can clear
-        # self._pending_kprofile_response between the check and the .set() call
-        event = self._pending_kprofile_response
-        if event:
+        # Deliver to the waiter this frame was correlated to, and only that one.
+        # Captured in a local first to avoid a TOCTOU race: the asyncio thread can
+        # drop the entry between the lookup and the .set() call, and MQTT
+        # callbacks run on a different thread.
+        entry = self._kprofile_waiters.get(waiter_key) if waiter_key else None
+        if entry:
+            event, expected_nozzle, _ = entry
+            self._kprofile_waiters[waiter_key] = (event, expected_nozzle, profiles)
             logger.info("[%s] Got %s K-profiles for nozzle=%s", self.serial_number, len(profiles), response_nozzle)
             if self._loop and self._loop.is_running():
                 self._loop.call_soon_threadsafe(event.set)
@@ -6020,11 +6048,12 @@ class BambuMQTTClient:
             return []
 
         for attempt in range(max_retries):
-            # Set up response event for this attempt
+            # One waiter per request, keyed by the sequence_id we are about to
+            # send. Registered BEFORE publishing so a fast reply cannot arrive
+            # before there is anything to deliver it to.
             self._sequence_id += 1
-            self._pending_kprofile_response = asyncio.Event()
-            self._kprofile_response_data = None
-            self._expected_kprofile_nozzle = nozzle_diameter  # Track which nozzle response we expect
+            seq_id = str(self._sequence_id)
+            self._kprofile_waiters[seq_id] = (asyncio.Event(), nozzle_diameter, None)
 
             # Send the command with nozzle_diameter filter
             command = {
@@ -6032,7 +6061,7 @@ class BambuMQTTClient:
                     "command": "extrusion_cali_get",
                     "filament_id": "",
                     "nozzle_diameter": nozzle_diameter,
-                    "sequence_id": str(self._sequence_id),
+                    "sequence_id": seq_id,
                 }
             }
 
@@ -6042,10 +6071,11 @@ class BambuMQTTClient:
             logger.debug("[%s] K-profile request JSON: %s", self.serial_number, json.dumps(command))
             self._client.publish(self.topic_publish, json.dumps(command), qos=1)
 
-            # Wait for response (response handler already filters by nozzle_diameter)
+            # Wait for the reply correlated to THIS request's sequence_id.
             try:
-                await asyncio.wait_for(self._pending_kprofile_response.wait(), timeout=timeout)
-                profiles = self._kprofile_response_data or []
+                event = self._kprofile_waiters[seq_id][0]
+                await asyncio.wait_for(event.wait(), timeout=timeout)
+                profiles = self._kprofile_waiters[seq_id][2] or []
                 logger.info(
                     f"[{self.serial_number}] Got {len(profiles)} K-profiles for nozzle={nozzle_diameter} on attempt {attempt + 1}"
                 )
@@ -6058,8 +6088,9 @@ class BambuMQTTClient:
                     # Brief delay before retry
                     await asyncio.sleep(0.5)
             finally:
-                self._pending_kprofile_response = None
-                self._expected_kprofile_nozzle = None
+                # Only this request's entry — a concurrent caller's waiter must
+                # survive, which is the entire point of the registry.
+                self._kprofile_waiters.pop(seq_id, None)
 
         logger.error("[%s] Failed to get K-profiles after %s attempts", self.serial_number, max_retries)
         return []
