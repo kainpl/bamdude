@@ -1147,6 +1147,7 @@ export interface ProjectListItem {
   archive_count: number;  // Number of print jobs (plates)
   total_items: number;  // Sum of quantities (total items printed, including failed)
   completed_count: number;  // Sum of quantities for completed prints only (parts)
+  defective_count: number;  // Scrap off completed plates — already subtracted from completed_count
   failed_count: number;  // Sum of quantities for failed prints
   queue_count: number;
   progress_percent: number | null;  // Plates progress

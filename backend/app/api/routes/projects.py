@@ -256,7 +256,8 @@ async def list_projects(
             )
         )
         completed_row = completed_result.first()
-        completed_count = max(0, int(completed_row.printed or 0) - int(completed_row.defective or 0))
+        defective_count = int(completed_row.defective or 0)
+        completed_count = max(0, int(completed_row.printed or 0) - defective_count)
 
         # Sum failed parts (quantities) - includes all failure states
         failed_result = await db.execute(
@@ -310,6 +311,7 @@ async def list_projects(
                 archive_count=archive_count,
                 total_items=total_items,
                 completed_count=completed_count,
+                defective_count=defective_count,
                 failed_count=failed_count,
                 queue_count=queue_count,
                 progress_percent=progress_percent,

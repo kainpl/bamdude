@@ -1819,6 +1819,7 @@ export function ProjectDetailPage() {
             archive_count: stats?.total_archives || 0,
             total_items: stats?.total_items || 0,
             completed_count: stats?.completed_prints || 0,
+            defective_count: stats?.defective_parts || 0,
             failed_count: stats?.failed_prints || 0,
             queue_count: stats?.queued_prints || 0,
             progress_percent: stats?.progress_percent || null,

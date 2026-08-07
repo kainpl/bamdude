@@ -12,6 +12,7 @@ import {
   Archive,
   ListTodo,
   Package,
+  PackageX,
   Layers,
   Clock,
   CheckCircle2,
@@ -887,6 +888,18 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
               <Package className="w-3.5 h-3.5 text-bambu-green" />
               <span>{project.completed_count} {t('projects.parts')}</span>
             </div>
+            {/* Scrap off completed plates. Sits next to the parts count
+                because it explains it: the parts figure is already net of
+                this, so without it the card shows fewer parts than plates
+                produced and says nothing about where they went. Amber, not
+                red — matching the project detail page; a defective part is
+                not a failed print. */}
+            {project.defective_count > 0 && (
+              <div className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400" title={t('projects.defectiveParts')}>
+                <PackageX className="w-3.5 h-3.5" />
+                <span>{project.defective_count}</span>
+              </div>
+            )}
             {project.failed_count > 0 && (
               <div className="flex items-center gap-1.5 text-red-600 dark:text-red-400" title={t('projects.failedParts')}>
                 <AlertTriangle className="w-3.5 h-3.5" />

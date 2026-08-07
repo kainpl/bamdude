@@ -4174,6 +4174,7 @@ export default {
     // Footer stats
     printJobs: 'Завдання друку (платформи)',
     partsPrinted: 'Надруковано деталей',
+    defectiveParts: 'Браковані деталі (вже відняті від надрукованих)',
     failedParts: 'Невдалі деталі',
     // Actions
     import: 'Імпорт',

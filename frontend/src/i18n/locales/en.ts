@@ -4154,6 +4154,7 @@ export default {
     // Footer stats
     printJobs: 'Print jobs (plates)',
     partsPrinted: 'Parts printed',
+    defectiveParts: 'Defective parts (already deducted from parts printed)',
     failedParts: 'Failed parts',
     // Actions
     import: 'Import',

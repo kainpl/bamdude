@@ -74,9 +74,13 @@ All notable changes to BamDude will be documented in this file.
 
 - **A sensor's recorded readings are no longer sent one by one.** A single sensor records around a hundred and fifty readings an hour, so a week of them was tens of thousands of points handed to the browser at once. They are now grouped into short intervals, the same way plug power already was.
 
+- **The build-plate icon on a queued job moved to the front of the row.** It sat at the end of the job's name, where the name's own width decided its position and it ended up pressed against buttons that only appear on hover — so at rest it hung on a ragged edge that shifted from row to row. It now sits between the queue number and the name, lined up down the column.
+
 - **Lists of locations are now in alphabetical order.** They were ordered by character code, which is not the alphabet: Ґ, Є, І and Ї sort before А, and anything typed in lower case fell to the very end — so a farm with places called "Ірпінь" and "Ангар" saw what looked like no order at all. This covers every location list: the filters on the printers, queues and maintenance pages, the picker in the printer and auto-queue dialogs, and the list under Settings. Numbered halls also count properly now — "Цех 2" comes before "Цех 10", not after it.
 
 ### Added
+
+- **A project card now says how many parts came out defective.** The parts figure on the card has always been net of scrap, so on a project with rejects it read lower than the plates produced and nothing on the card explained the gap. The count now sits beside the parts it accounts for, in amber rather than the red used for failed prints — a defective part is not a failed print, the plate finished and some of what it produced was unusable. Projects with no scrap are unchanged: nothing is shown at zero. Hovering says that the number has already been deducted, so the two are not added together by mistake.
 
 - **A library file now shows how many times it has been printed.** The count sits with the file's other facts — on the card and in the list — and opens that file's print history when clicked, which is what the filename already did without saying how much there was to see. Only finished prints count, so a file that was attempted and failed reads as never printed. Files never printed show nothing rather than a badge on nearly every row; to find those there is a **Not printed** filter in the toolbar, which combines with the others — "not printed" plus a file type answers "what have I sliced and never actually run".
 
