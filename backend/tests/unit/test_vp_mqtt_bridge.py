@@ -668,12 +668,18 @@ class TestPushStatusCache:
         await bridge.stop()
 
     @pytest.mark.asyncio
-    async def test_tray_exist_bits_skips_ams_ht_units(self):
-        """AMS-HT units (id >= 128) use a separate addressing scheme and
-        must not be touched by the bitmask cleanup — bit math at
-        global_bit = ams_id * 4 + tray_id would overrun normal AMS bits.
-        Pin the skip so future AMS-HT support doesn't accidentally wipe
-        loaded HT slots.
+    async def test_tray_exist_bits_clears_ams_ht_units(self):
+        """The slicer-facing cache clears an emptied AMS-HT slot too (#2670).
+
+        This used to pin the opposite — that HT units were skipped — which was
+        right only while the HT bit position was unknown: running the regular
+        ``ams_id * 4 + tray_id`` formula on id 128 would have overrun into
+        nonsense. The position is now known (``16 + (ams_id - 128)``), so the
+        skip is gone and the HT clears like any other unit.
+
+        Worth having on the VP side specifically: ``apply_tray_exist_bits`` is
+        shared with ``_handle_ams_data``, so this is what proves the fix reaches
+        the cache Bambu Studio reads and not just the printer card.
         """
         server = _make_server()
         bridge = _make_bridge(server)
@@ -705,9 +711,10 @@ class TestPushStatusCache:
 
         cached = bridge.get_latest_print_state()
         ht_slot = cached["ams"]["ams"][0]["tray"][0]
-        # tray_exist_bits="0" alone would normally wipe — but AMS-HT is
-        # skipped, so the HT slot keeps its loaded data.
-        assert ht_slot["tray_type"] == "PLA"
+        # Bit 16 clear = HT-A empty. The payload still says PLA — the HT keeps
+        # echoing a pulled spool — so the bitmask is the only thing that knows.
+        assert ht_slot["tray_type"] == ""
+        assert ht_slot["state"] == 9
 
         await bridge.stop()
 

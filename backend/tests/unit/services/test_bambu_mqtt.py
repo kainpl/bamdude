@@ -1177,13 +1177,74 @@ class TestApplyTrayExistBitsHelper:
         assert units[0]["tray"][0]["state"] == 9
         assert isinstance(units[0]["tray"][0]["state"], int)
 
-    def test_ams_ht_unit_skipped(self):
-        """AMS-HT (id >= 128) uses a different addressing scheme."""
+    def test_ams_ht_clears_via_its_own_bit(self):
+        """AMS-HT presence is one bit at 16 + (ams_id - 128), not ams_id * 4.
+
+        Used to be asserted the other way round — that an HT was skipped — which
+        is the bug: a pulled HT spool never cleared, because the HT keeps echoing
+        a stale tray_type and its state is firmware-variant, so the bitmask is
+        the only signal there is (upstream #2670).
+        """
         from backend.app.services.bambu_mqtt import apply_tray_exist_bits
 
         units = [{"id": 128, "tray": [{"id": 0, "tray_type": "PLA"}]}]
         cleared = apply_tray_exist_bits(units, "0", power_on_flag=True)
+        assert cleared == 1
+        assert units[0]["tray"][0]["tray_type"] == ""
+        assert units[0]["tray"][0]["state"] == 9
+
+    def test_ams_ht_loaded_bit_is_left_alone(self):
+        """Bit 16 set = HT-A holds a spool; nothing may be wiped."""
+        from backend.app.services.bambu_mqtt import apply_tray_exist_bits
+
+        units = [{"id": 128, "tray": [{"id": 0, "tray_type": "PLA"}]}]
+        cleared = apply_tray_exist_bits(units, hex(1 << 16), power_on_flag=True)
         assert cleared == 0
+        assert units[0]["tray"][0]["tray_type"] == "PLA"
+
+    def test_live_h2d_capture(self):
+        """The capture the addressing was confirmed against (upstream #2670).
+
+        loaded=0x10f7f → HT-A (bit 16) holds a spool; empty=0xf7f → it does not.
+        Both keep AMS 0 slots 0-3 (bits 0-3) loaded, so a change in the HT must
+        not disturb them.
+        """
+        from backend.app.services.bambu_mqtt import apply_tray_exist_bits
+
+        def _units():
+            return [
+                {"id": 0, "tray": [{"id": i, "tray_type": "PLA"} for i in range(4)]},
+                {"id": 128, "tray": [{"id": 0, "tray_type": "PETG"}]},
+            ]
+
+        loaded = _units()
+        assert apply_tray_exist_bits(loaded, "0x10f7f", power_on_flag=True) == 0
+        assert loaded[1]["tray"][0]["tray_type"] == "PETG"
+
+        empty = _units()
+        assert apply_tray_exist_bits(empty, "0xf7f", power_on_flag=True) == 1
+        assert empty[1]["tray"][0]["tray_type"] == ""
+        assert [t["tray_type"] for t in empty[0]["tray"]] == ["PLA"] * 4
+
+    def test_ht_b_uses_the_next_bit(self):
+        """HT-A=16, HT-B=17 — consecutive, not spaced by four."""
+        from backend.app.services.bambu_mqtt import apply_tray_exist_bits
+
+        units = [
+            {"id": 128, "tray": [{"id": 0, "tray_type": "PLA"}]},
+            {"id": 129, "tray": [{"id": 0, "tray_type": "PETG"}]},
+        ]
+        # Bit 17 only: HT-B loaded, HT-A empty.
+        assert apply_tray_exist_bits(units, hex(1 << 17), power_on_flag=True) == 1
+        assert units[0]["tray"][0]["tray_type"] == ""
+        assert units[1]["tray"][0]["tray_type"] == "PETG"
+
+    def test_unknown_ams_id_is_not_guessed_at(self):
+        """Outside 0-15 and 128-135 there is no layout we know."""
+        from backend.app.services.bambu_mqtt import apply_tray_exist_bits
+
+        units = [{"id": 64, "tray": [{"id": 0, "tray_type": "PLA"}]}]
+        assert apply_tray_exist_bits(units, "0", power_on_flag=True) == 0
         assert units[0]["tray"][0]["tray_type"] == "PLA"
 
     def test_string_ids_handled(self):

@@ -211,8 +211,15 @@ def apply_tray_exist_bits(
     is valid idle-printer state (#1365 — X1C between prints) and MUST be applied
     so spool removal is detected without requiring a manual reconnect.
 
-    AMS-HT units (``id >= 128``) use a separate addressing scheme and are
-    skipped here.
+    AMS-HT units (``id`` 128-135) are single-tray dry boxes whose presence bit
+    is packed as ONE consecutive bit starting at 16 (``16 + (ams_id - 128)``),
+    not at ``ams_id * 4``. This bitmask is the ONLY reliable empty signal for an
+    HT: it keeps echoing a stale ``tray_type`` after the spool is pulled, and its
+    ``state`` is firmware-variant (loaded reports 11 on H2D, 9 on the firmware in
+    upstream #2594). Addressing taken from OrcaSlicer's ``DevFilaSystem.cpp``
+    (``is_exists = tray_exist_bits >> (16 + (ams_id - 128))``) and confirmed
+    against a live H2D capture where HT-A is bit 16 — loaded ``0x10f7f``, empty
+    ``0xf7f`` (upstream #2670). We have no AMS-HT here to re-derive it from.
 
     ``tray_exist_bits_str`` is expected as a hex string (firmware sends it that
     way). Ints are tolerated for defensive symmetry but typically not seen on
@@ -254,8 +261,18 @@ def apply_tray_exist_bits(
             ams_id = int(ams_id_raw) if isinstance(ams_id_raw, str) else ams_id_raw
         except (ValueError, TypeError):
             continue
-        if not isinstance(ams_id, int) or ams_id >= 128:
-            # Skip AMS-HT (id >= 128) — separate addressing scheme.
+        if not isinstance(ams_id, int):
+            continue
+        # AMS-HT (id 128-135) is a single-tray dry box whose presence bit is ONE
+        # consecutive bit starting at 16 — ``16 + (ams_id - 128)`` — not
+        # ``ams_id * 4``, which would overflow past bit 512. Regular AMS (and the
+        # A2L-Lite, normalised to id 6, which lands at bits 24-27 through the
+        # ordinary formula) keep ``ams_id * 4 + tray_id``.
+        #
+        # Anything outside those two ranges has no layout we know, so it is
+        # skipped rather than guessed at.
+        is_ht = 128 <= ams_id <= 135
+        if not is_ht and not (0 <= ams_id <= 15):
             continue
         for tray in ams_unit.get("tray", []):
             if not isinstance(tray, dict):
@@ -269,7 +286,7 @@ def apply_tray_exist_bits(
                 continue
             if not isinstance(tray_id, int):
                 continue
-            global_bit = ams_id * 4 + tray_id
+            global_bit = (16 + (ams_id - 128)) if is_ht else (ams_id * 4 + tray_id)
             slot_exists = (tray_exist_bits >> global_bit) & 1
             if annotate_exists:
                 tray["exists"] = bool(slot_exists)
@@ -3049,9 +3066,22 @@ class BambuMQTTClient:
         # Persist updated drying fields back to raw_data
         self.state.raw_data["ams"] = merged_ams
 
-        # Create a hash of relevant AMS data to detect changes
+        # Create a hash of relevant AMS data to detect changes.
+        #
+        # Hash the MERGED state, not the raw incoming payload. A removal that the
+        # firmware signals ONLY through tray_exist_bits — still echoing the old
+        # tray_type, tag_uid and remain in the payload, which is exactly what an
+        # AMS-HT does — is cleared in merged_ams by apply_tray_exist_bits above,
+        # while the raw payload's fields sit unchanged. Those three fields are
+        # precisely what this hash is built from, so a raw-based hash never
+        # flipped: on_ams_change never fired and the spool_assignment row stayed
+        # bound to a slot that is now empty (upstream #2670).
+        #
+        # merged_ams also always spans every unit, so a partial single-unit
+        # update cannot hash differently from a full pushall carrying the same
+        # state — which a raw-based hash would.
         ams_hash_data = []
-        for ams_unit in ams_list:
+        for ams_unit in merged_ams:
             for tray in ams_unit.get("tray", []):
                 # Include fields that matter for filament tracking
                 ams_hash_data.append(
