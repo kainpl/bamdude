@@ -42,10 +42,29 @@ _GITLAB_PATTERNS = [
 ]
 
 # Gitea/Forgejo are always self-hosted — no canonical public host. Accept any
-# https://<host>[:<port>]/<owner>/<repo>[.git] (matches the parser shape in
-# services/git_providers/gitea.py::parse_repo_url) plus the SSH form.
+# https://<host>[:<port>][/<prefix>…]/<owner>/<repo>[.git] plus the SSH form.
+#
+# This gate is OURS — upstream has no schema-level URL validation at all — and it
+# is why the #2642 subpath fix is not only a provider change here. An instance
+# served under a ROOT_URL prefix (https://host/gitea/owner/repo) has three path
+# segments, and the `$`-anchored two-segment pattern this replaces rejected it at
+# the API with "Expected format: https://your-host/owner/repo". The user could
+# never save the config, so a parser that had learned to read subpaths would
+# never have been handed one.
+#
+# The shape must keep matching services/git_providers/gitea.py::_HTTPS_REPO_RE —
+# the last two segments are owner and repo, anything before them is the prefix.
+# Two validators of the same string disagreeing is how the message ends up
+# describing a URL the code would actually have accepted.
+#
+# ``(?!\.\.?(?:/|$))`` on each segment rejects ``.`` and ``..`` as whole path
+# components: segments are ``[\w.-]+``, which matches ``..`` happily, and the
+# prefix ends up concatenated into the API base the provider then builds requests
+# against. The pattern this replaces allowed no prefix at all, so widening it is
+# what would have created the vector.
+_GITEA_SEGMENT = r"(?!\.\.?(?:/|$))[\w.-]+"
 _GITEA_PATTERNS = [
-    r"^https?://[\w.-]+(:\d+)?/[\w.-]+/[\w.-]+(?:\.git)?$",
+    rf"^https?://[\w.-]+(:\d+)?(?:/{_GITEA_SEGMENT})*?/{_GITEA_SEGMENT}/{_GITEA_SEGMENT}(?:\.git)?$",
     r"^git@[\w.-]+:[\w.-]+/[\w.-]+(?:\.git)?$",
 ]
 
@@ -66,7 +85,8 @@ def _validate_repo_url(url: str, provider: str) -> str:
         if not any(re.match(p, url) for p in _GITEA_PATTERNS):
             raise ValueError(
                 f"Invalid {provider.value.title()} repository URL. "
-                f"Expected format: https://your-host/owner/repo (self-hosted instance)."
+                f"Expected format: https://your-host/owner/repo or "
+                f"https://your-host/subpath/owner/repo (self-hosted instance)."
             )
     return url
 
