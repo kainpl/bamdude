@@ -1,21 +1,34 @@
-"""Shared URL-safety primitives used by SSRF guards in this package.
+"""Shared URL-safety primitives for the SSRF guards in this package.
 
-Top-level assertion functions —
-``_spoolman_helpers.assert_safe_spoolman_url`` (Spoolman, deliberately
-allows loopback / RFC-1918 because same-LAN deployment is the standard
-topology) and ``_oidc_helpers.assert_safe_public_https_url`` (OIDC icons,
-must be reachable on the public internet, so loopback / private are
-rejected) — share the *data* (cloud-metadata IP set, numeric-encoded-IP
-regex) but not the *policy*. Only the data lives here. The functions
-stay in their respective modules with their distinct policies intact.
+There are exactly **two** outbound-URL policies, and which one applies is a
+property of the *service*, not of the caller:
 
-Upstream Bambuddy commit 8a7598f6 / #1333.
+- **LAN-service** (:func:`assert_safe_lan_service_url`) — the service
+  legitimately lives on the same host or home LAN, so loopback and RFC-1918
+  must be permitted; blocking them would break the normal topology. Used for
+  Spoolman, self-hosted notification servers (ntfy, Gotify, Bark, custom
+  webhooks), Home Assistant, the Obico ML endpoint and the slicer sidecars.
+- **Public-internet** (``_oidc_helpers.assert_safe_public_https_url``) — the
+  resource can only sensibly live on the public internet, so a private address
+  is an SSRF probe rather than a configuration. Used for the OIDC issuer and
+  icon URLs.
+
+Both reject what is dangerous regardless of topology: non-HTTP schemes,
+numeric-encoded IPs, cloud-metadata endpoints, multicast and unspecified
+addresses, and IPv4-mapped IPv6 encodings of any of those.
+
+The LAN-service policy lives here now that it has several callers;
+``_spoolman_helpers.assert_safe_spoolman_url`` is a thin alias for it. The
+public-internet policy stays in ``_oidc_helpers`` next to its only consumer.
+
+Upstream Bambuddy commit 8a7598f6 / #1333, generalised in the v1.2.5.2 hardening.
 """
 
 from __future__ import annotations
 
 import ipaddress
 import re
+from urllib.parse import urlparse
 
 # Cloud-provider metadata endpoints — the classic SSRF credential-exfil
 # targets. Both guards reject these unconditionally.
@@ -52,3 +65,58 @@ def unwrap_ipv4_mapped(
     if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
         return addr.ipv4_mapped
     return addr
+
+
+def assert_safe_lan_service_url(url: str, *, label: str) -> None:
+    """Raise ``ValueError`` if *url* is unsafe for a service that may live on the LAN.
+
+    ``label`` names the setting in the message ("Spoolman URL", "ntfy server
+    URL", …) so the user sees which field to correct.
+
+    Loopback and RFC-1918 are deliberately **permitted**: BamDude is self-hosted,
+    and running Spoolman, ntfy, Home Assistant, an Obico ML endpoint or a slicer
+    sidecar on the same box or home LAN is *the* normal topology, not an attack.
+    A blanket private-address block would break those integrations for most
+    installs — which is why this is a second policy rather than a looser call of
+    the public-internet one.
+
+    Rejected because it is dangerous under any topology:
+
+    - **Schemes other than http/https.** ``httpx`` already refuses ``file://``
+      and friends; doing it here turns an opaque delivery-time failure into a
+      clear validation error at configuration time.
+    - **Numeric-encoded IPv4** (decimal ``2130706433``, hex ``0x7f000001``) —
+      libc and browsers resolve these, but Python's ``ipaddress`` raises on them,
+      so they would slip past every check below.
+    - **Cloud-provider metadata endpoints** — the high-value SSRF target, and
+      never a legitimate destination for any of these services.
+    - **Multicast and unspecified** addresses — useless as a destination, and
+      indicative of misuse.
+    - **IPv4-mapped IPv6** encodings of any of the above.
+
+    Symbolic hostnames are accepted **without DNS resolution**, matching the
+    public-internet guard. Resolving here would be both a TOCTOU (DNS can change
+    between validation and request) and a network call a validator has no
+    business making.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in ("http", "https"):
+        raise ValueError(f"{label} must use http or https")
+
+    hostname = (parsed.hostname or "").lower()
+
+    if NUMERIC_IP_RE.match(hostname):
+        raise ValueError(f"{label} must not use numeric-encoded IP addresses; use standard dotted-decimal notation")
+
+    try:
+        addr = ipaddress.ip_address(hostname)
+    except ValueError:
+        return  # symbolic hostname — out of scope by design (no DNS check)
+
+    effective = unwrap_ipv4_mapped(addr)
+
+    if effective in CLOUD_METADATA_IPS:
+        raise ValueError(f"{label} must not point to a cloud metadata endpoint")
+
+    if effective.is_multicast or effective.is_unspecified:
+        raise ValueError(f"{label} must not point to a multicast or unspecified address")

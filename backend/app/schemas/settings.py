@@ -2,6 +2,18 @@ import json
 
 from pydantic import BaseModel, Field, field_validator
 
+# Outbound service URLs validated when they are saved, so a bad value is rejected
+# at configuration time with a message naming the field rather than failing
+# opaquely at request time. All of these are commonly self-hosted on the same
+# host or LAN as BamDude, so the LAN-service policy applies — see
+# ``api/routes/_url_safety.assert_safe_lan_service_url``.
+#
+# Module-level rather than a class attribute so the drift-guard test can import
+# the real tuple and cannot fall out of step with it. **Any new outbound-URL
+# setting belongs here** — or, if it must be reachable on the public internet, on
+# the stricter OIDC guard instead.
+LAN_SERVICE_URL_SETTINGS = ("ha_url", "obico_ml_url", "orcaslicer_api_url", "bambu_studio_api_url")
+
 
 class AppSettings(BaseModel):
     """Application settings schema."""
@@ -623,6 +635,25 @@ class AppSettingsUpdate(BaseModel):
     obico_enabled_printers: str | None = None
     default_sidebar_order: str | None = None
     gcode_snippets: str | None = None
+
+    @field_validator(*LAN_SERVICE_URL_SETTINGS)
+    @classmethod
+    def validate_lan_service_url(cls, v: str | None, info) -> str | None:
+        """Validate outbound service URLs on save, not at request time.
+
+        A bad value is then rejected with a message naming the field, instead of
+        failing opaquely when the integration next runs. Every one of these
+        services is commonly self-hosted on the same host or LAN as BamDude, so
+        the LAN-service policy applies: loopback and RFC-1918 stay permitted,
+        while cloud-metadata endpoints, numeric-encoded IPs, IPv4-mapped IPv6 and
+        non-HTTP schemes are rejected.
+        """
+        if not v:
+            return v  # empty means "not configured" — nothing to validate
+        from backend.app.api.routes._url_safety import assert_safe_lan_service_url
+
+        assert_safe_lan_service_url(v, label=info.field_name)
+        return v
 
     @field_validator("gcode_snippets")
     @classmethod

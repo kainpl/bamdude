@@ -5,15 +5,15 @@ No heavy dependencies — importable in unit tests without the full backend stac
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import logging
 import math
 import re
 from typing import Any
-from urllib.parse import urlparse
 
 from typing_extensions import TypedDict
+
+from backend.app.api.routes._url_safety import assert_safe_lan_service_url
 
 logger = logging.getLogger(__name__)
 
@@ -82,53 +82,18 @@ class NormalizedFilament(TypedDict):
     vendor: NormalizedVendorRef | None
 
 
-_CLOUD_METADATA_IPS = frozenset(
-    {
-        ipaddress.ip_address("169.254.169.254"),
-        ipaddress.ip_address("100.100.100.200"),
-        ipaddress.ip_address("fd00:ec2::254"),
-    }
-)
-
-
 def assert_safe_spoolman_url(url: str) -> None:
-    """Raise ValueError if *url* should be blocked as an SSRF risk.
+    """Raise ``ValueError`` if *url* should be blocked as an SSRF risk.
 
-    BamDude is typically deployed on a home LAN alongside Spoolman, so
-    loopback (127.0.0.1) and RFC-1918 private ranges (192.168.x.x, 10.x.x.x,
-    172.16-31.x) must be permitted — they are THE normal Spoolman topology.
-    This guard therefore targets the genuinely dangerous cases only.
+    Spoolman is one of several services that legitimately live on the LAN, so
+    this is the shared LAN-service policy with Spoolman's label — see
+    :func:`_url_safety.assert_safe_lan_service_url` for what it accepts and why.
 
-    Checks performed:
-    - Scheme must be http or https.
-    - Numeric-encoded IP addresses (decimal / hex) are rejected.
-    - Cloud-metadata endpoints (169.254.169.254, 100.100.100.200, fd00:ec2::254).
-    - Multicast / unspecified addresses.
-    - IPv4-mapped IPv6 unwrapped before checking.
+    It used to be a full copy of that logic, down to its own cloud-metadata set
+    and its own inline numeric-IP regex. Kept as a named alias rather than
+    deleted so the call sites and their tests keep reading in Spoolman's terms.
     """
-    parsed = urlparse(url)
-    if parsed.scheme.lower() not in ("http", "https"):
-        raise ValueError("Spoolman URL must use http or https")
-
-    hostname = (parsed.hostname or "").lower()
-
-    if re.match(r"^(0x[0-9a-f]+|[0-9]+)$", hostname, re.I):
-        raise ValueError("Spoolman URL must not use numeric-encoded IP addresses; use standard dotted-decimal notation")
-
-    try:
-        addr = ipaddress.ip_address(hostname)
-    except ValueError:
-        return
-
-    effective: ipaddress.IPv4Address | ipaddress.IPv6Address = addr
-    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
-        effective = addr.ipv4_mapped
-
-    if effective in _CLOUD_METADATA_IPS:
-        raise ValueError("Spoolman URL must not point to a cloud metadata endpoint")
-
-    if effective.is_multicast or effective.is_unspecified:
-        raise ValueError("Spoolman URL must not point to a multicast or unspecified address")
+    assert_safe_lan_service_url(url, label="Spoolman URL")
 
 
 _COLOR_HEX_RE = re.compile(r"^[0-9A-Fa-f]{6}$")
