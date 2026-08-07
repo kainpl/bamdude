@@ -56,6 +56,7 @@ import { ArchivedPrintersPanel } from '../components/settings/ArchivedPrintersPa
 import { RetentionCard } from '../components/settings/RetentionCard';
 import { PrinterLocationsCard } from '../components/settings/PrinterLocationsCard';
 import { PreheatFilamentTargetsEditor } from '../components/PreheatFilamentTargetsEditor';
+import { adoptUntouchedServerChanges } from '../utils/settingsReconcile';
 
 const validTabs = ['general', 'printing', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
@@ -1060,6 +1061,21 @@ export function SettingsPage() {
   const isSavingRef = useRef(false);
   const isInitialLoadRef = useRef(true);
 
+  // #2716: the last server snapshot this page reconciled with. It is what makes
+  // "did the user edit this field?" a well-defined question — a field where
+  // localSettings still equals the baseline has not been touched since that
+  // reconcile, so a newer server value can be adopted instead of the page's
+  // stale copy being written back over it.
+  //
+  // Before this, the debounced save diffed against the LIVE ['settings'] cache,
+  // which made a value changed on the server — another tab, another admin, a
+  // backup restore, our own log-retention writer, a refetch driven by any of the
+  // other observers of that key — indistinguishable from a local edit. The page
+  // then reverted it a few hundred ms later. No interaction was required: the
+  // query carries a 60 s staleTime and refetchOnWindowFocus, so returning to the
+  // tab was enough.
+  const serverBaselineRef = useRef<typeof settings | null>(null);
+
   // Sync local state when settings load
   useEffect(() => {
     if (settings && !localSettings) {
@@ -1068,6 +1084,9 @@ export function SettingsPage() {
         ...settings,
         external_url: settings.external_url || window.location.origin,
       };
+      // The baseline is the RAW server row, not this adjusted copy: a detected
+      // external_url has to read as a local change so it still gets persisted.
+      serverBaselineRef.current = settings;
       setLocalSettings(settingsWithExternalUrl);
       // Mark initial load complete after a short delay
       setTimeout(() => {
@@ -1076,9 +1095,32 @@ export function SettingsPage() {
     }
   }, [settings, localSettings]);
 
+  // #2716: reconcile a moved server snapshot into the local copy. A field the
+  // user has not touched since the last reconcile takes the server's value; a
+  // field they have edited keeps theirs and is saved over it by the debounced
+  // effect below — so the newer of the two writes wins either way, instead of
+  // the page always winning. Declared before that effect so the baseline has
+  // already moved by the time it computes its diff in the same commit.
+  useEffect(() => {
+    const baseline = serverBaselineRef.current;
+    if (!settings || !localSettings || !baseline || settings === baseline) {
+      return;
+    }
+    const adopted = adoptUntouchedServerChanges(baseline, localSettings, settings);
+    serverBaselineRef.current = settings;
+    if (Object.keys(adopted).length > 0) {
+      setLocalSettings(prev => (prev ? { ...prev, ...adopted } : prev));
+    }
+  }, [settings, localSettings]);
+
   const updateMutation = useMutation({
     mutationFn: api.updateSettings,
     onSuccess: (data) => {
+      // #2716: the row we just saved becomes the snapshot to diff against. The
+      // setQueryData below would normally let the reconcile effect do this, but
+      // only if react-query hands back a new object — setting it here means the
+      // baseline never lags behind a save regardless.
+      serverBaselineRef.current = data;
       queryClient.setQueryData(['settings'], data);
       // Don't call setLocalSettings(data) here - it would overwrite in-progress
       // user input (e.g. typing a hostname) with the stale saved snapshot,
@@ -1119,7 +1161,8 @@ export function SettingsPage() {
   // Debounced auto-save when localSettings change
   useEffect(() => {
     // Skip if initial load or no settings
-    if (isInitialLoadRef.current || !localSettings || !settings) {
+    const baseline = serverBaselineRef.current;
+    if (isInitialLoadRef.current || !localSettings || !settings || !baseline) {
       return;
     }
 
@@ -1133,78 +1176,78 @@ export function SettingsPage() {
 
     // Check if there are actual changes
     const hasChanges =
-      settings.save_thumbnails !== localSettings.save_thumbnails ||
-      settings.capture_finish_photo !== localSettings.capture_finish_photo ||
-      (settings.archive_3mf_retention_enabled ?? false) !== (localSettings.archive_3mf_retention_enabled ?? false) ||
-      (settings.archive_3mf_retention_days ?? 30) !== (localSettings.archive_3mf_retention_days ?? 30) ||
-      settings.default_filament_cost !== localSettings.default_filament_cost ||
-      settings.currency !== localSettings.currency ||
-      settings.energy_cost_per_kwh !== localSettings.energy_cost_per_kwh ||
-      settings.energy_tracking_mode !== localSettings.energy_tracking_mode ||
-      settings.check_updates !== localSettings.check_updates ||
-      (settings.check_printer_firmware ?? true) !== (localSettings.check_printer_firmware ?? true) ||
-      (settings.include_beta_updates ?? false) !== (localSettings.include_beta_updates ?? false) ||
-      (settings.local_login_enabled ?? true) !== (localSettings.local_login_enabled ?? true) ||
-      (settings.telemetry_enabled ?? true) !== (localSettings.telemetry_enabled ?? true) ||
-      (settings.bed_cooled_threshold ?? 35) !== (localSettings.bed_cooled_threshold ?? 35) ||
-      settings.ams_humidity_good !== localSettings.ams_humidity_good ||
-      settings.ams_humidity_fair !== localSettings.ams_humidity_fair ||
-      settings.ams_temp_good !== localSettings.ams_temp_good ||
-      settings.ams_temp_fair !== localSettings.ams_temp_fair ||
-      settings.ams_history_retention_days !== localSettings.ams_history_retention_days ||
+      baseline.save_thumbnails !== localSettings.save_thumbnails ||
+      baseline.capture_finish_photo !== localSettings.capture_finish_photo ||
+      (baseline.archive_3mf_retention_enabled ?? false) !== (localSettings.archive_3mf_retention_enabled ?? false) ||
+      (baseline.archive_3mf_retention_days ?? 30) !== (localSettings.archive_3mf_retention_days ?? 30) ||
+      baseline.default_filament_cost !== localSettings.default_filament_cost ||
+      baseline.currency !== localSettings.currency ||
+      baseline.energy_cost_per_kwh !== localSettings.energy_cost_per_kwh ||
+      baseline.energy_tracking_mode !== localSettings.energy_tracking_mode ||
+      baseline.check_updates !== localSettings.check_updates ||
+      (baseline.check_printer_firmware ?? true) !== (localSettings.check_printer_firmware ?? true) ||
+      (baseline.include_beta_updates ?? false) !== (localSettings.include_beta_updates ?? false) ||
+      (baseline.local_login_enabled ?? true) !== (localSettings.local_login_enabled ?? true) ||
+      (baseline.telemetry_enabled ?? true) !== (localSettings.telemetry_enabled ?? true) ||
+      (baseline.bed_cooled_threshold ?? 35) !== (localSettings.bed_cooled_threshold ?? 35) ||
+      baseline.ams_humidity_good !== localSettings.ams_humidity_good ||
+      baseline.ams_humidity_fair !== localSettings.ams_humidity_fair ||
+      baseline.ams_temp_good !== localSettings.ams_temp_good ||
+      baseline.ams_temp_fair !== localSettings.ams_temp_fair ||
+      baseline.ams_history_retention_days !== localSettings.ams_history_retention_days ||
       // Nullish-fallback so a transient ``undefined`` on either side
       // (stale settings query mid-fetch, fresh install before any
       // user write) doesn't trigger an infinite save loop. Mirrors the
       // ``archive_3mf_retention_days`` pattern above.
-      (settings.log_retention_days ?? 7) !== (localSettings.log_retention_days ?? 7) ||
-      settings.disable_filament_warnings !== localSettings.disable_filament_warnings ||
-      (settings.queue_drying_enabled ?? false) !== (localSettings.queue_drying_enabled ?? false) ||
-      (settings.queue_shortest_first ?? false) !== (localSettings.queue_shortest_first ?? false) ||
-      (settings.queue_drying_block ?? false) !== (localSettings.queue_drying_block ?? false) ||
-      (settings.ambient_drying_enabled ?? false) !== (localSettings.ambient_drying_enabled ?? false) ||
-      (settings.print_drying_enabled ?? false) !== (localSettings.print_drying_enabled ?? false) ||
-      (settings.drying_presets ?? '') !== (localSettings.drying_presets ?? '') ||
-      (settings.ams_humidity_thresholds ?? '') !== (localSettings.ams_humidity_thresholds ?? '') ||
-      (settings.stagger_enabled ?? false) !== (localSettings.stagger_enabled ?? false) ||
-      (settings.stagger_concurrent ?? 2) !== (localSettings.stagger_concurrent ?? 2) ||
-      (settings.stagger_interval_minutes ?? 5) !== (localSettings.stagger_interval_minutes ?? 5) ||
-      (settings.stagger_wait_for_bed ?? true) !== (localSettings.stagger_wait_for_bed ?? true) ||
-      (settings.stagger_strict_for_direct_dispatch ?? false) !== (localSettings.stagger_strict_for_direct_dispatch ?? false) ||
-      (settings.preheat_enabled ?? false) !== (localSettings.preheat_enabled ?? false) ||
-      (settings.preheat_filament_targets ?? '') !== (localSettings.preheat_filament_targets ?? '') ||
-      (settings.preheat_max_wait_seconds ?? 900) !== (localSettings.preheat_max_wait_seconds ?? 900) ||
-      (settings.preheat_soak_seconds ?? 300) !== (localSettings.preheat_soak_seconds ?? 300) ||
-      settings.per_printer_mapping_expanded !== localSettings.per_printer_mapping_expanded ||
-      settings.date_format !== localSettings.date_format ||
-      settings.time_format !== localSettings.time_format ||
-      settings.default_printer_id !== localSettings.default_printer_id ||
-      settings.ftp_retry_enabled !== localSettings.ftp_retry_enabled ||
-      settings.ftp_retry_count !== localSettings.ftp_retry_count ||
-      settings.ftp_retry_delay !== localSettings.ftp_retry_delay ||
-      settings.ftp_timeout !== localSettings.ftp_timeout ||
-      settings.mqtt_enabled !== localSettings.mqtt_enabled ||
-      settings.mqtt_broker !== localSettings.mqtt_broker ||
-      settings.mqtt_port !== localSettings.mqtt_port ||
-      settings.mqtt_username !== localSettings.mqtt_username ||
-      settings.mqtt_password !== localSettings.mqtt_password ||
-      settings.mqtt_topic_prefix !== localSettings.mqtt_topic_prefix ||
-      settings.mqtt_use_tls !== localSettings.mqtt_use_tls ||
-      settings.external_url !== localSettings.external_url ||
-      settings.ha_enabled !== localSettings.ha_enabled ||
-      settings.ha_url !== localSettings.ha_url ||
-      settings.ha_token !== localSettings.ha_token ||
-      Number(settings.library_disk_warning_gb ?? 5) !== Number(localSettings.library_disk_warning_gb ?? 5) ||
-      (settings.library_all_files_recursive ?? false) !== (localSettings.library_all_files_recursive ?? false) ||
-      (settings.camera_view_mode ?? 'window') !== (localSettings.camera_view_mode ?? 'window') ||
-      (settings.preferred_slicer ?? 'bambu_studio') !== (localSettings.preferred_slicer ?? 'bambu_studio') ||
-      (settings.open_in_slicer ?? null) !== (localSettings.open_in_slicer ?? null) ||
-      (settings.use_slicer_api ?? false) !== (localSettings.use_slicer_api ?? false) ||
-      (settings.orcaslicer_api_url ?? '') !== (localSettings.orcaslicer_api_url ?? '') ||
-      (settings.bambu_studio_api_url ?? '') !== (localSettings.bambu_studio_api_url ?? '') ||
-      settings.prometheus_enabled !== localSettings.prometheus_enabled ||
-      settings.prometheus_token !== localSettings.prometheus_token ||
-      (settings.session_max_hours ?? 720) !== (localSettings.session_max_hours ?? 720) ||
-      (settings.user_notifications_enabled ?? true) !== (localSettings.user_notifications_enabled ?? true);
+      (baseline.log_retention_days ?? 7) !== (localSettings.log_retention_days ?? 7) ||
+      baseline.disable_filament_warnings !== localSettings.disable_filament_warnings ||
+      (baseline.queue_drying_enabled ?? false) !== (localSettings.queue_drying_enabled ?? false) ||
+      (baseline.queue_shortest_first ?? false) !== (localSettings.queue_shortest_first ?? false) ||
+      (baseline.queue_drying_block ?? false) !== (localSettings.queue_drying_block ?? false) ||
+      (baseline.ambient_drying_enabled ?? false) !== (localSettings.ambient_drying_enabled ?? false) ||
+      (baseline.print_drying_enabled ?? false) !== (localSettings.print_drying_enabled ?? false) ||
+      (baseline.drying_presets ?? '') !== (localSettings.drying_presets ?? '') ||
+      (baseline.ams_humidity_thresholds ?? '') !== (localSettings.ams_humidity_thresholds ?? '') ||
+      (baseline.stagger_enabled ?? false) !== (localSettings.stagger_enabled ?? false) ||
+      (baseline.stagger_concurrent ?? 2) !== (localSettings.stagger_concurrent ?? 2) ||
+      (baseline.stagger_interval_minutes ?? 5) !== (localSettings.stagger_interval_minutes ?? 5) ||
+      (baseline.stagger_wait_for_bed ?? true) !== (localSettings.stagger_wait_for_bed ?? true) ||
+      (baseline.stagger_strict_for_direct_dispatch ?? false) !== (localSettings.stagger_strict_for_direct_dispatch ?? false) ||
+      (baseline.preheat_enabled ?? false) !== (localSettings.preheat_enabled ?? false) ||
+      (baseline.preheat_filament_targets ?? '') !== (localSettings.preheat_filament_targets ?? '') ||
+      (baseline.preheat_max_wait_seconds ?? 900) !== (localSettings.preheat_max_wait_seconds ?? 900) ||
+      (baseline.preheat_soak_seconds ?? 300) !== (localSettings.preheat_soak_seconds ?? 300) ||
+      baseline.per_printer_mapping_expanded !== localSettings.per_printer_mapping_expanded ||
+      baseline.date_format !== localSettings.date_format ||
+      baseline.time_format !== localSettings.time_format ||
+      baseline.default_printer_id !== localSettings.default_printer_id ||
+      baseline.ftp_retry_enabled !== localSettings.ftp_retry_enabled ||
+      baseline.ftp_retry_count !== localSettings.ftp_retry_count ||
+      baseline.ftp_retry_delay !== localSettings.ftp_retry_delay ||
+      baseline.ftp_timeout !== localSettings.ftp_timeout ||
+      baseline.mqtt_enabled !== localSettings.mqtt_enabled ||
+      baseline.mqtt_broker !== localSettings.mqtt_broker ||
+      baseline.mqtt_port !== localSettings.mqtt_port ||
+      baseline.mqtt_username !== localSettings.mqtt_username ||
+      baseline.mqtt_password !== localSettings.mqtt_password ||
+      baseline.mqtt_topic_prefix !== localSettings.mqtt_topic_prefix ||
+      baseline.mqtt_use_tls !== localSettings.mqtt_use_tls ||
+      baseline.external_url !== localSettings.external_url ||
+      baseline.ha_enabled !== localSettings.ha_enabled ||
+      baseline.ha_url !== localSettings.ha_url ||
+      baseline.ha_token !== localSettings.ha_token ||
+      Number(baseline.library_disk_warning_gb ?? 5) !== Number(localSettings.library_disk_warning_gb ?? 5) ||
+      (baseline.library_all_files_recursive ?? false) !== (localSettings.library_all_files_recursive ?? false) ||
+      (baseline.camera_view_mode ?? 'window') !== (localSettings.camera_view_mode ?? 'window') ||
+      (baseline.preferred_slicer ?? 'bambu_studio') !== (localSettings.preferred_slicer ?? 'bambu_studio') ||
+      (baseline.open_in_slicer ?? null) !== (localSettings.open_in_slicer ?? null) ||
+      (baseline.use_slicer_api ?? false) !== (localSettings.use_slicer_api ?? false) ||
+      (baseline.orcaslicer_api_url ?? '') !== (localSettings.orcaslicer_api_url ?? '') ||
+      (baseline.bambu_studio_api_url ?? '') !== (localSettings.bambu_studio_api_url ?? '') ||
+      baseline.prometheus_enabled !== localSettings.prometheus_enabled ||
+      baseline.prometheus_token !== localSettings.prometheus_token ||
+      (baseline.session_max_hours ?? 720) !== (localSettings.session_max_hours ?? 720) ||
+      (baseline.user_notifications_enabled ?? true) !== (localSettings.user_notifications_enabled ?? true);
 
     if (!hasChanges) {
       return;
