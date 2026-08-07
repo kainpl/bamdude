@@ -28,6 +28,11 @@ class FilamentOverride(BaseModel):
     slot_id: int = Field(ge=1)  # 1-indexed slot
     type: str | None = None  # e.g. "PLA", "PETG"
     color: str | None = None  # hex like "#FF0000"
+    # Slicer spool identity ("GFA00" PLA Basic, "GFA01" PLA Matte, "GFA06" Silk,
+    # "P4d64437" a custom preset). Only meaningful alongside force_color_match,
+    # where it keeps the variants apart — everything reports tray_type "PLA"
+    # (#2650). Blank means "no variant constraint".
+    tray_info_idx: str | None = None
     force_color_match: bool = False  # exact-color requirement
 
 

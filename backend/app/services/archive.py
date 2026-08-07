@@ -305,6 +305,13 @@ class ThreeMFParser:
                                     "used_g": round(used_g, 2),
                                     "type": f.get("type", ""),
                                     "color": f.get("color", ""),
+                                    # The slicer's spool identity for this slot
+                                    # ("GFA00" generic PLA, "GFA01" PLA Matte,
+                                    # "P4d64437" a custom preset, "" third-party).
+                                    # Bambu reports every PLA variant as tray_type
+                                    # "PLA", so this is the only field that tells
+                                    # Basic from Matte from Silk (#2650).
+                                    "tray_info_idx": f.get("tray_info_idx", ""),
                                 }
                             )
                     if filament_slots:

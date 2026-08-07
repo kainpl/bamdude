@@ -346,8 +346,18 @@ async def compute_ams_mapping_for_printer(
                     o = override_map[req["slot_id"]]
                     req["type"] = o.get("type", req["type"])
                     req["color"] = o.get("color", req["color"])
-                    # Clear tray_info_idx so matching falls to type+color
-                    req["tray_info_idx"] = ""
+                    # A preference override SWAPS the slot's filament, so the 3MF's
+                    # tray_info_idx now points at the spool being replaced and must be
+                    # cleared — matching then falls back to type+colour. A
+                    # force_color_match override is not a swap: it carries the 3MF's
+                    # intended variant (PLA Basic GFA00 / Matte GFA01 / Silk GFA06),
+                    # so keep it and let the matcher pin the right tray on a printer
+                    # holding two same-colour spools of different variants (#2650).
+                    # Eligibility already refused printers without that variant, so
+                    # keeping it here is what stops dispatch landing on the very tray
+                    # the matcher just rejected. When the variant is absent the
+                    # matcher falls through to type+colour by itself.
+                    req["tray_info_idx"] = (o.get("tray_info_idx") or "") if o.get("force_color_match") else ""
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             logger.warning("Failed to apply filament_overrides for auto item %s: %s", item.id, e)
 

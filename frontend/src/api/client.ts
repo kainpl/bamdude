@@ -2933,6 +2933,10 @@ export interface AutoQueueFilamentOverride {
   slot_id: number;
   type?: string | null;
   color?: string | null;
+  // Slicer spool identity ("GFA00" PLA Basic, "GFA01" Matte, "GFA06" Silk).
+  // Only read alongside force_color_match, where it keeps Bambu's PLA variants
+  // apart — they all report tray_type "PLA". Blank = no variant constraint.
+  tray_info_idx?: string | null;
   force_color_match?: boolean;
 }
 

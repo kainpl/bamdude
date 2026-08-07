@@ -1119,6 +1119,13 @@ class VirtualPrinterInstance:
                         "slot_id": slot["slot_id"],
                         "type": slot["type"],
                         "color": slot.get("color", ""),
+                        # Carry the slicer's spool identity so force_color_match
+                        # can tell Bambu's PLA variants apart (#2650): Basic,
+                        # Matte and Silk all report tray_type "PLA" and differ
+                        # only here. A blank idx (custom or third-party spool)
+                        # means "no variant constraint" and eligibility falls
+                        # back to type+colour.
+                        "tray_info_idx": slot.get("tray_info_idx", ""),
                         "force_color_match": True,
                     }
                     for slot in per_slot

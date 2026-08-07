@@ -12,8 +12,10 @@ current scheduler tick, pick the printer whose queue the item should join:
    equivalent — same as upstream).
 6. Satisfies ``filament_overrides``: when an override has
    ``force_color_match=True``, the printer must have an exact type+color
-   match in some loaded slot. Without the flag, color matches are
-   counted as a preference and the highest-scoring printer wins.
+   match in some loaded slot — and the same ``tray_info_idx`` when both
+   sides carry one, so PLA Basic/Matte/Silk are not interchangeable.
+   Without the flag, color matches are counted as a preference and the
+   highest-scoring printer wins.
 
 **Routing is not dispatching, and readiness is not a filter here.** Whether a
 printer can start *right now* — plate-clear gate, drying, staggering, the lot —
@@ -86,27 +88,56 @@ def _get_missing_force_color_slots(printer_id: int, force_overrides: list[dict])
 
     Each override must have ``type`` and ``color``. Returns ``"TYPE (color)"``
     for entries that don't have an exact type+color match on the printer.
+
+    When both the override and a candidate tray carry a ``tray_info_idx``, they
+    must match on that too. Bambu reports every PLA variant as
+    ``tray_type == "PLA"`` — Basic / Matte / Silk are told apart only by the idx
+    (GFA00 / GFA01 / GFA06), so without this a job sliced for PLA Matte was an
+    exact match for any white PLA on the farm (#2650). A blank idx on **either**
+    side falls back to the historical type+colour comparison: custom and
+    third-party spools report no idx at all, and 3MFs sliced before the field
+    existed carry none, so tightening that case would strand those setups
+    instead of routing them.
     """
     status = printer_manager.get_status(printer_id)
     if not status:
         return [f"{o.get('type', '?')} ({o.get('color_name') or o.get('color', '?')})" for o in force_overrides]
 
-    loaded: set[tuple[str, str]] = set()
+    # A list of triples, not a set of pairs: two trays can share type+colour and
+    # differ only by variant, and both have to stay visible to the comparison.
+    loaded: list[tuple[str, str, str]] = []
     for ams_unit in status.raw_data.get("ams", []) or []:
         for tray in ams_unit.get("tray", []) or []:
             t = tray.get("tray_type")
             if t:
-                loaded.add((_canonical_filament_type(t), _normalize_color_for_compare(tray.get("tray_color", ""))))
+                loaded.append(
+                    (
+                        _canonical_filament_type(t),
+                        _normalize_color_for_compare(tray.get("tray_color", "")),
+                        tray.get("tray_info_idx", "") or "",
+                    )
+                )
     for vt in status.raw_data.get("vt_tray") or []:
         t = vt.get("tray_type")
         if t:
-            loaded.add((_canonical_filament_type(t), _normalize_color_for_compare(vt.get("tray_color", ""))))
+            loaded.append(
+                (
+                    _canonical_filament_type(t),
+                    _normalize_color_for_compare(vt.get("tray_color", "")),
+                    vt.get("tray_info_idx", "") or "",
+                )
+            )
 
     missing: list[str] = []
     for o in force_overrides:
         o_type = _canonical_filament_type(o.get("type") or "")
         o_color = _normalize_color_for_compare(o.get("color") or "")
-        if (o_type, o_color) not in loaded:
+        o_idx = o.get("tray_info_idx") or ""
+        satisfied = any(
+            t_type == o_type and t_color == o_color and (not o_idx or not t_idx or o_idx == t_idx)
+            for t_type, t_color, t_idx in loaded
+        )
+        if not satisfied:
             color_label = o.get("color_name") or o.get("color", "?")
             missing.append(f"{o_type} ({color_label})")
     return missing
@@ -116,6 +147,12 @@ def _count_override_color_matches(printer_id: int, overrides: list[dict]) -> int
     """Count overrides that have an exact type+color match on the printer.
 
     Used to rank printers when overrides are preferences, not hard requirements.
+
+    Deliberately blind to ``tray_info_idx``, unlike the force path above. A
+    preference override is a *swap*: the operator chose a different filament for
+    that slot, so the 3MF's variant now describes the spool being replaced. It
+    is also only a ranking input — pinning it here would demote printers that
+    hold exactly what was asked for.
     """
     status = printer_manager.get_status(printer_id)
     if not status:

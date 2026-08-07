@@ -579,28 +579,15 @@ class PrintScheduler:
             logger.debug("No filament requirements found for queue item %s", item.id)
             return None
 
-        # Apply filament overrides if present
-        if item.filament_overrides:
-            try:
-                overrides = json.loads(item.filament_overrides)
-                override_map = {o["slot_id"]: o for o in overrides}
-                for req in filament_reqs:
-                    if req["slot_id"] in override_map:
-                        override = override_map[req["slot_id"]]
-                        req["type"] = override["type"]
-                        req["color"] = override["color"]
-                        # Clear tray_info_idx so matching uses type+color instead of
-                        # the original 3MF's tray_info_idx (which would match the old filament)
-                        req["tray_info_idx"] = ""
-                        logger.debug(
-                            "Queue item %s: Override slot %d -> %s %s",
-                            item.id,
-                            req["slot_id"],
-                            override["type"],
-                            override["color"],
-                        )
-            except (json.JSONDecodeError, KeyError, TypeError) as e:
-                logger.warning("Failed to apply filament overrides for queue item %s: %s", item.id, e)
+        # No filament-override step here on purpose. ``print_queue`` lost
+        # ``filament_overrides`` in m002 along with model-based assignment, which
+        # is the auto-queue tier's job in this fork — ``auto_queue_ams`` applies
+        # the overrides and stores the resulting mapping on the row it creates,
+        # so by the time this recompute runs there is nothing left to apply. The
+        # block that used to stand here still read the dropped attribute; the
+        # AttributeError was swallowed by ``run()``'s bare ``except Exception``,
+        # so an item whose stored mapping was missing or all-[-1] logged one line
+        # and silently never dispatched, every pass.
 
         # Build loaded filaments from printer status
         loaded_filaments = self._build_loaded_filaments(status)
