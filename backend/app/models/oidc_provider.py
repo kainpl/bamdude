@@ -144,6 +144,13 @@ class OIDCProvider(Base):
     # invariant: at most one provider carries this — create/update clear it on every
     # other row. Recovery: /login?fallback=local + BAMDUDE_LOCAL_LOGIN=true.
     is_autologin: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # #2593: this row is declared by BAMDUDE_OIDC_* and rewritten on every boot,
+    # so the UI shows it read-only and the API refuses writes to it — an edit
+    # would be reverted at the next restart anyway. Removing the variables
+    # DISABLES and releases the row rather than deleting it, because
+    # user_oidc_links.provider_id cascades and every linked account would be
+    # unlinked for good. See core/oidc_env.py.
+    is_env_managed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
 
     @property
     def has_icon(self) -> bool:

@@ -6778,6 +6778,20 @@ async def lifespan(app: FastAPI):
 
     await init_db()
 
+    # OIDC provider declared by BAMDUDE_OIDC_* (#2593). Re-applied on every boot,
+    # which is what makes the environment the authority and the UI read-only —
+    # and what lets removing the variables release the row rather than strand it.
+    # Runs after init_db because it needs the is_env_managed column m130 adds.
+    # Never raises by contract; a rejected config is logged and skipped.
+    try:
+        from backend.app.core.database import async_session as _oidc_session
+        from backend.app.core.oidc_env import apply_env_oidc_provider
+
+        async with _oidc_session() as _oidc_db:
+            await apply_env_oidc_provider(_oidc_db)
+    except Exception:  # noqa: BLE001 — nothing in startup may take the boot down
+        logging.getLogger(__name__).exception("Env-managed OIDC provider could not be applied")
+
     # Zigbee coordinator. Best-effort by contract: start() never raises, so a
     # missing, busy or wrong-mode dongle leaves the app fully usable with the
     # reason available at GET /zigbee/status. Skipped entirely when disabled,

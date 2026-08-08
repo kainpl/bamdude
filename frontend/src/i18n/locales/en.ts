@@ -2680,6 +2680,10 @@ export default {
     },
     oidc: {
       title: 'SSO / OIDC Providers',
+      // #2593: this provider is declared by BAMDUDE_OIDC_* and rewritten on
+      // every boot, so its controls are absent rather than disabled.
+      envManaged: 'From environment',
+      envManagedHint: 'Configured by BAMDUDE_OIDC_* environment variables and reapplied on every restart. Edit those variables to change it; unset them to release it back to this page.',
       desc: 'Configure OpenID Connect providers to allow single sign-on via external identity providers.',
       addProvider: 'Add Provider',
       newProvider: 'New Provider',

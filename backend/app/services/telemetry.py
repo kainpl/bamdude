@@ -23,16 +23,22 @@ from sqlalchemy import func, select
 from backend.app.core.config import APP_VERSION, TELEMETRY_DISABLED, TELEMETRY_RELAY_URL
 from backend.app.core.database import async_session
 from backend.app.core.install_id import get_install_id
+from backend.app.core.oidc_env import parse_bool
 
 logger = logging.getLogger(__name__)
 
 _task: asyncio.Task | None = None
+
 _INITIAL_DELAY_SECONDS = 300  # first ping ~5 min after startup
 _INTERVAL_SECONDS = 24 * 60 * 60
 
 
 def _truthy(value: str | None) -> bool:
-    return (value or "").strip().lower() in ("1", "true", "yes", "on")
+    """Callers here hold a value rather than a variable name, so this delegates to
+    the shared vocabulary instead of keeping its own. It used to be a second copy,
+    and the two had already drifted — the other accepted true/1/yes, this one also
+    accepted ``on``."""
+    return parse_bool(value, False)
 
 
 def _in_docker() -> bool:

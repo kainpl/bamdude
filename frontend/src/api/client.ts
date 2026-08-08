@@ -4183,6 +4183,10 @@ export interface OIDCProvider {
   // #1589: when true, the LoginPage redirects unauthenticated visitors
   // straight to this provider on mount. At most one provider may carry this.
   is_autologin: boolean;
+  // #2593: declared by BAMDUDE_OIDC_* and rewritten on every boot. The row is
+  // read-only here and the API answers 409 to any write — the environment is
+  // not visible to the browser, so the server has to say so.
+  is_env_managed?: boolean;
 }
 
 export interface OIDCProviderCreate {

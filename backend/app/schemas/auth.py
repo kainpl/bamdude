@@ -516,6 +516,10 @@ class OIDCProviderResponse(BaseModel):
     has_icon: bool = False
     default_group_id: int | None = None
     is_autologin: bool = False  # #1589
+    # #2593: declared by BAMDUDE_OIDC_* and rewritten on every boot, so the UI
+    # renders it read-only and the API refuses writes. Exposed rather than
+    # inferred client-side: the environment is not visible to the browser.
+    is_env_managed: bool = False
 
     class Config:
         from_attributes = True

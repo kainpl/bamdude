@@ -1467,6 +1467,21 @@ async def create_oidc_provider(
     return OIDCProviderResponse.model_validate(provider)
 
 
+def _refuse_if_env_managed(provider) -> None:
+    """Startup rewrites this provider from ``BAMDUDE_OIDC_*`` on every boot, so an
+    edit accepted here would be silently reverted at the next restart. Being told
+    no is better than being told yes and then having it undone.
+
+    ``BAMDUDE_LOCAL_LOGIN`` (#1589) remains the recovery path if the provider
+    becomes unusable, so refusing outright cannot lock anyone out.
+    """
+    if provider.is_env_managed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This OIDC provider is managed by environment variables and cannot be modified.",
+        )
+
+
 @router.put("/oidc/providers/{provider_id}", response_model=OIDCProviderResponse)
 async def update_oidc_provider(
     provider_id: int,
@@ -1493,6 +1508,7 @@ async def update_oidc_provider(
     provider = result2.scalar_one_or_none()
     if not provider:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
+    _refuse_if_env_managed(provider)
 
     # Same DB-state cross-check as create — when the operator supplies a
     # default_group_id, refuse the update if the referenced group doesn't
@@ -1627,6 +1643,7 @@ async def delete_oidc_provider_icon(
     provider = result.scalar_one_or_none()
     if provider is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
+    _refuse_if_env_managed(provider)
 
     # Setting deferred columns is safe — no read happens, just a write.
     provider.icon_url = None
@@ -1648,6 +1665,7 @@ async def delete_oidc_provider(
     provider = result2.scalar_one_or_none()
     if not provider:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
+    _refuse_if_env_managed(provider)
 
     await db.delete(provider)
     await db.commit()
