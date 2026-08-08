@@ -68,6 +68,10 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **Camera rotation now applies to timelapses and finish photos, not just snapshots.** If your camera is mounted rotated, the **Camera rotation** setting straightened the notification snapshot and nothing else — so the same print produced a right-way-up snapshot and a sideways timelapse, which looks like the timelapse is broken rather than like a setting that only half works. Layer-timelapse frames are now rotated as they are captured (before the video is assembled, since the video cannot be turned afterwards without re-encoding it), and every source a finish photo can come from is rotated too: the pre-captured frame, the external camera, a live view already open, a fresh grab, and the still recovered from the printer's own timelapse video.
+
+    The printer's own timelapse **video** is deliberately left as the printer recorded it — only the still extracted from it is straightened.
+
 - **A spool added by Quick Add, CSV import or an RFID scan can now be edited.** Those routes create a spool with a material and little else — no slicer preset, no brand, no subtype. Reopening one in Edit demanded all three before it would save anything, so changing its shelf location, its cost or a note was simply impossible, and the Quick Add toggle that waives those fields only exists when creating. Copy Spool had the same wall with no way around it at all. Editing and copying now ask for exactly what the server asks for: the material. Preset, brand and subtype stay visible and editable, and the little `*` markers now appear only where a field is genuinely required.
 
     **The brand and material lists no longer hide real products.** They filtered themselves down to the brand/material pairs the colour catalogue happens to know. Elegoo is catalogued for PLA only — so Elegoo ASA, a real filament you can buy, looked impossible to enter. Both lists now always offer everything, with the known pairings ranked first under **Suggested** and the rest under **All**, and a spool's own brand or material is always present in its own dropdown even if nothing else has heard of it.

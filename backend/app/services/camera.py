@@ -647,6 +647,7 @@ async def capture_finish_photo(
     access_code: str,
     model: str | None,
     archive_dir: Path,
+    rotation: int = 0,
 ) -> str | None:
     """Capture a finish photo and save it to the archive's photos folder.
 
@@ -656,6 +657,8 @@ async def capture_finish_photo(
         access_code: Printer access code
         model: Printer model
         archive_dir: Directory of the archive (where the 3MF is stored)
+        rotation: The printer's ``camera_rotation``, applied to the saved file
+            so this source agrees with every other finish-photo source (#2708).
 
     Returns:
         Filename of the captured photo, or None if capture failed
@@ -678,6 +681,7 @@ async def capture_finish_photo(
     )
 
     if success:
+        await apply_camera_rotation_to_file(output_path, rotation, logger)
         logger.info("Finish photo saved: %s", filename)
         return filename
     else:
@@ -804,3 +808,60 @@ async def extract_video_last_frame(video_path: Path, output_path: Path) -> bool:
     except OSError as e:
         logger.warning("ffmpeg subprocess error for %s: %s", video_path, e)
         return False
+
+
+def apply_camera_rotation(image_data: bytes, rotation: int, logger: logging.Logger) -> bytes:
+    """Apply a ``camera_rotation`` value (degrees clockwise) to a captured JPEG.
+
+    Shared by every capture path that saves a still: notification snapshots,
+    finish photos and layer-timelapse frames. It used to live inline in the
+    snapshot path alone, which left finish photos and timelapse videos
+    upside-down for anyone whose camera is mounted rotated — and made the
+    timelapse look like the bug, since the snapshot of the same print was the
+    right way up (upstream Bambuddy #2708).
+
+    **Rotate exactly once.** Some sources arrive already rotated (the in-print
+    frame bank is filled from the snapshot path), so the caller has to know
+    which it is holding; the producer of a stored frame is the right place to
+    decide, not each of its consumers.
+
+    Never raises: a still that could not be rotated is better than no still.
+    """
+    if not rotation:
+        return image_data
+
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        img = Image.open(BytesIO(image_data))
+        # PIL rotates counter-clockwise, so negate for clockwise rotation.
+        img = img.rotate(-rotation, expand=True)
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=90)
+        rotated = buf.getvalue()
+        logger.info("Applied %d° camera rotation: %s → %s bytes", rotation, len(image_data), len(rotated))
+        return rotated
+    except Exception as e:
+        logger.warning("Failed to apply camera rotation: %s", e)
+        return image_data
+
+
+async def apply_camera_rotation_to_file(path: Path, rotation: int, logger: logging.Logger) -> None:
+    """Rotate a JPEG already written to disk, in place.
+
+    For the finish photo recovered from the printer's own timelapse video: the
+    still is extracted by ffmpeg straight to a file, so there are no bytes to
+    rotate on the way past. The **video** is left alone deliberately — it is the
+    printer's file, and rotating it would mean re-encoding it.
+    """
+    if not rotation:
+        return
+    try:
+        data = await asyncio.to_thread(path.read_bytes)
+        rotated = await asyncio.to_thread(apply_camera_rotation, data, rotation, logger)
+        if rotated is not data:
+            await asyncio.to_thread(path.write_bytes, rotated)
+    except OSError as e:
+        logger.warning("Failed to rotate %s: %s", path, e)

@@ -367,6 +367,12 @@ _active_prints: dict[tuple[int, str], int] = {}
 # captures the better-framed pre-bed-drop moment without us having to force
 # timelapse on at dispatch (the #1397 mechanism that caused #1721's per-layer
 # nozzle parking on slicer profiles with Timelapse Type = Smooth).
+#
+# The bytes in here are ALWAYS already rotated by the printer's
+# ``camera_rotation``. ``on_finish_photo_moment`` owns that, because one of its
+# sources (the #1867 in-print bank) is rotated before it ever reaches the bank
+# and the others are not — so a consumer cannot tell them apart and must not
+# rotate again (#2708).
 _stage22_finish_frames: dict[int, bytes] = {}
 
 # #1790: per-printer producer-done event. Set by `on_finish_photo_moment` in its
@@ -2464,27 +2470,16 @@ async def _maybe_bank_inprint_frame(printer_id: int, layer_num: int) -> None:
 
 
 def _apply_camera_rotation(image_data: bytes, printer, logger) -> bytes:
-    """Apply camera rotation to snapshot image if configured."""
-    rotation = getattr(printer, "camera_rotation", 0)
-    if not rotation or rotation == 0:
-        return image_data
+    """Apply the printer's configured camera rotation to a captured still.
 
-    try:
-        from io import BytesIO
+    Thin wrapper over ``camera.apply_camera_rotation`` — the implementation is
+    shared with the layer-timelapse and finish-photo paths, which used to leave
+    their images unrotated while the snapshot of the very same print came out
+    the right way up (#2708).
+    """
+    from backend.app.services.camera import apply_camera_rotation
 
-        from PIL import Image
-
-        img = Image.open(BytesIO(image_data))
-        # PIL rotate is counter-clockwise, so negate for clockwise rotation
-        img = img.rotate(-rotation, expand=True)
-        buf = BytesIO()
-        img.save(buf, format="JPEG", quality=90)
-        rotated = buf.getvalue()
-        logger.info("[SNAPSHOT] Applied %d° rotation: %s → %s bytes", rotation, len(image_data), len(rotated))
-        return rotated
-    except Exception as e:
-        logger.warning("[SNAPSHOT] Failed to apply rotation: %s", e)
-        return image_data
+    return apply_camera_rotation(image_data, getattr(printer, "camera_rotation", 0), logger)
 
 
 async def _send_print_start_notification(
@@ -3181,6 +3176,7 @@ async def on_print_start(printer_id: int, data: dict):
                         printer.external_camera_url,
                         printer.external_camera_type or "mjpeg",
                         snapshot_url=printer.external_camera_snapshot_url,
+                        rotation=getattr(printer, "camera_rotation", 0) or 0,
                     )
                     logger.info(
                         "Started layer timelapse for printer %s, expected archive %s",
@@ -3714,6 +3710,7 @@ async def on_print_start(printer_id: int, data: dict):
                         printer.external_camera_url,
                         printer.external_camera_type or "mjpeg",
                         snapshot_url=printer.external_camera_snapshot_url,
+                        rotation=getattr(printer, "camera_rotation", 0) or 0,
                     )
                     logger.info("Started layer timelapse for printer %s, archive %s", printer_id, fallback_archive.id)
 
@@ -3836,6 +3833,7 @@ async def on_print_start(printer_id: int, data: dict):
                         printer.external_camera_url,
                         printer.external_camera_type or "mjpeg",
                         snapshot_url=printer.external_camera_snapshot_url,
+                        rotation=getattr(printer, "camera_rotation", 0) or 0,
                     )
                     logger.info("Started layer timelapse for printer %s, archive %s", printer_id, archive.id)
 
@@ -4197,6 +4195,7 @@ _FINISH_PHOTO_TIMELAPSE_POLL_TIMEOUT_SECONDS: float = 60.0
 async def _capture_finish_photo_from_timelapse(
     archive_id: int,
     archive_dir: Path,
+    rotation: int = 0,
 ) -> str | None:
     """Wait for the per-print timelapse to land on the archive and extract its
     last frame as the finish photo (#1397).
@@ -4216,7 +4215,7 @@ async def _capture_finish_photo_from_timelapse(
     import uuid
 
     from backend.app.models.archive import PrintArchive
-    from backend.app.services.camera import extract_video_last_frame
+    from backend.app.services.camera import apply_camera_rotation_to_file, extract_video_last_frame
 
     logger = logging.getLogger(__name__)
 
@@ -4238,6 +4237,11 @@ async def _capture_finish_photo_from_timelapse(
                 filename = f"finish_{timestamp}_{uuid.uuid4().hex[:8]}.jpg"
                 output_path = photos_dir / filename
                 if await extract_video_last_frame(video_path, output_path):
+                    # ffmpeg writes the still straight to disk, so there are no
+                    # bytes to rotate on the way past — do it in place. The
+                    # VIDEO is left alone deliberately: it is the printer's own
+                    # file, and rotating it would mean re-encoding it (#2708).
+                    await apply_camera_rotation_to_file(output_path, rotation, logger)
                     logger.info(
                         "[PHOTO-BG] Extracted finish photo from timelapse %s for archive %s",
                         video_path.name,
@@ -4373,10 +4377,17 @@ async def on_finish_photo_moment(printer_id: int, data: dict):
         # print from the last object layer, before the swap. Only for
         # ``finish_state``: the ``stage_22`` and ``last_layer`` triggers fire
         # before the swap and give cleaner (parked-toolhead) framing live.
+        # The banked frame arrives ALREADY rotated — it comes from
+        # ``_capture_snapshot_for_notification``, which rotates before it
+        # returns. Every other source below is a raw grab. Tracking which is
+        # what lets ``_stage22_finish_frames`` hold exactly one rotation either
+        # way, so consumers never have to guess (#2708).
+        frame_already_rotated = False
         if trigger == "finish_state":
             banked = _inprint_frame_bank.get(printer_id)
             if banked:
                 frame_bytes = banked
+                frame_already_rotated = True
                 logger.info(
                     "[FINISH-PHOTO-MOMENT] using banked in-print frame (%d bytes) — "
                     "avoids post-swap live grab on stage-22-less firmware",
@@ -4413,6 +4424,8 @@ async def on_finish_photo_moment(printer_id: int, data: dict):
                     logger.info("[FINISH-PHOTO-MOMENT] captured RTSP frame (%d bytes)", len(frame_bytes))
 
         if frame_bytes:
+            if not frame_already_rotated:
+                frame_bytes = _apply_camera_rotation(frame_bytes, printer, logger)
             _stage22_finish_frames[printer_id] = frame_bytes
         else:
             logger.warning(
@@ -5711,6 +5724,7 @@ async def on_print_complete(printer_id: int, data: dict):
                 photo_filename = await _capture_finish_photo_from_timelapse(
                     archive_id=archive_id,
                     archive_dir=archive_dir,
+                    rotation=getattr(printer, "camera_rotation", 0) or 0,
                 )
 
             # #1721: replacement framing path — on_finish_photo_moment pre-captured a
@@ -5769,6 +5783,9 @@ async def on_print_complete(printer_id: int, data: dict):
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                         photo_filename = f"finish_{timestamp}_{uuid.uuid4().hex[:8]}.jpg"
                         photo_path = photos_dir / photo_filename
+                        # Raw grab — the cached stage-22 frame above is already
+                        # rotated, this one is not (#2708).
+                        frame_data = _apply_camera_rotation(frame_data, printer, logger)
                         await asyncio.to_thread(photo_path.write_bytes, frame_data)
                         logger.info("[PHOTO-BG] Saved external camera frame: %s", photo_filename)
                 else:
@@ -5786,6 +5803,7 @@ async def on_print_complete(printer_id: int, data: dict):
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                         photo_filename = f"finish_{timestamp}_{uuid.uuid4().hex[:8]}.jpg"
                         photo_path = photos_dir / photo_filename
+                        buffered_frame = _apply_camera_rotation(buffered_frame, printer, logger)
                         await asyncio.to_thread(photo_path.write_bytes, buffered_frame)
                         logger.info("[PHOTO-BG] Saved buffered frame: %s", photo_filename)
                     else:
@@ -5798,6 +5816,7 @@ async def on_print_complete(printer_id: int, data: dict):
                             access_code=printer.access_code,
                             model=printer.model,
                             archive_dir=archive_dir,
+                            rotation=getattr(printer, "camera_rotation", 0) or 0,
                         )
 
             # Write phase: attach the photo in a fresh short-lived session (the read

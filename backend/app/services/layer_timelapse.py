@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from backend.app.core.config import settings
+from backend.app.services.camera import apply_camera_rotation
 from backend.app.services.external_camera import capture_frame
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ class TimelapseSession:
     camera_url: str
     camera_type: str
     snapshot_url: str | None = None  # Optional single-frame override; upstream #1177
+    rotation: int = 0  # The printer's configured camera_rotation, degrees clockwise
     last_layer: int = -1
     frame_count: int = 0
     session_id: str = field(default_factory=lambda: datetime.now().strftime("%Y%m%d_%H%M%S"))
@@ -70,6 +72,12 @@ class TimelapseSession:
         try:
             frame_data = await capture_frame(self.camera_url, self.camera_type, snapshot_url=self.snapshot_url)
             if frame_data:
+                # Rotate on the way in, not at stitch time: ffmpeg reads the
+                # frames straight off disk, so a frame saved the wrong way up
+                # stays that way in the finished video (#2708). Off the event
+                # loop — PIL is synchronous and this runs once per layer.
+                if self.rotation:
+                    frame_data = await asyncio.to_thread(apply_camera_rotation, frame_data, self.rotation, logger)
                 frame_path = self.frames_dir / f"layer_{layer_num:05d}.jpg"
                 await asyncio.to_thread(frame_path.write_bytes, frame_data)
                 self.frame_count += 1
@@ -188,6 +196,7 @@ def start_session(
     url: str,
     cam_type: str,
     snapshot_url: str | None = None,
+    rotation: int = 0,
 ) -> TimelapseSession:
     """Start new timelapse session for a printer.
 
@@ -199,6 +208,9 @@ def start_session(
         snapshot_url: Optional single-frame URL override; when set, layer captures
             fetch from it directly instead of opening the live stream. Upstream
             Bambuddy #1177.
+        rotation: The printer's configured ``camera_rotation`` (degrees clockwise),
+            applied to every frame before it is written. Without it the video
+            comes out rotated while a snapshot of the same print does not (#2708).
 
     Returns:
         The new TimelapseSession
@@ -212,6 +224,7 @@ def start_session(
         camera_url=url,
         camera_type=cam_type,
         snapshot_url=snapshot_url,
+        rotation=rotation,
     )
     _active_sessions[printer_id] = session
     logger.info("Started timelapse session for printer %s", printer_id)
