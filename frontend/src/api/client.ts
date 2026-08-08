@@ -1729,6 +1729,17 @@ export interface ObicoStatus {
   external_url_configured: boolean;
 }
 
+/** The printer-card view of AI detection: live classification only, no
+ * configuration. Served by a route that needs printers:read rather than
+ * settings:read, so an operator can see the badge without being handed the ML
+ * URL (#1546). `monitored_printers: null` means every printer is monitored. */
+export interface ObicoPrinterStatus {
+  enabled: boolean;
+  monitored_printers: number[] | null;
+  per_printer: Record<string, { class: string; frame_count: number; score: number }>;
+  last_error: string | null;
+}
+
 export interface ObicoTestConnection {
   ok: boolean;
   status_code: number | null;
@@ -8053,6 +8064,8 @@ export const api = {
   // Obico AI failure detection (#172)
   getObicoStatus: () =>
     request<ObicoStatus>('/obico/status'),
+  getObicoPrinterStatus: () =>
+    request<ObicoPrinterStatus>('/obico/printer-status'),
 
   testObicoConnection: (url: string) =>
     request<ObicoTestConnection>('/obico/test-connection', {

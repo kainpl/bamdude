@@ -336,6 +336,25 @@ class ObicoDetectionService:
 
     # ---- queries ----
 
+    def get_per_printer(self) -> dict:
+        """Live classification per actively monitored printer.
+
+        Only a printer with a running, monitored print has a state entry, so a
+        consumer gets "show nothing for idle printers" for free rather than
+        having to ask what is printing.
+
+        Split out of :meth:`get_status` so the printer-card endpoint and the
+        settings panel cannot drift into two answers to the same question.
+        """
+        return {
+            pid: {
+                "class": self._last_class.get(pid, "safe"),
+                "frame_count": state.frame_count,
+                "score": round(state.ewm_mean, 4),
+            }
+            for pid, state in self._states.items()
+        }
+
     def get_status(self, sensitivity: str = "medium") -> dict:
         # Report the thresholds for the configured sensitivity, not a hardcoded
         # "medium" — otherwise the Status panel always shows the medium row
@@ -345,14 +364,7 @@ class ObicoDetectionService:
         return {
             "is_running": self._task is not None and not self._task.done(),
             "last_error": self._last_error,
-            "per_printer": {
-                pid: {
-                    "class": self._last_class.get(pid, "safe"),
-                    "frame_count": state.frame_count,
-                    "score": round(state.ewm_mean, 4),
-                }
-                for pid, state in self._states.items()
-            },
+            "per_printer": self.get_per_printer(),
             "thresholds": {"low": low, "high": high},
             "history": list(self._history),
         }

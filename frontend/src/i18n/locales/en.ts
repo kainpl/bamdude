@@ -533,6 +533,15 @@ export default {
       connected: 'Connected',
       offline: 'Offline'
     },
+    // AI failure detection badge on the printer card
+    ai: {
+      idle: 'AI Idle',
+      safe: 'AI Safe',
+      warning: 'AI Warning',
+      failure: 'AI Failure',
+      idleTitle: 'AI failure detection is on for this printer; nothing is being watched right now.',
+      scoreTitle: 'AI failure detection — current score {{score}}. Click for the full status and history.'
+    },
     plateStatus: {
       markCleared: 'Mark plate as cleared',
       cleared: 'Plate Clear',

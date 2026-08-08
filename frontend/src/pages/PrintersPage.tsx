@@ -27,6 +27,7 @@ import {
   PowerOff,
   Zap,
   Wrench,
+  Sparkles,
   Droplet,
   ChevronDown,
   Filter,
@@ -1363,6 +1364,64 @@ const DRYING_PRESETS: Record<string, { n3f: number; n3s: number; n3f_hours: numb
   'PC':    { n3f: 65, n3s: 80, n3f_hours: 12, n3s_hours: 8 },
   'PVA':   { n3f: 65, n3s: 85, n3f_hours: 12, n3s_hours: 18 },
 };
+
+/** The AI failure-detection state for one printer, as a badge (#1546).
+ *
+ * The live classification was only visible under Settings → Failure Detection,
+ * so following how detection was tracking an ongoing print meant flipping
+ * between two screens. Renders only for printers detection is actually watching
+ * — a printer outside the monitored subset shows nothing at all, rather than a
+ * badge that would imply it is covered.
+ *
+ * Grey Idle while no print is being watched; green / amber / red once one is.
+ */
+function AiDetectionBadge({ printerId }: { printerId: number }) {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  // Shared query key: TanStack dedupes, so a farm of cards is one request.
+  const { data } = useQuery({
+    queryKey: ['obicoPrinterStatus'],
+    queryFn: api.getObicoPrinterStatus,
+    staleTime: 10_000,
+    refetchInterval: 30_000,
+    retry: false,
+  });
+
+  if (!data?.enabled) return null;
+  // null = every printer is monitored.
+  if (data.monitored_printers && !data.monitored_printers.includes(printerId)) return null;
+
+  const live = data.per_printer?.[String(printerId)];
+  const klass = live?.class ?? null;
+  const look =
+    klass === 'failure'
+      ? 'bg-status-error/20 text-status-error'
+      : klass === 'warning'
+        ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400'
+        : klass === 'safe'
+          ? 'bg-status-ok/20 text-status-ok'
+          : 'bg-bambu-dark-tertiary text-bambu-gray';
+  const label =
+    klass === 'failure'
+      ? t('printers.ai.failure')
+      : klass === 'warning'
+        ? t('printers.ai.warning')
+        : klass === 'safe'
+          ? t('printers.ai.safe')
+          : t('printers.ai.idle');
+
+  return (
+    <button
+      type="button"
+      onClick={() => navigate('/settings?tab=printing#failure-detection')}
+      className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs transition-opacity hover:opacity-80 ${look}`}
+      title={live ? t('printers.ai.scoreTitle', { score: live.score }) : t('printers.ai.idleTitle')}
+    >
+      <Sparkles className="w-3 h-3" />
+      {label}
+    </button>
+  );
+}
 
 /** One badge for a fan that exists only in ``device.airduct`` (#2576).
  *
@@ -3091,6 +3150,10 @@ function PrinterCard({
                   {status?.connected ? t('printers.connection.connected') : t('printers.connection.offline')}
                 </span>
               )}
+              {/* Renders itself only when detection is on AND watching this
+                  printer — a printer outside the monitored subset shows nothing
+                  rather than a badge implying it is covered (#1546). */}
+              <AiDetectionBadge printerId={printer.id} />
               {/* Run connection diagnostic — offered when the printer is offline, NOT in maintenance */}
               {printer.is_active !== false && !status?.connected && (
                 <button

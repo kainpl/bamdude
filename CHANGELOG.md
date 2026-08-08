@@ -68,6 +68,10 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **AI failure detection now shows on the printer cards.** The live classification was only visible under Settings → Failure Detection, so watching how detection was tracking an ongoing print meant flipping between two screens. Each card now carries an **AI** badge alongside the other health badges: grey while nothing is being watched, then green, amber or red as a monitored print is classified. The tooltip carries the current score, and clicking it goes to the full status and history. A printer that detection is not watching shows no badge at all, rather than one implying it is covered.
+
+    The badge is readable by anyone who can see printers — it does not require permission to read settings, and it deliberately carries no configuration: the ML server address and the detection history stay where they were.
+
 - **The small printer card now shows remaining time, ETA and layers.** The smallest card size exists for one job — watching a whole farm on one screen — and it showed only a name, a status dot and a progress bar. So dropping to it to fit more printers meant losing exactly the numbers you dropped down to compare, and it could not answer "which one finishes first". It now carries one line of metrics under the bar while a print is running, using the same formatting as the medium card so the two read alike. Each value is left out individually if the printer does not report it, and the row keeps its height when nothing is printing so cards do not jump as prints start and finish.
 
 - **Print progress can now show in the browser tab.** Optional, off by default, under **Settings → General → Appearance**. With it on, the tab title carries the percentage of the print finishing soonest and the tab icon becomes a matching progress ring in your accent colour — so a browser window parked on another screen tells you how the farm is doing without switching to it. The preference is per-browser rather than per-account: a wall display probably wants it, the same person's laptop probably does not. Turning it off hands the tab back exactly as it was.
