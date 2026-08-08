@@ -7230,6 +7230,14 @@ async def lifespan(app: FastAPI):
     # Start printer heater (nozzle/bed/chamber) history recording
     start_printer_sensor_history_recording()
 
+    # Rebuild MQTT sessions that stopped reconnecting on their own (#2732).
+    # check_staleness() only ever handles a client that is still *connected* and
+    # quiet, and we call it reactively from get_status() — so a printer nobody is
+    # looking at has nothing watching it at all.
+    from backend.app.services.connection_watchdog import start_connection_watchdog
+
+    start_connection_watchdog()
+
     # Start printer runtime tracking
     start_runtime_tracking()
 
@@ -7375,6 +7383,9 @@ async def lifespan(app: FastAPI):
     local_backup_service.stop_scheduler()
     stop_ams_history_recording()
     stop_printer_sensor_history_recording()
+    from backend.app.services.connection_watchdog import stop_connection_watchdog
+
+    await stop_connection_watchdog()
     stop_runtime_tracking()
     stop_camera_cleanup()
     # Cancel any pending offline-notification debounce tasks (#1752) so the 60s
