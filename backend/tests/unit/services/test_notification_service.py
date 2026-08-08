@@ -679,6 +679,99 @@ class TestHomeAssistantProvider:
             assert payload["title"] == "Test Title"
             assert payload["message"] == "Test Message"
 
+    async def _post_with_config(self, service, config: dict):
+        """Drive ``_send_homeassistant`` with HA configured, return (result, payload)."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        with (
+            patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client,
+            patch(
+                "backend.app.api.routes.settings.get_homeassistant_settings",
+                new_callable=AsyncMock,
+            ) as mock_ha_settings,
+        ):
+            mock_get_client.return_value = mock_client
+            mock_ha_settings.return_value = {
+                "ha_url": "http://ha.local:8123",
+                "ha_token": "test-token-123",
+                "ha_enabled": True,
+            }
+            result = await service._send_homeassistant(config, "Test Title", "Test Message", db=AsyncMock())
+
+        payload = mock_client.post.call_args.kwargs.get("json") if mock_client.post.call_args else None
+        return result, payload
+
+    @pytest.mark.asyncio
+    async def test_custom_data_is_forwarded_as_has_nested_data_object(self, service):
+        """#1441 — mobile-app push options (priority, ttl, channel) live under
+        ``data``, which is where an HA automation would put them too."""
+        (success, _), payload = await self._post_with_config(
+            service,
+            {"service": "notify.mobile_app_myphone", "data": '{"priority": "high", "ttl": 0}'},
+        )
+
+        assert success is True
+        assert payload["data"] == {"priority": "high", "ttl": 0}
+
+    @pytest.mark.asyncio
+    async def test_numbers_survive_as_numbers(self, service):
+        """The reason the field is JSON and not key=value lines: HA's Android
+        integration wants ``ttl: 0``, an integer, not the string "0"."""
+        (_, _), payload = await self._post_with_config(
+            service, {"service": "notify.mobile_app_myphone", "data": '{"ttl": 0, "nested": {"a": [1, 2]}}'}
+        )
+
+        assert payload["data"]["ttl"] == 0
+        assert payload["data"]["nested"] == {"a": [1, 2]}
+
+    @pytest.mark.asyncio
+    async def test_the_default_persistent_notification_path_stays_bare(self, service):
+        """``persistent_notification.create`` rejects unknown keys, so an
+        always-present ``data`` would break the provider's default shape."""
+        (success, _), payload = await self._post_with_config(service, {})
+
+        assert success is True
+        assert "data" not in payload
+
+    @pytest.mark.asyncio
+    async def test_an_empty_data_object_is_not_sent(self, service):
+        (_, _), payload = await self._post_with_config(service, {"service": "notify.x", "data": "{}"})
+
+        assert "data" not in payload
+
+    @pytest.mark.asyncio
+    async def test_malformed_json_fails_loudly_and_posts_nothing(self, service):
+        """A half-built payload reaching HA would be reported as delivered."""
+        (success, message), payload = await self._post_with_config(
+            service, {"service": "notify.x", "data": "{not json"}
+        )
+
+        assert success is False
+        assert "Invalid JSON" in message
+        assert payload is None
+
+    @pytest.mark.asyncio
+    async def test_a_json_array_is_refused(self, service):
+        """Valid JSON, wrong shape — HA's service data is an object."""
+        (success, message), _ = await self._post_with_config(service, {"service": "notify.x", "data": '["a"]'})
+
+        assert success is False
+        assert "JSON object" in message
+
+    @pytest.mark.asyncio
+    async def test_an_already_parsed_dict_is_accepted(self, service):
+        """The config round-trips as untyped JSON, so ``data`` can arrive as a
+        dict rather than a string depending on who wrote the row."""
+        (success, _), payload = await self._post_with_config(
+            service, {"service": "notify.x", "data": {"channel": "3D Printing"}}
+        )
+
+        assert success is True
+        assert payload["data"] == {"channel": "3D Printing"}
+
     @pytest.mark.asyncio
     async def test_send_homeassistant_no_db_no_env(self, service):
         """Verify HA provider fails gracefully without DB or env vars."""

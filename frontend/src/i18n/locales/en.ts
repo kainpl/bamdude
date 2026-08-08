@@ -6500,6 +6500,8 @@ export default {
     add: 'Add',
     nameRequired: 'Name is required',
     fieldRequired: '{{field}} is required',
+    haDataLabel: 'Data (JSON, optional)',
+    haDataInvalid: 'The Data field must be a valid JSON object, for example {"priority": "high", "ttl": 0}',
     // Config field labels
     // NotificationTemplateEditor
     editTemplate: 'Edit Template: {{name}}',

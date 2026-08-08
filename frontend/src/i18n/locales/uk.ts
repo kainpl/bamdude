@@ -6517,6 +6517,8 @@ export default {
     add: 'Додати',
     nameRequired: "Назва обов'язкова",
     fieldRequired: '{{field}} обов\'язкове',
+    haDataLabel: 'Дані (JSON, необов\'язково)',
+    haDataInvalid: 'Поле «Дані» має бути коректним JSON-об\'єктом, наприклад {"priority": "high", "ttl": 0}',
     // Config field labels
     // NotificationTemplateEditor
     editTemplate: 'Редагувати шаблон: {{name}}',
