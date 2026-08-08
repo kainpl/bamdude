@@ -44,6 +44,12 @@ All notable changes to BamDude will be documented in this file.
 
 ### Added
 
+- **Bark, for a notification that can wake you at three in the morning.** A new notification provider for [Bark](https://bark.day.app/), the free iOS push app that needs no account — install it, copy the device key it shows you, paste it in. Everything else is optional: point it at your own `bark-server` instead of the public relay, put BamDude's notifications in their own group, choose a sound.
+
+    The reason it is worth having next to ntfy and Pushover is the **interruption level**. Set it to **Critical** and iOS delivers the notification through Silent mode and through Focus — the print that stopped at 03:00 gets through, where every other channel waits politely until morning. **Time Sensitive** breaks through scheduled summaries without going that far, and **Passive** arrives with no sound at all, for the events you want recorded but not announced.
+
+    A self-hosted `bark-server` is subject to the same address rules as a self-hosted ntfy: on your own network is fine, anything that is not a real HTTP service is refused. And a `bark-server` that cannot deliver sometimes answers "OK" with the failure buried in the reply — BamDude reads the reply rather than trusting the "OK", so a bad device key is reported as a failure instead of showing as sent.
+
 - **An SSO provider can now be declared entirely in environment variables.** For installs managed by a compose file, Helm or GitOps, where clicking through Settings once is not part of the deployment. Set `BAMDUDE_OIDC_NAME`, `BAMDUDE_OIDC_ISSUER_URL`, `BAMDUDE_OIDC_CLIENT_ID` and `BAMDUDE_OIDC_CLIENT_SECRET` — all four, or nothing is applied — and the provider is created on startup and reapplied on every restart. The optional settings (scopes, auto-create, auto-link, email claim, icon, autologin, default group) have the same defaults they have in the UI. Everything is documented in `.env.example`.
 
     Because the variables are reapplied on every boot, that provider is shown in Settings as read-only and the app refuses to change it there — an edit would be accepted and then silently undone at the next restart, which is worse than being told no. **Removing the variables disables the provider rather than deleting it**, so accounts already linked to it keep their link and get it back if the variables return.

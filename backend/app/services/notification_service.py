@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 # and a more obvious bot signature for upstream WAFs (upstream Bambuddy #1534).
 _USER_AGENT = f"BamDude/{APP_VERSION} (+https://github.com/kainpl/bamdude)"
 
+# iOS interruption levels bark-server accepts. Anything else is dropped from the
+# payload rather than forwarded — see ``_send_bark``.
+_BARK_INTERRUPTION_LEVELS = frozenset({"active", "timeSensitive", "critical", "passive"})
+
 
 def _looks_like_cloudflare_challenge(response: httpx.Response) -> bool:
     """Return True if ``response`` looks like a Cloudflare mitigation interstitial
@@ -208,6 +212,8 @@ class NotificationService:
                 return await self._send_ntfy(config, title, message)
             elif provider_type == "pushover":
                 return await self._send_pushover(config, title, message)
+            elif provider_type == "bark":
+                return await self._send_bark(config, title, message)
             elif provider_type == "telegram":
                 return await self._send_telegram(config, f"*{title}*\n{message}")
             elif provider_type == "email":
@@ -388,6 +394,71 @@ class NotificationService:
                 return False, f"Pushover error: {', '.join(errors)}"
             except Exception:
                 return False, f"HTTP {response.status_code}: {response.text[:200]}"
+
+    async def _send_bark(self, config: dict, title: str, message: str) -> tuple[bool, str]:
+        """Send notification via Bark, the account-free iOS push service (upstream Bambuddy #1495).
+
+        POSTs JSON to ``{server}/push``. Defaults to the official ``api.day.app``
+        relay; pointing ``server`` at a self-hosted ``bark-server`` is the other
+        supported shape, which is why the URL goes through the LAN-service policy
+        rather than a blanket private-address block (same as ntfy).
+
+        The reason this provider earns its keep next to ntfy and Pushover is
+        ``level="critical"``: iOS delivers it through Silent mode and Focus, so a
+        printer that stops at 03:00 can actually wake somebody.
+        """
+        server = (config.get("server") or "https://api.day.app").strip().rstrip("/")
+        device_key = (config.get("device_key") or "").strip()
+
+        if not device_key:
+            return False, "Device key is required"
+
+        try:
+            assert_safe_lan_service_url(server, label="Bark server URL")
+        except ValueError as exc:
+            return False, str(exc)
+
+        payload: dict[str, Any] = {
+            "device_key": device_key,
+            "title": title,
+            "body": message,
+        }
+        group = (config.get("group") or "").strip()
+        if group:
+            payload["group"] = group
+        sound = (config.get("sound") or "").strip()
+        if sound:
+            payload["sound"] = sound
+        # An unrecognised level is dropped, not forwarded: bark-server rejects
+        # the whole push on an unknown value, so passing it through would trade
+        # a missing sound for a missing notification.
+        level = (config.get("level") or "").strip()
+        if level in _BARK_INTERRUPTION_LEVELS:
+            payload["level"] = level
+
+        client = await self._get_client()
+        response = await client.post(f"{server}/push", json=payload)
+
+        if response.status_code == 200:
+            # bark-server reports some failures inside an HTTP 200 body
+            # ({"code": 400, "message": ...}), so the status alone is not the
+            # outcome. A body that isn't JSON at all is left to the status.
+            try:
+                body = response.json()
+            except ValueError:
+                body = None
+            if isinstance(body, dict) and body.get("code") not in (200, None):
+                return False, f"Bark error {body.get('code')}: {str(body.get('message'))[:200]}"
+            return True, "Message sent successfully"
+        if _looks_like_cloudflare_challenge(response):
+            # A self-hosted bark-server behind a Cloudflare Tunnel hits exactly
+            # the same wall ntfy did (#1534) — say so instead of dumping HTML.
+            return False, (
+                f"HTTP {response.status_code} — the Bark server is behind a Cloudflare "
+                "challenge, which cannot be solved from a backend. Add a security-skip "
+                "rule for this hostname or front it with Cloudflare Access."
+            )
+        return False, f"HTTP {response.status_code}: {response.text[:200]}"
 
     async def _send_telegram_to_chats(
         self,
@@ -984,6 +1055,8 @@ class NotificationService:
                 return await self._send_ntfy(config, title, message, image_data=image_data, event_type=event_type)
             elif provider.provider_type == "pushover":
                 return await self._send_pushover(config, title, message, image_data=image_data)
+            elif provider.provider_type == "bark":
+                return await self._send_bark(config, title, message)
             elif provider.provider_type == "telegram":
                 return await self._send_telegram_to_chats(
                     config,

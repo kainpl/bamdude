@@ -13,6 +13,7 @@ class ProviderType(StrEnum):
     CALLMEBOT = "callmebot"
     NTFY = "ntfy"
     PUSHOVER = "pushover"
+    BARK = "bark"
     TELEGRAM = "telegram"
     EMAIL = "email"
     DISCORD = "discord"

@@ -13,7 +13,7 @@ interface AddNotificationModalProps {
   onClose: () => void;
 }
 
-const PROVIDER_VALUES: ProviderType[] = ['email', 'telegram', 'discord', 'ntfy', 'pushover', 'callmebot', 'webhook', 'homeassistant'];
+const PROVIDER_VALUES: ProviderType[] = ['email', 'telegram', 'discord', 'ntfy', 'pushover', 'bark', 'callmebot', 'webhook', 'homeassistant'];
 
 export function AddNotificationModal({ provider, onClose }: AddNotificationModalProps) {
   const { t } = useTranslation();
@@ -228,6 +228,20 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
             required: false,
             showIf: (cfg: Record<string, string>) => cfg.priority === '2',
           },
+        ];
+      case 'bark':
+        return [
+          { key: 'device_key', label: t('notifications.barkDeviceKey'), placeholder: 'Your Bark device key', type: 'text', required: true },
+          { key: 'server', label: 'Server URL', placeholder: 'https://api.day.app', type: 'text', required: false },
+          { key: 'group', label: t('notifications.barkGroup'), placeholder: 'BamDude', type: 'text', required: false },
+          { key: 'sound', label: t('notifications.barkSound'), placeholder: 'minuet', type: 'text', required: false },
+          { key: 'level', label: t('notifications.barkLevel'), type: 'select', required: false, options: [
+            { value: '', label: t('notifications.barkLevelDefault') },
+            { value: 'active', label: t('notifications.barkLevelActive') },
+            { value: 'timeSensitive', label: t('notifications.barkLevelTimeSensitive') },
+            { value: 'critical', label: t('notifications.barkLevelCritical') },
+            { value: 'passive', label: t('notifications.barkLevelPassive') },
+          ]},
         ];
       case 'telegram':
         return [
