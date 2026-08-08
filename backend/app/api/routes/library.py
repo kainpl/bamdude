@@ -16,7 +16,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse as FastAPIFileResponse
-from sqlalchemy import distinct, func, select
+from sqlalchemy import distinct, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -64,6 +64,7 @@ from backend.app.schemas.plate_objects import PlateObjectsResponse
 from backend.app.services.archive import ThreeMFParser
 from backend.app.services.library_helpers import (
     detect_file_type,
+    folder_activity_at,
     project_for_library_file,
     skip_objects_supported_from_metadata,
     sync_system_tags,
@@ -115,6 +116,23 @@ def _ensure_library_file_visible(
 def _project_refs(projects: list[Project]) -> list[ProjectRef]:
     """Map a list of Project ORM rows to lightweight ProjectRef DTOs."""
     return [ProjectRef(id=p.id, name=p.name, color=p.color) for p in projects]
+
+
+# A file's effective activity timestamp, in SQL (#2680). The Python-side twin of
+# this rule is ``library_helpers.folder_activity_at``; both must COALESCE the
+# same way or the folder tree and the file list disagree about the same file.
+_FILE_ACTIVITY = func.coalesce(LibraryFile.fs_modified_at, LibraryFile.updated_at)
+
+
+def _mtime_to_utc(st_mtime: float) -> datetime:
+    """An ``os.stat`` mtime as the naive-UTC datetime the DB columns hold.
+
+    ``st_mtime`` is epoch seconds in whatever the OS reports; every timestamp
+    column here is a naive ``DateTime`` written by ``func.now()``, which is UTC.
+    Storing a local-time or tz-aware value would sort correctly against itself
+    and wrongly against everything else in the same column.
+    """
+    return datetime.fromtimestamp(st_mtime, tz=timezone.utc).replace(tzinfo=None)
 
 
 async def _resolve_projects_for_assign(db: AsyncSession, project_ids: list[int]) -> list[Project]:
@@ -728,11 +746,10 @@ async def list_folders(
     file_counts = dict(file_counts_result.all())
 
     # Latest immediate-child file activity per folder (#1770). Sibling of the
-    # file_counts subquery — same WHERE clause, MAX(updated_at) instead of
-    # COUNT(id). Subfolder descent is not aggregated here; the frontend's
-    # "sort by recent activity" mode is satisfied by immediate-parent bubble.
+    # file_counts subquery — same WHERE clause, MAX() instead of COUNT(id).
+    # Descendants are folded in afterwards, over the linked tree (#2680).
     latest_file_activity_result = await db.execute(
-        select(LibraryFile.folder_id, func.max(LibraryFile.updated_at))
+        select(LibraryFile.folder_id, func.max(_FILE_ACTIVITY))
         .where(LibraryFile.folder_id.isnot(None), LibraryFile.deleted_at.is_(None))
         .group_by(LibraryFile.folder_id)
     )
@@ -743,8 +760,7 @@ async def list_folders(
     root_folders = []
 
     for folder, archive_name in rows:
-        latest_file = latest_file_activity.get(folder.id)
-        latest_activity_at = max(folder.updated_at, latest_file) if latest_file is not None else folder.updated_at
+        latest_activity_at = folder_activity_at(folder, latest_file_activity.get(folder.id))
         folder_item = FolderTreeItem(
             id=folder.id,
             name=folder.name,
@@ -768,6 +784,28 @@ async def list_folders(
             root_folders.append(folder_item)
         elif folder.parent_id in folder_map:
             folder_map[folder.parent_id].children.append(folder_item)
+
+    # Fold the whole subtree into each folder's activity (#2680). #1770 stopped
+    # at immediate children, which reads as "this folder has not been touched in
+    # months" for a parent whose files all live one level down — the normal shape
+    # of an imported model, and the normal shape of an external mount.
+    #
+    # Iterative post-order rather than recursion: an external folder is a
+    # user-supplied mount point, so its depth is whatever the filesystem says,
+    # and a scan of a deep tree must not depend on the interpreter's stack limit.
+    for root in root_folders:
+        stack: list[tuple[FolderTreeItem, bool]] = [(root, False)]
+        while stack:
+            node, children_done = stack.pop()
+            if not children_done:
+                stack.append((node, True))
+                stack.extend((child, False) for child in node.children)
+                continue
+            for child in node.children:
+                if child.latest_activity_at is None:
+                    continue
+                if node.latest_activity_at is None or child.latest_activity_at > node.latest_activity_at:
+                    node.latest_activity_at = child.latest_activity_at
 
     return root_folders
 
@@ -799,7 +837,7 @@ async def get_folders_by_project(
         agg_result = await db.execute(
             select(
                 func.count(LibraryFile.id),
-                func.max(LibraryFile.updated_at),
+                func.max(_FILE_ACTIVITY),
             ).where(
                 LibraryFile.folder_id == folder.id,
                 LibraryFile.deleted_at.is_(None),
@@ -807,7 +845,7 @@ async def get_folders_by_project(
         )
         file_count, latest_file = agg_result.one()
         file_count = file_count or 0
-        latest_activity_at = max(folder.updated_at, latest_file) if latest_file is not None else folder.updated_at
+        latest_activity_at = folder_activity_at(folder, latest_file)
 
         folders.append(
             FolderResponse(
@@ -858,7 +896,7 @@ async def get_folders_by_archive(
         agg_result = await db.execute(
             select(
                 func.count(LibraryFile.id),
-                func.max(LibraryFile.updated_at),
+                func.max(_FILE_ACTIVITY),
             ).where(
                 LibraryFile.folder_id == folder.id,
                 LibraryFile.deleted_at.is_(None),
@@ -866,7 +904,7 @@ async def get_folders_by_archive(
         )
         file_count, latest_file = agg_result.one()
         file_count = file_count or 0
-        latest_activity_at = max(folder.updated_at, latest_file) if latest_file is not None else folder.updated_at
+        latest_activity_at = folder_activity_at(folder, latest_file)
 
         folders.append(
             FolderResponse(
@@ -942,9 +980,9 @@ async def create_folder(
         external_readonly=folder.external_readonly,
         external_show_hidden=folder.external_show_hidden,
         file_count=0,
-        # New folder has no files yet — fall back to the folder's own
-        # updated_at so this matches the list-route semantics (#1770).
-        latest_activity_at=folder.updated_at,
+        # New folder has no files yet — the helper falls back to the folder's
+        # own timestamp, matching the list-route semantics (#1770).
+        latest_activity_at=folder_activity_at(folder),
         created_at=folder.created_at,
         updated_at=folder.updated_at,
     )
@@ -979,7 +1017,7 @@ async def get_folder(
     agg_result = await db.execute(
         select(
             func.count(LibraryFile.id),
-            func.max(LibraryFile.updated_at),
+            func.max(_FILE_ACTIVITY),
         ).where(
             LibraryFile.folder_id == folder_id,
             LibraryFile.deleted_at.is_(None),
@@ -987,7 +1025,7 @@ async def get_folder(
     )
     file_count, latest_file = agg_result.one()
     file_count = file_count or 0
-    latest_activity_at = max(folder.updated_at, latest_file) if latest_file is not None else folder.updated_at
+    latest_activity_at = folder_activity_at(folder, latest_file)
 
     return FolderResponse(
         id=folder.id,
@@ -1175,7 +1213,7 @@ async def update_folder(
     agg_result = await db.execute(
         select(
             func.count(LibraryFile.id),
-            func.max(LibraryFile.updated_at),
+            func.max(_FILE_ACTIVITY),
         ).where(
             LibraryFile.folder_id == folder_id,
             LibraryFile.deleted_at.is_(None),
@@ -1183,7 +1221,7 @@ async def update_folder(
     )
     file_count, latest_file = agg_result.one()
     file_count = file_count or 0
-    latest_activity_at = max(refreshed.updated_at, latest_file) if latest_file is not None else refreshed.updated_at
+    latest_activity_at = folder_activity_at(refreshed, latest_file)
 
     archive_name = None
     if refreshed.archive_id:
@@ -1460,9 +1498,9 @@ async def create_external_folder(
         external_readonly=folder.external_readonly,
         external_show_hidden=folder.external_show_hidden,
         file_count=0,
-        # Newly-created external folder hasn't been scanned yet — fall back
-        # to the folder's own updated_at (#1770).
-        latest_activity_at=folder.updated_at,
+        # Newly-created external folder hasn't been scanned yet, so there is no
+        # on-disk mtime either — the helper falls back to updated_at (#1770).
+        latest_activity_at=folder_activity_at(folder),
         created_at=folder.created_at,
         updated_at=folder.updated_at,
     )
@@ -1573,6 +1611,12 @@ async def scan_external_folder(
     added = 0
     removed = 0
     found_paths = set()
+    # Directory mtimes gathered during the walk (#2680), applied in one pass
+    # after it. Collected by id rather than written inline because the walk sees
+    # a path while the row it belongs to may have been created — or may already
+    # have existed — several statements earlier. Files need no such map: their
+    # rows are live ORM objects here, so the scan assigns straight to them.
+    folder_mtimes: dict[int, datetime] = {}
 
     for dirpath, dirnames, filenames in os.walk(ext_path):
         # Filter hidden directories unless configured
@@ -1611,6 +1655,13 @@ async def scan_external_folder(
                     all_folder_ids.add(new_folder.id)
                     current_parent_id = new_folder.id
             target_folder_id = folder_cache[current_path]
+
+        # The directory's own mtime (#2680). Recorded on every pass, not only
+        # when the row is created: a folder whose contents changed since the
+        # last scan has a new mtime, and that is the whole point of the column.
+        with contextlib.suppress(OSError):
+            folder_mtimes[target_folder_id] = _mtime_to_utc(os.stat(dirpath).st_mtime)
+
         for filename in filenames:
             # Skip hidden files unless configured
             if not folder.external_show_hidden and filename.startswith("."):
@@ -1638,14 +1689,25 @@ async def scan_external_folder(
             file_path_str = str(filepath)
             found_paths.add(file_path_str)
 
-            if file_path_str in existing_files:
-                continue  # Already tracked
-
-            # Get file info
+            # Stat BEFORE the already-tracked check (#2680). A re-scan has to
+            # refresh the mtime of files it already knows about — that is the
+            # normal case for a mount that was added once and edited since, and
+            # skipping straight to ``continue`` is why nothing ever recorded it.
             try:
                 stat = filepath.stat()
             except OSError:
                 continue
+            fs_modified_at = _mtime_to_utc(stat.st_mtime)
+
+            tracked = existing_files.get(file_path_str)
+            if tracked is not None:
+                # Assigned only when it actually moved. A no-op write would
+                # still fire ``onupdate`` and stamp ``updated_at`` on every row
+                # of every scan — re-creating the very tie this column exists to
+                # break, for anyone still falling back to it.
+                if tracked.fs_modified_at != fs_modified_at:
+                    tracked.fs_modified_at = fs_modified_at
+                continue  # Already tracked
 
             file_type = detect_file_type(filepath.name)
             # Sliced 3MFs (`.gcode.3mf`) collapse to file_type='gcode' but
@@ -1727,6 +1789,7 @@ async def scan_external_folder(
                 file_hash=None,  # Skip hashing external files for performance
                 thumbnail_path=thumbnail_path,
                 file_metadata=_without_print_name(file_metadata),
+                fs_modified_at=fs_modified_at,
             )
             db.add(db_file)
             # Flushed per row rather than once after the scan: the associations
@@ -1784,6 +1847,15 @@ async def scan_external_folder(
             if (child_count.scalar() or 0) > 0:
                 continue
             await db.delete(sub)
+
+    # Stamp the directories' on-disk mtimes (#2680). After the orphan cleanup so
+    # a folder deleted in the same pass isn't resurrected by an UPDATE — os.walk
+    # only visits directories that exist, so the two sets are disjoint in
+    # practice, but the ordering makes that independent of it staying true.
+    for stamped_folder_id, mtime in folder_mtimes.items():
+        await db.execute(
+            update(LibraryFolder).where(LibraryFolder.id == stamped_folder_id).values(fs_modified_at=mtime)
+        )
 
     await db.commit()
 
@@ -2015,6 +2087,7 @@ async def list_files(
                 created_by_id=f.created_by_id,
                 created_by_username=f.created_by.username if f.created_by else None,
                 created_at=f.created_at,
+                fs_modified_at=f.fs_modified_at,
                 print_name=print_name,
                 print_time_seconds=print_time,
                 filament_used_grams=filament_grams,
@@ -4437,6 +4510,7 @@ async def get_file(
         created_by_username=file.created_by.username if file.created_by else None,
         created_at=file.created_at,
         updated_at=file.updated_at,
+        fs_modified_at=file.fs_modified_at,
         print_name=print_name,
         print_time_seconds=print_time,
         filament_used_grams=filament_grams,

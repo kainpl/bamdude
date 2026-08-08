@@ -4063,6 +4063,9 @@ export default {
     externalPathHelp: 'Absolute path to the directory on the Docker host. Must be bind-mounted into the container.',
     readOnly: 'Read Only',
     readOnlyHelp: 'prevents uploads and deletions',
+    // Folder-name tooltip. "Activity", not "modified": the value is the newest
+    // thing anywhere in the folder's subtree, not the folder's own mtime.
+    lastActivity: 'Last activity',
     showHiddenFiles: 'Show hidden files (dotfiles)',
     externalFolder: 'External Folder',
     scanFolder: 'Scan',

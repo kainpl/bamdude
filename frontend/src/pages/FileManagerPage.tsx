@@ -75,7 +75,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDateTime, formatDuration, parseUTCDate, type TimeFormat, type DateFormat } from '../utils/date';
-import { formatFileSize } from '../utils/file';
+import { fileActivityAt, formatFileSize } from '../utils/file';
 import { FileTagBadges } from '../components/FileTagBadges';
 import { PlateObjectsPreviewModal } from '../components/PlateObjectsPreviewModal';
 import { SkipObjectsIcon } from '../components/SkipObjectsModal';
@@ -729,15 +729,25 @@ interface FolderTreeItemProps {
   defaultExpanded?: boolean;
   hasPermission: (permission: Permission) => boolean;
   t: TFunction;
+  timeFormat: TimeFormat;
+  dateFormat: DateFormat;
 }
 
-function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, onRename, depth = 0, wrapNames = false, defaultExpanded = true, hasPermission, t }: FolderTreeItemProps) {
+function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, onRename, depth = 0, wrapNames = false, defaultExpanded = true, hasPermission, t, timeFormat, dateFormat }: FolderTreeItemProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [showActions, setShowActions] = useState(false);
   const hasChildren = folder.children.length > 0;
   // m044: M2M projects + optional single archive.
   const isLinked = folder.projects.length > 0 || folder.archive_id != null;
   const isExternal = folder.is_external;
+  // The row has no room for a date column — the order icon → name → lock →
+  // link → count → menu is deliberate and keeps every row's right edge aligned.
+  // So the sort key lives in the name's tooltip, where it explains why a folder
+  // sits where it does under "sort by activity" (#2680). Omitted entirely when
+  // the server sent nothing rather than shown as an empty line.
+  const nameTitle = folder.latest_activity_at
+    ? `${folder.name}\n${t('fileManager.lastActivity')}: ${formatDateTime(folder.latest_activity_at, timeFormat, dateFormat)}`
+    : folder.name;
 
   return (
     <div>
@@ -768,7 +778,7 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
         ) : (
           <FolderOpen className="w-4 h-4 text-bambu-green flex-shrink-0" />
         )}
-        <span className={`text-sm flex-1 min-w-0 ${wrapNames ? 'break-all' : 'truncate'}`} title={folder.name}>{folder.name}</span>
+        <span className={`text-sm flex-1 min-w-0 ${wrapNames ? 'break-all' : 'truncate'}`} title={nameTitle}>{folder.name}</span>
         {/* Read-only indicator for external folders — non-interactive
             metadata, kept adjacent to the name. */}
         {isExternal && folder.external_readonly && (
@@ -883,6 +893,8 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
               defaultExpanded={defaultExpanded}
               hasPermission={hasPermission}
               t={t}
+              timeFormat={timeFormat}
+              dateFormat={dateFormat}
             />
           ))}
         </div>
@@ -1355,7 +1367,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
           </div>
         )}
         <div className="mt-1 text-xs text-bambu-gray truncate">
-          {formatDateTime(file.created_at, timeFormat, dateFormat)}
+          {formatDateTime(fileActivityAt(file), timeFormat, dateFormat)}
         </div>
         {authEnabled && file.created_by_username && (
           <div className="mt-0.5 text-xs text-bambu-gray flex items-center gap-1">
@@ -1971,7 +1983,9 @@ export function FileManagerPage() {
           comparison = (a.print_name || a.filename).localeCompare(b.print_name || b.filename);
           break;
         case 'date':
-          comparison = (parseUTCDate(a.created_at)?.getTime() ?? 0) - (parseUTCDate(b.created_at)?.getTime() ?? 0);
+          // Same source as the rendered date — see fileActivityAt (#2680).
+          comparison =
+            (parseUTCDate(fileActivityAt(a))?.getTime() ?? 0) - (parseUTCDate(fileActivityAt(b))?.getTime() ?? 0);
           break;
         case 'size':
           comparison = a.file_size - b.file_size;
@@ -2740,6 +2754,8 @@ export function FileManagerPage() {
                 defaultExpanded={!collapseFoldersByDefault}
                 hasPermission={hasPermission}
                 t={t}
+                timeFormat={timeFormat}
+                dateFormat={dateFormat}
               />
             ))}
           </div>
@@ -3385,7 +3401,7 @@ export function FileManagerPage() {
                         Archives list. */}
                     <div className="text-sm text-bambu-gray text-right">{formatFileSize(file.file_size)}</div>
                     {/* Date */}
-                    <div className="text-sm text-bambu-gray truncate">{formatDateTime(file.created_at, timeFormat, dateFormat)}</div>
+                    <div className="text-sm text-bambu-gray truncate">{formatDateTime(fileActivityAt(file), timeFormat, dateFormat)}</div>
                     {/* Actions — right-aligned within the column. When more
                         buttons appear (e.g. swap-mode adds Layers + Box for
                         a sliced .gcode.3mf), the row grows to the LEFT

@@ -31,6 +31,13 @@ class LibraryFolder(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
+    # Real on-disk mtime for external (mapped/NAS) folders, refreshed on every
+    # scan. Nullable on purpose: internal folders have no disk directory of
+    # their own, and external rows scanned before this column existed backfill
+    # on the next scan. Readers must COALESCE onto ``updated_at`` so both cases
+    # still contribute a sort key (#2680).
+    fs_modified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     # Relationships
     parent: Mapped["LibraryFolder | None"] = relationship(
         "LibraryFolder",
@@ -129,6 +136,14 @@ class LibraryFile(Base):
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    # Real on-disk mtime, recorded by the external scan and refreshed on every
+    # re-scan. This is the whole point of #2680: a bulk external scan stamps the
+    # *same* ``updated_at`` on every row it touches, so sorting by it ties across
+    # the whole batch and orders arbitrarily — nothing captured when the file was
+    # actually written. Nullable so internal uploads and pre-column rows keep
+    # working; readers COALESCE onto ``updated_at``.
+    fs_modified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Soft-delete / trash bin (#1008). When non-null, the file is in the
     # trash and should not appear in normal listings. A background sweeper

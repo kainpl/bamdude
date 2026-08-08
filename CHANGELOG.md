@@ -42,6 +42,10 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **Sorting a mapped folder by date now puts the newest file first.** Files on a NAS or USB folder came out in an order that had nothing to do with their dates, because BamDude was sorting on the moment it discovered them — and a scan discovers a whole folder in the same instant, so every file in it carried the same timestamp and the order was down to chance. It now reads each file's real date from disk, shows that date in the list, and refreshes it on every scan, so a file edited on the share moves to the top the next time you scan.
+
+    Folders in the tree keep pace too. A folder's date is now the newest thing anywhere inside it, however deep — previously it only looked one level down, so a folder whose models all sit in sub-folders looked untouched for months and sorted to the bottom. Hover a folder name to see the date it is sorted by.
+
 - **Queueing several files at once now works.** Adding files to a queue from the library was wired to a route that could not create a queue entry at all — it reported a failure for every file, and had no button anywhere in the interface to call it, which is how it went unnoticed.
 
     Select any number of sliced files and press **Schedule** — the usual scheduling window opens for the first of them, marked `1/3`, then for the next one, and so on. Each file gets the full set of choices it always had: a printer or several, the auto-queue, which plates, filament mapping, print options, quantity and when to start. Close the window at any point and the run stops there; whatever you did not get to stays selected, so it is clear what is left.

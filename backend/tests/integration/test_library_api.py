@@ -161,6 +161,85 @@ class TestLibraryFoldersAPI:
         # latest_activity_at == folder.updated_at when there are no files
         assert item["latest_activity_at"] is not None
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_folder_activity_bubbles_from_a_grandchild_not_just_a_child(
+        self, async_client: AsyncClient, folder_factory, db_session
+    ):
+        """#2680: activity folds in the whole subtree, not one level.
+
+        #1770 aggregated immediate children only, so a parent whose files all
+        live two levels down reported its own stale ``updated_at`` and sorted as
+        untouched. That is the normal shape of an imported model and of an
+        external mount, which is why it read as "the date sort is broken".
+        """
+        from datetime import datetime, timedelta
+
+        from backend.app.models.library import LibraryFile
+
+        root = await folder_factory(name="Root")
+        mid = await folder_factory(name="Mid", parent_id=root.id)
+        leaf = await folder_factory(name="Leaf", parent_id=mid.id)
+
+        future = datetime.utcnow() + timedelta(hours=24)
+        db_session.add(
+            LibraryFile(
+                folder_id=leaf.id,
+                filename="deep.3mf",
+                file_path="library/deep.3mf",
+                file_type="3mf",
+                file_size=1,
+                updated_at=future,
+            )
+        )
+        await db_session.commit()
+
+        items = (await async_client.get("/api/v1/library/folders")).json()
+        assert len(items) == 1  # only Root is top-level
+        root_item = items[0]
+        assert root_item["name"] == "Root"
+        # The grandchild's file is two levels below Root and must still surface.
+        assert root_item["latest_activity_at"] >= future.isoformat()
+        # ...and every level in between reports it too.
+        mid_item = root_item["children"][0]
+        assert mid_item["latest_activity_at"] >= future.isoformat()
+        assert mid_item["children"][0]["latest_activity_at"] >= future.isoformat()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_folder_activity_prefers_the_on_disk_mtime(
+        self, async_client: AsyncClient, folder_factory, db_session
+    ):
+        """#2680: ``fs_modified_at`` outranks ``updated_at`` on both row types.
+
+        An external scan stamps one identical ``updated_at`` across every row it
+        touches, so that column cannot order a scanned tree at all. m129 records
+        the real mtime; COALESCE has to prefer it even when it is OLDER, which is
+        the case this asserts — an ``updated_at`` of "now" would otherwise mask
+        a file that has genuinely not been touched since last year.
+        """
+        from datetime import datetime, timedelta
+
+        from backend.app.models.library import LibraryFile
+
+        past = datetime.utcnow() - timedelta(days=365)
+        folder = await folder_factory(name="Mount", fs_modified_at=past)
+        db_session.add(
+            LibraryFile(
+                folder_id=folder.id,
+                filename="old.3mf",
+                file_path="/mnt/nas/old.3mf",
+                file_type="3mf",
+                file_size=1,
+                is_external=True,
+                fs_modified_at=past,
+            )
+        )
+        await db_session.commit()
+
+        items = (await async_client.get("/api/v1/library/folders")).json()
+        assert items[0]["latest_activity_at"][:10] == past.date().isoformat()
+
 
 class TestLibraryFilesAPI:
     """Integration tests for library files endpoints."""

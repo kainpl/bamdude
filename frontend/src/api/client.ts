@@ -8388,8 +8388,10 @@ export interface LibraryFolderTree {
   external_path: string | null;
   external_readonly: boolean;
   file_count: number;
-  // #1770: max(folder.updated_at, newest immediate-child file.updated_at).
-  // Drives the folder tree's "sort by recent activity" mode.
+  // #1770 + #2680: the folder's own timestamp (real on-disk mtime when the
+  // external scan recorded one) against the newest activity anywhere in its
+  // subtree — not just among immediate children. Drives the folder tree's
+  // "sort by recent activity" mode.
   latest_activity_at: string | null;
   children: LibraryFolderTree[];
 }
@@ -8558,6 +8560,8 @@ export interface LibraryFile {
   created_by_username: string | null;
   created_at: string;
   updated_at: string;
+  // See LibraryFileListItem.fs_modified_at — m129 / #2680.
+  fs_modified_at: string | null;
   // Metadata fields
   print_name: string | null;
   print_time_seconds: number | null;
@@ -8593,6 +8597,10 @@ export interface LibraryFileListItem {
   created_by_id: number | null;
   created_by_username: string | null;
   created_at: string;
+  // Real on-disk mtime, external files only (m129 / #2680). NULL for uploads,
+  // where ``created_at`` already IS when the file arrived. Read it through
+  // ``fileActivityAt`` — never on its own, or an internal file loses its date.
+  fs_modified_at: string | null;
   print_name: string | null;
   print_time_seconds: number | null;
   filament_used_grams: number | null;

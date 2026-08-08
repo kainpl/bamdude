@@ -12,6 +12,7 @@ hardcoded ``"gcode"`` in slicer-output).
 from __future__ import annotations
 
 import os
+from datetime import datetime
 
 _SLICED_3MF_SUFFIX = ".gcode.3mf"
 
@@ -218,6 +219,31 @@ def skip_objects_supported_from_metadata(file_metadata: dict | None) -> bool:
     """
     meta = file_metadata or {}
     return bool(meta.get("gcode_label_objects")) and bool(meta.get("exclude_object"))
+
+
+def folder_activity_at(folder, latest_file_activity: datetime | None = None) -> datetime:
+    """When a folder was last meaningfully touched — the folder-sort key (#1770, #2680).
+
+    Two sources, newest wins: the folder's own timestamp and the newest activity
+    among the files it contains. The folder's own timestamp prefers the real
+    on-disk mtime (``fs_modified_at``, written by the external scan) and falls
+    back to ``updated_at``, which is all we have for internal folders and for
+    external ones not yet re-scanned since m129.
+
+    Lives here rather than inline for the reason the rest of this module does:
+    seven routes in ``routes/library.py`` answered this question with seven
+    copies of the same expression, and adding the on-disk source to six of them
+    would have been the kind of half-fix this cycle has already paid for twice.
+
+    Takes ``latest_file_activity`` rather than querying: the callers differ in
+    how they get it (one grouped aggregate for the whole tree, a scalar
+    aggregate for a single folder, and nothing at all for a folder that was
+    just created), and passing it in is what lets all three share the rule.
+    """
+    own = folder.fs_modified_at or folder.updated_at
+    if latest_file_activity is None:
+        return own
+    return max(own, latest_file_activity)
 
 
 def project_for_library_file(explicit: int | None, library_file) -> int | None:

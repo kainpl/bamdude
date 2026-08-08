@@ -214,6 +214,60 @@ class TestExternalFolderScan:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_scan_records_each_files_real_mtime(
+        self, async_client: AsyncClient, db_session, external_folder, external_dir
+    ):
+        """#2680: the scan stamps the on-disk mtime, distinct per file.
+
+        The bug this closes is not that the value was wrong but that there was
+        none: every discovered row got the scan instant as its ``created_at``,
+        so an external folder sorted by date was sorting on a tie and came out
+        in whatever order the walk happened to produce.
+        """
+        import os
+
+        # Distinct, well-separated mtimes so a tie is unmistakable in the result.
+        os.utime(external_dir / "benchy.3mf", (1_600_000_000, 1_600_000_000))
+        os.utime(external_dir / "bracket.stl", (1_700_000_000, 1_700_000_000))
+
+        await async_client.post(f"/api/v1/library/folders/{external_folder['id']}/scan")
+
+        files = (await async_client.get(f"/api/v1/library/files?folder_id={external_folder['id']}")).json()
+        by_name = {f["filename"]: f for f in files}
+        assert by_name["benchy.3mf"]["fs_modified_at"] is not None
+        assert by_name["bracket.stl"]["fs_modified_at"] is not None
+        assert by_name["benchy.3mf"]["fs_modified_at"] < by_name["bracket.stl"]["fs_modified_at"]
+        # 1_600_000_000 is 2020-09-13 UTC — asserted so a local-time conversion,
+        # which would still order correctly, cannot pass unnoticed.
+        assert by_name["benchy.3mf"]["fs_modified_at"].startswith("2020-09-13")
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_rescan_refreshes_the_mtime_of_a_file_it_already_knows(
+        self, async_client: AsyncClient, db_session, external_folder, external_dir
+    ):
+        """#2680: a file edited on disk gets its new mtime on the next scan.
+
+        The already-tracked branch used to ``continue`` before the ``stat`` call,
+        so nothing about a known file was ever re-read. Recording the mtime only
+        at discovery would have left every mount frozen at its import date —
+        correct on the day it was added and progressively wrong afterwards.
+        """
+        import os
+
+        os.utime(external_dir / "benchy.3mf", (1_600_000_000, 1_600_000_000))
+        await async_client.post(f"/api/v1/library/folders/{external_folder['id']}/scan")
+
+        os.utime(external_dir / "benchy.3mf", (1_800_000_000, 1_800_000_000))
+        second = await async_client.post(f"/api/v1/library/folders/{external_folder['id']}/scan")
+        assert second.json()["added"] == 0  # nothing new — this is a refresh
+
+        files = (await async_client.get(f"/api/v1/library/files?folder_id={external_folder['id']}")).json()
+        benchy = next(f for f in files if f["filename"] == "benchy.3mf")
+        assert benchy["fs_modified_at"].startswith("2027-01-15")  # 1_800_000_000 UTC
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_scan_removes_deleted_files(
         self, async_client: AsyncClient, db_session, external_folder, external_dir
     ):

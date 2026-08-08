@@ -194,6 +194,8 @@ class FileResponse(BaseModel):
 
     created_at: datetime
     updated_at: datetime
+    # See FileListResponse.fs_modified_at — m129 / #2680.
+    fs_modified_at: datetime | None = None
 
     # Metadata fields
     print_name: str | None = None
@@ -294,6 +296,12 @@ class FileListResponse(BaseModel):
     created_by_id: int | None = None
     created_by_username: str | None = None
     created_at: datetime
+    # Real on-disk mtime, external files only (m129 / #2680). NULL for uploads,
+    # where ``created_at`` already IS the moment the file arrived. The list
+    # renders and sorts on ``fs_modified_at ?? created_at``: a bulk external
+    # scan stamps one identical ``created_at`` across the whole batch, so
+    # sorting an external folder by date without this is sorting on a tie.
+    fs_modified_at: datetime | None = None
 
     # Key metadata fields for display
     print_name: str | None = None
