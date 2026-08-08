@@ -68,6 +68,8 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **A finished slice is announced once, not a dozen times.** Slicing a large project keeps the backend busy for seconds at a time, and BamDude kept asking for the job's status on a fixed timer without waiting for the previous answer. The requests queued up behind the busy backend, all came back at the same moment, and each one announced the same slice — one long slice could end in a stack of a dozen identical "Sliced …" notifications. Only one status check now runs at a time, which also stops BamDude piling requests onto a backend that is already saturated, and a finished job is recorded as finished exactly once.
+
 - **When a printer refuses every command, BamDude now says so instead of looking healthy.** Some firmware (P1 series, 01.08.03 and later) can end up rejecting control commands it cannot verify. Queries still answer, so the printer shows as connected and idle — while prints, temperature changes and filament loads are all silently dropped. Uploads appeared to succeed, the printer echoed the job back, and then nothing happened, over and over.
 
     The printer was reporting the reason the whole time — HMS `0500-0500-0001-0007`, "MQTT command verification failed" — and BamDude was throwing it away. The code's meaning lives in the half of it that the short four-digit form discards, so it arrived, matched nothing, and was filtered out as noise. It is now recognised, shown with the same four-group code the printer's own screen displays, and carries the fix that actually applies: enable Developer Mode on the printer and restart it. (Bambu's own advice for this code is to update Bambu Studio or Handy, which is no help for a print sent from BamDude.)
