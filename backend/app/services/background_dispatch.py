@@ -46,6 +46,40 @@ logger = logging.getLogger(__name__)
 # print_scheduler.py — kept duplicated to avoid coupling the two services.
 _ACTIVE_PRINT_STATES: frozenset[str] = frozenset({"PREPARE", "SLICING", "RUNNING", "PAUSE"})
 
+# The same code the printer's own screen shows, grouped the way it shows it.
+_HMS_VERIFY_FAILED_DISPLAY = "0500-0500-0001-0007"
+
+
+class PrintCommandRejectedError(RuntimeError):
+    """The printer refused the command outright — waiting will not help.
+
+    Distinguished from the ordinary "did not acknowledge" timeout because the
+    remedies are opposite. A timeout might come good on a retry; a printer
+    reporting ``HMS_MQTT_VERIFY_FAILED`` will refuse this job and every other
+    one until Developer Mode is enabled and the printer restarted, so spending
+    the rest of the dispatch window and two more 3MF uploads only burns an
+    upload slot the rest of the farm is queued behind (#2732).
+
+    A ``RuntimeError`` subclass on purpose: both dispatch paths already raise
+    ``RuntimeError`` here, so the failure is handled exactly as before — only
+    the message a user reads changes.
+    """
+
+
+def _mqtt_commands_rejected(status) -> bool:
+    """True when the printer is currently reporting that it refused a command.
+
+    Tolerates a missing status and errors carrying no ``full_code`` (the 8-char
+    ``print_error`` path builds :class:`HMSError` differently), so this is safe
+    to call on every watchdog poll.
+    """
+    from backend.app.services.bambu_mqtt import HMS_MQTT_VERIFY_FAILED
+
+    for err in getattr(status, "hms_errors", None) or []:
+        if getattr(err, "full_code", "") == HMS_MQTT_VERIFY_FAILED:
+            return True
+    return False
+
 
 async def _apply_calibrations_for_print(
     db,
@@ -1984,6 +2018,16 @@ class BackgroundDispatchService:
                 # landed" and the dispatch job would be marked successful even
                 # though no print is running. Upstream #1370 / commit 5680f5d3.
                 return True
+            # Checked only AFTER the active-state exit above: a stale HMS left
+            # over from an earlier job must never abort a print that is visibly
+            # running. An actually-refused command leaves the printer idle, so
+            # this ordering costs the detection nothing (#2732).
+            if _mqtt_commands_rejected(state):
+                raise PrintCommandRejectedError(
+                    "The printer rejected the print command: MQTT command verification failed "
+                    f"(HMS {_HMS_VERIFY_FAILED_DISPLAY}). Enable Developer Mode on the printer, "
+                    "restart it, then start the job again."
+                )
             if (
                 not phase_a_reached
                 and pre_subtask_id is not None

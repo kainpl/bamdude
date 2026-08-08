@@ -358,6 +358,19 @@ _HMS_USER_ACTION_CODES: frozenset[str] = frozenset(
     }
 )
 
+# "MQTT command verification failed" — the printer's authorization check
+# refusing a control command it could not verify (firmware >= 01.08.03.00beta /
+# 01.08.05.00). Queries (get_version, extrusion_cali_get, pushall) still answer,
+# so the connection looks perfectly healthy while project_file, gcode_line and
+# ams_change_filament are all silently dropped — which is exactly how it
+# presents: the upload succeeds, the printer echoes our subtask_id, then it sits
+# at IDLE forever (upstream Bambuddy #2732).
+#
+# The 16-char form is load-bearing. This code's meaning lives in ``attr``'s low
+# half (0500) and ``code``'s high half (0001); the MMMM_EEEE short code collapses
+# it to "0500_0007", which matches nothing in any catalog.
+HMS_MQTT_VERIFY_FAILED: str = "0500050000010007"
+
 
 @dataclass
 class KProfile:
@@ -1119,6 +1132,13 @@ class BambuMQTTClient:
         self._dev_mode_probe_seq: str | None = None
         self._dev_mode_probe_time: float = 0.0
         self._dev_mode_probe_failures: int = 0
+        # True while developer_mode=False came from HMS_MQTT_VERIFY_FAILED rather
+        # than from the probe. The HMS is a latch, not a level: the printer keeps
+        # reporting it until the fault clears, so when a later hms[] arrives
+        # without it (user enabled Developer Mode and restarted) we drop back to
+        # "unknown" and let the probe re-run, instead of leaving a permanently
+        # wrong False behind (#2732).
+        self._dev_mode_from_hms: bool = False
         self._connect_time: float = 0.0
 
         # Set when check_staleness() force-closes the socket to trigger reconnect.
@@ -1222,7 +1242,19 @@ class BambuMQTTClient:
             # regardless, but the printer publishes to device/<real-serial>/
             # report, which is case-sensitive. Surface that once so the user
             # has something actionable instead of an endless reconnect loop.
-            if self._report_messages_since_connect == 0 and not self._zero_report_hint_logged:
+            # Only meaningful once the *current* session has had time to receive
+            # something. ``_report_messages_since_connect`` is reset by
+            # ``_on_connect``, so a reconnect landing microseconds before this
+            # check leaves it at 0 for reasons that have nothing to do with the
+            # serial — which is how a healthy printer gets told to go check its
+            # serial number 1 ms after reconnecting (#2732). Requiring
+            # STALE_TIMEOUT of silence on this session means the hint fires only
+            # when the printer really has published nothing to the topic we
+            # subscribed to. A ``_connect_time`` of 0 means we have no timestamp
+            # to judge by (never went through ``_on_connect``); fall back to the
+            # old unconditional behaviour rather than swallowing the hint.
+            session_too_young = self._connect_time > 0 and (time.monotonic() - self._connect_time) < self.STALE_TIMEOUT
+            if self._report_messages_since_connect == 0 and not session_too_young and not self._zero_report_hint_logged:
                 self._zero_report_hint_logged = True
                 logger.warning(
                     "[%s] Connected and subscribed, but the printer has sent zero "
@@ -1347,6 +1379,9 @@ class BambuMQTTClient:
             self._dev_mode_probe_time = 0.0
             self._dev_mode_probe_failures = 0
             self._connect_time = time.monotonic()
+            # NOT reset: _dev_mode_from_hms. The HMS is a property of the printer,
+            # not of our session — it survives a reconnect and is cleared only by
+            # the printer no longer reporting it (see _apply_mqtt_verify_state).
             self._report_messages_since_connect = 0
             # Reset zombie session detection — fresh session means no commands pending
             self._last_ams_cmd_time = 0.0
@@ -4096,6 +4131,10 @@ class BambuMQTTClient:
             hms_list = data["hms"]
             logger.debug("[%s] HMS data received: %s", self.serial_number, hms_list)
             self.state.hms_errors = []
+            # Reconciled against the whole list once it is rebuilt, below: a
+            # verdict on "is the printer refusing our commands" has to be drawn
+            # from the absence of the code as much as from its presence.
+            verify_failed = False
             if isinstance(hms_list, list):
                 for hms in hms_list:
                     if isinstance(hms, dict):
@@ -4130,6 +4169,8 @@ class BambuMQTTClient:
                         # 32 bits of attr_low + code_high that short_code discards — that's
                         # the firmware's matching key, so try it first and fall back.
                         full_code = f"{attr:08X}{code:08X}"
+                        if full_code == HMS_MQTT_VERIFY_FAILED:
+                            verify_failed = True
                         actions = get_actions_for_error_code(self.serial_number[:3], full_code)
                         if not actions:
                             actions = get_actions_for_error_code(self.serial_number[:3], short_code.replace("_", ""))
@@ -4144,6 +4185,7 @@ class BambuMQTTClient:
                                 full_code=full_code,
                             )
                         )
+            self._apply_mqtt_verify_state(verify_failed)
 
         # Parse print_error - this is a different error format than HMS
         # print_error is a 32-bit integer where:
@@ -4874,7 +4916,15 @@ class BambuMQTTClient:
         self._client.publish(self.topic_publish, json.dumps(command), qos=1)
 
     def _handle_dev_mode_probe_response(self, data: dict):
-        """Handle response to the developer mode probe command."""
+        """Handle response to the developer mode probe command.
+
+        **Three outcomes, not two** (upstream Bambuddy #2732). Reading "anything
+        that is not an explicit refusal" as confirmation is what put
+        ``developer_mode: pass`` in the support bundle of a printer that had not
+        accepted a command all day: this firmware answers the probe with an empty
+        result while refusing everything else. An answer we cannot interpret
+        leaves the flag at ``None``, and the diagnostic reports ``skip``.
+        """
         self._dev_mode_probe_seq = None
         self._dev_mode_probe_failures = 0
         result = data.get("result", "")
@@ -4882,13 +4932,66 @@ class BambuMQTTClient:
 
         if result == "failed" and "verify failed" in reason:
             self.state.developer_mode = False
+            self._dev_mode_from_hms = False
             logger.info("[%s] Developer mode probe: DISABLED (reason=%r)", self.serial_number, reason)
-        else:
+        elif result == "success":
             self.state.developer_mode = True
+            self._dev_mode_from_hms = False
             logger.info("[%s] Developer mode probe: ENABLED (result=%r)", self.serial_number, result)
+        else:
+            logger.info(
+                "[%s] Developer mode probe: UNKNOWN — the printer answered without saying either way "
+                "(result=%r, reason=%r). Leaving it undetermined rather than inferring a pass.",
+                self.serial_number,
+                result,
+                reason,
+            )
+            return
 
         if self.on_state_change:
             self.on_state_change(self.state)
+
+    def _apply_mqtt_verify_state(self, verify_failed: bool) -> None:
+        """Reconcile ``developer_mode`` with the printer's own verdict on our commands.
+
+        :data:`HMS_MQTT_VERIFY_FAILED` is the only *direct* evidence we ever get
+        that control commands are being refused, so it outranks the probe in both
+        directions:
+
+        * **present** → ``developer_mode`` is definitively False, whatever the
+          probe concluded. The probe can only read the response to its own
+          ``ams_filament_setting``; on P1 firmware a refusal is reported here
+          instead, so the probe answers ENABLED while every print silently dies.
+        * **gone again** → drop the HMS-derived False back to unknown and re-arm
+          the probe, so a user who enables Developer Mode and restarts the
+          printer is not stuck behind a verdict nothing would ever revisit.
+
+        A False that came from the probe itself is left alone — this only ever
+        unwinds its own latch.
+        """
+        if verify_failed:
+            if not self._dev_mode_from_hms:
+                logger.warning(
+                    "[%s] Printer reported HMS %s (MQTT command verification failed): it is "
+                    "rejecting control commands, so prints, temperature changes and filament "
+                    "loads will be ignored. Enable Developer Mode on the printer and restart it.",
+                    self.serial_number,
+                    HMS_MQTT_VERIFY_FAILED,
+                )
+            self._dev_mode_from_hms = True
+            self.state.developer_mode = False
+            return
+
+        if self._dev_mode_from_hms:
+            logger.info(
+                "[%s] HMS %s cleared — developer mode is undetermined again, re-probing.",
+                self.serial_number,
+                HMS_MQTT_VERIFY_FAILED,
+            )
+            self._dev_mode_from_hms = False
+            self.state.developer_mode = None
+            self._dev_mode_probed = False
+            self._dev_mode_needs_probe = True
 
     def _request_push_all(self):
         """Request full status update from printer."""

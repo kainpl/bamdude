@@ -6,7 +6,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
-import { HMSErrorModal } from '../../components/HMSErrorModal';
+import { HMSErrorModal, filterKnownHMSErrors } from '../../components/HMSErrorModal';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
 import type { HMSError, Permission } from '../../api/client';
@@ -237,6 +237,56 @@ describe('HMSErrorModal', () => {
 
       fireEvent.keyDown(window, { key: 'Escape' });
       expect(onClose).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  /**
+   * "MQTT command verification failed" — the printer refusing every control
+   * command and saying so. Its meaning lives in attr's low half (0500) and
+   * code's high half (0001), both discarded by the MMMM_EEEE short form, which
+   * collapses it to a useless "0500_0007". That is why it was received and then
+   * dropped: uncataloged, no actions, filtered out — so the one message that
+   * explained why nothing printed was the one message hidden (#2732).
+   */
+  describe('an error only its full code can express', () => {
+    const verifyFailed: HMSError = {
+      attr: 0x05000500,
+      code: '0x00010007',
+      module: 0,
+      severity: 1,
+      full_code: '0500050000010007',
+    };
+
+    it('survives the filter that drops uncataloged action-less errors', () => {
+      expect(filterKnownHMSErrors([verifyFailed])).toHaveLength(1);
+    });
+
+    it('the short code alone still matches nothing', () => {
+      // Guards the reason this needed a full-code lookup at all: if someone
+      // "simplifies" it back to the short form, this is what they get.
+      const shortOnly: HMSError = { ...verifyFailed, full_code: undefined };
+      expect(filterKnownHMSErrors([shortOnly])).toHaveLength(0);
+    });
+
+    it('shows the explanation and our own remedy, not Bambu\'s', () => {
+      render(<HMSErrorModal {...defaultProps} errors={[verifyFailed]} />);
+
+      expect(screen.getByText(/could not verify it/i)).toBeInTheDocument();
+      // Bambu's wiki says to update Studio or Handy, which is no help to
+      // someone printing from BamDude.
+      expect(screen.getByText(/Developer Mode/i)).toBeInTheDocument();
+    });
+
+    it('shows the four-group code the printer itself displays', () => {
+      render(<HMSErrorModal {...defaultProps} errors={[verifyFailed]} />);
+
+      expect(screen.getByText('[0500-0500-0001-0007]')).toBeInTheDocument();
+    });
+
+    it('leaves ordinary short-coded errors on their short form', () => {
+      render(<HMSErrorModal {...defaultProps} errors={[knownError]} />);
+
+      expect(screen.getByText('[0300-400C]')).toBeInTheDocument();
     });
   });
 });

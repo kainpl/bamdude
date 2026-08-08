@@ -2731,6 +2731,8 @@ export default {
     noErrors: 'No errors',
     viewOnWiki: 'View on Bambu Lab Wiki',
     unknownCode: 'Unknown HMS code — see the Bambu Lab wiki for details.',
+    mqttVerifyFailedRemedy:
+      'To fix: enable Developer Mode (LAN Mode) on the printer, then restart the printer. Bambu Lab\'s own advice for this code — update Bambu Studio or Handy — does not apply to a print sent from BamDude.',
     clearInstructions: 'Clear errors on the printer to dismiss them here.',
     clearErrors: 'Clear Errors',
     clearSuccess: 'HMS errors cleared',

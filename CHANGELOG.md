@@ -68,6 +68,12 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **When a printer refuses every command, BamDude now says so instead of looking healthy.** Some firmware (P1 series, 01.08.03 and later) can end up rejecting control commands it cannot verify. Queries still answer, so the printer shows as connected and idle — while prints, temperature changes and filament loads are all silently dropped. Uploads appeared to succeed, the printer echoed the job back, and then nothing happened, over and over.
+
+    The printer was reporting the reason the whole time — HMS `0500-0500-0001-0007`, "MQTT command verification failed" — and BamDude was throwing it away. The code's meaning lives in the half of it that the short four-digit form discards, so it arrived, matched nothing, and was filtered out as noise. It is now recognised, shown with the same four-group code the printer's own screen displays, and carries the fix that actually applies: enable Developer Mode on the printer and restart it. (Bambu's own advice for this code is to update Bambu Studio or Handy, which is no help for a print sent from BamDude.)
+
+    **Three follow-on effects, all fixed with it.** The Developer Mode check in the support bundle and printer diagnostics used to treat any reply that was not an outright refusal as confirmation — so it reported a pass for a printer that had not accepted a command all day. It now has a third answer, "undetermined", and says so rather than guessing. Queueing a print onto such a printer no longer spends four and a half minutes and three uploads before failing with an unrelated message about SD cards: it stops on the first attempt and names the cause. And a healthy printer is no longer told to go check its serial number in the moment right after it reconnects.
+
 - **Re-slicing a model that paints with one filament no longer prints the wrong material.** Open the Slice dialog on a model that declares four filaments but paints with slot 4 alone — a common MakerWorld shape — and it offered a single filament dropdown. The slicer binds that list by position, so your pick went to **slot 1**, and slot 4, the one the model actually prints with, was sliced with whatever the file's author had left in it. The result printed in the wrong material, with nothing on screen to suggest anything was off.
 
     The dialog now shows one row per slot the project declares, with the slots this plate does not use greyed out exactly as before. Choosing a filament for slot 4 now sets slot 4.
