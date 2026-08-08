@@ -4394,6 +4394,27 @@ async def on_finish_photo_moment(printer_id: int, data: dict):
                     len(banked),
                 )
 
+        # Reuse the live view before touching either camera (#2707). The
+        # external branch never consulted the buffer at all, and the built-in
+        # one below checked the buffer without asking whether a viewer was
+        # attached — so an empty buffer during a live view fell through to a
+        # competing handle on a single-reader device.
+        if frame_bytes is None:
+            from backend.app.api.routes.camera import live_frame_for_capture
+
+            defer, buffered_live = live_frame_for_capture(printer_id)
+            if defer:
+                if buffered_live:
+                    frame_bytes = buffered_live
+                    logger.info("[FINISH-PHOTO-MOMENT] reused the live view's frame (%d bytes)", len(buffered_live))
+                else:
+                    logger.info(
+                        "[FINISH-PHOTO-MOMENT] viewer attached for printer %s with an empty buffer — "
+                        "not opening a competing handle; the post-completion fallback will retry",
+                        printer_id,
+                    )
+                    frame_bytes = None
+
         if frame_bytes is None and printer.external_camera_enabled and printer.external_camera_url:
             from backend.app.services.external_camera import capture_frame
 
@@ -5767,6 +5788,32 @@ async def on_print_complete(printer_id: int, data: dict):
             # capture. Only runs if neither the timelapse source nor the pre-captured
             # frame above produced a photo.
             if not photo_filename:
+                # One rule, asked once, before either camera kind (#2707). The
+                # built-in branch below hand-rolls this same check by scanning
+                # the stream registries; the external branch had none at all, so
+                # a watched print with a USB camera opened a competing handle
+                # and got nothing. Kept above both so neither can drift again.
+                from backend.app.api.routes.camera import live_frame_for_capture
+
+                defer_live, buffered_live = live_frame_for_capture(printer_id)
+                if defer_live and buffered_live:
+                    photos_dir = archive_dir / "photos"
+                    photos_dir.mkdir(parents=True, exist_ok=True)
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    photo_filename = f"finish_{timestamp}_{uuid.uuid4().hex[:8]}.jpg"
+                    photo_path = photos_dir / photo_filename
+                    await asyncio.to_thread(
+                        photo_path.write_bytes, _apply_camera_rotation(buffered_live, printer, logger)
+                    )
+                    logger.info("[PHOTO-BG] Reused the live view's frame: %s", photo_filename)
+                elif defer_live:
+                    logger.info(
+                        "[PHOTO-BG] Viewer attached for printer %s with an empty buffer — leaving the "
+                        "finish photo unset rather than opening a competing camera handle",
+                        printer_id,
+                    )
+
+            if not photo_filename and not defer_live:
                 # Check for external camera first
                 if printer.external_camera_enabled and printer.external_camera_url:
                     logger.info("[PHOTO-BG] Using external camera")

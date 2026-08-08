@@ -70,7 +70,27 @@ class TimelapseSession:
         self.last_layer = layer_num
 
         try:
-            frame_data = await capture_frame(self.camera_url, self.camera_type, snapshot_url=self.snapshot_url)
+            # Reuse the live view's frame rather than opening a second handle on
+            # a single-reader device (#2707). Unguarded, a print watched from
+            # start to finish recorded ZERO successful layer captures and the
+            # stitched video came out empty — the failure this whole guard
+            # exists for, and one nobody reports as a camera bug.
+            from backend.app.api.routes.camera import live_frame_for_capture
+
+            defer, buffered = live_frame_for_capture(self.printer_id)
+            if defer:
+                if not buffered:
+                    # Viewer attached, buffer momentarily empty: skip this layer
+                    # rather than compete and kick them off (#1348).
+                    logger.debug(
+                        "Skipping layer %s for printer %s: viewer attached, no buffered frame yet",
+                        layer_num,
+                        self.printer_id,
+                    )
+                    return False
+                frame_data = buffered
+            else:
+                frame_data = await capture_frame(self.camera_url, self.camera_type, snapshot_url=self.snapshot_url)
             if frame_data:
                 # Rotate on the way in, not at stitch time: ffmpeg reads the
                 # frames straight off disk, so a frame saved the wrong way up

@@ -216,7 +216,7 @@ class ObicoDetectionService:
         + #1348 / ce5f4e5f.
         """
         # Late import to avoid cycles at module load time
-        from backend.app.api.routes.camera import get_buffered_frame, is_stream_active
+        from backend.app.api.routes.camera import live_frame_for_capture
         from backend.app.services.camera import capture_camera_frame_bytes
         from backend.app.services.external_camera import capture_frame as capture_external_frame
 
@@ -226,6 +226,22 @@ class ObicoDetectionService:
             self._last_error = f"Printer {printer_id} not found"
             return None
 
+        # One rule for both camera kinds now. The external branch used to skip
+        # this entirely, but a USB camera is single-reader too — polling it
+        # while a viewer is attached does not degrade, it fails (#2707). Cost:
+        # at most one missed detection cycle per viewer-attach (~10 s lag);
+        # benefit: zero competing-handle events.
+        defer, buffered = live_frame_for_capture(printer_id)
+        if defer:
+            if buffered:
+                return buffered
+            logger.info(
+                "Obico: viewer attached for printer %s but the buffer is empty; skipping this "
+                "poll rather than opening a competing camera handle",
+                printer_id,
+            )
+            return None
+
         if printer.external_camera_enabled and printer.external_camera_url:
             return await capture_external_frame(
                 printer.external_camera_url,
@@ -233,12 +249,6 @@ class ObicoDetectionService:
                 timeout=SNAPSHOT_CAPTURE_TIMEOUT,
                 snapshot_url=printer.external_camera_snapshot_url,
             )
-
-        # Built-in camera: never compete with an attached viewer. Cost: at
-        # most one missed Obico detection cycle per viewer-attach (~10 s
-        # lag); benefit: zero competing-socket events.
-        if is_stream_active(printer_id):
-            return get_buffered_frame(printer_id)
 
         return await capture_camera_frame_bytes(
             ip_address=printer.ip_address,

@@ -8,6 +8,7 @@ to ensure they are well-formed before use.
 """
 
 import asyncio
+import functools
 import logging
 import re
 import shutil
@@ -21,6 +22,33 @@ from backend.app.core.logging_filters import redact_url_credentials
 from backend.app.services.ffmpeg_stderr import FfmpegStderrDrain
 
 logger = logging.getLogger(__name__)
+
+# In-flight one-shot captures, keyed by (url, camera_type, snapshot_url).
+# ``snapshot_url`` belongs in the key rather than just url/camera_type: a
+# snapshot override fetches a completely different endpoint, so two callers that
+# disagree about it are not asking for the same thing and must not share a
+# result. The timeout is deliberately NOT in the key — callers disagree about it
+# and would then never coalesce, which is the collision this exists to stop.
+_inflight_captures: dict[tuple[str, str, str | None], "asyncio.Task[bytes | None]"] = {}
+
+
+def capture_in_flight(url: str, camera_type: str, snapshot_url: str | None = None) -> bool:
+    """True iff a one-shot capture for this key is running right now."""
+    task = _inflight_captures.get((url, camera_type, snapshot_url))
+    return task is not None and not task.done()
+
+
+def _discard_inflight_capture(key: tuple[str, str, str | None], task: "asyncio.Task") -> None:
+    """Done-callback: drop the finished task, guarded on identity so a slow task
+    cannot evict the successor that registered for the same key. Also retrieves
+    the exception, which an abandoned leader would otherwise leave for asyncio to
+    report later out of context."""
+    if _inflight_captures.get(key) is task:
+        del _inflight_captures[key]
+    if not task.cancelled() and task.exception() is not None:
+        logger.debug(
+            "In-flight external-camera capture for %s ended in an exception", redact_url_credentials(key[0])[:50]
+        )
 
 
 def _sanitize_camera_url(url: str, allowed_schemes: tuple[str, ...] = ("http", "https", "rtsp")) -> str | None:
@@ -187,6 +215,64 @@ async def capture_frame(
 
     Returns:
         JPEG bytes or None on failure
+
+    Concurrent callers for the same source **share one capture** (#2705 did this
+    for the built-in path; a V4L2 USB device allows exactly one open handle just
+    like Bambu's RTSP limit, so the external path needs it too). The first caller
+    opens the connection, the rest await the same result. ``live_frame_for_capture``
+    only stops a capturer competing with an attached VIEWER — Obico polling, the
+    in-print frame bank, the finish-photo moment, plate detection and the
+    notification snapshot could each still open their own handle on the same
+    camera and collide with one another.
+    """
+    key = (url, camera_type, snapshot_url)
+
+    # Same two-round follower rule as the built-in path — see
+    # ``services/camera.capture_camera_frame_bytes`` for why it is bounded there.
+    for _ in range(2):
+        leader = _inflight_captures.get(key)
+        if leader is None or leader.done():
+            break
+        try:
+            frame = await asyncio.wait_for(asyncio.shield(leader), timeout=timeout)
+        except TimeoutError:
+            logger.warning(
+                "Gave up waiting %ss on the in-flight external-camera capture for %s",
+                timeout,
+                redact_url_credentials(key[0])[:50],
+            )
+            return None
+        except asyncio.CancelledError:
+            if not leader.cancelled():
+                raise
+            logger.info("In-flight external-camera capture was cancelled; capturing our own")
+            continue
+        if frame is not None:
+            logger.info(
+                "Reusing in-flight external-camera capture: %s bytes (no second handle opened)",
+                len(frame),
+            )
+            return frame
+        logger.info("In-flight external-camera capture failed; capturing our own")
+    else:
+        return None
+
+    task = asyncio.create_task(_capture_frame_uncoalesced(url, camera_type, timeout, snapshot_url))
+    _inflight_captures[key] = task
+    task.add_done_callback(functools.partial(_discard_inflight_capture, key))
+    return await asyncio.shield(task)
+
+
+async def _capture_frame_uncoalesced(
+    url: str,
+    camera_type: str,
+    timeout: int = 15,
+    snapshot_url: str | None = None,
+) -> bytes | None:
+    """Open a handle and capture one frame. See :func:`capture_frame`.
+
+    Callers want that wrapper, not this: this opens a handle unconditionally,
+    which is the collision #2705 is about.
     """
     if snapshot_url:
         logger.debug("capture_frame using snapshot override url=%s...", redact_url_credentials(snapshot_url)[:50])
@@ -610,6 +696,7 @@ async def generate_mjpeg_stream(
     fps: int = 10,
     *,
     on_process: Callable[[asyncio.subprocess.Process], None] | None = None,
+    on_frame: Callable[[bytes], None] | None = None,
     stop_event: asyncio.Event | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """Generator yielding MJPEG frames for streaming.
@@ -625,6 +712,16 @@ async def generate_mjpeg_stream(
             open (#2675). Without it the process is reachable only from this
             generator's own ``finally``, which an abrupt client disconnect can
             skip — the same cancellation-timing class as #776.
+        on_frame: Called with each RAW frame, before it is wrapped for the wire,
+            so the route layer can publish it as the printer's buffered frame
+            (#2707). It has to be a callback: what this generator yields is
+            multipart-wrapped, so a consumer of the stream cannot recover the
+            JPEG — and until now nothing populated the buffer for external
+            cameras at all, leaving every one-shot consumer (layer timelapse,
+            finish photo, Obico, plate check) with nothing to reuse and no
+            option but to open a competing handle on a single-reader device.
+            Exceptions are logged and swallowed: buffering is a side effect and
+            must never be able to take the live stream down with it.
         stop_event: When set, the reconnect loops stop retrying. An explicit
             stop kills the current ffmpeg; without this the loop would spawn a
             replacement and take the device straight back.
@@ -634,6 +731,15 @@ async def generate_mjpeg_stream(
     """
     frame_interval = 1.0 / max(fps, 1)
     last_frame_time = 0.0
+
+    def _publish(frame: bytes) -> bytes:
+        """Hand the raw frame to ``on_frame``, then format it for the wire."""
+        if on_frame is not None:
+            try:
+                on_frame(frame)
+            except Exception:
+                logger.exception("on_frame callback raised")
+        return _format_mjpeg_frame(frame)
 
     if camera_type == "mjpeg":
         # Proxy MJPEG stream directly, with reconnect on timeout
@@ -645,7 +751,7 @@ async def generate_mjpeg_stream(
                 current_time = asyncio.get_event_loop().time()
                 if current_time - last_frame_time >= frame_interval:
                     last_frame_time = current_time
-                    yield _format_mjpeg_frame(frame)
+                    yield _publish(frame)
             if not frame_yielded or attempt == max_retries or (stop_event is not None and stop_event.is_set()):
                 break
             logger.warning(
@@ -662,7 +768,7 @@ async def generate_mjpeg_stream(
             frame_yielded = False
             async for frame in _stream_rtsp(url, fps, on_process=on_process):
                 frame_yielded = True
-                yield _format_mjpeg_frame(frame)
+                yield _publish(frame)
             if not frame_yielded or attempt == max_retries or (stop_event is not None and stop_event.is_set()):
                 break
             logger.warning(
@@ -675,7 +781,7 @@ async def generate_mjpeg_stream(
     elif camera_type == "usb":
         # Use ffmpeg to stream from USB camera
         async for frame in _stream_usb(url, fps, on_process=on_process):
-            yield _format_mjpeg_frame(frame)
+            yield _publish(frame)
 
     elif camera_type == "snapshot":
         # Poll snapshot URL at interval
@@ -683,7 +789,7 @@ async def generate_mjpeg_stream(
             try:
                 frame = await _capture_snapshot(url, timeout=10)
                 if frame:
-                    yield _format_mjpeg_frame(frame)
+                    yield _publish(frame)
                 await asyncio.sleep(frame_interval)
             except asyncio.CancelledError:
                 break
