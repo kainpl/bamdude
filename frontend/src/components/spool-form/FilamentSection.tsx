@@ -1,9 +1,47 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { Fragment, useState, useRef, useEffect, useMemo } from 'react';
 import { Search, Loader2, ChevronDown, Cloud, CloudOff } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { FilamentSectionProps, FilamentOption } from './types';
 import { KNOWN_VARIANTS } from './constants';
 import { parsePresetName } from './utils';
+
+/** Emit a "Suggested" / "All" heading when the ranked list crosses from the
+ * catalog-paired entries to the rest. The two groups are a hint about which
+ * combinations are known, never a restriction on what can be entered (#1905). */
+function groupHeading(
+  entries: { suggested: boolean }[],
+  index: number,
+  t: (key: string, fallback: string) => string,
+) {
+  const isFirstOfGroup = index === 0 || entries[index - 1].suggested !== entries[index].suggested;
+  if (!isFirstOfGroup) return null;
+  // A single ungrouped run needs no heading at all.
+  if (entries.every((e) => e.suggested === entries[0].suggested)) return null;
+  return (
+    <div className="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wide text-bambu-gray/70">
+      {entries[index].suggested ? t('inventory.suggested', 'Suggested') : t('inventory.allOptions', 'All')}
+    </div>
+  );
+}
+
+/** Rank the entries the catalog knows to pair with the other field's value
+ * first, WITHOUT dropping the rest (#1905). Elegoo is catalogued for PLA only,
+ * so filtering by the pairing made a real product — Elegoo ASA — look
+ * impossible to enter. Suggestion is a hint, not a rule. */
+function rankBySuggested(all: string[], suggested: string[], search: string) {
+  const suggestedSet = new Set(suggested.map((s) => s.toLowerCase()));
+  const needle = search.toLowerCase();
+  return all
+    .filter((v) => !needle || v.toLowerCase().includes(needle))
+    .map((value) => ({ value, suggested: suggestedSet.has(value.toLowerCase()) }))
+    .sort((a, b) => {
+      const aExact = a.value.toLowerCase() === needle;
+      const bExact = b.value.toLowerCase() === needle;
+      if (needle && aExact !== bExact) return aExact ? -1 : 1;
+      if (a.suggested !== b.suggested) return a.suggested ? -1 : 1;
+      return a.value.localeCompare(b.value);
+    });
+}
 
 export function FilamentSection({
   formData,
@@ -16,6 +54,9 @@ export function FilamentSection({
   filamentOptions,
   availableBrands,
   availableMaterials,
+  suggestedBrands,
+  suggestedMaterials,
+  detailsRequired,
   quickAdd,
   quantity,
   onQuantityChange,
@@ -66,20 +107,10 @@ export function FilamentSection({
     );
   }, [filamentOptions, presetInputValue]);
 
-  // Filtered brands
-  const filteredBrands = useMemo(() => {
-    if (!brandSearch) return availableBrands;
-    const search = brandSearch.toLowerCase();
-    const filtered = availableBrands.filter(b => b.toLowerCase().includes(search));
-    // Sort: exact match first, then others
-    return filtered.sort((a, b) => {
-      const aExact = a.toLowerCase() === search;
-      const bExact = b.toLowerCase() === search;
-      if (aExact && !bExact) return -1;
-      if (!aExact && bExact) return 1;
-      return a.localeCompare(b);
-    });
-  }, [availableBrands, brandSearch]);
+  const filteredBrands = useMemo(
+    () => rankBySuggested(availableBrands, suggestedBrands, brandSearch),
+    [availableBrands, suggestedBrands, brandSearch],
+  );
 
   const filteredVariants = useMemo(() => {
     if (!subtypeSearch) return KNOWN_VARIANTS;
@@ -87,19 +118,10 @@ export function FilamentSection({
     return KNOWN_VARIANTS.filter(v => v.toLowerCase().includes(search));
   }, [subtypeSearch]);
 
-  const filteredMaterials = useMemo(() => {
-    if (!materialSearch) return availableMaterials;
-    const search = materialSearch.toLowerCase();
-    const filtered = availableMaterials.filter(m => m.toLowerCase().includes(search));
-    // Sort: exact match first, then others
-    return filtered.sort((a, b) => {
-      const aExact = a.toLowerCase() === search;
-      const bExact = b.toLowerCase() === search;
-      if (aExact && !bExact) return -1;
-      if (!aExact && bExact) return 1;
-      return a.localeCompare(b);
-    });
-  }, [materialSearch, availableMaterials]);
+  const filteredMaterials = useMemo(
+    () => rankBySuggested(availableMaterials, suggestedMaterials, materialSearch),
+    [availableMaterials, suggestedMaterials, materialSearch],
+  );
 
   useEffect(() => {
     if (!isLabelFocused) {
@@ -139,7 +161,7 @@ export function FilamentSection({
       {!quickAdd && (
         <div>
           <label className="block text-sm font-medium text-bambu-gray mb-1">
-            {t('inventory.slicerPreset')} *
+            {t('inventory.slicerPreset')}{detailsRequired && ' *'}
           </label>
           <div className="relative" ref={presetRef}>
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50 pointer-events-none" />
@@ -215,25 +237,27 @@ export function FilamentSection({
               {filteredMaterials.length === 0 ? (
                 <div className="px-3 py-2 text-sm text-bambu-gray">{t('inventory.noResults')}</div>
               ) : (
-                filteredMaterials.map((material) => (
-                  <button
-                    key={material}
-                    type="button"
-                    className={`w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary ${
-                      formData.material === material ? 'bg-bambu-green/10 text-bambu-green' : 'text-white'
-                    }`}
-                    onClick={() => {
-                      updateField('material', material);
-                      setMaterialDropdownOpen(false);
-                      setMaterialSearch('');
-                    }}
-                  >
-                    {material}
-                  </button>
+                filteredMaterials.map((entry, i) => (
+                  <Fragment key={entry.value}>
+                    {groupHeading(filteredMaterials, i, t)}
+                    <button
+                      type="button"
+                      className={`w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary ${
+                        formData.material === entry.value ? 'bg-bambu-green/10 text-bambu-green' : 'text-white'
+                      }`}
+                      onClick={() => {
+                        updateField('material', entry.value);
+                        setMaterialDropdownOpen(false);
+                        setMaterialSearch('');
+                      }}
+                    >
+                      {entry.value}
+                    </button>
+                  </Fragment>
                 ))
               )}
               {/* Allow custom material */}
-              {materialSearch && !filteredMaterials.includes(materialSearch) && (
+              {materialSearch && !filteredMaterials.some((e) => e.value === materialSearch) && (
                 <button
                   type="button"
                   className="w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary text-bambu-green border-t border-bambu-dark-tertiary"
@@ -257,7 +281,7 @@ export function FilamentSection({
       {/* Brand (dropdown with search) */}
       <div>
         <label className="block text-sm font-medium text-bambu-gray mb-1">
-          {t('inventory.brand')}{!quickAdd && ' *'}
+          {t('inventory.brand')}{detailsRequired && ' *'}
         </label>
           <div className="relative" ref={brandRef}>
             <input
@@ -280,25 +304,27 @@ export function FilamentSection({
                 {filteredBrands.length === 0 ? (
                   <div className="px-3 py-2 text-sm text-bambu-gray">{t('inventory.noResults')}</div>
                 ) : (
-                  filteredBrands.map(brand => (
-                    <button
-                      key={brand}
-                      type="button"
-                      className={`w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary ${
-                        formData.brand === brand ? 'bg-bambu-green/10 text-bambu-green' : 'text-white'
-                      }`}
-                      onClick={() => {
-                        updateField('brand', brand);
-                        setBrandDropdownOpen(false);
-                        setBrandSearch('');
-                      }}
-                    >
-                      {brand}
-                    </button>
+                  filteredBrands.map((entry, i) => (
+                    <Fragment key={entry.value}>
+                      {groupHeading(filteredBrands, i, t)}
+                      <button
+                        type="button"
+                        className={`w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary ${
+                          formData.brand === entry.value ? 'bg-bambu-green/10 text-bambu-green' : 'text-white'
+                        }`}
+                        onClick={() => {
+                          updateField('brand', entry.value);
+                          setBrandDropdownOpen(false);
+                          setBrandSearch('');
+                        }}
+                      >
+                        {entry.value}
+                      </button>
+                    </Fragment>
                   ))
                 )}
                 {/* Allow custom brand */}
-                {brandSearch && !filteredBrands.includes(brandSearch) && (
+                {brandSearch && !filteredBrands.some((e) => e.value === brandSearch) && (
                   <button
                     type="button"
                     className="w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary text-bambu-green border-t border-bambu-dark-tertiary"
@@ -322,7 +348,7 @@ export function FilamentSection({
       {/* Variant / Subtype */}
       <div>
         <label className="block text-sm font-medium text-bambu-gray mb-1">
-          {t('inventory.subtype')}{!quickAdd && ' *'}
+          {t('inventory.subtype')}{detailsRequired && ' *'}
         </label>
           <div className="relative" ref={subtypeRef}>
             <input

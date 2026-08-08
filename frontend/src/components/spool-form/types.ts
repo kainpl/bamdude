@@ -1,6 +1,11 @@
 
 import type { Printer } from '../../api/client';
 
+// Which operation the spool form is performing. Lives here rather than in
+// SpoolFormModal so validateForm can key off it without a circular import;
+// SpoolFormModal re-exports it for existing consumers.
+export type SpoolFormMode = 'create' | 'edit' | 'copy';
+
 // Catalog color display type (moved from component)
 export interface CatalogDisplayColor {
   name: string;
@@ -136,6 +141,16 @@ export interface FilamentSectionProps extends SectionProps {
   filamentOptions: FilamentOption[];
   availableBrands: string[];
   availableMaterials: string[];
+  // Brands/materials the catalog and slicer presets know to pair with the
+  // other field's current value (#1905). These sort to the top under a
+  // "Suggested" heading — they are never used to hide the rest, because doing
+  // so made legitimate combinations (Elegoo ASA) look impossible to enter.
+  suggestedBrands: string[];
+  suggestedMaterials: string[];
+  // Whether preset/brand/subtype are mandatory for this submission — see
+  // spoolDetailsRequired. Drives the " *" markers so the form never advertises
+  // a requirement it will not enforce (#1905).
+  detailsRequired: boolean;
   quickAdd: boolean;
   quantity: number;
   onQuantityChange: (value: number) => void;
@@ -211,38 +226,53 @@ export interface ValidationResult {
   errors: Partial<Record<keyof SpoolFormData, string>>;
 }
 
+/** Whether preset/brand/subtype are mandatory for this submission.
+ *
+ * Exported so the form can drive its " *" markers off the same rule that
+ * enforces them — a field marked required but not checked (or the reverse) is
+ * how #1905 went unnoticed. */
+export function spoolDetailsRequired(quickAdd: boolean, spoolmanMode: boolean, mode: SpoolFormMode): boolean {
+  return !quickAdd && !spoolmanMode && mode === 'create';
+}
+
 export function validateForm(
   formData: SpoolFormData,
   quickAdd = false,
   spoolmanMode = false,
+  mode: SpoolFormMode = 'create',
 ): ValidationResult {
   const errors: Partial<Record<keyof SpoolFormData, string>> = {};
 
-  // Quick-add and Spoolman mode only require material (unless a catalog entry is pre-selected)
-  if (quickAdd || spoolmanMode) {
-    if (!formData.material && !formData.spoolman_filament_id) {
+  // Quick-add and Spoolman mode only require material (unless a catalog entry
+  // is pre-selected). Edit and copy relax the same way (#1905): the spool
+  // already exists, and a row created by Quick Add, a CSV import or an RFID
+  // scan has no preset, brand or subtype — demanding them here blocked every
+  // later edit, even one that only changed the storage location, and the
+  // create-only Quick Add toggle meant there was no way to waive it. The
+  // backend has only ever required material (SpoolBase in schemas/spool.py).
+  // Completeness — which fields must be present at all. The relaxed shapes
+  // still require material; only the three details are waived.
+  //
+  // ⚠️ Deliberately NOT an early return, unlike upstream's version: the checks
+  // below are about a value being *well-formed*, which is a different question
+  // from a field being *filled in*. Returning here would let a malformed hex
+  // stop or an out-of-range threshold through on every edit — and neither the
+  // backend nor the column constrains them.
+  if (spoolDetailsRequired(quickAdd, spoolmanMode, mode)) {
+    if (!formData.slicer_filament) {
+      errors.slicer_filament = 'Slicer preset is required';
+    }
+    if (!formData.material) {
       errors.material = 'Material is required';
     }
-    return {
-      isValid: Object.keys(errors).length === 0,
-      errors,
-    };
-  }
-
-  if (!formData.slicer_filament) {
-    errors.slicer_filament = 'Slicer preset is required';
-  }
-
-  if (!formData.material) {
+    if (!formData.brand) {
+      errors.brand = 'Brand is required';
+    }
+    if (!formData.subtype) {
+      errors.subtype = 'Subtype is required';
+    }
+  } else if (!formData.material && !formData.spoolman_filament_id) {
     errors.material = 'Material is required';
-  }
-
-  if (!formData.brand) {
-    errors.brand = 'Brand is required';
-  }
-
-  if (!formData.subtype) {
-    errors.subtype = 'Subtype is required';
   }
 
   // B.8 — low-stock threshold override must be 1..99 if provided.

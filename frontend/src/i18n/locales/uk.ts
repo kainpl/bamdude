@@ -4742,6 +4742,8 @@ export default {
     autoIncrementLots: 'Авто-нумерація лотів (+1 на копію)',
     measuredWeightError: 'Виміряна вага повинна бути від {{min}}г до {{max}}г.',
     slicerPreset: 'Пресет слайсера',
+    suggested: 'Пропоновані',
+    allOptions: 'Усі',
     searchPresets: 'Пошук пресетів філаменту...',
     selectedPreset: 'Вибрано',
     noPresetsFound: 'Пресети не знайдено',

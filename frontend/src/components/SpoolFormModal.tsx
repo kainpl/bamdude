@@ -6,8 +6,8 @@ import { api, ApiError } from '../api/client';
 import type { InventorySpool, SlicerSetting, SpoolCatalogEntry, LocalPreset, SpoolmanBulkCreateResult, SpoolKProfileInput, SpoolmanFilamentEntry, BuiltinFilament } from '../api/client';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
-import type { SpoolFormData, PrinterWithCalibrations, ColorPreset } from './spool-form/types';
-import { defaultFormData, validateForm, SPOOLMAN_LINKED_FIELDS } from './spool-form/types';
+import type { SpoolFormData, PrinterWithCalibrations, ColorPreset, SpoolFormMode } from './spool-form/types';
+import { defaultFormData, spoolDetailsRequired, validateForm, SPOOLMAN_LINKED_FIELDS } from './spool-form/types';
 import { buildFilamentOptions, extractBrandsFromPresets, fetchPrinterCalibrations, findPresetOption, loadRecentColors, normalizeSlicerCodeToFilamentId, parsePresetName, resolveTargetFilamentId, saveRecentColor } from './spool-form/utils';
 import { MATERIALS } from './spool-form/constants';
 import { FilamentSection } from './spool-form/FilamentSection';
@@ -25,7 +25,9 @@ type TabId = 'filament' | 'pa-profile';
 
 const CLEAR_TAG_PAYLOAD = { tag_uid: null, tray_uuid: null, tag_type: null, data_origin: null };
 
-export type SpoolFormMode = 'create' | 'edit' | 'copy';
+// Defined in spool-form/types so validateForm can key off it without a
+// circular import; re-exported here for the callers that already import it.
+export type { SpoolFormMode } from './spool-form/types';
 
 interface SpoolFormModalProps {
   isOpen: boolean;
@@ -77,6 +79,10 @@ export function SpoolFormModal({
   const [locationIdTouched, setLocationIdTouched] = useState(false);
   const [quickAdd, setQuickAdd] = useState(false);
   const [quantity, setQuantity] = useState(1);
+
+  // Same rule the validator enforces, so the " *" markers can never advertise
+  // a requirement that is not checked — or hide one that is (#1905).
+  const detailsRequired = spoolDetailsRequired(quickAdd, spoolmanMode, resolvedMode);
 
   // Cloud presets
   const [cloudAuthenticated, setCloudAuthenticated] = useState(false);
@@ -316,21 +322,40 @@ export function SpoolFormModal({
     return map;
   }, [brandMaterialPairs]);
 
-  const availableBrands = useMemo(() => {
-    if (!formData.material) return baseAvailableBrands;
-    const materialKey = formData.material.toLowerCase();
-    const brandKeys = materialToBrands.get(materialKey);
-    if (!brandKeys || brandKeys.size === 0) return baseAvailableBrands;
-    return baseAvailableBrands.filter(brand => brandKeys.has(brand.toLowerCase()));
+  // Pairs the catalog and the slicer presets know about are *suggested*, never
+  // used to hide the rest (#1905). Elegoo is catalogued for PLA only, so
+  // filtering made a real product — Elegoo ASA — look impossible to enter. The
+  // spool's own current value is always present in its own dropdown, whatever
+  // the catalog thinks of it.
+  const suggestedBrands = useMemo(() => {
+    if (!formData.material) return [];
+    const brandKeys = materialToBrands.get(formData.material.toLowerCase());
+    if (!brandKeys || brandKeys.size === 0) return [];
+    return baseAvailableBrands.filter((brand) => brandKeys.has(brand.toLowerCase()));
   }, [baseAvailableBrands, formData.material, materialToBrands]);
 
-  const availableMaterials = useMemo(() => {
-    if (!formData.brand) return baseAvailableMaterials;
-    const brandKey = formData.brand.toLowerCase();
-    const materialKeys = brandToMaterials.get(brandKey);
-    if (!materialKeys || materialKeys.size === 0) return baseAvailableMaterials;
-    return baseAvailableMaterials.filter(material => materialKeys.has(material.toLowerCase()));
+  const suggestedMaterials = useMemo(() => {
+    if (!formData.brand) return [];
+    const materialKeys = brandToMaterials.get(formData.brand.toLowerCase());
+    if (!materialKeys || materialKeys.size === 0) return [];
+    return baseAvailableMaterials.filter((material) => materialKeys.has(material.toLowerCase()));
   }, [baseAvailableMaterials, formData.brand, brandToMaterials]);
+
+  const availableBrands = useMemo(() => {
+    const own = formData.brand?.trim();
+    if (!own || baseAvailableBrands.some((b) => b.toLowerCase() === own.toLowerCase())) {
+      return baseAvailableBrands;
+    }
+    return [own, ...baseAvailableBrands];
+  }, [baseAvailableBrands, formData.brand]);
+
+  const availableMaterials = useMemo(() => {
+    const own = formData.material?.trim();
+    if (!own || baseAvailableMaterials.some((m) => m.toLowerCase() === own.toLowerCase())) {
+      return baseAvailableMaterials;
+    }
+    return [own, ...baseAvailableMaterials];
+  }, [baseAvailableMaterials, formData.material]);
 
   // Find selected preset option
   const selectedPresetOption = useMemo(
@@ -767,7 +792,7 @@ export function SpoolFormModal({
   if (!isOpen) return null;
 
   const handleSubmit = () => {
-    const validation = validateForm(formData, quickAdd, spoolmanMode);
+    const validation = validateForm(formData, quickAdd, spoolmanMode, resolvedMode);
     if (!validation.isValid) {
       setErrors(validation.errors);
       if (validation.errors.slicer_filament || validation.errors.material || validation.errors.brand || validation.errors.subtype) {
@@ -963,6 +988,9 @@ export function SpoolFormModal({
                   filamentOptions={filamentOptions}
                   availableBrands={availableBrands}
                   availableMaterials={availableMaterials}
+                  suggestedBrands={suggestedBrands}
+                  suggestedMaterials={suggestedMaterials}
+                  detailsRequired={detailsRequired}
                   quickAdd={quickAdd}
                   quantity={quantity}
                   onQuantityChange={setQuantity}

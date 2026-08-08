@@ -4727,6 +4727,8 @@ export default {
     autoIncrementLots: 'Auto-number lots (+1 per copy)',
     measuredWeightError: 'Measured weight must be between {{min}}g and {{max}}g.',
     slicerPreset: 'Slicer Preset',
+    suggested: 'Suggested',
+    allOptions: 'All',
     searchPresets: 'Search filament presets...',
     selectedPreset: 'Selected',
     noPresetsFound: 'No presets found',
