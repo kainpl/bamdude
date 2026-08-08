@@ -1147,6 +1147,10 @@ class TestVirtualPrinterManager:
             # MagicMock attribute is truthy and every unchanged-instance sync
             # test would see a spurious gcode_injection diff → restart.
             "gcode_injection": False,
+            # m131 (#2700): same reason again — the third flag to land in this
+            # comparison, and the third that would restart every VP on every
+            # sync if left as a truthy MagicMock attribute.
+            "save_ams_mapping": False,
             "tailscale_disabled": True,
             "position": 0,
         }

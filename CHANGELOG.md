@@ -68,6 +68,10 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **A Virtual Printer can now keep the AMS slots you picked in the slicer.** Off by default, per Virtual Printer, under its settings. Two spools of the same red PLA are identical as far as the file is concerned, so matching by filament type and colour cannot tell them apart — whichever one you chose in Bambu Studio, BamDude might load the other. With this on, the slots the slicer resolved are used exactly as sent.
+
+    It is a trade, and worth understanding before turning it on: for those prints BamDude stops choosing slots itself, which also switches off "use the lowest spool first", the check that keeps that from stranding a print when AMS filament backup is off, the remaining-weight figures from your inventory, and the Flow-Through-System routing rule. With the setting off, all of that works exactly as it does today.
+
 - **Re-slicing a published model for another printer keeps the designer's settings.** Models on MakerWorld often deviate from the stock profile on purpose — five walls, 100 % infill, a 0.1 mm first layer. Re-slicing one for a different printer threw all of that away, because the process profile you pick overrides the file's own settings, and that override is exactly what makes cross-printer re-slicing work in the first place. "Slice as designed" does not help either: it is all-or-nothing, and only offered when the printer you picked is already the one the model was made for.
 
     The Slice dialog now lists exactly which print settings the author changed and what each was set to, with a checkbox per setting. **Design intent** — wall count, infill, layer and first-layer height, supports, seam, brim, ironing — is ticked by default. **Machine-tuned values** — speeds, accelerations, jerk, fans, temperatures, prime-tower geometry — are listed with a badge but start unticked: they were chosen for the author's printer, and on yours they can be merely wrong or outside the range your profile accepts, which fails the slice outright. Only what you tick is applied.

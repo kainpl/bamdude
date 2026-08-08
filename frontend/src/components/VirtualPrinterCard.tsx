@@ -64,6 +64,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   const [localAutoDispatch, setLocalAutoDispatch] = useState(printer.auto_dispatch ?? true);
   const [localQueueForceColorMatch, setLocalQueueForceColorMatch] = useState(printer.queue_force_color_match ?? false);
   const [localGcodeInjection, setLocalGcodeInjection] = useState(printer.gcode_injection ?? false);
+  const [localSaveAmsMapping, setLocalSaveAmsMapping] = useState(printer.save_ams_mapping ?? false);
   const [localTailscaleDisabled, setLocalTailscaleDisabled] = useState(printer.tailscale_disabled ?? true);
   const [showAccessCode, setShowAccessCode] = useState(false);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
@@ -84,6 +85,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
       setLocalAutoDispatch(printer.auto_dispatch ?? true);
       setLocalQueueForceColorMatch(printer.queue_force_color_match ?? false);
       setLocalGcodeInjection(printer.gcode_injection ?? false);
+      setLocalSaveAmsMapping(printer.save_ams_mapping ?? false);
       setLocalTailscaleDisabled(printer.tailscale_disabled ?? true);
     }
   }, [printer, pendingAction]);
@@ -494,6 +496,45 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                     <span
                       className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
                         localQueueForceColorMatch ? 'translate-x-5' : ''
+                      }`}
+                    />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Save the slicer's AMS pick — queue modes only (#2700). Two spools
+                of the same red PLA are indistinguishable in the file, so a
+                mapping derived from static type+colour cannot honour the slot
+                the user chose in Bambu Studio. When on, that resolved pick is
+                stored on the queue item and used as-is.
+
+                ⚠️ It is a trade, and the description says so: a stored mapping
+                makes the dispatcher skip its own slot computation, which is
+                where prefer-lowest-filament, the AMS-Backup gate, the
+                inventory-remain overrides and FTS routing live. */}
+            {(localMode === 'print_queue' || localMode === 'auto_queue') && (
+              <div className="pt-2 border-t border-bambu-dark-tertiary">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-white text-sm font-medium">{t('virtualPrinter.saveAmsMapping.title')}</div>
+                    <div className="text-[10px] text-bambu-gray">{t('virtualPrinter.saveAmsMapping.description')}</div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const newVal = !localSaveAmsMapping;
+                      setLocalSaveAmsMapping(newVal);
+                      setPendingAction('saveAmsMapping');
+                      updateMutation.mutate({ save_ams_mapping: newVal });
+                    }}
+                    disabled={pendingAction === 'saveAmsMapping'}
+                    className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${
+                      localSaveAmsMapping ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
+                    } ${pendingAction === 'saveAmsMapping' ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
+                        localSaveAmsMapping ? 'translate-x-5' : ''
                       }`}
                     />
                   </button>

@@ -5997,6 +5997,10 @@ export default {
       title: 'Force colour match',
       description: 'Pin per-slot type+colour from each 3MF so the auto-queue router refuses printers loaded with the right material in the wrong colour.'
     },
+    saveAmsMapping: {
+      title: "Use the slicer's AMS slots",
+      description: "Keep the exact slots picked in Bambu Studio instead of matching by filament type and colour — the only way to tell two spools of the same colour apart. Turns off BamDude's own slot picking for these prints, including lowest-spool-first and the Flow-Through routing rule."
+    },
     gcodeInjection: {
       title: 'G-code injection',
       description: 'Apply the per-model G-code snippets (Settings → Printers → G-code Snippets) to jobs this VP queues. Off by default; no-op unless snippets exist for the target model.'
