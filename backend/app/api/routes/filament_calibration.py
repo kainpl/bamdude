@@ -55,6 +55,7 @@ from backend.app.services.slicer_api import (
     SlicerApiService,
     SlicerApiUnavailableError,
     SlicerInputError,
+    SlicerTimeoutError,
 )
 from backend.app.services.slicer_routing import any_sidecar_online, resolve_sidecar_url
 
@@ -722,6 +723,10 @@ async def slice_calibration_for_verification(
             exc,
         )
         raise HTTPException(400, f"Slicer rejected input: {exc}") from exc
+    except SlicerTimeoutError as exc:
+        # 504, not 503: the sidecar was reachable and working — we gave up first.
+        logger.error("slice_only: slicing timed out at %s: %s", api_url, exc)
+        raise HTTPException(504, str(exc)) from exc
     except SlicerApiUnavailableError as exc:
         logger.error("slice_only: sidecar unreachable at %s: %s", api_url, exc)
         raise HTTPException(503, str(exc)) from exc

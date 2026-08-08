@@ -2371,6 +2371,7 @@ async def _run_slicer_with_fallback(
         SlicerApiService,
         SlicerApiUnavailableError,
         SlicerInputError,
+        SlicerTimeoutError,
     )
     from backend.app.services.slicer_routing import resolve_sidecar_url, slicer_label
 
@@ -2651,6 +2652,11 @@ async def _run_slicer_with_fallback(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except SlicerApiServerError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except SlicerTimeoutError as exc:
+        # 504, not 502: the slicer answered, we stopped waiting. There is no
+        # base SlicerApiError handler on this route, so without this the timeout
+        # would escape as a 500 with no message at all.
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
     except SlicerApiUnavailableError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     finally:

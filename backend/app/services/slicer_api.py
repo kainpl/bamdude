@@ -36,6 +36,22 @@ class SlicerApiUnavailableError(SlicerApiError):
     """Sidecar is unreachable (connection error, no response)."""
 
 
+class SlicerTimeoutError(SlicerApiError):
+    """We gave up waiting on a slice that never finished.
+
+    Kept apart from :class:`SlicerApiUnavailableError` because the two call for
+    opposite reactions and used to be reported as the same thing: an
+    ``httpx.ReadTimeout`` is a subclass of ``RequestError``, so a heavy model
+    that simply took a long time surfaced as "Slicer sidecar unreachable" —
+    sending the reporter of #2730 off to update a sidecar that was reachable the
+    whole time and still slicing when we hung up on it.
+
+    Only raised from the slice calls. On the health and profile probes, which
+    carry short timeouts of their own, a read timeout genuinely does mean the
+    sidecar is not answering.
+    """
+
+
 class SlicerApiServerError(SlicerApiError):
     """Sidecar responded with a 5xx — usually the wrapped slicer CLI exited
     non-zero (range-validation reject, segfault on complex models, etc.).
@@ -417,6 +433,17 @@ class SlicerApiService:
                 data=data,
                 timeout=self.timeout_seconds,
             )
+        except httpx.TimeoutException as exc:
+            # Distinguished from a refused connection: the slicer was there, we
+            # stopped waiting. The bare-float timeout this service was built with
+            # applies to connect, read, write and pool alike, so on one long
+            # request it is a cap on how complex a model may be — not a health
+            # check. Naming it honestly is the half of #2730 that does not need a
+            # liveness poller; see the audit for the rest.
+            raise SlicerTimeoutError(
+                f"Slicing exceeded the {self.timeout_seconds:.0f}s limit. The slicer was still responding — "
+                f"this is a time limit, not a connection problem."
+            ) from exc
         except httpx.RequestError as exc:
             raise SlicerApiUnavailableError(f"Slicer sidecar unreachable: {exc}") from exc
         finally:
@@ -483,6 +510,17 @@ class SlicerApiService:
                 data=data,
                 timeout=self.timeout_seconds,
             )
+        except httpx.TimeoutException as exc:
+            # Distinguished from a refused connection: the slicer was there, we
+            # stopped waiting. The bare-float timeout this service was built with
+            # applies to connect, read, write and pool alike, so on one long
+            # request it is a cap on how complex a model may be — not a health
+            # check. Naming it honestly is the half of #2730 that does not need a
+            # liveness poller; see the audit for the rest.
+            raise SlicerTimeoutError(
+                f"Slicing exceeded the {self.timeout_seconds:.0f}s limit. The slicer was still responding — "
+                f"this is a time limit, not a connection problem."
+            ) from exc
         except httpx.RequestError as exc:
             raise SlicerApiUnavailableError(f"Slicer sidecar unreachable: {exc}") from exc
         finally:
