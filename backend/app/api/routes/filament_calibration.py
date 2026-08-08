@@ -56,6 +56,7 @@ from backend.app.services.slicer_api import (
     SlicerApiUnavailableError,
     SlicerInputError,
     SlicerTimeoutError,
+    get_stall_timeout_seconds,
 )
 from backend.app.services.slicer_routing import any_sidecar_online, resolve_sidecar_url
 
@@ -614,7 +615,7 @@ async def slice_calibration_for_verification(
         (body.spec or {}).get("nozzle_diameter", 0.4) if isinstance(body.spec, dict) else 0.4
     )
     try:
-        async with SlicerApiService(base_url=api_url) as svc:
+        async with SlicerApiService(base_url=api_url, timeout_seconds=await get_stall_timeout_seconds(db)) as svc:
             # Manual path — resolve each PresetRef to the JSON the
             # sidecar's --load-settings expects. PA Line already
             # resolved the printer JSON above (to read printable_area

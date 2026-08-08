@@ -2445,6 +2445,7 @@ async def _run_slicer_with_fallback(
         SlicerApiUnavailableError,
         SlicerInputError,
         SlicerTimeoutError,
+        get_stall_timeout_seconds,
     )
     from backend.app.services.slicer_routing import resolve_sidecar_url, slicer_label
 
@@ -2543,7 +2544,9 @@ async def _run_slicer_with_fallback(
     # the toggle on the picked printer matching the design's target, so this path
     # never re-targets across printer models.
     embedded_mode = bool(request.use_embedded_settings and is_3mf)
-    service = SlicerApiService(api_url)
+    # Bounds silence rather than total slicing time (#2730), so a heavy model
+    # that keeps reporting progress runs to completion however long it takes.
+    service = SlicerApiService(api_url, timeout_seconds=await get_stall_timeout_seconds(db))
     progress_request_id: str | None = None
     progress_callback = None
     if job_id is not None:
@@ -3986,6 +3989,8 @@ async def _try_preview_slice_filaments(
         file_bytes = file_path.read_bytes()
     except OSError:
         return None
+    from backend.app.services.slicer_api import get_stall_timeout_seconds
+
     return await get_preview_filaments(
         kind=kind,
         source_id=source_id,
@@ -3994,6 +3999,7 @@ async def _try_preview_slice_filaments(
         file_name=file_path.name,
         api_url=api_url,
         request_id=request_id,
+        timeout_seconds=await get_stall_timeout_seconds(db),
     )
 
 

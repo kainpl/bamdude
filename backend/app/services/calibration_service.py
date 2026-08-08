@@ -468,11 +468,12 @@ class CalibrationService:
             SlicerApiService,
             SlicerApiUnavailableError,
             SlicerInputError,
+            get_stall_timeout_seconds,
         )
 
         model_filename = f"calibration_{cali_mode.value}.3mf"
         try:
-            async with SlicerApiService(base_url=api_url) as svc:
+            async with SlicerApiService(base_url=api_url, timeout_seconds=await get_stall_timeout_seconds(db)) as svc:
                 printer_json = pre_resolved_printer_json or await resolve_preset_ref(
                     db, user, printer_preset, "printer"
                 )

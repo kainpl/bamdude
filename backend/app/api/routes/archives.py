@@ -3167,6 +3167,8 @@ async def _try_preview_slice_filaments(
         file_bytes = file_path.read_bytes()
     except OSError:
         return None
+    from backend.app.services.slicer_api import get_stall_timeout_seconds
+
     return await get_preview_filaments(
         kind=kind,
         source_id=source_id,
@@ -3175,6 +3177,7 @@ async def _try_preview_slice_filaments(
         file_name=file_path.name,
         api_url=api_url,
         request_id=request_id,
+        timeout_seconds=await get_stall_timeout_seconds(db),
     )
 
 

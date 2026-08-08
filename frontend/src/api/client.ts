@@ -1648,6 +1648,10 @@ export interface AppSettings {
   // back to env defaults configured on the server.
   orcaslicer_api_url?: string;
   bambu_studio_api_url?: string;
+  // Minutes of SILENCE from the sidecar's progress channel before a slice is
+  // abandoned — not a cap on how long a model may take. On a sidecar too old
+  // to report progress it falls back to bounding total elapsed time.
+  slicer_stall_timeout_minutes?: number;
   // Per-model auto-print G-code snippets (#422). JSON object keyed by printer
   // model name → { start_gcode, end_gcode }. Empty string = none configured.
   gcode_snippets?: string;

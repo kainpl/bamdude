@@ -1244,6 +1244,7 @@ export function SettingsPage() {
       (baseline.use_slicer_api ?? false) !== (localSettings.use_slicer_api ?? false) ||
       (baseline.orcaslicer_api_url ?? '') !== (localSettings.orcaslicer_api_url ?? '') ||
       (baseline.bambu_studio_api_url ?? '') !== (localSettings.bambu_studio_api_url ?? '') ||
+      (baseline.slicer_stall_timeout_minutes ?? 15) !== (localSettings.slicer_stall_timeout_minutes ?? 15) ||
       baseline.prometheus_enabled !== localSettings.prometheus_enabled ||
       baseline.prometheus_token !== localSettings.prometheus_token ||
       (baseline.session_max_hours ?? 720) !== (localSettings.session_max_hours ?? 720) ||
@@ -1336,6 +1337,7 @@ export function SettingsPage() {
         use_slicer_api: localSettings.use_slicer_api,
         orcaslicer_api_url: localSettings.orcaslicer_api_url,
         bambu_studio_api_url: localSettings.bambu_studio_api_url,
+        slicer_stall_timeout_minutes: localSettings.slicer_stall_timeout_minutes,
         prometheus_enabled: localSettings.prometheus_enabled,
         prometheus_token: localSettings.prometheus_token,
         session_max_hours: localSettings.session_max_hours,
@@ -1902,6 +1904,27 @@ export function SettingsPage() {
                         {t(
                           'settings.bambuStudioApiUrlDescription',
                           'Empty falls back to the BAMBU_STUDIO_API_URL env default.',
+                        )}
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-sm text-bambu-gray mb-1">
+                        {t('settings.slicerStallTimeout', 'Slicer stall timeout (minutes)')}
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={240}
+                        value={localSettings.slicer_stall_timeout_minutes ?? 15}
+                        onChange={(e) =>
+                          updateSetting('slicer_stall_timeout_minutes', Number(e.target.value))
+                        }
+                        className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                      />
+                      <p className="text-xs text-bambu-gray mt-1">
+                        {t(
+                          'settings.slicerStallTimeoutDescription',
+                          'How long to keep waiting with no progress from the sidecar. This is not a limit on how long a model may take — a heavy model that keeps reporting runs to completion. On a sidecar that does not report progress it applies to total slicing time instead.',
                         )}
                       </p>
                     </div>

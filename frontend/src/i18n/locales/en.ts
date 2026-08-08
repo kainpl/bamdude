@@ -2433,6 +2433,8 @@ export default {
     orcaslicerApiUrlDescription: 'Empty falls back to the SLICER_API_URL env default.',
     bambuStudioApiUrl: 'BambuStudio API URL',
     bambuStudioApiUrlDescription: 'Empty falls back to the BAMBU_STUDIO_API_URL env default.',
+    slicerStallTimeout: 'Slicer stall timeout (minutes)',
+    slicerStallTimeoutDescription: 'How long to keep waiting with no progress from the sidecar. This is not a limit on how long a model may take — a heavy model that keeps reporting runs to completion. On a sidecar that does not report progress it applies to total slicing time instead.',
     bothSlicersHint: 'When both URLs are set and reachable, the Slice modal lets you pick which slicer to use per file.',
     sidebarOrderDescription: 'Drag items in the sidebar to reorder. Reset to default order here.',
     setDefault: 'Set Default',
