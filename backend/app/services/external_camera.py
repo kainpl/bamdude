@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 import aiohttp
 
 from backend.app.core.logging_filters import redact_url_credentials
+from backend.app.services.ffmpeg_stderr import FfmpegStderrDrain
 
 logger = logging.getLogger(__name__)
 
@@ -799,6 +800,7 @@ async def _stream_rtsp(
 
     cmd = [
         ffmpeg,
+        "-nostats",  # see routes/camera.py — no continuous writer on stderr
         "-rtsp_transport",
         "tcp",
         "-rtsp_flags",
@@ -832,6 +834,7 @@ async def _stream_rtsp(
     ]
 
     process = None
+    stderr_drain: FfmpegStderrDrain | None = None
     try:
         process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -844,12 +847,18 @@ async def _stream_rtsp(
         if on_process is not None:
             on_process(process)
 
-        # Brief check for immediate startup failures
+        # Brief check for immediate startup failures. The pipe is read directly
+        # here — the drain starts only once this ffmpeg is going to live.
         await asyncio.sleep(0.1)
         if process.returncode is not None:
             stderr = await process.stderr.read()
             logger.error("ffmpeg RTSP stream failed immediately: %s", redact_url_credentials(stderr.decode())[:300])
             return
+
+        # From here it runs for as long as the viewer watches, and nothing was
+        # reading its stderr — see services/ffmpeg_stderr for why that stalls a
+        # stream that still looks alive.
+        stderr_drain = FfmpegStderrDrain(process, name=f"ext-rtsp-{process.pid}").start()
 
         buffer = b""
         jpeg_start = b"\xff\xd8"
@@ -891,6 +900,8 @@ async def _stream_rtsp(
     except OSError as e:
         logger.error("RTSP stream error: %s", e)
     finally:
+        if stderr_drain is not None:
+            await stderr_drain.aclose()
         if process and process.returncode is None:
             process.terminate()
             try:
@@ -927,6 +938,7 @@ async def _stream_usb(
     # ffmpeg command to stream from USB camera (v4l2)
     cmd = [
         ffmpeg,
+        "-nostats",  # see routes/camera.py — no continuous writer on stderr
         "-f",
         "v4l2",
         "-framerate",
@@ -943,6 +955,7 @@ async def _stream_usb(
     ]
 
     process = None
+    stderr_drain: FfmpegStderrDrain | None = None
     try:
         logger.info("Starting USB camera stream from %s at %s fps", device, fps)
         process = await asyncio.create_subprocess_exec(
@@ -963,6 +976,9 @@ async def _stream_usb(
             stderr = await process.stderr.read()
             logger.error("ffmpeg USB stream failed immediately: %s", redact_url_credentials(stderr.decode())[:300])
             return
+
+        # Same as the RTSP path above — see services/ffmpeg_stderr.
+        stderr_drain = FfmpegStderrDrain(process, name=f"ext-usb-{process.pid}").start()
 
         buffer = b""
         jpeg_start = b"\xff\xd8"
@@ -1004,6 +1020,8 @@ async def _stream_usb(
     except OSError as e:
         logger.error("USB stream error: %s", e)
     finally:
+        if stderr_drain is not None:
+            await stderr_drain.aclose()
         if process and process.returncode is None:
             process.terminate()
             try:
