@@ -656,6 +656,13 @@ class MQTTBridge:
             # pushalls also carry ``tray_exist_bits`` and benefit from the cleanup.
             merged_ams_dict = new_state.get("ams")
             if isinstance(merged_ams_dict, dict):
+                # These units carry the RAW firmware ids, deliberately. This
+                # cache is what the slicer sees, and BambuStudio addresses the
+                # A2L's AMS-Lite as the physical id 16 — it sends
+                # ``ams_get_rfid {ams_id: 16}`` back through the VP — so
+                # normalising them to 6 the way our internal state does would
+                # break the slicer's own command path. ``apply_tray_exist_bits``
+                # folds 16 onto the same bit base internally instead (#2699).
                 units = merged_ams_dict.get("ams")
                 apply_tray_exist_bits(
                     units if isinstance(units, list) else [],

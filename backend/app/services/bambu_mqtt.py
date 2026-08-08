@@ -263,6 +263,16 @@ def apply_tray_exist_bits(
             continue
         if not isinstance(ams_id, int):
             continue
+        # Fold the A2L AMS-Lite's physical id (16) onto its normalised one (6)
+        # HERE rather than relying on the caller, because the two callers do not
+        # agree: ``_handle_ams_data`` reads state normalised at ingest, while the
+        # VP bridge does its own ``json.loads`` on the raw payload and still
+        # holds 16. Without this the docstring's promise below — "the A2L-Lite,
+        # normalised to id 6, lands at bits 24-27" — is simply untrue for one of
+        # them, and that unit falls out of the range guard and gets no cleanup at
+        # all: empty slots keep their stale filament and BambuStudio paints
+        # phantom loaded spools through the VP (upstream Bambuddy #2699).
+        ams_id = normalize_am_unit_id(ams_id)
         # AMS-HT (id 128-135) is a single-tray dry box whose presence bit is ONE
         # consecutive bit starting at 16 — ``16 + (ams_id - 128)`` — not
         # ``ams_id * 4``, which would overflow past bit 512. Regular AMS (and the

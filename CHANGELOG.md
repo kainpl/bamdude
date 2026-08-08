@@ -68,6 +68,8 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **The A2L's AMS Lite no longer shows phantom filament in Bambu Studio.** Through the Virtual Printer, empty slots on an A2L kept whatever filament had last been in them, so Studio's Sync painted spools that were not there. The A2L is the odd one out: it reports its AMS Lite under one number but packs its slot-occupancy bits under another, and while BamDude's own screens account for that, the copy handed to the slicer did not — the empty-slot cleanup skipped that unit entirely. It now recognises the unit whichever number it arrives under. Studio still addresses the AMS Lite by the number the printer uses, so the commands it sends back keep working.
+
 - **Camera rotation now applies to timelapses and finish photos, not just snapshots.** If your camera is mounted rotated, the **Camera rotation** setting straightened the notification snapshot and nothing else — so the same print produced a right-way-up snapshot and a sideways timelapse, which looks like the timelapse is broken rather than like a setting that only half works. Layer-timelapse frames are now rotated as they are captured (before the video is assembled, since the video cannot be turned afterwards without re-encoding it), and every source a finish photo can come from is rotated too: the pre-captured frame, the external camera, a live view already open, a fresh grab, and the still recovered from the printer's own timelapse video.
 
     The printer's own timelapse **video** is deliberately left as the printer recorded it — only the still extracted from it is straightened.
