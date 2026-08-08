@@ -439,6 +439,73 @@ describe('StatsPage', () => {
       // The completed print is the record instead.
       expect(screen.getAllByText('Good Small').length).toBeGreaterThan(0);
     });
+
+    it('ranks Most Expensive on filament AND measured electricity', async () => {
+      // The load-bearing case: the print with the DEARER FILAMENT loses once the
+      // power it drew is counted. Ranking on `cost` alone answered a narrower
+      // question than the label promises — `cost` is filament only.
+      server.use(
+        http.get('/api/v1/archives/slim', () =>
+          HttpResponse.json([
+            {
+              id: 20, created_at: '2024-03-01T10:00:00Z', started_at: '2024-03-01T10:00:00Z',
+              completed_at: '2024-03-01T11:00:00Z', print_name: 'Pricey Filament', status: 'completed',
+              printer_id: 1, filament_type: 'PLA', filament_color: '#00FF00',
+              filament_used_grams: 20, actual_time_seconds: 3600, print_time_seconds: 3600,
+              cost: 5.0, energy_kwh: 0.1, energy_cost: 0.05, quantity: 1,
+            },
+            {
+              id: 21, created_at: '2024-03-02T10:00:00Z', started_at: '2024-03-02T10:00:00Z',
+              completed_at: '2024-03-02T20:00:00Z', print_name: 'Long And Hungry', status: 'completed',
+              printer_id: 1, filament_type: 'ABS', filament_color: '#0000FF',
+              filament_used_grams: 30, actual_time_seconds: 36000, print_time_seconds: 36000,
+              cost: 4.0, energy_kwh: 8.0, energy_cost: 3.2, quantity: 1,
+            },
+          ])
+        )
+      );
+      render(<StatsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Most Expensive')).toBeInTheDocument();
+      });
+      // 4.00 filament + 3.20 power = 7.20 beats 5.00 + 0.05 = 5.05.
+      expect(screen.getByText('$7.20')).toBeInTheDocument();
+      expect(screen.queryByText('$5.05')).not.toBeInTheDocument();
+      // And the split is shown, so the total can be reconciled against the
+      // print's own page rather than reading as a wrong filament cost.
+      expect(screen.getByText(/filament \$4\.00 \+ power \$3\.20/)).toBeInTheDocument();
+    });
+
+    it('lets a print with no plug compete on filament alone', async () => {
+      // Unmetered prints carry null energy. They must still be rankable —
+      // treating "not measured" as disqualifying would hide every record on a
+      // farm without smart plugs.
+      server.use(
+        http.get('/api/v1/archives/slim', () =>
+          HttpResponse.json([
+            {
+              id: 30, created_at: '2024-04-01T10:00:00Z', started_at: '2024-04-01T10:00:00Z',
+              completed_at: '2024-04-01T11:00:00Z', print_name: 'Unmetered', status: 'completed',
+              printer_id: 1, filament_type: 'PLA', filament_color: '#00FF00',
+              filament_used_grams: 20, actual_time_seconds: 3600, print_time_seconds: 3600,
+              cost: 6.0, energy_kwh: null, energy_cost: null, quantity: 1,
+            },
+          ])
+        )
+      );
+      render(<StatsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Most Expensive')).toBeInTheDocument();
+      });
+      // getAllByText: with one archive its cost is also the period total, so
+      // the same figure renders in more than one widget.
+      expect(screen.getAllByText('$6.00').length).toBeGreaterThan(0);
+      // No breakdown when nothing was measured — a "+ power $0.00" would claim
+      // the print ran on no electricity.
+      expect(screen.queryByText(/power \$0\.00/)).not.toBeInTheDocument();
+    });
   });
 
   describe('export', () => {

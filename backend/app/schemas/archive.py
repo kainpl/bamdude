@@ -183,7 +183,16 @@ class ArchiveSlim(BaseModel):
     status: str
     started_at: datetime | None
     completed_at: datetime | None
+    # Filament ONLY — computed by usage_tracker from grams x price per spool
+    # (plus the untracked remainder at the default rate) and recomputed by
+    # POST /archives/recalculate-costs. Electricity is NOT in here.
     cost: float | None
+    # Measured electricity for this print, when a smart plug covered it.
+    # Populated in per-print energy tracking mode; NULL otherwise, and NULL for
+    # every print on a printer with no plug — those then compete on filament
+    # alone, which is the honest comparison rather than a fabricated zero-cost.
+    energy_kwh: float | None = None
+    energy_cost: float | None = None
     quantity: int = 1
     created_at: datetime | None
     thumbnail_path: str | None = None

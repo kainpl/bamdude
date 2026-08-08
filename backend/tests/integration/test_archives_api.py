@@ -288,6 +288,52 @@ class TestArchivesSlimAPI:
         assert "tags" not in item
         assert "photos" not in item
         assert "content_hash" not in item
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_slim_carries_measured_energy(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        """The "Most Expensive" record is computed client-side from this payload.
+
+        ``cost`` is filament ONLY — usage_tracker fills it from grams x the price
+        of each spool, plus the untracked remainder at the default rate. Ranking
+        on it alone answered a narrower question than the label promises, and it
+        could not be widened from the frontend because the electricity simply was
+        not in this response.
+        """
+        printer = await printer_factory()
+        await archive_factory(
+            printer.id,
+            print_name="Metered",
+            status="completed",
+            cost=1.50,
+            energy_kwh=0.9,
+            energy_cost=0.42,
+        )
+
+        item = (await async_client.get("/api/v1/archives/slim")).json()[0]
+        assert item["cost"] == 1.50
+        assert item["energy_kwh"] == 0.9
+        assert item["energy_cost"] == 0.42
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_slim_reports_no_energy_as_null_not_zero(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        """A printer with no smart plug drew *something*; we just did not measure it.
+
+        NULL says that. A zero would claim the print ran on no electricity, and
+        would be indistinguishable from a measured zero — which is exactly the
+        distinction the plug drivers already refuse to blur.
+        """
+        printer = await printer_factory()
+        await archive_factory(printer.id, print_name="Unmetered", status="completed", cost=1.50)
+
+        item = (await async_client.get("/api/v1/archives/slim")).json()[0]
+        assert item["energy_kwh"] is None
+        assert item["energy_cost"] is None
         assert "duplicates" not in item
         assert "duplicate_count" not in item
 

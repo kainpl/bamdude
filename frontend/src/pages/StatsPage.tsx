@@ -896,12 +896,31 @@ function RecordsWidget({ archives, currency }: { archives: ArchiveSlim[]; curren
       });
     }
 
-    const costliest = findMax(a => a.cost);
+    // Filament AND measured electricity. `cost` is filament only — grams x the
+    // price of that spool — so ranking on it alone answered a narrower question
+    // than the label promises, and a long print on a cheap filament could lose
+    // to a short one on an expensive filament while having cost more to run.
+    //
+    // A print with no plug data contributes 0 energy and competes on filament
+    // alone, which is how it has always been ranked. That is the honest
+    // comparison: we do not know what it drew, and inventing a figure would put
+    // a guess on the podium.
+    const printTotalCost = (a: ArchiveSlim) => (a.cost ?? 0) + (a.energy_cost ?? 0);
+    const costliest = findMax(printTotalCost);
     if (costliest.archive) {
+      const winner: ArchiveSlim = costliest.archive;
+      // Show the split when electricity actually moved the number, so the value
+      // can be reconciled against the print's own page rather than looking like
+      // the filament cost is wrong.
+      const energy = winner.energy_cost ?? 0;
+      const breakdown =
+        energy > 0
+          ? `${t('stats.filamentCostShort')} ${currency}${(winner.cost ?? 0).toFixed(2)} + ${t('stats.energyCostShort')} ${currency}${energy.toFixed(2)}`
+          : null;
       result.push({
         icon: DollarSign, iconColor: 'text-green-600 dark:text-green-400', label: t('stats.mostExpensivePrint'),
         value: `${currency}${costliest.value.toFixed(2)}`,
-        detail: costliest.archive.print_name || null,
+        detail: [winner.print_name || null, breakdown].filter(Boolean).join(' · ') || null,
       });
     }
 

@@ -1391,6 +1391,11 @@ export default {
     longestPrint: 'Longest Print',
     heaviestPrint: 'Heaviest Print',
     mostExpensivePrint: 'Most Expensive',
+    // Breakdown under the Most Expensive record. Shown only when a smart plug
+    // measured the electricity, so the total can be reconciled against the
+    // print's own page instead of reading as a wrong filament cost.
+    filamentCostShort: 'filament',
+    energyCostShort: 'power',
     busiestDay: 'Busiest Day',
     successStreak: 'Success Streak',
     streakPrint: 'consecutive print',

@@ -918,7 +918,13 @@ export interface ArchiveSlim {
   status: string;
   started_at: string | null;
   completed_at: string | null;
+  // Filament only — grams x price per spool, plus the untracked remainder at
+  // the default rate. Electricity is NOT in here; it is the two fields below.
   cost: number | null;
+  // Measured electricity for this print, when a smart plug covered it. Null on
+  // a printer without one, and null outside per-print energy tracking mode.
+  energy_kwh: number | null;
+  energy_cost: number | null;
   quantity: number;
   created_at: string;
   thumbnail_path: string | null;

@@ -437,6 +437,14 @@ async def list_archives_slim(
             PrintArchive.filament_color,
             PrintArchive.status,
             PrintArchive.cost,
+            # Measured electricity, alongside the filament cost. ``cost`` is
+            # filament ONLY (usage_tracker: grams x that spool's price, plus the
+            # untracked remainder at the default rate), so a "most expensive
+            # print" computed from it alone is answering a narrower question
+            # than it claims. Both columns ride here because the records widget
+            # aggregates client-side from this payload.
+            PrintArchive.energy_kwh,
+            PrintArchive.energy_cost,
             PrintArchive.quantity,
             PrintArchive.created_at,
             PrintArchive.thumbnail_path,
@@ -464,6 +472,8 @@ async def list_archives_slim(
             "started_at": r.started_at,
             "completed_at": r.completed_at,
             "cost": r.cost,
+            "energy_kwh": r.energy_kwh,
+            "energy_cost": r.energy_cost,
             "quantity": r.quantity,
             "created_at": r.created_at,
             "thumbnail_path": r.thumbnail_path,
