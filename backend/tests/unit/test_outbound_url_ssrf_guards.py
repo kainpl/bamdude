@@ -123,6 +123,74 @@ class TestSettingsAreValidatedOnSave:
         AppSettingsUpdate(**{field: ""})
 
 
+class TestPerServiceCallSites:
+    """Save-time validation covers the settings; these cover the same values
+    arriving another way — stored before the validator existed, or supplied
+    per-device rather than per-install.
+    """
+
+    def test_home_assistant_refuses_an_unsafe_url_by_staying_unconfigured(self) -> None:
+        """Disabling the integration beats raising out of a service constructor:
+        a bad setting should stop HA calls, not break whatever called in."""
+        from backend.app.services.homeassistant import HomeAssistantService
+
+        svc = HomeAssistantService()
+        svc.configure("http://169.254.169.254/", "token")
+        assert svc.base_url == ""
+
+        svc.configure("http://192.168.1.100:8123", "token")
+        assert svc.base_url == "http://192.168.1.100:8123"
+
+    @pytest.mark.parametrize(
+        ("ip", "allowed"),
+        [
+            ("192.168.1.50", True),
+            ("10.1.2.3", True),
+            ("100.100.100.200", False),  # Alibaba metadata — neither loopback nor link-local
+            ("169.254.169.254", False),
+            ("::ffff:100.100.100.200", False),  # mapped form of the same
+            ("224.0.0.1", False),
+            ("0.0.0.0", False),
+            ("plug.local", False),  # fail closed: a Tasmota target is always a bare IP
+        ],
+    )
+    def test_tasmota_ip_guard(self, ip: str, allowed: bool) -> None:
+        from backend.app.services.tasmota import TasmotaService
+
+        assert TasmotaService._validate_ip(ip) is allowed
+
+    @pytest.mark.parametrize(
+        ("url", "allowed"),
+        [
+            ("http://openhab.local/api", True),  # symbolic hostname stays valid here
+            ("http://192.168.1.5/api", True),
+            ("http://100.100.100.200/", False),
+            ("http://2130706433/", False),  # numeric-encoded: used to pass as "a hostname"
+            ("ftp://192.168.1.5/", False),
+            ("http://[::ffff:169.254.169.254]/", False),
+        ],
+    )
+    def test_rest_plug_url_guard(self, url: str, allowed: bool) -> None:
+        from backend.app.services.rest_smart_plug import RESTSmartPlugService
+
+        assert RESTSmartPlugService._validate_url(url) is allowed
+
+    def test_the_old_plug_checks_missed_three_of_these(self) -> None:
+        """``not is_loopback and not is_link_local`` — the previous rule — caught
+        only AWS's IPv4 metadata address. Recorded so the widening is not later
+        mistaken for belt-and-braces."""
+        import ipaddress
+
+        def old(host: str) -> bool:
+            addr = ipaddress.ip_address(host)
+            return not addr.is_loopback and not addr.is_link_local
+
+        assert old("100.100.100.200") is True  # Alibaba metadata: waved through
+        assert old("fd00:ec2::254") is True  # AWS IPv6 metadata: waved through
+        assert old("224.0.0.1") is True  # multicast: waved through
+        assert old("169.254.169.254") is False  # the one it did catch
+
+
 class TestNoNewOutboundUrlEscapesAPolicy:
     """The backstop. Everything above tests today's fields; this one fails when
     tomorrow's is added without a decision.

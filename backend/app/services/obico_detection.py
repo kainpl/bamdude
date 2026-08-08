@@ -130,9 +130,26 @@ class ObicoDetectionService:
         else:
             enabled_printers = None  # None = all printers
 
+        # The ML endpoint is commonly self-hosted next to BamDude, so the
+        # LAN-service policy applies — loopback and RFC-1918 stay allowed, cloud
+        # metadata and numeric-encoded hosts do not. ``schemas/settings``
+        # validates the same value on save; this covers values stored before that
+        # validator existed. An unsafe URL reads as "not configured", which the
+        # poll loop already treats as "do nothing" (see the ``ml_url`` check
+        # below), rather than raising inside a background loop.
+        ml_url = (rows.get("obico_ml_url") or "").rstrip("/")
+        if ml_url:
+            from backend.app.api.routes._url_safety import assert_safe_lan_service_url
+
+            try:
+                assert_safe_lan_service_url(ml_url, label="Obico ML URL")
+            except ValueError as exc:
+                logger.warning("Refusing unsafe Obico ML URL: %s", exc)
+                ml_url = ""
+
         return {
             "enabled": rows.get("obico_enabled", "false").lower() == "true",
-            "ml_url": (rows.get("obico_ml_url") or "").rstrip("/"),
+            "ml_url": ml_url,
             "sensitivity": rows.get("obico_sensitivity", "medium"),
             "action": rows.get("obico_action", "notify"),
             "poll_interval": int(rows.get("obico_poll_interval", "10")),

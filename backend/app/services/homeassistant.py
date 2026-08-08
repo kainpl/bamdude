@@ -21,7 +21,28 @@ class HomeAssistantService:
         self.token: str = ""
 
     def configure(self, url: str, token: str):
-        """Configure HA connection settings."""
+        """Configure HA connection settings.
+
+        The URL is checked here — the one point it enters this service — under
+        the LAN-service policy: Home Assistant on the same box or LAN is the
+        normal deployment, so loopback and RFC-1918 stay allowed, while cloud
+        metadata endpoints, numeric-encoded IPs and non-HTTP schemes do not.
+
+        ``schemas/settings`` validates the same value on save; this covers the
+        ones that were stored before that validator existed, and any that arrive
+        by another route. An unsafe URL leaves the service unconfigured rather
+        than raising, so a bad setting disables the integration instead of
+        breaking whatever was calling it.
+        """
+        from backend.app.api.routes._url_safety import assert_safe_lan_service_url
+
+        if url:
+            try:
+                assert_safe_lan_service_url(url, label="Home Assistant URL")
+            except ValueError as exc:
+                logger.warning("Refusing unsafe Home Assistant URL: %s", exc)
+                url = ""
+
         self.base_url = url.rstrip("/") if url else ""
         self.token = token or ""
 

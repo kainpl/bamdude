@@ -17,6 +17,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.api.routes._url_safety import assert_safe_lan_service_url
 from backend.app.core.config import APP_VERSION
 from backend.app.models.notification import NotificationDigestQueue, NotificationLog, NotificationProvider
 from backend.app.models.notification_template import NotificationTemplate
@@ -258,6 +259,13 @@ class NotificationService:
 
         if not topic:
             return False, "Topic is required"
+
+        # A self-hosted ntfy on the same box or LAN is the normal case, so the
+        # LAN-service policy applies rather than a blanket private-address block.
+        try:
+            assert_safe_lan_service_url(server, label="ntfy server URL")
+        except ValueError as exc:
+            return False, str(exc)
 
         url = f"{server}/{topic}"
         # ntfy reads Title/Message from HTTP headers. httpx enforces ASCII
@@ -808,6 +816,15 @@ class NotificationService:
         """
         webhook_url = config.get("webhook_url", "").strip()
         auth_header = config.get("auth_header", "").strip()
+
+        # Same reasoning as ntfy: a webhook receiver is routinely something the
+        # operator runs themselves, so loopback and RFC-1918 stay valid targets
+        # while cloud-metadata endpoints and numeric-encoded hosts do not.
+        if webhook_url:
+            try:
+                assert_safe_lan_service_url(webhook_url, label="Webhook URL")
+            except ValueError as exc:
+                return False, str(exc)
         payload_format = config.get("payload_format", "generic").strip()
 
         if not webhook_url:
