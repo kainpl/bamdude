@@ -620,6 +620,23 @@ class PrinterState:
     # (home_flag / xcam / cfg / fun / fun2 / named support bools). Populated as
     # messages arrive; compute_printer_supports gates each row on it.
     print_option_support: dict = field(default_factory=dict)
+    # The two live halves of BS ``MachineObject::is_nozzle_flow_type_supported``
+    # (``DeviceManager.hpp:336`` — ``is_enable_np | has_extra_flow_type``), which
+    # decides whether a K-profile's Standard / High Flow choice means anything on
+    # this machine. See ``printer_configs.supports_nozzle_flow_type``.
+    #
+    # STICKY: once observed they stay true. BS re-evaluates ``is_enable_np`` on
+    # each full parse, but our pushes are frequently partial — a status frame
+    # carrying only ``gcode_state`` would otherwise retract a capability the
+    # printer has, and the field would flicker in the UI as frames arrive.
+    # A capability is a property of the printer, not of one message.
+    #
+    # ``is_enable_np`` — the push carries the new-protocol quartet
+    # (``check_enable_np``, ``DeviceManager.cpp:4280``).
+    enable_np: bool = False
+    # ``has_extra_flow_type`` — a nozzle frame that also carried ``flag3``
+    # (``DeviceManager.cpp:3314-3321``).
+    has_extra_flow_type: bool = False
     # AI detection and print options
     print_options: PrintOptions = field(default_factory=PrintOptions)
     # Calibration stage tracking (from stg_cur and stg fields)
@@ -1016,6 +1033,14 @@ class BambuMQTTClient:
         # correlated by sequence_id" in this class.
         self._sequence_id: int = 0
         self._kprofile_waiters: dict[str, tuple[asyncio.Event, str, list | None]] = {}
+        # Verdicts on K-profile *writes* (``extrusion_cali_set`` /
+        # ``extrusion_cali_del``), keyed by the sequence_id we sent — the printer
+        # echoes it back. ``None`` = registered, not yet answered. Filled on the
+        # MQTT thread, drained by ``await_cali_ack``. A separate registry from
+        # ``_kprofile_waiters`` because a read waits for a payload and a write
+        # waits for a verdict; sharing one would make "no profiles" and "no
+        # answer" the same value.
+        self._pending_cali_acks: dict[str, dict | None] = {}
 
         # GCode ACK listeners: sequence_id -> (threading.Event, result_dict)
         # Used by macro execute to wait for printer ACK before returning HTTP response
@@ -1700,6 +1725,8 @@ class BambuMQTTClient:
 
             # Accumulate per-option support (BS DevPrintOptionsParser parity).
             self._parse_print_option_support(print_data)
+
+            self._latch_flow_type_flags(print_data)
             if "auto_recovery" in print_data and not _ps_hold("auto_recovery"):
                 po.auto_recovery_step_loss = bool(print_data["auto_recovery"])
             if "sound_enable" in print_data and not _ps_hold("sound_enable"):
@@ -1790,7 +1817,9 @@ class BambuMQTTClient:
             if "command" in print_data:
                 cmd = print_data.get("command")
                 logger.debug("[%s] Received command response: %s", self.serial_number, cmd)
-                if cmd in ("extrusion_cali_sel", "extrusion_cali_set", "extrusion_cali_del", "ams_filament_setting"):
+                if cmd in ("extrusion_cali_set", "extrusion_cali_del"):
+                    self._route_ack(print_data)
+                elif cmd in ("extrusion_cali_sel", "ams_filament_setting"):
                     logger.debug("[%s] %s response: %s", self.serial_number, cmd, print_data)
                 # AMS drying responses are rare (user-initiated only) and the
                 # full payload — including `result` and any `reason` code —
@@ -5804,6 +5833,42 @@ class BambuMQTTClient:
             self._drying_targets.pop(ams_id, None)
         return True
 
+    @staticmethod
+    def _entry_nozzle_diameter(entry: dict, envelope: dict) -> str:
+        """Which nozzle a calibration entry belongs to (#1748).
+
+        The printer puts ``nozzle_diameter`` on the ``extrusion_cali_get``
+        **envelope**. A per-filament entry carries ``setting_id``,
+        ``filament_id``, ``name``, ``k_value``, ``n_coef`` and ``cali_idx`` —
+        and, on every single-nozzle model, nothing else. Reading it off the
+        entry and defaulting to ``"0.4"`` therefore reported *every* profile on
+        a 0.6 or 0.8 mm machine as 0.4 mm, while the correct value sat unread on
+        the envelope two lines away.
+
+        That was never cosmetic. Editing a profile is delete-and-re-add on
+        single-nozzle printers and the dialog rebuilds the diameter from what it
+        was shown, so saving an untouched 0.6 mm profile stored it back as 0.4.
+        Deletes aimed ``extrusion_cali_del`` at the wrong nozzle the same way.
+        And the ``cali_idx`` cascade keys off ``KProfile.nozzle_diameter``
+        (``calibration_service.py`` sync path), so on 0.6/0.8 it wrote DB rows
+        under the wrong diameter and a spool's profile assignment silently
+        failed to stick — the "cannot auto-map a K-profile" half of the report,
+        fixed here at the source rather than at each consumer.
+
+        It never reproduced on H2D because that firmware *does* repeat the field
+        per entry; the entry is preferred for exactly that reason, and resolved
+        per row — a dual-nozzle payload can carry one of each.
+
+        ``"0.4"`` survives only as the floor for a payload that names no
+        diameter anywhere: the field is not optional downstream. It is now
+        reached when the printer told us nothing, instead of on every entry from
+        every single-nozzle machine.
+        """
+        for value in (entry.get("nozzle_diameter"), envelope.get("nozzle_diameter")):
+            if value not in (None, ""):
+                return str(value)
+        return "0.4"
+
     def _handle_extrusion_cali_history(self, data: dict) -> None:
         """Mirror ``extrusion_cali_get`` push into ``state.extrusion_cali_history``.
 
@@ -5826,7 +5891,7 @@ class BambuMQTTClient:
                         name=str(f.get("name", "")),
                         filament_id=str(f.get("filament_id", "")),
                         setting_id=str(f.get("setting_id", "") or ""),
-                        nozzle_diameter=float(f.get("nozzle_diameter", 0.4) or 0.4),
+                        nozzle_diameter=float(self._entry_nozzle_diameter(f, data)),
                         nozzle_volume_type=str(f.get("nozzle_volume_type", "standard") or "standard"),
                         extruder_id=int(f.get("extruder_id", 0)),
                         k_value=float(f.get("k_value", 0.0) or 0.0),
@@ -5858,7 +5923,7 @@ class BambuMQTTClient:
                         ams_id=int(f.get("ams_id", 0)),
                         slot_id=int(f.get("slot_id", 0)),
                         extruder_id=int(f.get("extruder_id", 0)),
-                        nozzle_diameter=float(f.get("nozzle_diameter", 0.4) or 0.4),
+                        nozzle_diameter=float(self._entry_nozzle_diameter(f, data)),
                         nozzle_volume_type=str(f.get("nozzle_volume_type", "standard") or "standard"),
                         filament_id=str(f.get("filament_id", "")),
                         setting_id=str(f.get("setting_id", "") or ""),
@@ -5961,7 +6026,7 @@ class BambuMQTTClient:
                                 slot_id=cali_idx,
                                 extruder_id=int(f.get("extruder_id", 0)),
                                 nozzle_id=str(f.get("nozzle_id", "")),
-                                nozzle_diameter=str(f.get("nozzle_diameter", "0.4")),
+                                nozzle_diameter=self._entry_nozzle_diameter(f, data),
                                 filament_id=str(f.get("filament_id", "")),
                                 name=str(f.get("name", "")),
                                 k_value=str(f.get("k_value", "0.000000")),
@@ -5989,7 +6054,7 @@ class BambuMQTTClient:
                             slot_id=cali_idx,
                             extruder_id=int(f.get("extruder_id", 0)),
                             nozzle_id=str(f.get("nozzle_id", "")),
-                            nozzle_diameter=str(f.get("nozzle_diameter", "0.4")),
+                            nozzle_diameter=self._entry_nozzle_diameter(f, data),
                             filament_id=str(f.get("filament_id", "")),
                             name=str(f.get("name", "")),
                             k_value=str(f.get("k_value", "0.000000")),
@@ -6106,7 +6171,7 @@ class BambuMQTTClient:
         setting_id: str | None = None,
         slot_id: int = 0,
         cali_idx: int | None = None,
-    ) -> bool:
+    ) -> str | None:
         """Set/update a K-profile on the printer.
 
         Args:
@@ -6121,11 +6186,15 @@ class BambuMQTTClient:
             cali_idx: For edits, the existing slot being edited (enables in-place edit)
 
         Returns:
-            True if command was sent, False otherwise
+            The ``sequence_id`` the command was published under — pass it to
+            :meth:`await_cali_ack` to learn the printer's verdict — or ``None``
+            when nothing was sent. Never the empty string: ``_sequence_id`` is
+            incremented before use, so the value is always ≥ 1 and a caller can
+            test it for truth.
         """
         if not self._client or not self.state.connected:
             logger.warning("[%s] Cannot set K-profile: not connected", self.serial_number)
-            return False
+            return None
 
         self._sequence_id += 1
 
@@ -6155,15 +6224,24 @@ class BambuMQTTClient:
             "nozzle_diameter": nozzle_diameter,
             "nozzle_id": nozzle_id,
             "setting_id": setting_id if setting_id else "",
-            "tray_id": -1,
+            # 0, not -1. The X1C validates this field and answers
+            # result:"fail" reason:"invalid tray_id" — while applying the write
+            # anyway — so with -1 the acknowledgement was useless and could not
+            # be gated on. The H2D ignores the value entirely. BambuStudio always
+            # sends a real tray_id and defaults it to 0 for a manually entered
+            # profile. Measured upstream on both printer classes: -1 fails,
+            # 0 succeeds, and cali_idx:-1 is accepted either way, so this one
+            # field was the whole cause.
+            "tray_id": 0,
         }
 
+        seq = str(self._sequence_id)
         command = {
             "print": {
                 "command": "extrusion_cali_set",
                 "filaments": [filament_entry],
                 "nozzle_diameter": nozzle_diameter,
-                "sequence_id": str(self._sequence_id),
+                "sequence_id": seq,
             }
         }
 
@@ -6172,14 +6250,17 @@ class BambuMQTTClient:
             f"[{self.serial_number}] Setting K-profile: {name} = {k_value} (cali_idx={effective_cali_idx}, new={slot_id == 0})"
         )
         logger.debug("[%s] K-profile SET command: %s", self.serial_number, command_json)
+        # Registered before publishing: the reply can land on the MQTT thread
+        # before this call returns, and a verdict with nowhere to go is dropped.
+        self._pending_cali_acks[seq] = None
         self._client.publish(self.topic_publish, command_json, qos=1)
-        return True
+        return seq
 
     def set_kprofiles_batch(
         self,
         profiles: list[dict],
         nozzle_diameter: str = "0.4",
-    ) -> bool:
+    ) -> str | None:
         """Set multiple K-profiles in a single command (for dual-nozzle).
 
         Args:
@@ -6188,11 +6269,12 @@ class BambuMQTTClient:
             nozzle_diameter: Common nozzle diameter for all profiles
 
         Returns:
-            True if command was sent, False otherwise
+            The published ``sequence_id``, or ``None`` when nothing was sent.
+            See :meth:`set_kprofile`.
         """
         if not self._client or not self.state.connected:
             logger.warning("[%s] Cannot set K-profiles batch: not connected", self.serial_number)
-            return False
+            return None
 
         import random
 
@@ -6224,24 +6306,26 @@ class BambuMQTTClient:
                     "nozzle_diameter": nozzle_diameter,
                     "nozzle_id": p.get("nozzle_id", f"HS00-{nozzle_diameter}"),
                     "setting_id": setting_id if setting_id else "",
-                    "tray_id": -1,
+                    "tray_id": 0,  # not -1 — see set_kprofile
                 }
             )
 
+        seq = str(self._sequence_id)
         command = {
             "print": {
                 "command": "extrusion_cali_set",
                 "filaments": filament_entries,
                 "nozzle_diameter": nozzle_diameter,
-                "sequence_id": str(self._sequence_id),
+                "sequence_id": seq,
             }
         }
 
         command_json = json.dumps(command)
         logger.info("[%s] Setting %s K-profiles in batch", self.serial_number, len(filament_entries))
         logger.debug("[%s] K-profile SET batch command: %s", self.serial_number, command_json)
+        self._pending_cali_acks[seq] = None
         self._client.publish(self.topic_publish, command_json, qos=1)
-        return True
+        return seq
 
     def delete_kprofile(
         self,
@@ -6250,7 +6334,7 @@ class BambuMQTTClient:
         nozzle_id: str,
         nozzle_diameter: str = "0.4",
         extruder_id: int = 0,
-    ) -> bool:
+    ) -> str | None:
         """Delete a K-profile from the printer.
 
         Single BS-parity ``extrusion_cali_del`` shape for every printer
@@ -6274,18 +6358,20 @@ class BambuMQTTClient:
             extruder_id: Extruder ID (0 or 1 for dual nozzle)
 
         Returns:
-            True if command was sent, False otherwise
+            The published ``sequence_id``, or ``None`` when nothing was sent.
+            See :meth:`set_kprofile`.
         """
         if not self._client or not self.state.connected:
             logger.warning("[%s] Cannot delete K-profile: not connected", self.serial_number)
-            return False
+            return None
 
         self._sequence_id += 1
 
+        seq = str(self._sequence_id)
         command = {
             "print": {
                 "command": "extrusion_cali_del",
-                "sequence_id": str(self._sequence_id),
+                "sequence_id": seq,
                 "extruder_id": extruder_id,
                 "nozzle_id": nozzle_id,
                 "filament_id": filament_id,
@@ -6297,9 +6383,101 @@ class BambuMQTTClient:
         command_json = json.dumps(command)
         logger.info(f"[{self.serial_number}] Deleting K-profile: cali_idx={cali_idx}, filament={filament_id}")
         logger.debug("[%s] K-profile DELETE command: %s", self.serial_number, command_json)
+        self._pending_cali_acks[seq] = None
         # Use QoS 1 for reliable delivery (at least once)
         self._client.publish(self.topic_publish, command_json, qos=1)
-        return True
+        return seq
+
+    def _latch_flow_type_flags(self, print_data: dict) -> None:
+        """The live half of BS's nozzle-flow-type capability (#1748).
+
+        ``is_enable_np`` — ``MachineObject::check_enable_np`` — is "the push
+        carries the new-protocol quartet". ``has_extra_flow_type`` is "a nozzle
+        frame also carried ``flag3``". Their OR is what
+        ``is_nozzle_flow_type_supported()`` returns.
+
+        Both latch true and are never cleared. BS re-evaluates ``is_enable_np``
+        on each full parse; our pushes are frequently partial, so re-evaluating
+        would let a frame carrying only ``gcode_state`` retract a capability the
+        printer has, and the Flow Type field would appear and disappear as frames
+        arrive. A capability is a property of the printer, not of one message.
+        """
+        if not self.state.enable_np and all(k in print_data for k in ("cfg", "fun", "aux", "stat")):
+            self.state.enable_np = True
+        if not self.state.has_extra_flow_type and all(
+            k in print_data for k in ("nozzle_diameter", "nozzle_type", "flag3")
+        ):
+            self.state.has_extra_flow_type = True
+
+    def _route_ack(self, print_data: dict) -> None:
+        """Deliver an ``extrusion_cali_set`` / ``_del`` verdict to its waiter.
+
+        Lifted out of ``_update_state`` so it can be reached from a test without
+        building a whole status payload — the block it replaces sat several
+        hundred lines into that method, which is why nothing covered it.
+
+        Runs on the MQTT thread. Assignment into a dict is atomic under the GIL
+        and ``await_cali_ack`` only reads, so no lock is needed here.
+        """
+        # INFO, not DEBUG: this is the printer's verdict on a write the user just
+        # made, and while it sat at DEBUG the one line explaining a failed save
+        # was absent from every support bundle. Same reasoning that put
+        # ams_filament_drying at INFO.
+        logger.info(
+            "[%s] %s response: result=%s reason=%s seq=%s",
+            self.serial_number,
+            print_data.get("command"),
+            print_data.get("result"),
+            print_data.get("reason", ""),
+            print_data.get("sequence_id"),
+        )
+        logger.debug("[%s] %s full response: %s", self.serial_number, print_data.get("command"), print_data)
+        ack_seq = str(print_data.get("sequence_id", ""))
+        # Only fill a slot somebody is waiting on. Writing every ack into the
+        # dict would make it grow for the lifetime of the process.
+        if ack_seq in self._pending_cali_acks:
+            self._pending_cali_acks[ack_seq] = print_data
+
+    async def await_cali_ack(self, sequence_id: str | None, timeout: float = 3.0) -> tuple[bool, str]:
+        """Wait for the printer's verdict on a K-profile write.
+
+        ``extrusion_cali_set`` / ``extrusion_cali_del`` are answered with
+        ``result`` and, on failure, ``reason`` — echoing the ``sequence_id`` the
+        write was published under, so an answer can be attributed to the write
+        that caused it rather than to whichever write was most recent.
+
+        **Silence is success.** A printer that never answers must not turn every
+        save into an error: no answer is not evidence of refusal, and some
+        firmware simply does not send one. Only an explicit non-success verdict
+        is reported as a failure — which is why this can be gated on at all, and
+        why the ``tray_id`` fix had to come first (see :meth:`set_kprofile`).
+
+        Polls rather than waiting on an Event: the writers are synchronous and
+        called from the request thread, so there is no loop-safe place to create
+        one, and a 3 s ceiling at 50 ms costs at most 60 wake-ups on the slowest
+        path. ``get_kprofiles`` uses an Event because it is async throughout.
+
+        Returns ``(ok, detail)``; ``detail`` carries the printer's own reason.
+        """
+        if not sequence_id:
+            return True, ""
+        try:
+            deadline = asyncio.get_running_loop().time() + timeout
+            while asyncio.get_running_loop().time() < deadline:
+                ack = self._pending_cali_acks.get(sequence_id)
+                if ack is not None:
+                    result = str(ack.get("result", "")).lower()
+                    if result in ("success", "ok", ""):
+                        return True, ""
+                    reason = str(ack.get("reason", "") or "").strip()
+                    return False, reason or result
+                await asyncio.sleep(0.05)
+            logger.debug("[%s] No cali ack for seq=%s within %ss", self.serial_number, sequence_id, timeout)
+            return True, ""
+        finally:
+            # Only this write's slot. Clearing the dict would drop the verdicts
+            # other in-flight writes are still waiting on.
+            self._pending_cali_acks.pop(sequence_id, None)
 
     # =========================================================================
     # Printer Control Commands
