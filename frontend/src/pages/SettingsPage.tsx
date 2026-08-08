@@ -232,9 +232,11 @@ export function SettingsPage() {
     mode, resolvedMode,
     darkStyle, darkBackground, darkAccent,
     lightStyle, lightBackground, lightAccent,
+    progressInTitle,
     setMode,
     setDarkStyle, setDarkBackground, setDarkAccent,
     setLightStyle, setLightBackground, setLightAccent,
+    setProgressInTitle,
   } = useTheme();
   const [localSettings, setLocalSettings] = useState<AppSettings | null>(null);
   // Transient typed strings for the per-filament humidity threshold inputs
@@ -2066,6 +2068,21 @@ export function SettingsPage() {
               <p className="text-xs text-bambu-gray">
                 {t('settings.themeToggleHint')}
               </p>
+
+              {/* Per-browser, not per-account: a wall display wants this, the
+                  same person's laptop may not — so it is stored locally and
+                  never synced to the server (#2681). */}
+              <div className="flex items-center justify-between pt-2 border-t border-bambu-dark-tertiary">
+                <div className="min-w-0 pr-4">
+                  <label className="block text-sm text-white">{t('settings.progressInTitle')}</label>
+                  <p className="text-xs text-bambu-gray mt-0.5">{t('settings.progressInTitleHint')}</p>
+                </div>
+                <Toggle
+                  checked={progressInTitle}
+                  onChange={(checked) => setProgressInTitle(checked)}
+                  aria-label={t('settings.progressInTitle')}
+                />
+              </div>
             </CardContent>
           </Card>
 

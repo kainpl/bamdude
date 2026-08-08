@@ -3403,6 +3403,37 @@ function PrinterCard({
                     )}
                   </div>
                 )}
+                {/* Size S exists to watch a whole fleet on one screen, and it
+                    could not answer the question that view is for — "which
+                    printer finishes first". One line of the metrics the expanded
+                    card already shows, through the same formatters so the two
+                    sizes read alike. Each value is dropped individually when the
+                    printer does not report it, and the row keeps its height when
+                    nothing is printing so cards do not shift as prints start and
+                    finish (upstream #2674). */}
+                <div className="mt-1 flex min-h-[14px] items-center gap-2 overflow-hidden text-[11px] leading-none text-bambu-gray">
+                  {(status.state === 'RUNNING' || status.state === 'PAUSE') && (
+                    <>
+                      {status.remaining_time != null && status.remaining_time > 0 && (
+                        <>
+                          <span className="flex shrink-0 items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            {formatDuration(status.remaining_time * 60)}
+                          </span>
+                          <span className="shrink-0 font-medium text-bambu-green" title={t('printers.estimatedCompletion')}>
+                            ETA {formatETA(status.remaining_time, timeFormat, t)}
+                          </span>
+                        </>
+                      )}
+                      {status.layer_num != null && status.total_layers != null && status.total_layers > 0 && (
+                        <span className="flex min-w-0 items-center gap-1 truncate">
+                          <Layers className="w-3 h-3 shrink-0" />
+                          {status.layer_num}/{status.total_layers}
+                        </span>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             ) : (
               /* Expanded: Full status section */

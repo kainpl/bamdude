@@ -68,6 +68,10 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **The small printer card now shows remaining time, ETA and layers.** The smallest card size exists for one job — watching a whole farm on one screen — and it showed only a name, a status dot and a progress bar. So dropping to it to fit more printers meant losing exactly the numbers you dropped down to compare, and it could not answer "which one finishes first". It now carries one line of metrics under the bar while a print is running, using the same formatting as the medium card so the two read alike. Each value is left out individually if the printer does not report it, and the row keeps its height when nothing is printing so cards do not jump as prints start and finish.
+
+- **Print progress can now show in the browser tab.** Optional, off by default, under **Settings → General → Appearance**. With it on, the tab title carries the percentage of the print finishing soonest and the tab icon becomes a matching progress ring in your accent colour — so a browser window parked on another screen tells you how the farm is doing without switching to it. The preference is per-browser rather than per-account: a wall display probably wants it, the same person's laptop probably does not. Turning it off hands the tab back exactly as it was.
+
 - **You can delete a folder you emptied yourself.** Folders have no owner, so deleting one needed the full "delete anything" permission — which meant a user could create a folder, delete their own files out of it, and then have to ask an administrator to clear the empty shell. Deleting an **empty** folder now needs only the ordinary delete permission. A folder with files or subfolders in it, an external mount, or a folder linked to a project or an archive still needs an administrator, since removing those affects more than the folder.
 
     "Empty" is decided by the server, not by what you can see. A folder holding a file somebody else has deleted looks empty in the tree — deleting it would take that file for good and break their restore — so it is refused, and says why.
