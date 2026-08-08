@@ -62,6 +62,11 @@ from backend.app.schemas.library import (
 )
 from backend.app.schemas.plate_objects import PlateObjectsResponse
 from backend.app.services.archive import ThreeMFParser
+from backend.app.services.design_settings import (
+    apply_design_overrides,
+    extract_design_process_overrides,
+    overrides_from_config,
+)
 from backend.app.services.library_helpers import (
     detect_file_type,
     folder_activity_at,
@@ -84,6 +89,9 @@ from backend.app.utils.threemf_tools import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Path of the embedded slicer config inside a BambuStudio / OrcaSlicer 3MF.
+_PROJECT_SETTINGS_PATH = "Metadata/project_settings.config"
 
 router = APIRouter(prefix="/library", tags=["library"])
 
@@ -2594,6 +2602,21 @@ async def _run_slicer_with_fallback(
         # with a PVA slot loaded but never used.
         presets["process"] = _patch_process_support_settings(presets["process"], primary_bytes)
 
+        # Carry the designer's own process tweaks onto the picked preset (#2622).
+        # BambuStudio records exactly which keys deviate from the system preset,
+        # so a MakerWorld author's five walls / 100 % infill / 0.1 mm first layer
+        # survive a re-slice for another printer instead of being flattened by
+        # --load-settings. Opt-in per key: only the keys the caller names are
+        # applied, and only if the source really lists them as changed. Runs
+        # AFTER the support patch so an explicit design pick wins over the
+        # blanket support carry-over.
+        if request.design_overrides:
+            presets["process"] = apply_design_overrides(
+                presets["process"],
+                extract_design_process_overrides(primary_bytes),
+                request.design_overrides,
+            )
+
     used_embedded_settings = False
     # "Slice as designed" (upstream #2611): honour the file's embedded
     # project_settings.config instead of the picked profile triplet. Only
@@ -3880,9 +3903,23 @@ async def get_library_file_plates(
     # back to its own defaults. Done outside the fast/slow plate split so both
     # return paths carry it.
     embedded_presets: dict[str, str | None] = {"printer": None, "process": None}
+    # Process settings the designer changed away from the stock preset (#2622).
+    # Offered in the SliceModal so a cross-printer re-slice can carry them
+    # instead of silently losing them to the picked process profile. Read from
+    # the ZIP already being opened for the embedded preset names — one open, two
+    # answers, and both degrade to "nothing to offer" on any parse failure.
+    design_overrides: list[dict] = []
     try:
         with zipfile.ZipFile(file_path, "r") as zf:
             embedded_presets = extract_embedded_presets_from_3mf(zf)
+            if _PROJECT_SETTINGS_PATH in zf.namelist():
+                try:
+                    design_overrides = [
+                        o._asdict()
+                        for o in overrides_from_config(json.loads(zf.read(_PROJECT_SETTINGS_PATH).decode("utf-8")))
+                    ]
+                except (ValueError, OSError, KeyError):
+                    design_overrides = []
     except Exception:
         pass
 
@@ -3908,6 +3945,7 @@ async def get_library_file_plates(
             "is_multi_plate": len(plates) > 1,
             "embedded_printer": embedded_presets["printer"],
             "embedded_process": embedded_presets["process"],
+            "design_overrides": design_overrides,
         }
 
     # Slow path: open ZIP + parse. Used for files uploaded before m023 ran,
@@ -3938,6 +3976,7 @@ async def get_library_file_plates(
         "is_multi_plate": len(plates) > 1,
         "embedded_printer": embedded_presets["printer"],
         "embedded_process": embedded_presets["process"],
+        "design_overrides": design_overrides,
     }
 
 

@@ -2092,6 +2092,11 @@ export interface SliceRequest {
   // etc.) instead of the picked profile triplet. The preset refs are still
   // required by the backend validator but go unused on this path.
   use_embedded_settings?: boolean;
+  /** Process setting keys the 3MF's designer changed away from the stock
+   * preset, to carry onto the picked process profile (#2622). Authoritative:
+   * a key not listed here is not applied. Mutually exclusive with
+   * `use_embedded_settings`, which bypasses the process JSON entirely. */
+  design_overrides?: string[];
   printer_preset_id?: number;
   process_preset_id?: number;
   filament_preset_id?: number;

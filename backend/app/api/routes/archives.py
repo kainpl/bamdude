@@ -34,6 +34,7 @@ from backend.app.schemas.archive import (
 )
 from backend.app.schemas.plate_objects import PlateObjectsResponse
 from backend.app.services.archive import ArchiveService, resolve_display_stem
+from backend.app.services.design_settings import overrides_from_config
 from backend.app.services.filament_cost import default_rate_per_kg
 from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
@@ -47,6 +48,9 @@ from backend.app.utils.threemf_tools import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Path of the embedded slicer config inside a BambuStudio / OrcaSlicer 3MF.
+_PROJECT_SETTINGS_PATH = "Metadata/project_settings.config"
 
 router = APIRouter(prefix="/archives", tags=["archives"])
 
@@ -2978,9 +2982,23 @@ async def get_archive_plates(
     # back to its own defaults. Done outside the fast/slow plate split so both
     # return paths carry it.
     embedded_presets: dict[str, str | None] = {"printer": None, "process": None}
+    # Process settings the designer changed away from the stock preset (#2622).
+    # ⚡ Upstream added this to the library endpoint only, but the SliceModal
+    # re-slices archives through this one as well — leaving it out would make
+    # the offer appear and disappear depending on which door the same 3MF was
+    # opened from. One ZIP open, two answers.
+    design_overrides: list[dict] = []
     try:
         with zipfile.ZipFile(file_path, "r") as zf:
             embedded_presets = extract_embedded_presets_from_3mf(zf)
+            if _PROJECT_SETTINGS_PATH in zf.namelist():
+                try:
+                    design_overrides = [
+                        o._asdict()
+                        for o in overrides_from_config(json.loads(zf.read(_PROJECT_SETTINGS_PATH).decode("utf-8")))
+                    ]
+                except (ValueError, OSError, KeyError):
+                    design_overrides = []
     except Exception:
         pass
 
@@ -3015,6 +3033,7 @@ async def get_archive_plates(
             "has_gcode": has_gcode,
             "embedded_printer": embedded_presets["printer"],
             "embedded_process": embedded_presets["process"],
+            "design_overrides": design_overrides,
         }
 
     # Slow path: open ZIP + parse. Used for archives created before m023 ran.
@@ -3049,6 +3068,7 @@ async def get_archive_plates(
         "has_gcode": has_gcode,
         "embedded_printer": embedded_presets["printer"],
         "embedded_process": embedded_presets["process"],
+        "design_overrides": design_overrides,
     }
 
 

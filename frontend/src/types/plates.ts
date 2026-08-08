@@ -58,6 +58,11 @@ export interface ArchivePlatesResponse {
   // the 3MF carries no embedded preset ids.
   embedded_printer?: string | null;
   embedded_process?: string | null;
+  // See LibraryFilePlatesResponse.design_overrides (#2622). Present here too
+  // because the SliceModal re-slices archives through this endpoint — offering
+  // the designer's settings from one door and not the other would look like a
+  // property of the file rather than of the route.
+  design_overrides?: DesignOverride[];
 }
 
 export interface LibraryFilePlatesResponse {
@@ -68,6 +73,25 @@ export interface LibraryFilePlatesResponse {
   // See ArchivePlatesResponse.embedded_printer / embedded_process (#1325).
   embedded_printer?: string | null;
   embedded_process?: string | null;
+  // Process settings the designer changed away from the stock preset, read from
+  // the 3MF's own `different_settings_to_system` (#2622). Offered in the
+  // SliceModal so a re-slice for another printer can carry them instead of
+  // losing them to the picked process profile. Empty for STL, for OrcaSlicer
+  // files, and for older exports that predate the field.
+  design_overrides?: DesignOverride[];
+}
+
+/** One process setting the designer deviated on.
+ *
+ * `printer_coupled` marks the values that only make sense on the machine they
+ * were tuned for — speeds, accelerations, prime-tower geometry. Those are
+ * offered but never pre-selected: on another printer they are at best merely
+ * wrong, and at worst outside the range its profile accepts, which fails the
+ * slice outright. */
+export interface DesignOverride {
+  key: string;
+  value: unknown;
+  printer_coupled: boolean;
 }
 
 /** Read-only plate object preview — GET /{library|archives}/…/plate-objects.

@@ -97,6 +97,20 @@ class SliceRequest(BaseModel):
             "here (that is exactly what the profile path is for)."
         ),
     )
+    design_overrides: list[str] | None = Field(
+        default=None,
+        description=(
+            "3MF only. Process setting keys the file's designer changed away from "
+            "the stock preset, to carry onto the picked process profile (#2622). "
+            "Named individually and authoritative: a key not listed here is not "
+            "applied, and a key listed here is applied only if the source really "
+            "records it as changed. Distinct from ``use_embedded_settings``, which "
+            "is all-or-nothing and only works when the picked printer already "
+            "matches the design's target — this is the cross-printer path, where "
+            "some of the designer's values are intent (walls, infill) and some are "
+            "tuned for their machine (speeds, accelerations, temperatures)."
+        ),
+    )
     # five enum values BambuStudio's ``curr_bed_type`` accepts (see
     # libslic3r/PrintConfig.cpp:1069+). Without this override the CLI falls
     # back to per-plate value baked into the source 3MF (when present) and
