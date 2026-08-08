@@ -4085,6 +4085,7 @@ export default {
     noPermissionRenameFolder: 'У вас немає дозволу перейменовувати папки',
     noPermissionLinkFolder: "У вас немає дозволу прив'язувати папки",
     noPermissionDeleteFolder: 'У вас немає дозволу видаляти папки',
+    onlyEmptyFolders: 'Ви можете видаляти лише порожні папки',
     noPermissionPrint: 'У вас немає дозволу друкувати',
     noPermissionAddToQueue: 'У вас немає дозволу додавати до черги',
     noPermissionSlice: 'У вас немає дозволу нарізати моделі',

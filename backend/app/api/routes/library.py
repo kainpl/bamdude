@@ -1249,22 +1249,78 @@ async def update_folder(
     )
 
 
+async def _restricted_folder_delete_blocker(db: AsyncSession, folder: LibraryFolder) -> str | None:
+    """Why a ``library:delete_own`` user may NOT delete this folder, or None if they may.
+
+    Folders carry no ownership, so a user without ``library:delete_all`` may only
+    remove one that holds nobody's data: truly empty, not external, not linked
+    to a project or an archive (#1781). Without this a user could create a
+    folder, delete their own files from it, and then need an admin to clear the
+    empty shell they left behind.
+
+    ⚠️ **"Empty" has to include TRASHED files.** ``library_files.folder_id`` is
+    ``ON DELETE CASCADE`` and ``_trash_folder_contents`` walks
+    ``LibraryFile.active()`` — so a file that was already in the trash is never
+    detached, and the folder delete takes its row with it. The other user's
+    restore then fails with no explanation. A folder can look empty in the tree
+    and still be holding someone's deleted work.
+    """
+    if folder.is_external:
+        return "External folders can only be deleted by users with library:delete_all"
+    if folder.archive_id is not None:
+        return "Folders linked to an archive can only be deleted by users with library:delete_all"
+    # ⚡ Ours diverges from upstream here: m044 replaced the folder's single
+    # ``project_id`` column with the ``library_folder_projects`` pivot, so the
+    # question is "is it linked to ANY project", asked of the pivot.
+    linked = await db.execute(
+        select(func.count())
+        .select_from(library_folder_projects)
+        .where(library_folder_projects.c.folder_id == folder.id)
+    )
+    if (linked.scalar() or 0) > 0:
+        return "Folders linked to a project can only be deleted by users with library:delete_all"
+
+    children = await db.execute(select(func.count(LibraryFolder.id)).where(LibraryFolder.parent_id == folder.id))
+    if (children.scalar() or 0) > 0:
+        return "Only empty folders can be deleted without library:delete_all"
+
+    # No deleted_at filter, deliberately — see the docstring.
+    files = await db.execute(select(func.count(LibraryFile.id)).where(LibraryFile.folder_id == folder.id))
+    if (files.scalar() or 0) > 0:
+        return "Only empty folders can be deleted without library:delete_all (the folder may contain trashed files)"
+
+    return None
+
+
 @router.delete("/folders/{folder_id}")
 async def delete_folder(
     folder_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission(Permission.LIBRARY_DELETE_ALL)),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_DELETE_ALL,
+            Permission.LIBRARY_DELETE_OWN,
+        )
+    ),
 ):
     """Delete a folder and all its contents (cascade).
 
-    Note: Folders require library:delete_all permission since they don't have
-    ownership tracking.
+    Folders have no ownership tracking, so clearing one that still holds files
+    requires ``library:delete_all``. A user with only ``library:delete_own`` may
+    delete an empty, non-external, non-linked folder — see
+    :func:`_restricted_folder_delete_blocker` for what "empty" has to mean.
     """
     result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))
     folder = result.scalar_one_or_none()
 
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
+
+    _, can_modify_all = auth_result
+    if not can_modify_all:
+        blocker = await _restricted_folder_delete_blocker(db, folder)
+        if blocker:
+            raise HTTPException(status_code=403, detail=blocker)
 
     await _trash_folder_contents(db, folder_id)
 
@@ -5081,15 +5137,15 @@ async def bulk_delete(
             await library_trash_service.trash_or_purge(db, file)
             deleted_files += 1
 
-    # Delete folders (cascade will handle contents)
-    # Note: Folders don't have ownership tracking currently, require *_all permission
+    # Delete folders. Folders have no ownership tracking, so a user without
+    # *_all may only take empty, non-external, non-linked ones — the same rule
+    # as DELETE /folders/{id}, asked through the same function so the two doors
+    # cannot drift apart (#1781).
     for folder_id in data.folder_ids:
-        if not can_modify_all:
-            # Users without *_all permission cannot delete folders
-            continue
-
         result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))
         folder = result.scalar_one_or_none()
+        if folder and not can_modify_all and await _restricted_folder_delete_blocker(db, folder):
+            continue
         if folder:
             # Same door, same answer as DELETE /folders/{id}: the files inside
             # go to the trash, detached so the CASCADE cannot take them.

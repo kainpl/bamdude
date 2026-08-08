@@ -860,17 +860,35 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
                   <Link2 className="w-3.5 h-3.5" />
                   {isLinked ? t('fileManager.changeLink') : t('fileManager.linkTo')}
                 </button>
+                {/* A folder holds nobody's ownership, so clearing one that has
+                    contents needs delete_all. delete_own is enough for an empty
+                    one (#1781) — but only the BACKEND can say "empty", because a
+                    folder holding somebody's trashed file looks empty here and
+                    still refuses. This gate is the hint, not the rule. */}
+                {(() => {
+                  const looksEmpty = folder.file_count === 0 && folder.children.length === 0;
+                  const canDelete =
+                    hasPermission('library:delete_all') ||
+                    (hasPermission('library:delete_own') && looksEmpty && !folder.is_external);
+                  const why = !canDelete
+                    ? hasPermission('library:delete_own') && !looksEmpty
+                      ? t('fileManager.onlyEmptyFolders')
+                      : t('fileManager.noPermissionDeleteFolder')
+                    : undefined;
+                  return (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                    hasPermission('library:delete_all') ? 'text-red-700 dark:text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                    canDelete ? 'text-red-700 dark:text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
                   }`}
-                  onClick={() => { if (hasPermission('library:delete_all')) { onDelete(folder.id); setShowActions(false); } }}
-                  disabled={!hasPermission('library:delete_all')}
-                  title={!hasPermission('library:delete_all') ? t('fileManager.noPermissionDeleteFolder') : undefined}
+                  onClick={() => { if (canDelete) { onDelete(folder.id); setShowActions(false); } }}
+                  disabled={!canDelete}
+                  title={why}
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                   {t('common.delete')}
                 </button>
+                  );
+                })()}
               </div>
               </>
             )}
