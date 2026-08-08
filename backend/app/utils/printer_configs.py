@@ -181,6 +181,49 @@ def has_remote_storage_toggle(model: str | None, live_support: dict | None = Non
     return bool(get_device_support_flags(model).get("support_save_remote_print_file_to_storage"))
 
 
+def supports_nozzle_flow_type(model: str | None, live_flow_type_supported: bool | None = None) -> bool:
+    """Whether a K-profile's Standard / High Flow choice means anything here.
+
+    A K-profile is filed under a ``nozzle_id`` of the form ``HS00-0.4`` (Standard)
+    or ``HH00-0.4`` (High Flow), so the flow type is part of the profile's
+    identity on a printer where both exist — and a field that cannot be saved on
+    one where the firmware discards it.
+
+    BambuStudio's own gate for this exact dialog is
+    ``CaliHistoryDialog.cpp::support_nozzle_volume``, and it is two questions:
+
+    1. ``DevPrinterConfigUtil::support_disable_cali_flow_type(printer_type)`` —
+       the top-level flag in the mirrored per-model config. When set, the answer
+       is no, full stop. In the configs we ship that is **X1C, X1, P1P, P1S and
+       X1E**.
+    2. otherwise ``MachineObject::is_nozzle_flow_type_supported()``, i.e.
+       ``is_enable_np | has_extra_flow_type`` — live, from the push. Pass it as
+       ``live_flow_type_supported``; the printer has to have spoken for this to
+       be answerable at all.
+
+    ⚠️ **Deliberate divergence from upstream**, which hardcodes
+    ``{A1, A1 mini, A2L}`` as the models *without* the choice — very nearly the
+    opposite of this list. They are not misreading their data; they derived it
+    from a different one (``len(nozzle_volume) // len(nozzle_diameter)`` over the
+    machine presets) than the calibration dialog's own gate. Since the screen we
+    mirror is that dialog, its gate is the one to mirror, and reading the config
+    we already ship keeps this in data rather than in a Python set that has to be
+    revisited for every new model.
+
+    Unknown model, or a printer that has not spoken yet: **False** — the honest
+    answer to "does this machine offer the choice" is not yet known, and offering
+    it means letting the user set a value the firmware may silently discard.
+    Note this is the opposite default from :func:`has_remote_storage_toggle`,
+    where an unknown model defaults permissive: there the cost of guessing wrong
+    is a diagnostic that stays red, here it is a saved profile that reads back
+    different from what was chosen.
+    """
+    cfg = load_printer_config(model)
+    if cfg and cfg.get("support_disable_cali_flow_type"):
+        return False
+    return bool(live_flow_type_supported)
+
+
 def device_calibration_availability(model: str | None) -> dict[str, bool]:
     """Base per-model availability of the seven device calibrations, read from
     the mirrored BambuStudio config.

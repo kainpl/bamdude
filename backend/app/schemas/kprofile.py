@@ -48,6 +48,14 @@ class KProfilesResponse(BaseModel):
     profiles: list[KProfile]
     nozzle_diameter: str  # Current nozzle filter
     fc_id_by_cali_idx: dict[int, int] = {}
+    # Whether the Standard / High Flow choice means anything on this printer
+    # (#1748). BS's own gate for this dialog — see
+    # ``printer_configs.supports_nozzle_flow_type``. It rides on this response
+    # rather than on ``PrinterResponse`` because half the answer is live MQTT
+    # state, and the route that builds this already holds the client; putting it
+    # on the printer schema would make a Pydantic model reach into
+    # ``printer_manager``. False when the printer has not spoken yet.
+    supports_flow_type: bool = False
 
 
 class KProfileDelete(BaseModel):

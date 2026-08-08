@@ -3095,6 +3095,11 @@ export interface KProfilesResponse {
   // Maps each live cali_idx → our stable filament_calibration.id so notes
   // (keyed by fc_id since m065) survive printer reorders.
   fc_id_by_cali_idx?: Record<number, number>;
+  // Whether the Standard / High Flow choice means anything on this printer
+  // (#1748). BS's own gate for this dialog, from the mirrored per-model config
+  // plus live MQTT flags. Not the nozzle count: P1S and X1C are single-nozzle
+  // and this is false for them, while P2S is single-nozzle and it is true.
+  supports_flow_type?: boolean;
 }
 
 export interface KProfileNotesResponse {

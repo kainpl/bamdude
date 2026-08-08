@@ -10,6 +10,7 @@ from backend.app.utils.printer_configs import (
     has_remote_storage_toggle,
     load_printer_config,
     resolve_device_calibrations,
+    supports_nozzle_flow_type,
 )
 
 
@@ -147,3 +148,43 @@ class TestRemoteStorageToggle:
         # A sparse push (other options only) must not be read as "not supported".
         assert has_remote_storage_toggle("X1C", {"sound": True}) is True
         assert has_remote_storage_toggle("P1S", {"sound": True}) is False
+
+
+class TestNozzleFlowType:
+    """BS's own gate for the K-profile Flow Type field (#1748).
+
+    ``CaliHistoryDialog.cpp::support_nozzle_volume`` is two questions: the
+    per-model ``support_disable_cali_flow_type`` config flag, then the live
+    ``is_enable_np | has_extra_flow_type``. Both halves are pinned here because
+    the split is counter-intuitive — it is NOT the single-versus-dual-nozzle
+    line, and it is very nearly the inverse of the hardcoded model set upstream
+    ported (``{A1, A1 mini, A2L}``), which came from a different BS data source.
+    """
+
+    @pytest.mark.parametrize("model", ["X1C", "X1", "P1P", "P1S", "X1E"])
+    def test_the_config_flag_settles_it_regardless_of_the_live_flags(self, model):
+        # support_disable_cali_flow_type is set for exactly these five in the
+        # configs we mirror. BS returns false before even asking the device.
+        assert supports_nozzle_flow_type(model, live_flow_type_supported=True) is False
+
+    @pytest.mark.parametrize("model", ["H2D", "H2S", "X2D", "P2S", "A1", "A2L"])
+    def test_everything_else_defers_to_the_live_flags(self, model):
+        assert supports_nozzle_flow_type(model, live_flow_type_supported=True) is True
+        assert supports_nozzle_flow_type(model, live_flow_type_supported=False) is False
+
+    def test_a_printer_that_has_not_spoken_yet_gets_no_choice(self):
+        # Deliberately the opposite default from has_remote_storage_toggle:
+        # there a wrong guess leaves a diagnostic red, here it lets somebody set
+        # a value the firmware silently discards.
+        assert supports_nozzle_flow_type("H2D") is False
+        assert supports_nozzle_flow_type(None) is False
+        assert supports_nozzle_flow_type("Some Printer We Do Not Mirror") is False
+
+    def test_p2s_and_p1s_disagree_although_both_are_single_nozzle(self):
+        """The load-bearing case for reading the config instead of a model set.
+
+        If this ever collapses to one answer, somebody has replaced the config
+        lookup with a nozzle-count check.
+        """
+        assert supports_nozzle_flow_type("P2S", live_flow_type_supported=True) is True
+        assert supports_nozzle_flow_type("P1S", live_flow_type_supported=True) is False

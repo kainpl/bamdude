@@ -25,6 +25,7 @@ from backend.app.schemas.kprofile import (
     KProfilesResponse,
 )
 from backend.app.services.printer_manager import printer_manager
+from backend.app.utils.printer_configs import supports_nozzle_flow_type
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +197,10 @@ async def get_kprofiles(
         ],
         nozzle_diameter=nozzle_diameter,
         fc_id_by_cali_idx=fc_id_by_cali_idx,
+        supports_flow_type=supports_nozzle_flow_type(
+            printer.model,
+            live_flow_type_supported=client.state.enable_np or client.state.has_extra_flow_type,
+        ),
     )
 
 
@@ -277,7 +282,20 @@ async def set_kprofile(
             slot_id=0,
         )
 
+    # The printer answers extrusion_cali_set with result/reason, echoing our
+    # sequence_id. That answer used to be logged at DEBUG and dropped, so a write
+    # the printer refused was reported to the user as saved. Awaited BEFORE the
+    # audit row is written, so the audit records the printer's verdict rather
+    # than the fact that bytes left the process.
+    ack_ok, ack_detail = await client.await_cali_ack(success)
+
     fc_id = await _resolve_fc_id_for_audit(db, printer_id=printer_id, profile=profile)
+    if not success:
+        audit_error = "set_kprofile MQTT publish failed"
+    elif not ack_ok:
+        audit_error = f"printer rejected: {ack_detail}"
+    else:
+        audit_error = None
     await _audit_kprofile(
         db,
         printer_id=printer_id,
@@ -285,12 +303,14 @@ async def set_kprofile(
         action="kprofile_edit" if is_edit else "kprofile_add",
         payload=profile.model_dump(),
         filament_calibration_id=fc_id,
-        result="ok" if success else "error",
-        error=None if success else "set_kprofile MQTT publish failed",
+        result="ok" if audit_error is None else "error",
+        error=audit_error,
     )
 
     if not success:
         raise HTTPException(500, "Failed to send K-profile command")
+    if not ack_ok:
+        raise HTTPException(500, f"Printer rejected the K-profile: {ack_detail}")
 
     message = "K-profile updated successfully" if is_edit else "K-profile added successfully"
     return {"success": True, "message": message}
@@ -352,7 +372,14 @@ async def set_kprofiles_batch(
     nozzle_diameter = profiles[0].nozzle_diameter
 
     success = client.set_kprofiles_batch(profile_dicts, nozzle_diameter)
+    ack_ok, ack_detail = await client.await_cali_ack(success)
 
+    if not success:
+        audit_error = "set_kprofiles_batch MQTT publish failed"
+    elif not ack_ok:
+        audit_error = f"printer rejected: {ack_detail}"
+    else:
+        audit_error = None
     await _audit_kprofile(
         db,
         printer_id=printer_id,
@@ -360,12 +387,14 @@ async def set_kprofiles_batch(
         action="kprofile_batch_add",
         payload={"profiles": [p.model_dump() for p in profiles]},
         filament_calibration_id=None,
-        result="ok" if success else "error",
-        error=None if success else "set_kprofiles_batch MQTT publish failed",
+        result="ok" if audit_error is None else "error",
+        error=audit_error,
     )
 
     if not success:
         raise HTTPException(500, "Failed to send K-profiles batch command")
+    if not ack_ok:
+        raise HTTPException(500, f"Printer rejected the K-profiles: {ack_detail}")
 
     return {"success": True, "message": f"Added {len(profiles)} K-profiles"}
 
@@ -411,7 +440,15 @@ async def delete_kprofile(
         extruder_id=profile.extruder_id,
     )
 
+    ack_ok, ack_detail = await client.await_cali_ack(success)
+
     fc_id = await _resolve_fc_id_for_audit(db, printer_id=printer_id, profile=profile)
+    if not success:
+        audit_error = "delete_kprofile MQTT publish failed"
+    elif not ack_ok:
+        audit_error = f"printer rejected: {ack_detail}"
+    else:
+        audit_error = None
     await _audit_kprofile(
         db,
         printer_id=printer_id,
@@ -419,12 +456,14 @@ async def delete_kprofile(
         action="kprofile_delete",
         payload=profile.model_dump(),
         filament_calibration_id=fc_id,
-        result="ok" if success else "error",
-        error=None if success else "delete_kprofile MQTT publish failed",
+        result="ok" if audit_error is None else "error",
+        error=audit_error,
     )
 
     if not success:
         raise HTTPException(500, "Failed to send K-profile delete command")
+    if not ack_ok:
+        raise HTTPException(500, f"Printer rejected the delete: {ack_detail}")
 
     # Wait for printer to process the delete before frontend refetches
     await asyncio.sleep(0.5)
