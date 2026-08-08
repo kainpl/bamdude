@@ -322,41 +322,51 @@ export function buildFilamentComparison(
       ? matchLoadedExtruderTray(req, available, trayNow)
       : undefined;
 
-    let idxMatch: LoadedFilament | undefined;
     let exactMatch: LoadedFilament | undefined;
     let similarMatch: LoadedFilament | undefined;
     let typeOnlyMatch: LoadedFilament | undefined;
 
-    // Check if tray_info_idx is unique among available trays
+    // Trays carrying the slicer's tray_info_idx.
+    //
+    // A unique idx match used to be taken as definitive, on the premise
+    // "same preset = same spool = same colour" (#2687). The premise is false:
+    // an idx names the filament VARIANT, not a spool — GFA00 is PLA Basic,
+    // GFA01 PLA Matte, GFA17 PLA Translucent, in every colour Bambu sells. With
+    // one Matte spool loaded, every Matte requirement matched it whatever colour
+    // it was, and the comparison below never ran — so the panel showed "(Ready)"
+    // with a green tick for red-required-on-green-loaded, while picking that
+    // same tray by hand reported the mismatch honestly.
+    //
+    // The asymmetry gave it away: the >1 branch already compared colour. Only
+    // uniqueness was trusted to imply it. Every idx candidate is classified the
+    // same way now, so the variant still decides *selection* among colour-
+    // agreeing trays (#2650 — Basic is not Matte) without deciding the verdict.
+    let idxTypeOnly: LoadedFilament | undefined;
     if (reqTrayInfoIdx) {
       const idxMatches = available.filter((f) => f.trayInfoIdx === reqTrayInfoIdx);
-      if (idxMatches.length === 1) {
-        // Unique tray_info_idx - use it as definitive match
-        idxMatch = idxMatches[0];
-      } else if (idxMatches.length > 1) {
-        // Multiple trays with same tray_info_idx - use color matching among them
-        exactMatch = idxMatches.find(
+      exactMatch = idxMatches.find(
+        (f) =>
+          f.type?.toUpperCase() === req.type?.toUpperCase() &&
+          normalizeColorForCompare(f.color) === normalizeColorForCompare(req.color)
+      );
+      if (!exactMatch) {
+        similarMatch = idxMatches.find(
           (f) =>
             f.type?.toUpperCase() === req.type?.toUpperCase() &&
-            normalizeColorForCompare(f.color) === normalizeColorForCompare(req.color)
+            colorsAreSimilar(f.color, req.color)
         );
-        if (!exactMatch) {
-          similarMatch = idxMatches.find(
-            (f) =>
-              f.type?.toUpperCase() === req.type?.toUpperCase() &&
-              colorsAreSimilar(f.color, req.color)
-          );
-        }
-        if (!exactMatch && !similarMatch) {
-          typeOnlyMatch = idxMatches.find(
-            (f) => f.type?.toUpperCase() === req.type?.toUpperCase()
-          );
-        }
+      }
+      if (!exactMatch && !similarMatch) {
+        // Right variant, wrong colour. Held back as a last resort so it cannot
+        // block the search below from finding a correctly-coloured tray.
+        idxTypeOnly = idxMatches.find(
+          (f) => f.type?.toUpperCase() === req.type?.toUpperCase()
+        );
       }
     }
 
     // If no idx match, do standard type/color matching on all available trays
-    if (!idxMatch && !exactMatch && !similarMatch && !typeOnlyMatch) {
+    if (!exactMatch && !similarMatch && !typeOnlyMatch) {
       exactMatch = available.find(
         (f) =>
           f.type?.toUpperCase() === req.type?.toUpperCase() &&
@@ -376,7 +386,8 @@ export function buildFilamentComparison(
       }
     }
 
-    const loaded = extruderTray || idxMatch || exactMatch || similarMatch || typeOnlyMatch || undefined;
+    const loaded =
+      extruderTray || exactMatch || similarMatch || typeOnlyMatch || idxTypeOnly || undefined;
 
     // Mark this tray as used so it won't be assigned to another slot
     if (loaded) {
@@ -387,13 +398,14 @@ export function buildFilamentComparison(
     // Every match path (cascade tiers + extruderTray) requires a
     // type-compatible tray, so anything loaded is a type match.
     const typeMatch = hasFilament;
-    // idxMatch is always a colour match (same spool = same colour);
-    // otherwise compare the picked tray's colour directly - covers
-    // extruderTray, which is chosen on type alone.
+    // #2687: judge the colour on the tray we actually picked, never on which
+    // branch found it. A requirement with no colour at all is not a mismatch —
+    // the 3MF simply did not ask for one, and any loaded colour satisfies it.
+    const requiredColor = normalizeColorForCompare(req.color);
     const colorMatch =
       hasFilament &&
-      (!!idxMatch ||
-        normalizeColorForCompare(loaded?.color) === normalizeColorForCompare(req.color) ||
+      (!requiredColor ||
+        normalizeColorForCompare(loaded?.color) === requiredColor ||
         colorsAreSimilar(loaded?.color, req.color));
 
     // Status: match (type+colour), type_only (type ok, colour off), mismatch (type not found)
