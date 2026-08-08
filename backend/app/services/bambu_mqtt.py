@@ -644,6 +644,10 @@ class PrinterState:
     stg: list = field(default_factory=list)  # List of stages to execute
     # Air conditioning mode (0=cooling, 1=heating)
     airduct_mode: int = 0
+    # ``device.airduct.subMode`` — BS ``m_sub_mode``. On the X2D the SAME part id
+    # is a different fan depending on it (part 10 in cooling: 0 → Right(Aux),
+    # 1 → Right(Filter)), so a label derived without it is a guess.
+    airduct_sub_mode: int = -1
     # Print speed level (1=silent, 2=standard, 3=sport, 4=ludicrous)
     speed_level: int = 2
     # Chamber light on/off
@@ -765,6 +769,18 @@ class PrinterState:
     big_fan1_speed: int | None = None  # Auxiliary fan
     big_fan2_speed: int | None = None  # Chamber/exhaust fan
     heatbreak_fan_speed: int | None = None  # Hotend heatbreak fan
+    # ``device.airduct.parts``, keyed by BS part id (AIR_FUN). The ONLY source
+    # for fans that are never mirrored into a flat ``big_fanX_speed`` field —
+    # notably the second auxiliary fan, which is an add-on kit on the P2S and
+    # factory-fitted on the X2D. The list contains only fans that physically
+    # exist, so presence here IS the hardware check; there is no model table.
+    # Value: {"state", "range_start", "range_end", "func", "type"}.
+    airduct_parts: dict[int, dict] = field(default_factory=dict)
+    # ``device.airduct.modeList``, keyed by mode id: {"ctrl": [...], "off": [...]}
+    # of part ids. A fan listed in ``off`` for the current mode is forced off by
+    # the mode and cannot be driven — the printer accepts the command and
+    # ignores it, which looks like a broken control.
+    airduct_modes: dict[int, dict] = field(default_factory=dict)
     # Tray change history during current print: [(global_tray_id, layer_num), ...]
     # Used by usage tracker to split filament weight on mid-print tray switch
     tray_change_log: list = field(default_factory=list)
@@ -854,6 +870,27 @@ STAGE_NAMES = {
 def get_stage_name(stage: int) -> str:
     """Get human-readable stage name from stage number."""
     return STAGE_NAMES.get(stage, f"Unknown stage ({stage})")
+
+
+def airduct_fan_controllable(state, part_id: int) -> bool:
+    """Whether an airduct fan can be driven in the mode currently active.
+
+    A mode lists the parts it forces off (BS ``AirMode.off``). The printer
+    accepts a command for one of those and ignores it, which reads as a broken
+    control rather than as "the mode owns this fan" — the P2S's left auxiliary
+    fan is forced off in heating mode exactly this way.
+
+    Module-level rather than a client method because the status route needs the
+    same answer from a bare ``PrinterState``, and two copies of a rule is how
+    this codebase keeps producing half-fixes.
+
+    Unknown mode → True: a missing mode list must not disable a fan the hardware
+    is reporting.
+    """
+    mode = (state.airduct_modes or {}).get(state.airduct_mode)
+    if not mode:
+        return True
+    return part_id not in (mode.get("off") or [])
 
 
 class BambuMQTTClient:
@@ -3936,7 +3973,7 @@ class BambuMQTTClient:
                 # Parse chamber temp from device.ctc.info.temp if not already set
                 ctc_data = device.get("ctc", {})
                 ctc_info = ctc_data.get("info", {})
-                # Parse airduct mode (0=cooling, 1=heating)
+                # Parse airduct mode (0=cooling, 1=heating) + parts + modes
                 airduct_data = device.get("airduct", {})
                 if "modeCur" in airduct_data:
                     new_mode = airduct_data["modeCur"]
@@ -3945,6 +3982,7 @@ class BambuMQTTClient:
                             f"[{self.serial_number}] airduct_mode changed: {self.state.airduct_mode} -> {new_mode}"
                         )
                     self.state.airduct_mode = new_mode
+                self._parse_airduct_parts(airduct_data)
                 # Parse chamber temp - may be encoded as (target*65536+current) when > 500
                 # Check if we recently set the target locally (within 5 seconds)
                 local_set_time = self.state.temperatures.get("_chamber_target_set_time", 0)
@@ -6388,6 +6426,88 @@ class BambuMQTTClient:
         self._client.publish(self.topic_publish, command_json, qos=1)
         return seq
 
+    # BS ``AIR_FUN`` (DevFan.h). Only the ids we can act on are named; the parser
+    # keeps whatever the printer sends, named or not.
+    AIRDUCT_PART_COOLING = 1  # FAN_COOLING_0_AIRDOOR — part cooling
+    AIRDUCT_PART_AUX_0 = 2  # FAN_REMOTE_COOLING_0_IDX
+    AIRDUCT_PART_CHAMBER = 3  # FAN_CHAMBER_0_IDX — "Exhaust" on P2S/X2D
+    AIRDUCT_PART_AUX_1 = 10  # FAN_REMOTE_COOLING_1_IDX — the second aux kit
+
+    @staticmethod
+    def _bits(value: int, start: int, count: int) -> int:
+        """BS ``MachineObject::get_flag_bits`` — ``(value >> start) & mask``."""
+        return (int(value) >> start) & ((1 << count) - 1)
+
+    def _parse_airduct_parts(self, airduct: dict) -> None:
+        """Mirror ``device.airduct`` — BS ``DevFan::ParseV3_0`` parity.
+
+        The second auxiliary fan exists **only** here. It is never mirrored into
+        a flat ``big_fanX_speed`` field, which is the whole reason it was
+        invisible: every consumer read the flat fields.
+
+        Encoding, taken from BS rather than guessed:
+
+        * ``id`` low 4 bits = type (0 fan, 1 air door), bits 4-11 = the part id.
+          So the raw ``160`` is part **10**, not 160.
+        * ``state`` — **low 8 bits**. The upper bits carry something else, and
+          reading the whole word gives a "speed" in the thousands.
+        * ``range`` — low 16 bits start, high 16 bits end. The part states its
+          own allowed range, so clamping does not need a table.
+
+        ⚠️ **Absent ``parts`` means "this frame did not say", not "no fans".**
+        Bambu sends diff pushes constantly; clearing on a frame that simply
+        omits the key would retract a fan kit and make the tile flicker. Same
+        latching reasoning as the nozzle-flow-type flags.
+        """
+        if not isinstance(airduct, dict):
+            return
+        if "subMode" in airduct:
+            try:
+                self.state.airduct_sub_mode = int(airduct["subMode"])
+            except (TypeError, ValueError):
+                pass
+
+        modes = airduct.get("modeList")
+        if isinstance(modes, list) and modes:
+            parsed_modes: dict[int, dict] = {}
+            for entry in modes:
+                if not isinstance(entry, dict) or "modeId" not in entry:
+                    continue
+                try:
+                    mode_id = int(entry["modeId"])
+                except (TypeError, ValueError):
+                    continue
+                # ``ctrl`` / ``off`` carry raw ids, shifted the same way as a
+                # part's — BS applies ``>> 4`` to each.
+                parsed_modes[mode_id] = {
+                    key: [self._bits(v, 4, 8) for v in entry.get(key, []) if isinstance(v, int)]
+                    for key in ("ctrl", "off")
+                }
+            self.state.airduct_modes = parsed_modes
+
+        parts = airduct.get("parts")
+        if not isinstance(parts, list) or not parts:
+            return
+        parsed: dict[int, dict] = {}
+        for part in parts:
+            if not isinstance(part, dict) or "id" not in part:
+                continue
+            try:
+                raw_id = int(part["id"])
+                state = int(part.get("state", 0))
+                rng = int(part.get("range", 0))
+            except (TypeError, ValueError):
+                continue
+            parsed[self._bits(raw_id, 4, 8)] = {
+                "type": self._bits(raw_id, 0, 4),
+                "func": part.get("func"),
+                "state": self._bits(state, 0, 8),
+                "range_start": self._bits(rng, 0, 16),
+                "range_end": self._bits(rng, 16, 16),
+            }
+        if parsed:
+            self.state.airduct_parts = parsed
+
     def _latch_flow_type_flags(self, print_data: dict) -> None:
         """The live half of BS's nozzle-flow-type capability (#1748).
 
@@ -6899,6 +7019,78 @@ class BambuMQTTClient:
         logger.info(
             "[%s] Set airduct mode to %s (modeId=%s, seq=%s)", self.serial_number, mode, mode_id, self._sequence_id
         )
+        return True
+
+    def set_fan_speed(self, part_id: int, percent: int) -> bool:
+        """Set one airduct fan's speed, 0-100 %.
+
+        **Which wire command depends on the printer, and BS decides it the same
+        way** (``Widgets/FanControl.cpp::FanControlNew::command_control_fan``):
+
+            if not is_enable_np or not supports airduct:  M106 P<id> S<0-255>
+            else:                                         {"command": "set_fan",
+                                                           "fan_index", "speed"}
+
+        So a P2S or X2D — new protocol, airduct present — is driven with
+        ``set_fan``, not with ``M106``. Upstream ports ``M106 P10`` here, taken
+        from Bambu's machine *profile* gcode; that is what runs inside a print,
+        not how the slicer's own control panel drives the fan live. We follow the
+        live path, because that is the one this control is.
+
+        ``is_enable_np`` is the flag the K-profile flow-type gate already latches
+        — the same "new protocol" question, so there is one answer to it.
+
+        The two protocols disagree about the scale as well: ``M106`` takes
+        0-255, ``set_fan`` takes 0-100. Passing a percentage into the wrong one
+        would be a fan at 40 % of the speed asked for, silently.
+        """
+        if not self._client or not self.state.connected:
+            logger.warning("[%s] Cannot set fan speed: not connected", self.serial_number)
+            return False
+
+        if not airduct_fan_controllable(self.state, part_id):
+            logger.warning(
+                "[%s] Fan %s is forced off by airduct mode %s — command would be ignored",
+                self.serial_number,
+                part_id,
+                self.state.airduct_mode,
+            )
+            return False
+
+        part = self.state.airduct_parts.get(part_id)
+        # Clamp to the range the part declares, when it declares one — the part
+        # states its own limits, so this needs no per-model table.
+        low = int(part.get("range_start", 0)) if part else 0
+        high = int(part.get("range_end", 100)) if part else 100
+        if high <= low:
+            low, high = 0, 100
+        percent = max(low, min(high, int(percent)))
+
+        self._sequence_id += 1
+        if self.state.enable_np and self.state.airduct_parts:
+            command = {
+                "print": {
+                    "command": "set_fan",
+                    "fan_index": int(part_id),
+                    "speed": percent,
+                    "sequence_id": str(self._sequence_id),
+                }
+            }
+            self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+            logger.info("[%s] set_fan part=%s speed=%s%%", self.serial_number, part_id, percent)
+            return True
+
+        # Old protocol: M106 takes 0-255.
+        gcode = f"M106 P{int(part_id)} S{round(percent * 255 / 100)}\n"
+        command = {
+            "print": {
+                "command": "gcode_line",
+                "param": gcode,
+                "sequence_id": str(self._sequence_id),
+            }
+        }
+        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+        logger.info("[%s] M106 P%s at %s%%", self.serial_number, part_id, percent)
         return True
 
     def set_chamber_light(self, on: bool) -> bool:

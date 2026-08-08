@@ -26,6 +26,7 @@ from backend.app.models.printer_location import PrinterLocation
 from backend.app.models.slot_preset import SlotPresetMapping
 from backend.app.models.user import User
 from backend.app.schemas.printer import (
+    AirductFan,
     AmsLabelBody,
     AMSTray,
     AMSUnit,
@@ -50,6 +51,7 @@ from backend.app.services.bambu_ftp import (
     get_storage_info_async,
     list_files_async,
 )
+from backend.app.services.bambu_mqtt import airduct_fan_controllable
 from backend.app.services.printer_diagnostic import run_connection_diagnostic
 from backend.app.services.printer_location_service import load_tree, subtree_ids
 from backend.app.services.printer_manager import (
@@ -68,6 +70,7 @@ from backend.app.services.printer_manager import (
 )
 from backend.app.utils.filament_ids import filament_id_to_setting_id
 from backend.app.utils.http import build_content_disposition
+from backend.app.utils.printer_configs import airduct_fan_label
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/printers", tags=["printers"])
@@ -80,6 +83,42 @@ def _caller_can_view_printer_secrets(user: User | None) -> bool:
     if user is None:
         return False
     return user.has_permission(Permission.PRINTERS_UPDATE.value)
+
+
+def _airduct_fans(model: str | None, state) -> list[AirductFan]:
+    """The fans this printer reports through ``device.airduct``, named (#2576).
+
+    Presence in ``airduct_parts`` is the hardware check — the printer lists only
+    fitted parts, which matters on the P2S where the second auxiliary fan and
+    the exhaust fan are both add-on kits.
+
+    The label comes from the mirrored per-model config and depends on the
+    airduct mode, because the same part id is a different fan on different
+    models: part 10 is the LEFT aux on a P2S and the RIGHT one on an X2D. See
+    ``printer_configs.airduct_fan_label``.
+
+    Sorted by part id so the badges keep a stable order across pushes rather
+    than following dict insertion, which follows whatever order the printer
+    happened to send.
+    """
+    fans: list[AirductFan] = []
+    for part_id, part in sorted((state.airduct_parts or {}).items()):
+        # Air doors are in the same list (type 1) and are not fans.
+        if part.get("type") not in (0, None):
+            continue
+        label_key, label = airduct_fan_label(model, state.airduct_mode, state.airduct_sub_mode, part_id)
+        fans.append(
+            AirductFan(
+                part_id=part_id,
+                speed=int(part.get("state", 0)),
+                range_start=int(part.get("range_start", 0)),
+                range_end=int(part.get("range_end", 100)),
+                controllable=airduct_fan_controllable(state, part_id),
+                label_key=label_key,
+                label=label,
+            )
+        )
+    return fans
 
 
 def _serialize_printer(printer: Printer, *, include_secret: bool):
@@ -890,6 +929,7 @@ async def get_printer_status(
         big_fan1_speed=state.big_fan1_speed,
         big_fan2_speed=state.big_fan2_speed,
         heatbreak_fan_speed=state.heatbreak_fan_speed,
+        airduct_fans=_airduct_fans(printer.model, state),
         firmware_version=state.firmware_version,
         developer_mode=state.developer_mode if state else None,
         ams_auto_switch_filament=state.ams_auto_switch_filament if state else None,
@@ -3166,6 +3206,49 @@ async def set_chamber_light(
         raise HTTPException(500, "Failed to control chamber light")
 
     return {"success": True, "message": f"Chamber light {'on' if on else 'off'}"}
+
+
+@router.post("/{printer_id}/fan-speed")
+async def set_fan_speed(
+    printer_id: int,
+    part_id: int = Query(..., description="Airduct part id as reported in status.airduct_fans"),
+    percent: int = Query(..., ge=0, le=100, description="Fan speed, 0-100 %"),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set one airduct fan's speed.
+
+    Addressed by the part id the status reports, not by a name. The same id is a
+    different fan on different models — part 10 is the left auxiliary on a P2S
+    and the right one on an X2D — so a name in the API would have to be resolved
+    back to an id anyway, and the resolution differs per model. The client
+    speaks whichever wire protocol this printer uses; see
+    ``BambuMQTTClient.set_fan_speed``.
+    """
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    if not await printer_manager.ensure_fresh_connection_for_printer(printer):
+        raise HTTPException(500, "Can`t re-connect printer MQTT")
+
+    client = printer_manager.get_client(printer_id)
+    if not client or not client.state.connected:
+        raise HTTPException(400, "Printer not connected")
+
+    # Refuse an id this printer never reported rather than sending it. The parts
+    # list is the hardware inventory, so an unknown id is a fan that is not
+    # fitted — and a command for it would be accepted and do nothing.
+    if part_id not in (client.state.airduct_parts or {}):
+        raise HTTPException(400, f"Printer does not report a fan with part id {part_id}")
+    if not airduct_fan_controllable(client.state, part_id):
+        raise HTTPException(409, "This fan is forced off by the current airduct mode")
+
+    if not client.set_fan_speed(part_id, percent):
+        raise HTTPException(500, "Failed to set fan speed")
+
+    return {"success": True, "part_id": part_id, "percent": percent}
 
 
 @router.post("/{printer_id}/hms/clear")

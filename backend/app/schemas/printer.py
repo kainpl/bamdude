@@ -273,6 +273,27 @@ class NozzleRackSlot(BaseModel):
     filament_type: str = ""  # Material type (e.g. "PLA", "PETG")
 
 
+class AirductFan(BaseModel):
+    """One fan reported through ``device.airduct.parts`` (#2576).
+
+    Presence in the list means the fan physically exists — the printer reports
+    only fitted parts, so there is no model table to keep in step with the
+    hardware. That matters on the P2S, where both the second auxiliary fan and
+    the exhaust fan are add-on kits.
+    """
+
+    part_id: int  # BS AIR_FUN index. 2 / 10 = the two aux fans, 3 = chamber/exhaust
+    speed: int  # 0-100 %
+    range_start: int = 0
+    range_end: int = 100
+    # True when the current airduct mode does not force this fan off. A mode
+    # owns some fans (the P2S's left aux is off in heating), and the printer
+    # accepts a command for one of those and ignores it.
+    controllable: bool = True
+    label_key: str | None = None  # i18n key under ``printers.fans.*`` when recognised
+    label: str | None = None  # BambuStudio's own name, verbatim, as the fallback
+
+
 class FilaSwitchResponse(BaseModel):
     """Filament Track Switch (FTS) state — accessory that mediates AMS-to-extruder routing.
 
@@ -404,6 +425,17 @@ class PrinterStatus(BaseModel):
     big_fan1_speed: int | None = None  # Auxiliary fan
     big_fan2_speed: int | None = None  # Chamber/exhaust fan
     heatbreak_fan_speed: int | None = None  # Hotend heatbreak fan
+    # Fans reported only through ``device.airduct`` (#2576). The second
+    # auxiliary fan — an add-on kit on the P2S, factory-fitted on the X2D — has
+    # no flat ``big_fanX_speed`` field at all, which is why nothing could show
+    # it. The list carries only fans that physically exist, so its contents are
+    # the hardware check; there is no per-model table.
+    #
+    # ``label_key`` is an i18n key under ``printers.fans.*`` when we recognise
+    # BambuStudio's own name for it, ``label`` is that name verbatim. Both come
+    # from the mirrored per-model config and depend on the airduct mode — the
+    # same part id is a different fan on the P2S and the X2D.
+    airduct_fans: list[AirductFan] = Field(default_factory=list)
     # Firmware version (from info.module[name="ota"].sw_ver)
     firmware_version: str | None = None
     # Developer LAN mode: True = enabled, False = disabled (MQTT encryption), None = unknown

@@ -600,6 +600,20 @@ export interface FilaSwitchState {
   info: number;
 }
 
+export interface AirductFan {
+  part_id: number;      // BambuStudio AIR_FUN index: 2 / 10 = the two aux fans, 3 = chamber/exhaust
+  speed: number;        // 0-100 %
+  range_start: number;
+  range_end: number;
+  // False when the current airduct mode forces this fan off — the printer
+  // accepts a command for it and ignores it.
+  controllable: boolean;
+  // i18n key under printers.fans.* when BambuStudio's own name is one we
+  // recognise; otherwise null and `label` carries that name verbatim.
+  label_key: string | null;
+  label: string | null;
+}
+
 export interface PrinterStatus {
   id: number;
   name: string;
@@ -708,6 +722,11 @@ export interface PrinterStatus {
   big_fan1_speed: number | null;     // Auxiliary fan
   big_fan2_speed: number | null;     // Chamber/exhaust fan
   heatbreak_fan_speed: number | null; // Hotend heatbreak fan
+  // Fans reported through device.airduct (#2576). The second auxiliary fan —
+  // a kit on the P2S, factory-fitted on the X2D — has no flat big_fanX_speed
+  // field at all, which is why nothing could show it. Present only on printers
+  // with an airduct; the list contains only fans that physically exist.
+  airduct_fans?: AirductFan[];
   firmware_version: string | null;   // Firmware version from MQTT
   // Developer LAN mode: true = enabled, false = disabled, null = unknown
   developer_mode: boolean | null;
@@ -5089,6 +5108,15 @@ export const api = {
     request<{ success: boolean; message: string }>(`/printers/${printerId}/chamber-light?on=${on}`, {
       method: 'POST',
     }),
+
+  // Airduct fan speed. Addressed by the part id the status reports, because the
+  // same id is a different fan on different models (part 10 is the left aux on
+  // a P2S and the right one on an X2D).
+  setFanSpeed: (printerId: number, partId: number, percent: number) =>
+    request<{ success: boolean; part_id: number; percent: number }>(
+      `/printers/${printerId}/fan-speed?part_id=${partId}&percent=${percent}`,
+      { method: 'POST' },
+    ),
 
   // AMS Drying Control
   startDrying: (printerId: number, amsId: number, temp: number, duration: number, filament: string = '', rotateTray: boolean = false) =>

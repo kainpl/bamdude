@@ -81,7 +81,7 @@ import { api, discoveryApi, firmwareApi, macrosApi, withStreamToken } from '../a
 import { BulkPrinterToolbar } from '../components/BulkPrinterToolbar';
 import { PauseChip } from '../components/PauseChip';
 import { formatDateOnly, formatETA, formatDuration } from '../utils/date';
-import type { Printer, PrinterCreate, PrinterStatus, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro, InventorySpool, SmartPlug, PrinterDiagnosticResult, HeaterSensorKind } from '../api/client';
+import type { Printer, PrinterCreate, PrinterStatus, AirductFan, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro, InventorySpool, SmartPlug, PrinterDiagnosticResult, HeaterSensorKind } from '../api/client';
 
 // Source of truth for Spoolman ↔ AMS slot binding (upstream PR #1241).
 // Mirrors backend `spoolman_slot_assignments` rows; PrintersPage subscribes to
@@ -1364,6 +1364,79 @@ const DRYING_PRESETS: Record<string, { n3f: number; n3s: number; n3f_hours: numb
   'PVA':   { n3f: 65, n3s: 85, n3f_hours: 12, n3s_hours: 18 },
 };
 
+/** One badge for a fan that exists only in ``device.airduct`` (#2576).
+ *
+ * Same shape as the neighbouring fan badges so the row stays uniform, plus a
+ * speed menu built like the print-speed one. It is a button rather than a plain
+ * tile only when the fan can actually be driven: a mode owns some fans (the
+ * P2S's left aux is off in heating), and the printer accepts a command for one
+ * of those and ignores it — so offering the control there would spend two
+ * clicks to do nothing.
+ */
+function FanBadge({
+  fan,
+  label,
+  open,
+  onToggle,
+  onPick,
+  canControl,
+}: {
+  fan: AirductFan;
+  label: string;
+  open: boolean;
+  onToggle: () => void;
+  onPick: (percent: number) => void;
+  canControl: boolean;
+}) {
+  const on = fan.speed > 0;
+  const interactive = canControl && fan.controllable;
+  const body = (
+    <>
+      <Wind className={`w-3.5 h-3.5 ${on ? 'text-blue-400' : 'text-bambu-gray/50'}`} />
+      <span className={`text-[10px] ${on ? 'text-blue-400' : 'text-bambu-gray/50'}`}>{fan.speed}%</span>
+    </>
+  );
+  const className = `flex items-center gap-1 px-1.5 py-1 rounded ${on ? 'bg-blue-500/10' : 'bg-bambu-dark'}`;
+
+  if (!interactive) {
+    return (
+      <div className={className} title={label}>
+        {body}
+      </div>
+    );
+  }
+
+  // Steps rather than a slider: the printer's own panel offers gears, and the
+  // badge is 40 px wide.
+  const steps = [0, 25, 50, 75, 100].filter((p) => p >= fan.range_start && p <= fan.range_end);
+  return (
+    <div className="relative">
+      <button onClick={onToggle} className={`${className} hover:bg-blue-500/20 transition-colors`} title={label}>
+        {body}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={onToggle} />
+          <div className="absolute bottom-full left-0 mb-1 z-50 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg py-1 min-w-[110px]">
+            <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-bambu-gray">{label}</div>
+            {steps.map((pct) => (
+              <button
+                key={pct}
+                onClick={() => onPick(pct)}
+                className={`w-full text-left px-3 py-1.5 text-xs transition-colors ${
+                  fan.speed === pct ? 'text-bambu-green bg-bambu-green/10' : 'text-white hover:bg-bambu-dark-tertiary'
+                }`}
+              >
+                {pct}%
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function PrinterCard({
   printer,
   hideIfDisconnected,
@@ -1463,6 +1536,9 @@ function PrinterCard({
   const [showStopConfirm, setShowStopConfirm] = useState(false);
   const [showPauseConfirm, setShowPauseConfirm] = useState(false);
   const [showSpeedMenu, setShowSpeedMenu] = useState<number | null>(null);
+  // Keyed "<printerId>-<partId>": a printer can report more than one airduct
+  // fan, so a bare printer id could not tell two menus apart.
+  const [showFanMenu, setShowFanMenu] = useState<string | null>(null);
   const [showResumeConfirm, setShowResumeConfirm] = useState(false);
   const [showBedJogMenu, setShowBedJogMenu] = useState<number | null>(null);
   const [bedJogStep, setBedJogStep] = useState<number>(10);
@@ -2141,6 +2217,18 @@ function PrinterCard({
       }
       showToast(error.message || t('printers.toast.failedToSetSpeed'), 'error');
     },
+  });
+
+  // Airduct fan speed. No optimistic update: the printer's own reported speed
+  // is the only honest source, the mode can refuse the change outright, and a
+  // badge that snapped to the requested value and then drifted back would read
+  // as the control being flaky rather than as the mode owning the fan.
+  const fanSpeedMutation = useMutation({
+    mutationFn: ({ partId, percent }: { partId: number; percent: number }) =>
+      api.setFanSpeed(printer.id, partId, percent),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['printerStatus', printer.id] }),
+    onError: (error: Error) =>
+      showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
   });
 
   // Backup toggle from the AMS Backup modal. Deliberately the SAME wire call
@@ -3573,6 +3661,28 @@ function PrinterCard({
               const chamberFan = status.big_fan2_speed;
               const hasChamberFan = MODELS_WITH_CHAMBER_FAN.has(mapModelCode(printer.model));
 
+              // Fans reported only through device.airduct (#2576). Part ids
+              // 1/2/3 already have badges of their own fed by the flat
+              // cooling/big_fan1/big_fan2 fields, so only the rest get a badge
+              // here — otherwise a P2S would show its right aux fan twice.
+              // What the airduct DOES add for 2 and 3 is the model-appropriate
+              // name: "Right(Aux)" rather than a generic "Auxiliary".
+              const airductFans = status.airduct_fans ?? [];
+              const fanName = (f: AirductFan) =>
+                f.label_key ? t(`printers.fans.${f.label_key}`, f.label ?? '') : (f.label ?? '');
+              const namedFan = (partId: number) => airductFans.find((f) => f.part_id === partId);
+              const auxLabel = namedFan(2) ? fanName(namedFan(2)!) : t('printers.fans.auxiliary');
+              const chamberLabel = namedFan(3) ? fanName(namedFan(3)!) : t('printers.fans.chamber');
+              // Left before right, so the badges read in the order the fans sit
+              // in the machine rather than in part-id order — which is mirrored
+              // between the P2S and the X2D.
+              const extraFans = airductFans
+                .filter((f) => ![1, 2, 3].includes(f.part_id))
+                .sort((a, b) => {
+                  const side = (f: AirductFan) => (/left/i.test(f.label ?? '') ? 0 : /right/i.test(f.label ?? '') ? 1 : 2);
+                  return side(a) - side(b) || a.part_id - b.part_id;
+                });
+
               return (
                 <div className="mt-3">
                   {/* Section Header */}
@@ -3600,7 +3710,7 @@ function PrinterCard({
                       {/* Auxiliary Fan */}
                       <div
                         className={`flex items-center gap-1 px-1.5 py-1 rounded ${auxFan && auxFan > 0 ? 'bg-blue-500/10' : 'bg-bambu-dark'}`}
-                        title={t('printers.fans.auxiliary')}
+                        title={auxLabel}
                       >
                         <Wind className={`w-3.5 h-3.5 ${auxFan && auxFan > 0 ? 'text-blue-400' : 'text-bambu-gray/50'}`} />
                         <span className={`text-[10px] ${auxFan && auxFan > 0 ? 'text-blue-400' : 'text-bambu-gray/50'}`}>
@@ -3608,11 +3718,33 @@ function PrinterCard({
                         </span>
                       </div>
 
+                      {/* Fans that exist only in the airduct — the second
+                          auxiliary fan is a kit on the P2S and factory-fitted
+                          on the X2D, and has no flat field to be read from. */}
+                      {extraFans.map((f) => (
+                        <FanBadge
+                          key={f.part_id}
+                          fan={f}
+                          label={fanName(f)}
+                          open={showFanMenu === `${printer.id}-${f.part_id}`}
+                          onToggle={() =>
+                            setShowFanMenu(
+                              showFanMenu === `${printer.id}-${f.part_id}` ? null : `${printer.id}-${f.part_id}`,
+                            )
+                          }
+                          onPick={(pct) => {
+                            fanSpeedMutation.mutate({ partId: f.part_id, percent: pct });
+                            setShowFanMenu(null);
+                          }}
+                          canControl={hasPermission('printers:control')}
+                        />
+                      ))}
+
                       {/* Chamber Fan — only on models that physically have one */}
                       {hasChamberFan && (
                         <div
                           className={`flex items-center gap-1 px-1.5 py-1 rounded ${chamberFan && chamberFan > 0 ? 'bg-green-500/10' : 'bg-bambu-dark'}`}
-                          title={t('printers.fans.chamber')}
+                          title={chamberLabel}
                         >
                           <AirVent className={`w-3.5 h-3.5 ${chamberFan && chamberFan > 0 ? 'text-green-400' : 'text-bambu-gray/50'}`} />
                           <span className={`text-[10px] ${chamberFan && chamberFan > 0 ? 'text-green-400' : 'text-bambu-gray/50'}`}>

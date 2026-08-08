@@ -42,6 +42,14 @@ All notable changes to BamDude will be documented in this file.
 
     **Move** and **Tags** are on a single file's menu now, so moving one file no longer starts with ticking its checkbox. Tagging one file shows what is already on it, and a tick applies immediately.
 
+### Added
+
+- **The P2S and X2D accessory fans are visible and controllable.** These machines have a second auxiliary fan — an add-on kit on the P2S, fitted from the factory on the X2D — that BamDude could not show at all. Unlike the other fans it is never reported as a plain speed field; it exists only inside the printer's air-duct data, which nothing was reading. It now appears as its own badge when the printer reports it, with its speed, and you can set that speed from the badge. Nothing appears on a machine that does not have the fan: the printer lists only the parts actually fitted, so the badge is driven by the hardware rather than by a list of model names.
+
+    **The fans are named the way your printer names them.** The same fan position is not the same fan on every model — on the P2S the second auxiliary fan is the **left** one, on the X2D it is the **right** one, and on the X2D it is even called something different in cooling and in heating mode. BamDude reads those names from the Bambu Studio printer definitions it already ships, so each machine gets its own correct labels instead of one guess applied to both. The existing Auxiliary and Chamber badges pick up the same treatment, so a P2S now says "Right Auxiliary" and not just "Auxiliary".
+
+    A fan that the current air-duct mode holds off — the P2S's left fan in heating mode, for instance — is shown but not offered as a control, because the printer accepts the command and ignores it.
+
 ### Fixed
 
 - **Reopening a camera view no longer breaks the stream you just opened.** Closing a camera and opening it again within a second or two could leave the new stream orphaned: the departing one cleaned up using a name both of them shared, so it took the new stream's registration and its buffered frame with it. Nothing looked wrong — the video kept playing — but BamDude then believed nobody was watching. Snapshots and AI failure detection would open a **second** connection to a camera that only allows one, kicking the live view off; the background cleanup would kill the running ffmpeg as an orphan; and "stop camera" reported that it had stopped nothing. Each stream now carries its own name, and shared state is only released once the last viewer for that printer has actually gone.

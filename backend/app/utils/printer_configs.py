@@ -224,6 +224,69 @@ def supports_nozzle_flow_type(model: str | None, live_flow_type_supported: bool 
     return bool(live_flow_type_supported)
 
 
+# BambuStudio's own fan labels, mapped to i18n keys under ``printers.fans.*``.
+# The config strings are BS's English; the vocabulary is small and stable, so
+# the ones we recognise are translated and anything new falls through as BS
+# wrote it — a label from a model we have not seen reads as words rather than as
+# a missing key, and re-syncing the configs cannot break the screen.
+_BS_FAN_LABEL_KEYS = {
+    "left(aux)": "leftAux",
+    "right(aux)": "rightAux",
+    "left(filter)": "leftFilter",
+    "right(filter)": "rightFilter",
+    "left(heating)": "leftHeating",
+    "right(heating)": "rightHeating",
+    "chamber": "chamber",
+}
+
+
+def airduct_fan_label(model: str | None, mode: int, sub_mode: int, part_id: int) -> tuple[str | None, str | None]:
+    """What this printer calls a given airduct fan, right now.
+
+    Returns ``(i18n_key, raw_bs_label)``. Either may be ``None``: an unmapped
+    label yields ``(None, "Something New")`` so the caller can still show it, and
+    a model whose config names nothing yields ``(None, None)``.
+
+    ⚠️ **The same part id is a different fan on different models — and in
+    different modes.** From the configs we mirror:
+
+    ======  =========  ==============  ==================================
+    model   mode       part 2          part 10
+    ======  =========  ==============  ==================================
+    P2S     0 cooling  Right(Aux)      **Left(Aux)**
+    P2S     1 heating  Right(Filter)   **Left(Aux)**
+    X2D     0 cooling  **Left(Aux)**   Right(Aux) / Right(Filter) by subMode
+    X2D     1 heating  **Left(Heating)**  Right(Filter)
+    ======  =========  ==============  ==================================
+
+    So on the X2D part 10 is the **right**-hand fan — mirrored from the P2S.
+    Upstream hardcodes "part 10 = Left Auxiliary" for both, which is correct on
+    the P2S they measured against and wrong on the X2D named in the same commit.
+    Reading the config is not tidiness here; it is the difference between a
+    correct label and a confidently wrong one.
+
+    Mode ``-1`` in the config means "any mode" and is the fallback — that is how
+    X1/P1S name part 3 "Chamber".
+    """
+    cfg = load_printer_config(model)
+    fans = cfg.get("fan") if cfg else None
+    if not isinstance(fans, dict):
+        return None, None
+
+    for mode_key in (str(mode), "-1"):
+        by_part = fans.get(mode_key)
+        if not isinstance(by_part, dict):
+            continue
+        value = by_part.get(str(part_id))
+        # A dict here means the label depends on the sub-mode as well (X2D
+        # part 10 in cooling: 0 → Right(Aux), 1 → Right(Filter)).
+        if isinstance(value, dict):
+            value = value.get(str(sub_mode)) or value.get("-1")
+        if isinstance(value, str) and value:
+            return _BS_FAN_LABEL_KEYS.get(value.strip().lower()), value
+    return None, None
+
+
 def device_calibration_availability(model: str | None) -> dict[str, bool]:
     """Base per-model availability of the seven device calibrations, read from
     the mirrored BambuStudio config.

@@ -739,7 +739,18 @@ export default {
     fans: {
       partCooling: 'Part Cooling Fan',
       auxiliary: 'Auxiliary Fan',
-      chamber: 'Chamber Fan'
+      chamber: 'Chamber Fan',
+      // BambuStudio's own names for the airduct fans, per model and per mode.
+      // The same part id is a different fan on a P2S and an X2D, so these are
+      // never chosen by id — the backend resolves the name from the mirrored
+      // printer config and sends the key. A name we do not recognise arrives as
+      // BS's English rather than as a missing key.
+      leftAux: 'Left Auxiliary Fan',
+      rightAux: 'Right Auxiliary Fan',
+      leftFilter: 'Left Filter Fan',
+      rightFilter: 'Right Filter Fan',
+      leftHeating: 'Left Heating Fan',
+      rightHeating: 'Right Heating Fan'
     },
     // HMS errors
     clickToViewHmsErrors: 'Click to view HMS errors',
