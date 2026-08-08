@@ -416,10 +416,17 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   const filamentReqsQuery = useQuery({
     queryKey: ['sliceFilamentReqs', source.kind, source.id, effectivePlateId],
     queryFn: async () => {
+      // `fullSlots`: one row per project slot, not only the ones this plate
+      // prints with. The list below is positional all the way to the CLI's
+      // filament_N.json parts, so a source whose only used slot is 4 has to
+      // present four rows — otherwise the single pick binds to slot 1 and slot
+      // 4 slices with whatever the source had baked in (#2712). The unused rows
+      // stay disabled exactly as before. PrintModal deliberately does NOT pass
+      // it: AMS matching must ask for the spools the job actually needs.
       if (source.kind === 'libraryFile') {
-        return api.getLibraryFileFilamentRequirements(source.id, effectivePlateId, previewRequestId);
+        return api.getLibraryFileFilamentRequirements(source.id, effectivePlateId, previewRequestId, true);
       }
-      return api.getArchiveFilamentRequirements(source.id, effectivePlateId, previewRequestId);
+      return api.getArchiveFilamentRequirements(source.id, effectivePlateId, previewRequestId, true);
     },
     enabled: !needsPlatePicker,
     staleTime: 60_000,

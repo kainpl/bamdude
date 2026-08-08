@@ -68,6 +68,12 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **Re-slicing a model that paints with one filament no longer prints the wrong material.** Open the Slice dialog on a model that declares four filaments but paints with slot 4 alone — a common MakerWorld shape — and it offered a single filament dropdown. The slicer binds that list by position, so your pick went to **slot 1**, and slot 4, the one the model actually prints with, was sliced with whatever the file's author had left in it. The result printed in the wrong material, with nothing on screen to suggest anything was off.
+
+    The dialog now shows one row per slot the project declares, with the slots this plate does not use greyed out exactly as before. Choosing a filament for slot 4 now sets slot 4.
+
+    The Print dialog is deliberately unchanged: it asks which spools the job needs, and it needs the narrow answer — otherwise it would have you load three spools the print never touches.
+
 - **A slice is no longer cut off for taking too long — only for going quiet.** A heavy model, the kind Bambu Studio also chews on for a while, would fail after five minutes with *"Slicer sidecar unreachable"*. The sidecar was reachable the whole time and still slicing when BamDude hung up on it — and the message sent people off to restart a container that was never the problem. That message was corrected earlier in this release; the limit itself is fixed now.
 
     BamDude was already watching the slicer work: while a slice runs it asks the sidecar for progress once a second, to drive the progress toast. So at minute five it had fresh evidence the thing was fine, and killed it anyway. That evidence is now what decides. The clock resets on every progress update, so a model that keeps reporting runs to completion however long it needs, and only real silence ends the wait. A sidecar that will not accept a connection at all is still reported as unreachable, immediately, as it should be.

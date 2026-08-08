@@ -40,6 +40,7 @@ from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.safe_path import safe_join_under
 from backend.app.utils.threemf_tools import (
+    expand_to_project_slots,
     extract_embedded_presets_from_3mf,
     extract_nozzle_mapping_from_3mf,
     extract_project_filaments_from_3mf,
@@ -3186,6 +3187,7 @@ async def get_filament_requirements(
     archive_id: int,
     plate_id: int | None = None,
     request_id: str | None = None,
+    full_slots: bool = False,
     db: AsyncSession = Depends(get_db),
     auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
@@ -3202,6 +3204,9 @@ async def get_filament_requirements(
     Args:
         archive_id: The archive ID
         plate_id: Optional plate index to filter filaments for (for multi-plate files)
+        full_slots: Return one entry per *project* slot rather than only the
+            slots the plate consumes — the slice modal's positional list needs
+            it, print-time AMS matching must not set it (#2712).
         request_id: forwarded to the sidecar's preview-slice fallback for
             unsliced project files; lets the SliceModal poll matching live
             progress.
@@ -3297,6 +3302,14 @@ async def get_filament_requirements(
                                     "used_in_plate": True,
                                 }
                             )
+
+            # Re-slicing a source that already carries slice_info (#2712).
+            # See library.py for the full rationale: the slice modal's list is
+            # positional, so a source using only slot 4 must still present four
+            # slots or the pick lands on slot 1. The print path keeps the
+            # used-only list it depends on.
+            if full_slots and filaments:
+                filaments = expand_to_project_slots(zf, filaments)
 
             # Unsliced project files: see library.py for full rationale.
             # Return the FULL project_settings.config slot list with a

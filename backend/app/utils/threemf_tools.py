@@ -586,6 +586,51 @@ def extract_project_filaments_from_3mf(zf: zipfile.ZipFile) -> list[dict]:
     return out
 
 
+def expand_to_project_slots(zf: zipfile.ZipFile, used: list[dict]) -> list[dict]:
+    """Widen a used-only filament list to one entry per project slot (#2712).
+
+    ``used`` is the slice_info-derived list: only the slots whose G-code
+    actually consumed filament, each carrying real usage figures. That is the
+    right answer for print-time AMS matching, and the **wrong** one for the
+    slice modal, because the list the modal builds is *positional* — index 0 is
+    slot 1, all the way down to the ``filament_N.json`` parts handed to the
+    slicer CLI. A source whose only used slot is 4 therefore produced a single
+    dropdown whose pick the CLI bound to slot 1, leaving slot 4 — the one the
+    model actually prints with — on whatever the source had baked in.
+
+    Returns the project's slots in slot order, each flagged ``used_in_plate``.
+    Rows present in ``used`` are kept whole, so their usage figures, resolved
+    type/colour and ``tray_info_idx`` survive; the rest come from the project
+    configuration with zero usage. A used slot beyond the project's slot count
+    is appended rather than dropped — the caller asked for a superset, and
+    silently losing the one slot that prints would be the original bug again.
+
+    ``used`` comes back unchanged when the file carries no project settings to
+    widen against: a narrower-than-ideal list still prints correctly, an
+    invented one might not.
+    """
+    project = extract_project_filaments_from_3mf(zf)
+    if not project:
+        return used
+
+    by_slot = {f["slot_id"]: f for f in used}
+    out: list[dict] = []
+    for slot in project:
+        known = by_slot.pop(slot["slot_id"], None)
+        if known is not None:
+            known["used_in_plate"] = True
+            out.append(known)
+        else:
+            slot["used_in_plate"] = False
+            out.append(slot)
+    # Anything slice_info reported that the project does not declare.
+    for leftover in by_slot.values():
+        leftover["used_in_plate"] = True
+        out.append(leftover)
+    out.sort(key=lambda f: f["slot_id"])
+    return out
+
+
 # paint_color attr on <triangle> elements (per-face filament painting).
 _PAINT_COLOR_ATTR_RE = re.compile(rb'paint_color="([0-9A-Fa-f]+)"')
 # Min share of painted triangles an extruder must cover to count as "used"

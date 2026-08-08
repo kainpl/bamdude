@@ -6028,12 +6028,23 @@ export const api = {
     `${API_BASE}/archives/${archiveId}/dl/${token}/${encodeURIComponent(buildSlicerUrlFilename(filename))}`,
   getArchivePlates: (archiveId: number) =>
     request<ArchivePlatesResponse>(`/archives/${archiveId}/plates`),
-  getArchiveFilamentRequirements: (archiveId: number, plateId?: number, requestId?: string) => {
+  getArchiveFilamentRequirements: (
+    archiveId: number,
+    plateId?: number,
+    requestId?: string,
+    /** Ask for one entry per project slot instead of only the slots this plate
+     * consumes. The slice modal needs it: its filament list is positional, so a
+     * source whose only used slot is 4 must still present four rows or the
+     * user's pick binds to slot 1 (#2712). Print-time AMS matching must NOT set
+     * this — it wants the used-only list. */
+    fullSlots?: boolean,
+  ) => {
     // request_id flows to the sidecar's preview-slice fallback so the
     // SliceModal's inline spinner can poll matching live progress.
     const params = new URLSearchParams();
     if (plateId !== undefined) params.set('plate_id', String(plateId));
     if (requestId !== undefined) params.set('request_id', requestId);
+    if (fullSlots) params.set('full_slots', 'true');
     const qs = params.toString();
     return request<{
       archive_id: number;
@@ -7946,10 +7957,18 @@ export const api = {
         ? `/library/files/${id}/plate-objects?plate=${plate}`
         : `/archives/${id}/plate-objects`,
     ),
-  getLibraryFileFilamentRequirements: (fileId: number, plateId?: number, requestId?: string) => {
+  getLibraryFileFilamentRequirements: (
+    fileId: number,
+    plateId?: number,
+    requestId?: string,
+    /** One entry per project slot rather than only the slots this plate
+     * consumes — see `getArchiveFilamentRequirements` (#2712). */
+    fullSlots?: boolean,
+  ) => {
     const params = new URLSearchParams();
     if (plateId !== undefined) params.set('plate_id', String(plateId));
     if (requestId !== undefined) params.set('request_id', requestId);
+    if (fullSlots) params.set('full_slots', 'true');
     const qs = params.toString();
     return request<{
       file_id: number;
