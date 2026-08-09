@@ -15,8 +15,14 @@ class AmsSystemSettingState(BaseModel):
     remain_capacity: bool | None = None
     auto_switch_filament: bool | None = None
     air_print_detect: bool | None = None
+    # ``firmware_idx_run`` — what the AMS is running; ``firmware_idx_sel`` —
+    # what runs after a switch finishes. They differ only mid-switch.
     firmware_idx_run: int | None = None
     firmware_idx_sel: int | None = None
+    # BS hides the picker entirely while ``status == "SWITCHING"`` and shows
+    # progress instead (AMSSetting.cpp) — a reflash in progress is not a moment
+    # to offer a second one.
+    firmware_switching: bool = False
 
 
 class AmsSystemSettingSupports(BaseModel):
@@ -35,8 +41,16 @@ class AmsUnitInfo(BaseModel):
 
 
 class AmsFirmwareOption(BaseModel):
+    """One switchable AMS firmware, exactly as the device reported it.
+
+    ``idx`` is the device's own id (BS ``IDX_LITE = 0``,
+    ``IDX_AMS_AMS2_AMSHT = 1``) and ``label`` its own name — neither is ours to
+    choose. An empty list means the printer offers no switch.
+    """
+
     idx: int
     label: str
+    version: str | None = None
 
 
 class AmsSettingsGetResponse(BaseModel):

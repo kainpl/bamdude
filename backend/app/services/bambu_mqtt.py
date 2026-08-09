@@ -716,8 +716,37 @@ class PrinterState:
     ams_remain_capacity: bool | None = None
     ams_auto_switch_filament: bool | None = None
     ams_air_print_detect: bool | None = None
+    # ---------- AMS firmware switch (BS DevAmsSystemFirmwareSwitch) ----------
+    # The A1's AMS carries two firmware "personalities" and can reflash between
+    # them. Everything here comes from ``print.upgrade_state.mc_for_ams_firmware``
+    # — BS never hardcodes the names, and neither do we: the device reports its
+    # own list, and an id whose meaning we invented is how you reflash an AMS
+    # into the wrong personality.
+    #
+    # ``ams_firmwares`` is BS's ``m_firmwares`` map flattened to a list, ordered
+    # by id: [{"id": int, "name": str, "version": str}, …]. Empty means the
+    # printer has not offered a switch, which is BS's whole support test
+    # (``SupportSwitchFirmware() = !m_firmwares.empty()``).
+    ams_firmwares: list = field(default_factory=list)
+    # ``current_run_firmware_id`` — what the AMS is running now. BS's IDX_DC
+    # (-1) means "not reported"; we use None for the same thing.
     ams_firmware_idx_run: int | None = None
+    # ``current_firmware_id`` — what is selected, i.e. what runs after a switch
+    # completes. Differs from _run only mid-switch.
     ams_firmware_idx_sel: int | None = None
+    # Raw ``status`` string. BS treats exactly "SWITCHING" as in-progress
+    # (``IsSwitching()``) and hides the picker while it holds.
+    ams_firmware_status: str | None = None
+    # ``print.upgrade_state.status`` — the PRINTER's own firmware flash, not the
+    # AMS one above. BS's ``is_in_upgrading()`` is this string being one of five
+    # values (DevUpgrade.cpp): DOWNLOADING, FLASHING, UPGRADE_REQUEST,
+    # PRE_FLASH_START, PRE_FLASH_SUCCESS. Used to refuse an AMS reflash while
+    # the printer is already flashing something.
+    firmware_upgrade_status: str | None = None
+    # ``device.extruder.info[].info`` bit 1 — filament present in that extruder
+    # (BS ``DevExtruderSystem.cpp``: ``m_ext_has_filament = get_flag_bits(info, 1)``).
+    # Keyed by extruder id. BS refuses an AMS firmware switch while any is loaded.
+    ext_has_filament: dict = field(default_factory=dict)
     # Hold-timer: when we publish an AMS setting command we stamp the flag
     # name here; the push parser skips overwriting the corresponding field
     # while ``time.time() - hold < 3.0``. Avoids the toggle visually flipping
@@ -4288,6 +4317,87 @@ class BambuMQTTClient:
                 if not _ams_cfg_hold_active("ams_auto_switch_filament"):
                     self.state.ams_auto_switch_filament = bool((_cfg_int >> 18) & 0x1)
 
+        # AMS firmware switch — BS ``DevAmsSystemFirmwareSwitch::ParseFirmwareSwitch``
+        # (DevFilaAmsSetting.cpp). Lives under ``upgrade_state``, not under ``ams``.
+        #
+        # The list is the source of BOTH the ids and the labels. BS builds its
+        # combo box from ``m_name`` per entry and never carries a name of its
+        # own, which is the only safe shape: the two A1 personalities are
+        # IDX_LITE = 0 and IDX_AMS_AMS2_AMSHT = 1, and a label paired with the
+        # wrong id reflashes the AMS into the other one.
+        _upgrade_state = data.get("upgrade_state")
+        if isinstance(_upgrade_state, dict) and "status" in _upgrade_state:
+            self.state.firmware_upgrade_status = str(_upgrade_state["status"] or "") or None
+
+        # ``device.extruder.info[].info`` bit 1 = filament present in that
+        # extruder. Parsed here rather than beside the nozzle temperatures
+        # because the only reader is the AMS-firmware-switch refusal, and BS
+        # reads the same bit for the same reason.
+        _ext = (data.get("device") or {}).get("extruder") if isinstance(data.get("device"), dict) else None
+        if isinstance(_ext, dict) and isinstance(_ext.get("info"), list):
+            for _idx, _entry in enumerate(_ext["info"]):
+                if not isinstance(_entry, dict) or "info" not in _entry:
+                    continue
+                try:
+                    _info_int = int(_entry["info"])
+                except (TypeError, ValueError):
+                    continue
+                _ext_id = _entry.get("id")
+                try:
+                    _ext_id = int(_ext_id)
+                except (TypeError, ValueError):
+                    _ext_id = _idx
+                self.state.ext_has_filament[_ext_id] = bool((_info_int >> 1) & 0x1)
+
+        _ams_fw = _upgrade_state.get("mc_for_ams_firmware") if isinstance(_upgrade_state, dict) else None
+        if isinstance(_ams_fw, dict):
+            # One hold covers the whole block: a switch we just asked for must
+            # not be undone by the report that was already in flight. Same 3 s
+            # TTL as every other AMS setting.
+            _fw_ts = self.state.ams_settings_hold.get("ams_firmware_switch")
+            if _fw_ts is None or (time.time() - _fw_ts) >= 3.0:
+                firmwares = _ams_fw.get("firmware")
+                if isinstance(firmwares, list):
+                    parsed: list[dict] = []
+                    for item in firmwares:
+                        if not isinstance(item, dict) or "id" not in item:
+                            continue
+                        try:
+                            fw_id = int(item["id"])
+                        except (TypeError, ValueError):
+                            continue
+                        parsed.append(
+                            {
+                                "id": fw_id,
+                                "name": str(item.get("name") or ""),
+                                "version": str(item.get("version") or ""),
+                            }
+                        )
+                    # BS keys a std::map, so entries arrive ordered by id and a
+                    # duplicate id keeps the last one. Mirror both.
+                    self.state.ams_firmwares = sorted({fw["id"]: fw for fw in parsed}.values(), key=lambda fw: fw["id"])
+
+                # An id the list does not contain resets the field rather than
+                # being kept — BS does exactly this, and a stale id would point
+                # the picker at an entry that no longer exists.
+                _known = {fw["id"] for fw in self.state.ams_firmwares}
+                if "current_firmware_id" in _ams_fw:
+                    try:
+                        _sel = int(_ams_fw["current_firmware_id"])
+                    except (TypeError, ValueError):
+                        _sel = None
+                    self.state.ams_firmware_idx_sel = _sel if _sel in _known else None
+                if "current_run_firmware_id" in _ams_fw:
+                    try:
+                        _run = int(_ams_fw["current_run_firmware_id"])
+                    except (TypeError, ValueError):
+                        _run = None
+                    # BS's IDX_DC (-1) is "not reported"; None says the same
+                    # thing without a magic number leaking to the frontend.
+                    self.state.ams_firmware_idx_run = _run if _run in _known else None
+                if "status" in _ams_fw:
+                    self.state.ams_firmware_status = str(_ams_fw["status"] or "") or None
+
         # Parse home_flag first so SD-card / door detection below can use it.
         # Bit 8 = HAS_SDCARD_NORMAL, bit 9 = HAS_SDCARD_ABNORMAL, bit 11 = store-to-SD,
         # bit 18 = wired network, bit 23 = door-open (X1 family only).
@@ -7773,11 +7883,17 @@ class BambuMQTTClient:
         return self.send_gcode(f"M620 C{int(ams_id)}\n")
 
     def ams_firmware_switch(self, firmware_idx: int) -> tuple[bool, str | None]:
-        """BS ``DevAmsSystemFirmwareSwitch::CrtlSwitchFirmware`` (DevFilaAmsSettingCtrl.cpp:7).
+        """BS ``DevAmsSystemFirmwareSwitch::CrtlSwitchFirmware`` (DevFilaAmsSettingCtrl.cpp).
 
         Note: this payload sits under ``upgrade`` (NOT ``print``). ``src_id=1``
         is the slicer identifier — we reuse 1 so the printer treats us the
         same as BambuStudio.
+
+        ``firmware_idx`` is the **id the device reported** for the chosen entry,
+        never a position in a list. BS sends ``m_type_combobox->GetSelection()``
+        — a row index — which coincides with the id only because the two A1
+        personalities happen to be 0 and 1; the wire field is documented as the
+        id, so we send the id and stay correct if a third ever appears.
         """
         if not self._client or not self.state.connected:
             logger.warning("[%s] Cannot send ams_firmware_switch: not connected", self.serial_number)
@@ -7794,6 +7910,14 @@ class BambuMQTTClient:
             }
         }
         self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+        # BS latches ``m_status = "SWITCHING"`` locally the moment the publish
+        # succeeds, so the picker disappears before the printer has said
+        # anything (DevFilaAmsSettingCtrl.cpp). We do the same, and take the
+        # standard 3 s hold so the report already in flight — which still
+        # carries the OLD selection — cannot flip the answer back.
+        self.state.ams_firmware_status = "SWITCHING"
+        self.state.ams_firmware_idx_sel = int(firmware_idx)
+        self.state.ams_settings_hold["ams_firmware_switch"] = time.time()
         logger.info(
             "[%s] ams_firmware_switch: firmware_idx=%s seq=%s",
             self.serial_number,

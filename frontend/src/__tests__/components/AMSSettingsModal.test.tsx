@@ -45,6 +45,7 @@ const baseState = {
   air_print_detect: null,
   firmware_idx_run: null,
   firmware_idx_sel: null,
+  firmware_switching: false,
 };
 
 beforeEach(() => {
@@ -115,5 +116,54 @@ describe('AMSSettingsModal', () => {
     await waitFor(() => {
       expect(api.postAmsSettings).toHaveBeenCalledWith(1, { action: 'reorder' });
     });
+  });
+
+  // ---- AMS firmware switch -------------------------------------------------
+  // The picker used to carry hardcoded FULL/LITE labels against ids 0/1, while
+  // BS's enum is IDX_LITE = 0 — so every click sent the opposite personality.
+  // The labels now come from the device, which is what makes that class of bug
+  // impossible rather than merely fixed.
+
+  const fwResponse = (overrides: Record<string, unknown> = {}) => ({
+    state: { ...baseState, firmware_idx_sel: 1, firmware_idx_run: 1, ...overrides },
+    supports: { ...baseSupports, firmware_switch: true },
+    ams_units: [{ ams_id: 0, label: 'AMS A' }],
+    firmware_options: [
+      { idx: 0, label: 'AMS Lite', version: '00.00.06.15' },
+      { idx: 1, label: 'AMS / AMS2 / AMS HT', version: '00.00.07.89' },
+    ],
+  });
+
+  it('labels the firmware options with the names the device reported', async () => {
+    (api.getAmsSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce(fwResponse());
+    render(<AMSSettingsModal isOpen={true} onClose={() => {}} printerId={1} />);
+
+    const lite = await screen.findByRole('option', { name: /AMS Lite/ });
+    expect((lite as HTMLOptionElement).value).toBe('0');
+    const full = screen.getByRole('option', { name: /AMS \/ AMS2 \/ AMS HT/ });
+    expect((full as HTMLOptionElement).value).toBe('1');
+  });
+
+  it('hides the picker while a switch is in progress', async () => {
+    (api.getAmsSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      fwResponse({ firmware_switching: true }),
+    );
+    render(<AMSSettingsModal isOpen={true} onClose={() => {}} printerId={1} />);
+
+    await screen.findByText(/Switching AMS type/);
+    expect(screen.queryByRole('option', { name: /AMS Lite/ })).toBeNull();
+  });
+
+  it('does not pre-select a personality the printer never reported', async () => {
+    // The old code fell back to `?? 0`, and 0 is a real id (IDX_LITE) — so an
+    // unreported state rendered as "Lite is selected".
+    (api.getAmsSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      fwResponse({ firmware_idx_sel: null, firmware_idx_run: null }),
+    );
+    render(<AMSSettingsModal isOpen={true} onClose={() => {}} printerId={1} />);
+
+    const select = (await screen.findByRole('option', { name: /AMS Lite/ }))
+      .closest('select') as HTMLSelectElement;
+    expect(select.value).toBe('');
   });
 });

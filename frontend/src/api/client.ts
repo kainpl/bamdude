@@ -4376,6 +4376,8 @@ export interface AmsSystemSettingState {
   air_print_detect: boolean | null;
   firmware_idx_run: number | null;
   firmware_idx_sel: number | null;
+  /** A reflash is in progress — the picker is hidden while this holds. */
+  firmware_switching: boolean;
 }
 
 export interface AmsSystemSettingSupports {
@@ -4393,9 +4395,15 @@ export interface AmsSettingsUnitInfo {
   label: string;
 }
 
+/**
+ * One switchable AMS firmware, as the device reported it. `idx` is the
+ * device's own id and `label` its own name — never ours to invent, because an
+ * id paired with the wrong label reflashes the AMS into the other personality.
+ */
 export interface AmsSettingsFirmwareOption {
   idx: number;
   label: string;
+  version?: string | null;
 }
 
 export interface AmsSettingsGetResponse {

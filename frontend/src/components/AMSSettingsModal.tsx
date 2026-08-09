@@ -218,19 +218,45 @@ export function AMSSettingsModal({ isOpen, onClose, printerId }: Props) {
                 <div className="font-medium text-white">
                   {t('amsSettings.amsType')}
                 </div>
-                <div className="mt-2 flex gap-2 items-center">
-                  <select
-                    className="bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1 text-white focus:border-bambu-green focus:outline-none"
-                    value={s.firmware_idx_sel ?? data.firmware_options[0]?.idx ?? 0}
-                    onChange={(e) => setFwSwitchConfirm(Number(e.target.value))}
-                  >
-                    {data.firmware_options.map((o) => (
-                      <option key={o.idx} value={o.idx}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                {s.firmware_switching ? (
+                  // BS hides the picker entirely while the reflash runs
+                  // (AMSSetting.cpp) — offering a second switch mid-flash is
+                  // the one thing that must not be possible here.
+                  <p className="text-sm text-bambu-gray mt-2">
+                    {t('amsSettings.amsTypeSwitching')}
+                  </p>
+                ) : (
+                  <div className="mt-2 flex gap-2 items-center">
+                    <select
+                      className="bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1 text-white focus:border-bambu-green focus:outline-none"
+                      // No `?? 0` fallback: 0 is a real id (IDX_LITE), so
+                      // defaulting to it would silently pre-select a
+                      // personality the printer never said it was running.
+                      value={s.firmware_idx_sel ?? ''}
+                      onChange={(e) => setFwSwitchConfirm(Number(e.target.value))}
+                    >
+                      {s.firmware_idx_sel == null && (
+                        <option value="" disabled>
+                          {t('amsSettings.amsTypeUnknown')}
+                        </option>
+                      )}
+                      {data.firmware_options.map((o) => (
+                        <option key={o.idx} value={o.idx}>
+                          {o.version ? `${o.label} (${o.version})` : o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                {s.firmware_idx_run != null && s.firmware_idx_run !== s.firmware_idx_sel && (
+                  <p className="text-sm text-bambu-gray mt-2">
+                    {t('amsSettings.amsTypeRunning', {
+                      name:
+                        data.firmware_options.find((o) => o.idx === s.firmware_idx_run)?.label ??
+                        String(s.firmware_idx_run),
+                    })}
+                  </p>
+                )}
               </div>
             )}
 

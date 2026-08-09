@@ -29,12 +29,26 @@ def test_a1_mini_no_rfid():
     assert sup["air_print_detect"] is True
 
 
-def test_a1_full_has_firmware_switch_and_air_print():
+def test_a1_full_has_air_print():
     sup = compute_ams_supports(_s(), "A1")
     assert sup["insertion_update"] is True
-    assert sup["firmware_switch"] is True
     assert sup["air_print_detect"] is True
     assert sup["reorder"] is False
+
+
+def test_firmware_switch_is_the_devices_answer_not_the_models():
+    """This used to assert ``"A1" -> True``, which was the bug in miniature: a
+    model list decided whether to offer a control that **reflashes hardware**.
+
+    BS's test is ``SupportSwitchFirmware() = !m_firmwares.empty()`` — the printer
+    either offers a list of firmwares or it does not. Full parity coverage lives
+    in ``test_ams_firmware_switch_parity.py``.
+    """
+    assert compute_ams_supports(_s(), "A1")["firmware_switch"] is False
+
+    reported = _s()
+    reported.ams_firmwares = [{"id": 0, "name": "AMS Lite", "version": ""}]
+    assert compute_ams_supports(reported, "A1")["firmware_switch"] is True
 
 
 def test_h2d_supports_reorder():

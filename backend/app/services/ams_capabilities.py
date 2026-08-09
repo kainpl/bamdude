@@ -62,8 +62,8 @@ _H2_FAMILY = frozenset({"H2D", "H2DPRO", "H2C", "H2S"})
 def compute_ams_supports(state: PrinterState, printer_model: str | None) -> AmsSupports:
     """Return per-flag visibility for the AMS Settings dialog.
 
-    ``state`` is the live MQTT state (currently unused — kept on the signature
-    so a future cfg-bit gate can refine the answer without an API change).
+    Most flags are still answered from the model. ``firmware_switch`` is not —
+    see below.
     """
     m = _norm(printer_model)
     has_rfid = m in _HAS_RFID_AMS
@@ -77,6 +77,13 @@ def compute_ams_supports(state: PrinterState, printer_model: str | None) -> AmsS
         remain_capacity=has_rfid,
         auto_switch_filament=has_rfid,
         air_print_detect=(is_a1_mini or is_a1_full),
-        firmware_switch=is_a1_full,
+        # **Asked of the device, not of the model.** BS's whole support test is
+        # ``SupportSwitchFirmware() = !m_firmwares.empty()`` — the printer either
+        # offers a list of firmwares to switch between, or it does not. The
+        # previous ``m in _A1_FULL`` was a guess about which machines have the
+        # feature, and it decided the question for a control that reflashes
+        # hardware. A model list cannot know that an AMS was swapped, that the
+        # firmware predates the feature, or that Bambu shipped it elsewhere.
+        firmware_switch=bool(state.ams_firmwares),
         reorder=is_h2,
     )

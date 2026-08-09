@@ -5064,6 +5064,9 @@ export default {
     airPrintTip:
       'Detects clogging and filament grinding, halting printing immediately to conserve time and filament.',
     amsType: 'AMS Type',
+    amsTypeSwitching: 'Switching AMS type — this takes about 30 seconds.',
+    amsTypeUnknown: 'Not reported yet',
+    amsTypeRunning: 'Currently running: {{name}}',
     arrangeOrder: 'Arrange AMS Order',
     arrangeNote:
       "If you want a specific AMS ID sequence, please disconnect all AMS after clicking 'Reset', and then reconnect them in the desired order.",
