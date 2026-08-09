@@ -68,6 +68,10 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **The bed-jog arrows moved the wrong way on the A2L.** Which direction the nozzle-bed gap changes depends on the machine's frame: on most Bambu printers the bed itself rides the Z axis, while on the open-frame A-series the toolhead does, and the same command means the opposite thing on the two. BamDude decided which was which from a list of model names written before the A2L existed — so on that printer the arrows were inverted, and pressing "closer" opened the gap while "further" drove the nozzle at the plate.
+
+    The list is gone. The answer now comes from the printer definitions BamDude already ships — the same files Bambu Studio reads for the same decision — so a machine is classified correctly the day its definition arrives rather than the day somebody remembers to edit a list. A test now checks every shipped definition against the answer, so the two cannot drift apart again. Nothing changes on any other model: all fifteen already agreed.
+
 - **Jog, Auto Home, calibration and firmware preparation now refuse a printer that has a job on it.** All four moved the toolhead or reflashed the machine, and none of them checked. The buttons were hidden in the interface, which is enough for a desktop program in one window — it is not enough here, where the same commands are reachable from an API key, from the Telegram bot, and from a browser tab that was opened before the print started. A running print, a paused one, and a print still warming up all now get a plain refusal saying the printer is busy.
 
     "Still warming up" is the part that was missing everywhere. The one place that *did* check — the bulk firmware updater — asked only whether a print was running or paused, so a printer already heating and positioning for a job counted as free. All five places now share one rule, and it is the same four states Bambu Studio uses.

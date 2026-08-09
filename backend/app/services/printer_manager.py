@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.printer import Printer
 from backend.app.services.bambu_mqtt import BambuMQTTClient, MQTTLogEntry, PrinterState, get_stage_name
+from backend.app.utils.printer_configs import printer_arch
 
 logger = logging.getLogger(__name__)
 
@@ -249,20 +250,28 @@ def is_printer_busy(printer_id: int) -> bool:
 def is_bed_slinger(model: str | None) -> bool:
     """Whether the printer's Z axis controls the *toolhead*, not the bed.
 
-    Bambu's A1 family (A1, A1 Mini; internal codes ``N1`` / ``N2S``) are
-    open-frame bed-slingers: the bed moves on Y, the toolhead moves on
-    X+Z. On every other current model (X1, P1, H2, H2C, H2D, H2S, P2S,
-    ...) the bed moves on Z and the toolhead is fixed in Z.
+    Open-frame bed-slingers (``printer_arch: "i3"``) move the bed on Y and the
+    toolhead on X+Z. On a CoreXY machine (X1, P1, H2 family, P2S, X2D) the bed
+    moves on Z and the toolhead is fixed in Z.
 
-    G-code direction is opposite on these two families. ``G1 Z-10``
-    reduces the nozzle-bed gap on both, but on bed-on-Z machines it
-    does so by moving the BED up, while on bed-slingers it does so by
-    moving the TOOLHEAD down — which is what crashed the nozzle in
-    upstream Bambuddy #1334.
+    G-code direction is opposite on these two families. ``G1 Z-10`` reduces the
+    nozzle-bed gap on both, but on bed-on-Z machines it does so by moving the
+    BED up, while on bed-slingers it does so by moving the TOOLHEAD down —
+    which is what crashed the nozzle in upstream Bambuddy #1334.
+
+    **The answer comes from the mirrored config, because that is where BS gets
+    it.** ``DevAxis::IsArchCoreXY()`` is ``get_printer_arch() == ARCH_CORE_XY``,
+    read from ``printer_arch`` in ``resources/printers/<code>.json`` — the exact
+    files we ship. The hardcoded model set this replaced listed A1 and A1 mini
+    and **not the A2L**, whose own config says ``i3``: that machine jogged the
+    wrong way, which is #1334 again on a model nobody re-checked.
+
+    ⚠️ Do not reintroduce a model list here. See
+    ``inv-per-model-capability-from-mirrored-config`` — a list cannot learn
+    about a machine released after it was written, and this particular list
+    decides which way a nozzle moves.
     """
-    if not model:
-        return False
-    return model.strip().upper() in A1_MODELS
+    return printer_arch(model) == "i3"
 
 
 # Minimum firmware versions for AMS drying support (confirmed via capture testing)

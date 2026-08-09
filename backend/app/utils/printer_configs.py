@@ -122,6 +122,28 @@ def load_printer_config(model: str | None) -> dict | None:
     return _base_block(data) if isinstance(data, dict) else None
 
 
+def printer_arch(model: str | None) -> str:
+    """The model's kinematic architecture — ``"core_xy"`` or ``"i3"``.
+
+    Byte-for-byte the question BS answers in
+    ``DevPrinterConfigUtil::get_printer_arch``, **including its default**::
+
+        if   arch_str == "i3"      -> ARCH_I3
+        elif arch_str == "core_xy" -> ARCH_CORE_XY
+        else                       -> ARCH_CORE_XY
+
+    So an unknown model, an unreadable config and an unrecognised value all
+    answer ``core_xy``. That default is the safe one for the only consumer that
+    matters: ``core_xy`` means "do not invert the Z sign", i.e. leave the
+    caller's g-code alone rather than flip it on a machine we cannot identify.
+    """
+    cfg = load_printer_config(model) or {}
+    value = cfg.get("printer_arch")
+    if not isinstance(value, str):
+        value = (cfg.get("print") or {}).get("printer_arch") if isinstance(cfg.get("print"), dict) else None
+    return "i3" if value == "i3" else "core_xy"
+
+
 def supports_safety_options(model: str | None) -> bool:
     """Whether the model exposes BS's Safety Options dialog — the top-level
     ``support_safety_options`` flag in the mirrored per-model config. Currently
