@@ -68,6 +68,12 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **Jog, Auto Home, calibration and firmware preparation now refuse a printer that has a job on it.** All four moved the toolhead or reflashed the machine, and none of them checked. The buttons were hidden in the interface, which is enough for a desktop program in one window — it is not enough here, where the same commands are reachable from an API key, from the Telegram bot, and from a browser tab that was opened before the print started. A running print, a paused one, and a print still warming up all now get a plain refusal saying the printer is busy.
+
+    "Still warming up" is the part that was missing everywhere. The one place that *did* check — the bulk firmware updater — asked only whether a print was running or paused, so a printer already heating and positioning for a job counted as free. All five places now share one rule, and it is the same four states Bambu Studio uses.
+
+    Auto Home is stricter here than in Bambu Studio, on purpose. Studio does not refuse a mid-print home; it quietly homes the X axis only, which is harmless because the bed never moves. This endpoint has no such mode — it deliberately always runs the printer's full home sequence, because homing Z alone once drove a bed into the toolhead — and a full home in the middle of a print would park the head and re-home every axis under the running job. Refusing is the honest answer; a mid-print X-only home would be a new feature, not a safety check.
+
 - **The AMS type switch sent the opposite of what it said.** The A1's AMS carries two firmware personalities and can reflash between them, and BamDude offered that as a dropdown reading **FULL** and **LITE** — with the two labels attached to the wrong numbers. Picking FULL flashed the AMS to Lite. It is the most destructive control in the app, and the only thing that made it survivable is that the same dropdown is how you undo it.
 
     The labels were never ours to write. The printer reports its own list — each entry with a name and a firmware version — and that list is now what the dropdown shows, so a name can no longer drift away from what it selects. A printer that reports no list gets no dropdown at all, which also replaces the old guess about which machines have the feature: an AMS can be swapped, and firmware can predate it.

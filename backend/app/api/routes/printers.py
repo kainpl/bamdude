@@ -61,6 +61,7 @@ from backend.app.services.printer_manager import (
     get_derived_status_name,
     get_stage_name,
     is_bed_slinger,
+    is_printer_busy,
     printer_manager,
     resolve_expected_tray,
     resolve_plate_id,
@@ -2225,6 +2226,12 @@ async def start_calibration(
     if not client or not client.state.connected:
         raise HTTPException(400, "Printer not connected")
 
+    if is_printer_busy(printer_id):
+        # BS marks a printing machine BUSY in its calibration picker and will
+        # not let you select it (CalibrationPanel.cpp). Every one of these
+        # routines moves the toolhead across the plate.
+        raise HTTPException(409, "Printer is busy — cannot calibrate while a job is on it")
+
     # Check that at least one option is selected
     if not any([bed_leveling, vibration, motor_noise, nozzle_offset, high_temp_heatbed, lidar, clump_pos]):
         raise HTTPException(400, "At least one calibration option must be selected")
@@ -3111,6 +3118,12 @@ async def bed_jog(
     if not client:
         raise HTTPException(400, "Printer not connected")
 
+    if is_printer_busy(printer_id):
+        # Moving the bed under a running or paused print destroys it. The
+        # frontend already hides the control, but this route is reachable by
+        # API key and by a tab opened before the print started.
+        raise HTTPException(409, "Printer is busy — cannot jog while a job is on it")
+
     # Model-aware direction flip — see docstring for the physics.
     z_distance = -distance if is_bed_slinger(printer.model) else distance
 
@@ -3173,6 +3186,25 @@ async def home_axes(
     client = printer_manager.get_client(printer_id)
     if not client:
         raise HTTPException(400, "Printer not connected")
+
+    if is_printer_busy(printer_id):
+        # ⚠️ We are STRICTER than BambuStudio here, deliberately.
+        #
+        # BS does not refuse a mid-print home — it degrades one
+        # (``DevAxis::Ctrl_GoHome``):
+        #
+        #     is_in_printing() ? publish_gcode("G28 X\n") : publish_gcode("G28 \n")
+        #
+        # Homing X alone is safe mid-print because the bed never moves. This
+        # endpoint has no such mode: it always sends a bare ``G28`` on purpose
+        # (see the docstring — ``G28 Z`` skipped the toolhead park and drove the
+        # bed into the head on H2C, #1052), and a bare G28 mid-print parks the
+        # toolhead and re-homes every axis under a running job.
+        #
+        # So the honest answer is a refusal, not a degraded command we do not
+        # implement. An X-only mid-print home would be a new capability, not a
+        # guard, and belongs with the rest of the motion work.
+        raise HTTPException(409, "Printer is busy — cannot home while a job is on it")
 
     if not client.send_gcode("G28"):
         raise HTTPException(500, "Failed to send home command")

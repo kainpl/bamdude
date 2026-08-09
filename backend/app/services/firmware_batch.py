@@ -24,7 +24,7 @@ from backend.app.models.printer import Printer
 from backend.app.services import firmware_store
 from backend.app.services.bambu_ftp import get_ftp_retry_settings, upload_file_async, with_ftp_retry
 from backend.app.services.firmware_profiles import get_firmware_profile
-from backend.app.services.printer_manager import printer_manager
+from backend.app.services.printer_manager import is_printer_busy
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +40,14 @@ class BatchTarget:
 
 
 def _is_printing(printer_id: int) -> bool:
-    """True if the printer is mid-job (RUNNING/PAUSE) — never FTP to its SD then."""
-    client = printer_manager.get_client(printer_id)
-    if not client or not client.state:
-        return False
-    return client.state.state in ("RUNNING", "PAUSE")
+    """True if the printer is mid-job — never FTP to its SD then.
+
+    Kept as a name because the batch code reads better with it, but the rule
+    itself now lives in one place. It also got **wider** doing so: this used to
+    ask for ``("RUNNING", "PAUSE")`` and let ``PREPARE`` through, which is a
+    printer already heating and positioning for a job.
+    """
+    return is_printer_busy(printer_id)
 
 
 async def _ftp_upload(item, sf) -> None:

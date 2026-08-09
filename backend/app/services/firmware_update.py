@@ -26,7 +26,7 @@ from backend.app.services.bambu_ftp import (
     with_ftp_retry,
 )
 from backend.app.services.firmware_check import get_firmware_service
-from backend.app.services.printer_manager import printer_manager
+from backend.app.services.printer_manager import is_printer_busy, printer_manager
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +135,14 @@ class FirmwareUpdateService:
             return result
 
         state = mqtt_client.state
+
+        # A firmware update uploads to the SD card and then asks the printer to
+        # flash itself. ``firmware_batch`` already refuses to FTP to a printer
+        # mid-job; preparing one single-handed skipped that check entirely, so
+        # the bulk path was safe and the individual one was not.
+        if is_printer_busy(printer_id):
+            result["errors"].append("Printer is busy — finish or cancel the job first")
+            return result
 
         # Get current firmware version
         result["current_version"] = state.firmware_version

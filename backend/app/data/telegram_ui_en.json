@@ -36,6 +36,7 @@
     "offline": "Offline",
     "not_found": "Printer not found",
     "not_connected": "Printer not connected",
+    "busy_cannot_control": "The printer is busy — finish or cancel the job first.",
     "model": "Model",
     "status": "Status",
     "nozzle": "Nozzle",

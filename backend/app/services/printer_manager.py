@@ -219,6 +219,33 @@ def has_stg_cur_idle_bug(model: str | None) -> bool:
     return model_upper in STG_CUR_IDLE_BUG_MODELS
 
 
+# BS ``MachineObject::is_in_printing_status`` (DeviceManager.cpp) — the four
+# gcode_state values that mean "this machine has a job on it". Note SLICING and
+# PREPARE: a print being prepared is already heating and positioning, which is
+# exactly when homing or jogging does the most damage. An earlier, narrower
+# version of this rule lived in ``firmware_batch._is_printing`` as
+# ``("RUNNING", "PAUSE")`` and let PREPARE through.
+BUSY_PRINT_STATES = frozenset({"RUNNING", "PAUSE", "SLICING", "PREPARE"})
+
+
+def is_printer_busy(printer_id: int) -> bool:
+    """Whether the printer has a job on it, so physical commands must be refused.
+
+    BS can answer this question in the UI — it is a single-window desktop app,
+    and a greyed-out button is a sufficient guard. Ours is an HTTP surface
+    reachable by API key, by the Telegram bot and by a browser tab left open
+    since before the print started, so the answer has to live on the server.
+
+    A printer we have no client for is **not** reported busy: "unknown" is
+    already handled by the connection check every caller does first, and
+    answering True here would turn a disconnect into a permanent refusal.
+    """
+    client = printer_manager.get_client(printer_id)
+    if not client or not client.state:
+        return False
+    return client.state.state in BUSY_PRINT_STATES
+
+
 def is_bed_slinger(model: str | None) -> bool:
     """Whether the printer's Z axis controls the *toolhead*, not the bed.
 
