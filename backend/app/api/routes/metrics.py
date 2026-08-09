@@ -300,36 +300,32 @@ async def get_metrics(
         status = all_statuses.get(printer.id)
         if not status:
             continue
-        # Part cooling fan
-        if "part_fan" in status.temperatures:
-            val = status.temperatures["part_fan"]
+        # These read ``status.temperatures["part_fan"|"aux_fan"|"chamber_fan"]``,
+        # keys that **nothing in the backend has ever written** — the fan speeds
+        # live in their own fields on PrinterState, already converted to percent
+        # by ``parse_fan_speed``. So this series emitted its HELP/TYPE header and
+        # never a single sample, and a Grafana alert built on it sat silently
+        # false forever. An always-empty metric is worse than a missing one: the
+        # metric exists, the query returns no data, and "no data" reads as
+        # "no problem".
+        #
+        # Not covered here: the second auxiliary fan on P2S / X2D, which exists
+        # only inside ``airduct_parts`` and has no flat field. Exporting it is a
+        # new series, not this fix.
+        for fan_label, value in (
+            ("part", status.cooling_fan_speed),
+            ("aux", status.big_fan1_speed),
+            ("chamber", status.big_fan2_speed),
+        ):
+            if value is None:
+                continue
             labels = format_labels(
                 printer_id=str(printer.id),
                 printer_name=printer.name,
                 serial=printer.serial_number,
-                fan="part",
+                fan=fan_label,
             )
-            lines.append(f"bamdude_fan_speed_percent{labels} {val:.1f}")
-        # Aux fan
-        if "aux_fan" in status.temperatures:
-            val = status.temperatures["aux_fan"]
-            labels = format_labels(
-                printer_id=str(printer.id),
-                printer_name=printer.name,
-                serial=printer.serial_number,
-                fan="aux",
-            )
-            lines.append(f"bamdude_fan_speed_percent{labels} {val:.1f}")
-        # Chamber fan
-        if "chamber_fan" in status.temperatures:
-            val = status.temperatures["chamber_fan"]
-            labels = format_labels(
-                printer_id=str(printer.id),
-                printer_name=printer.name,
-                serial=printer.serial_number,
-                fan="chamber",
-            )
-            lines.append(f"bamdude_fan_speed_percent{labels} {val:.1f}")
+            lines.append(f"bamdude_fan_speed_percent{labels} {value:.1f}")
 
     # =========================================================================
     # WiFi signal
