@@ -2595,7 +2595,7 @@ class TestTrayNowDualNozzleH2DSnow(_H2DFixtureMixin):
         assert h2d_client.state.h2d_extruder_snow.get(1) == 128
 
         # Switch to left extruder
-        h2d_client._process_message(_extruder_state_payload(0x0100))
+        h2d_client._process_message(_extruder_state_payload(0x0010))
         assert h2d_client.state.active_extruder == 1
 
         # tray_now="0" with left extruder active, snow says AMS HT (128)
@@ -2726,7 +2726,7 @@ class TestTrayNowDualNozzleH2DFallback(_H2DFixtureMixin):
     def test_single_ams_ht_on_extruder_returns_unit_id(self, h2d_client):
         """AMS-HT 128 alone on left extruder, slot 0 → global ID 128 (not 512)."""
         # Switch to left extruder (where AMS-HT 128 is mapped)
-        h2d_client._process_message(_extruder_state_payload(0x0100))
+        h2d_client._process_message(_extruder_state_payload(0x0010))
         # Only AMS-HT 128 on left extruder; no snow available
         h2d_client._process_message(_ams_payload(0))
         assert h2d_client.state.tray_now == 128
@@ -2789,7 +2789,7 @@ class TestLastLoadedTrayValidation(_H2DFixtureMixin):
 
     def test_ams_ht_tray_stored(self, h2d_client):
         """Valid AMS-HT tray (128-135) → stored in last_loaded_tray."""
-        h2d_client._process_message(_extruder_state_payload(0x0100))
+        h2d_client._process_message(_extruder_state_payload(0x0010))
         h2d_client._process_message(
             _extruder_info_payload(
                 [
@@ -2816,24 +2816,52 @@ class TestLastLoadedTrayValidation(_H2DFixtureMixin):
 
 
 class TestTrayNowDualNozzleH2DActiveExtruder(_H2DFixtureMixin):
-    """Active extruder switching via device.extruder.state bit 8."""
+    """Active extruder from ``device.extruder.state`` bits 4-7.
+
+    These used to drive bit 8 and assert the opposite. Bit 8 is the low bit of
+    the **target** extruder field — BS ``DevExtruderSystem.cpp``::
+
+        bits 0..3   total extruder count
+        bits 4..7   CURRENT extruder id
+        bits 8..11  TARGET extruder id
+        bits 12..14 switch state
+
+    so ``0x0100`` does not mean "left is printing", it means "a switch to left
+    is under way while right still is". On a settled machine the two agree,
+    which is why the old reading passed for so long; mid-change it attributed
+    the plastic to the wrong spool in the archive and in Spoolman.
+    """
 
     def test_active_extruder_right_by_default(self, h2d_client):
         """Initial state.active_extruder == 0 (right)."""
         assert h2d_client.state.active_extruder == 0
 
-    def test_extruder_state_bit8_switches_to_left(self, h2d_client):
-        """state=0x100 → active_extruder=1 (left)."""
-        h2d_client._process_message(_extruder_state_payload(0x0100))
+    def test_current_field_switches_to_left(self, h2d_client):
+        """state=0x0010 → bits 4-7 = 1 → active_extruder=1 (left)."""
+        h2d_client._process_message(_extruder_state_payload(0x0010))
         assert h2d_client.state.active_extruder == 1
 
-    def test_extruder_state_bit8_switches_back_to_right(self, h2d_client):
+    def test_current_field_switches_back_to_right(self, h2d_client):
         """Cycle 0 → 1 → 0."""
-        h2d_client._process_message(_extruder_state_payload(0x0100))
+        h2d_client._process_message(_extruder_state_payload(0x0010))
         assert h2d_client.state.active_extruder == 1
 
         h2d_client._process_message(_extruder_state_payload(0x0001))
         assert h2d_client.state.active_extruder == 0
+
+    def test_a_pending_switch_does_not_move_the_active_extruder(self, h2d_client):
+        """The regression this fix is about: target set, current unchanged.
+
+        ``0x0100`` = target 1, current 0 — the printer is on its way to the left
+        nozzle but the right one is still laying plastic.
+        """
+        h2d_client._process_message(_extruder_state_payload(0x0100))
+        assert h2d_client.state.active_extruder == 0
+
+    def test_current_wins_over_target_when_they_disagree(self, h2d_client):
+        """current=1, target=0 — mid-switch back."""
+        h2d_client._process_message(_extruder_state_payload(0x0010))
+        assert h2d_client.state.active_extruder == 1
 
     def test_extruder_switch_changes_tray_disambiguation(self, h2d_client):
         """Snow on both extruders; switching active changes which snow is used."""
@@ -2851,8 +2879,8 @@ class TestTrayNowDualNozzleH2DActiveExtruder(_H2DFixtureMixin):
         h2d_client._process_message(_ams_payload(1))
         assert h2d_client.state.tray_now == 1
 
-        # Switch to left
-        h2d_client._process_message(_extruder_state_payload(0x0100))
+        # Switch to left — bits 4-7 are the CURRENT extruder, not bit 8
+        h2d_client._process_message(_extruder_state_payload(0x0010))
 
         # Left active - tray_now="0" → snow ext[1] says AMS HT (128), slot 0 matches
         h2d_client._process_message(_ams_payload(0))
@@ -2886,7 +2914,7 @@ class TestTrayNowDualNozzleH2DFullSequence(_H2DFixtureMixin):
     def test_h2d_left_nozzle_ams_ht_lifecycle(self, h2d_client):
         """Setup → switch left → load AMS HT → verify tray_now=128."""
         # Switch to left extruder
-        h2d_client._process_message(_extruder_state_payload(0x0100))
+        h2d_client._process_message(_extruder_state_payload(0x0010))
 
         # Snow: ext 1 → AMS HT slot 0
         h2d_client._process_message(
@@ -2925,7 +2953,7 @@ class TestTrayNowDualNozzleH2DFullSequence(_H2DFixtureMixin):
         assert h2d_client.state.tray_now == 0
 
         # Step 2: Switch to left, load AMS HT
-        h2d_client._process_message(_extruder_state_payload(0x0100))
+        h2d_client._process_message(_extruder_state_payload(0x0010))
         h2d_client._process_message(
             _extruder_info_payload(
                 [

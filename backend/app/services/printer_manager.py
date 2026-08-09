@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.printer import Printer
 from backend.app.services.bambu_mqtt import BambuMQTTClient, MQTTLogEntry, PrinterState, get_stage_name
-from backend.app.utils.printer_configs import printer_arch
+from backend.app.utils.printer_configs import get_device_support_flags, printer_arch
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,10 @@ CHAMBER_TEMP_SUPPORTED_MODELS = frozenset(
         "H2DPRO",
         "H2S",  # H2 series
         # Internal codes (from MQTT/SSDP)
-        "BL-P001",  # X1/X1C
+        "BL-P001",  # X1C
+        "BL-P002",  # X1 — was missing while its sibling was here, so a printer
+        # identified by the raw code rather than the display name lost its
+        # chamber reading from the card, the status API and the history, silently.
         "C13",  # X1E
         "N6",  # X2D
         "O1D",  # H2D
@@ -113,17 +116,35 @@ STG_CUR_IDLE_BUG_MODELS = A1_MODELS | frozenset(
 )
 
 
+def _norm_model(model: str | None) -> str:
+    """Normalise a model name for set membership.
+
+    ⚠️ **Internal spaces and hyphens too**, not just the ends. The three chamber
+    sets used ``model.strip().upper()``, which leaves the space in the middle of
+    ``"H2D Pro"`` — and ``"H2D Pro"`` is exactly what ``PRINTER_MODEL_ID_MAP``
+    emits, while the set spells it ``H2DPRO``. So the H2D Pro answered False to
+    every chamber question and preheat never heated its chamber; ``X1 Carbon``
+    failed the same way. Matches ``ams_capabilities._norm`` and
+    ``printer_configs._norm``, which already got this right.
+
+    ⚠️ Spaces only — **hyphens are load-bearing here.** The internal codes in
+    these sets are spelled ``BL-P001`` / ``BL-P002``, and the A1 set lists
+    ``A1-MINI`` explicitly. Stripping hyphens the way ``ams_capabilities._norm``
+    does would silently unmatch every X1-family internal code; those sets
+    tolerate it because they are written without hyphens, and these are not.
+    """
+    if not model:
+        return ""
+    return model.strip().upper().replace(" ", "")
+
+
 def supports_chamber_temp(model: str | None) -> bool:
     """Check if a printer model has a real chamber temperature sensor.
 
     P1P, P1S, A1, and A1Mini do NOT have chamber temp sensors.
     The 'chamber_temper' value they report is meaningless.
     """
-    if not model:
-        return False
-    # Normalize model name (uppercase, strip whitespace)
-    model_upper = model.strip().upper()
-    return model_upper in CHAMBER_TEMP_SUPPORTED_MODELS
+    return _norm_model(model) in CHAMBER_TEMP_SUPPORTED_MODELS
 
 
 # Models with an ACTIVE chamber heater (chamber temp raisable via M141, not just
@@ -162,10 +183,17 @@ def supports_chamber_heater(model: str | None) -> bool:
     chamber only passively via bed radiation, so they are sensor-capable but not
     heater-capable. The preheat / heat-soak stage (#1468) sends M141 only on models in
     this set; sensor-only models wait for radiant warm-up, no-sensor models soak on a timer.
+
+    **Answered from the mirrored config.** ``support_chamber_temp_edit`` is
+    exactly this question, and its value across the fifteen shipped files
+    reproduces the hardcoded set exactly — X1E, X2D, H2C, H2D, H2D Pro, H2S —
+    so the set was a transcription with nothing of its own to say. The list is
+    kept only as the fallback for a model we ship no config for.
     """
-    if not model:
-        return False
-    return model.strip().upper() in CHAMBER_HEATER_MODELS
+    cfg = get_device_support_flags(model)
+    if "support_chamber_temp_edit" in cfg:
+        return bool(cfg["support_chamber_temp_edit"])
+    return _norm_model(model) in CHAMBER_HEATER_MODELS
 
 
 # Models with a cooling / heating airduct flap. Same set as the PrintersPage airduct
@@ -201,10 +229,14 @@ def supports_airduct(model: str | None) -> bool:
     Distinct from ``supports_chamber_heater`` — P2S has the airduct toggle but no active
     heater, and X1E has the heater but no airduct. The preheat stage flips the flap to
     heating before energising M141 (cooling mode vents the chamber and fights the heater).
+
+    ⚠️ Stays a model list on purpose: **the mirrored configs do not answer this
+    one.** Only N6 (X2D) and N7 (P2S) carry a ``fan`` block; the H2 family has
+    none at all, yet those machines do have the duct. See
+    ``inv-per-model-capability-from-mirrored-config`` — a hardcoded set is
+    legitimate where the data is silent, provided it says so.
     """
-    if not model:
-        return False
-    return model.strip().upper() in CHAMBER_AIRDUCT_MODELS
+    return _norm_model(model) in CHAMBER_AIRDUCT_MODELS
 
 
 def has_stg_cur_idle_bug(model: str | None) -> bool:

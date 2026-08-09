@@ -5818,6 +5818,7 @@ export default {
       profilesSaved: 'K-profile saved to {{count}} extruders',
       noteSaved: 'Note saved (no printer change)',
       selectAtLeastOneExtruder: 'Please select at least one extruder',
+      invalidKValue: 'K must be between {{min}} and {{max}} (exclusive)',
       profileDeleted: 'K-profile deleted',
       profilesDeleted: 'Deleted {{count}} profiles',
       exportedProfiles: 'Exported {{count}} profiles',

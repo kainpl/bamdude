@@ -51,7 +51,7 @@ from backend.app.services.bambu_ftp import (
     get_storage_info_async,
     list_files_async,
 )
-from backend.app.services.bambu_mqtt import airduct_fan_controllable
+from backend.app.services.bambu_mqtt import HMS_UI_ONLY_ACTIONS, airduct_fan_controllable
 from backend.app.services.printer_diagnostic import run_connection_diagnostic
 from backend.app.services.printer_location_service import load_tree, subtree_ids
 from backend.app.services.printer_manager import (
@@ -3353,6 +3353,14 @@ async def execute_hms_action(
     success = client.execute_hms_action(body.print_error, body.action, body.job_id)
     if not success:
         raise HTTPException(400, "Failed to execute HMS action")
+
+    if body.action in HMS_UI_ONLY_ACTIONS:
+        # These publish nothing by design — the printer's own screen owns them.
+        # Running the ack probe below would wait 2.5 s for a pushall that was
+        # never provoked and then 502, reporting a transmission failure for
+        # something that was never a transmission. Answering honestly instead:
+        # handled here, nothing sent.
+        return {"success": True, "sent_to_printer": False, "message": "Handled in the interface"}
 
     # Give the printer time to push a status update. execute_hms_action already publishes
     # a pushall after every command, so a fresh status should arrive within ~1s; 2.5s

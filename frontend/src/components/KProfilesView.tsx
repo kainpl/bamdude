@@ -25,6 +25,7 @@ import { Card, CardContent } from './Card';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
+import { MAX_PA_K_VALUE, MIN_PA_K_VALUE, formatKForDisplay, isValidKValue } from '../utils/kValue';
 
 interface KProfileCardProps {
   profile: KProfile;
@@ -40,11 +41,6 @@ interface KProfileCardProps {
   supportsFlowType?: boolean;
 }
 
-// Truncate to 3 decimal places (like Bambu Studio) instead of rounding
-const truncateK = (value: string) => {
-  const num = parseFloat(value);
-  return (Math.trunc(num * 1000) / 1000).toFixed(3);
-};
 
 // Get flow type label from nozzle_id (e.g., "HH00-0.4" -> "HF", "HS00-0.4" -> "S").
 const getFlowTypeLabel = (nozzleId: string) => {
@@ -126,7 +122,7 @@ function KProfileCard({ profile, onEdit, onCopy, selectionMode, isSelected, onTo
       >
         <div className="flex items-center gap-2">
           <span className="text-bambu-green font-mono text-sm font-bold whitespace-nowrap">
-            {truncateK(profile.k_value)}
+            {formatKForDisplay(profile.k_value)}
           </span>
           <span className="text-white text-sm truncate flex-1" title={profile.name}>
             {profile.name || 'Unnamed'}
@@ -201,7 +197,7 @@ function KProfileModal({
 
   const [name, setName] = useState(profile?.name || '');
   const [kValue, setKValue] = useState(
-    profile?.k_value ? truncateK(profile.k_value) : '0.020'
+    profile?.k_value ? formatKForDisplay(profile.k_value) : '0.020'
   );
   const [filamentId, setFilamentId] = useState(profile?.filament_id || '');
   // Split nozzle into type and diameter. Missing reads as Standard, which is
@@ -322,6 +318,17 @@ function KProfileModal({
     // Validate at least one extruder is selected for dual-nozzle
     if (isDualNozzle && !profile && selectedExtruders.length === 0) {
       showToast(t('kProfiles.toast.selectAtLeastOneExtruder'), 'error');
+      return;
+    }
+
+    // BS refuses a K outside 0.0 … 2.0, both ends exclusive
+    // (CalibUtils::validate_input_k_value). We had no bound at all, so a typo
+    // was published to the printer and stored against the spool.
+    if (!isValidKValue(kValue)) {
+      showToast(
+        t('kProfiles.toast.invalidKValue', { min: MIN_PA_K_VALUE.toFixed(1), max: MAX_PA_K_VALUE.toFixed(1) }),
+        'error',
+      );
       return;
     }
 
@@ -473,10 +480,17 @@ function KProfileModal({
                   }
                 }}
                 onBlur={(e) => {
-                  // Format to 3 decimal places on blur
+                  // Round for display, never truncate the value being submitted.
+                  //
+                  // This used to do Math.trunc(num * 1000) / 1000, "like Bambu
+                  // Studio" — BS does no such thing. It formats for DISPLAY with
+                  // %.3f and stores what was parsed (CalibrationWizardSavePage /
+                  // CalibUtils::validate_input_k_value). Truncating the input
+                  // turned a real 0.0005 into 0.000, i.e. a saved profile with
+                  // pressure advance switched off, silently.
                   const num = parseFloat(e.target.value);
                   if (!isNaN(num)) {
-                    setKValue((Math.trunc(num * 1000) / 1000).toFixed(3));
+                    setKValue(formatKForDisplay(num));
                   }
                 }}
                 className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none font-mono"

@@ -149,6 +149,18 @@ def _list_extruders(model_norm: str) -> list[dict]:
     return [{"id": 0, "name": "Main"}]
 
 
+def _as_float(value: object) -> float | None:
+    """Firmware reports the nozzle diameter as a string ("0.4"); the API contract
+    (``client.ts``) and the wizard both want a number. Empty and unparseable
+    both answer ``None`` so the caller can tell "not reported" from a value."""
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
 def compute_calibration_supports(
     state: PrinterState,
     printer_model: str | None,
@@ -190,12 +202,25 @@ def compute_calibration_supports(
         # Layout
         "dual_extruder": m in _DUAL_EXTRUDER_MODELS,
         "extruders": _list_extruders(m),
+        # ⚠️ These read ``nozzle_diameter`` / ``nozzle_type`` / ``nozzle_flow``,
+        # which is what ``NozzleInfo`` actually carries. They used to ask for
+        # ``diameter`` / ``type`` / ``flow_type`` — attributes that do not exist
+        # on it — so all three ``getattr`` defaults fired and **every nozzle came
+        # out as all-None**. The wizard then fell through to its hardcoded
+        # 0.4 mm (``capabilities?.nozzles?.[0]?.diameter ?? 0.4``), so a farm on
+        # 0.6 or 0.8 filed every calibration under the wrong nozzle key.
+        #
+        # The response keys stay ``diameter`` / ``type`` / ``flow_type``: that is
+        # the published contract (``client.ts``), and it is only the *source*
+        # attribute that was wrong.
         "nozzles": [
             {
                 "id": i,
-                "diameter": getattr(n, "diameter", None),
-                "type": getattr(n, "type", None),
-                "flow_type": getattr(n, "flow_type", None),
+                # NozzleInfo keeps the firmware's string ("0.4"); the schema and
+                # the wizard both want a number, and the wizard compares it.
+                "diameter": _as_float(getattr(n, "nozzle_diameter", None)),
+                "type": getattr(n, "nozzle_type", None) or None,
+                "flow_type": getattr(n, "nozzle_flow", None) or None,
             }
             for i, n in enumerate(getattr(state, "nozzles", []) or [])
         ],

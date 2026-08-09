@@ -344,6 +344,27 @@ _HMS_LEVEL_MAX = 5  # BS HMS_MSG_LEVEL_MAX — the exclusive bound on a valid le
 # notification filter; the frontend applies the same ``<= 2`` for its red pip.
 HMS_SEVERITY_NOTIFY_THRESHOLD = HMS_LEVEL_SERIOUS
 
+# Actions that send the printer nothing — the printer's own screen owns them, and
+# BS treats them the same way. Exported because the HTTP route must NOT run its
+# "did the printer answer?" probe for these: with no publish there is no pushall,
+# so the probe times out and reports a failure for something that was never a
+# transmission.
+#
+# ``REMOVE_CLOSE_BTN`` is not even a button. BS's ``DeviceErrorDialog.hpp`` marks
+# it *"special case, do not show close button"* — a dialog modifier that hides the
+# close affordance, which is why it must never be rendered as one.
+HMS_UI_ONLY_ACTIONS: frozenset[str] = frozenset(
+    {
+        "CHECK_ASSISTANT",
+        "JUMP_TO_LIVEVIEW",
+        "OK_JUMP_RACK",
+        "REMOVE_CLOSE_BTN",
+        "LOAD_VIRTUAL_TRAY",
+        "CANCLE",
+        "DBL_CHECK_CANCEL",
+    }
+)
+
 
 def _hms_severity_from_code(code: int) -> int:
     """BS ``DevHMSItem::parse`` — ``msg_level_int = code >> 16``, clamped.
@@ -3841,11 +3862,28 @@ class BambuMQTTClient:
                 self._device_id_logged = True
             if "extruder" in device and "state" in device["extruder"]:
                 state_val = device["extruder"]["state"]
-                # Extract bit 8 for extruder position
-                new_extruder = (state_val >> 8) & 0x1
+                # ``device.extruder.state`` is a packed bitfield. BS
+                # ``DevExtruderSystem.cpp`` reads it as:
+                #
+                #   bits  0..3  total extruder count
+                #   bits  4..7  CURRENT extruder id      <- the one printing now
+                #   bits  8..11 TARGET extruder id       <- the one being switched to
+                #   bits 12..14 switch state
+                #   bits 15..18 currently-loading extruder id
+                #   bit  19     busy loading
+                #
+                # We read ``(state_val >> 8) & 0x1`` — the low bit of the
+                # **target** field. While a tool change is in flight target and
+                # current disagree, so the spool written to the archive (and
+                # pushed to Spoolman) was the one being switched TO, not the one
+                # that laid the plastic. On a two-extruder machine the values
+                # coincide the rest of the time, which is why it looked fine.
+                new_extruder = (state_val >> 4) & 0xF
                 if new_extruder != self.state.active_extruder:
                     logger.debug(
-                        f"[{self.serial_number}] ACTIVE EXTRUDER CHANGED (state bit 8): {self.state.active_extruder} -> {new_extruder} (0=right, 1=left) [state={state_val}]"
+                        f"[{self.serial_number}] ACTIVE EXTRUDER CHANGED (state bits 4-7): "
+                        f"{self.state.active_extruder} -> {new_extruder} (0=right, 1=left) "
+                        f"[state={state_val}, target={(state_val >> 8) & 0xF}]"
                     )
                     self.state.active_extruder = new_extruder
 
@@ -7121,17 +7159,18 @@ class BambuMQTTClient:
             case HMSAction.DISABLE_PURIFICATION:
                 publish({"print": {"command": "close_air_filt", "sequence_id": "0"}})
 
-            case (
-                HMSAction.CHECK_ASSISTANT
-                | HMSAction.JUMP_TO_LIVEVIEW
-                | HMSAction.OK_JUMP_RACK
-                | HMSAction.REMOVE_CLOSE_BTN
-                | HMSAction.LOAD_VIRTUAL_TRAY
-                | HMSAction.CANCLE
-                | HMSAction.DBL_CHECK_CANCEL
-            ):
+            case _ if action in HMS_UI_ONLY_ACTIONS:
                 # UI-only actions — the printer's own screen handles these; the modal
                 # still surfaces them so the user has parity with Studio.
+                #
+                # ⚠️ Nothing is published here, which the CALLER has to know:
+                # ``/hms/action`` proves a command landed by waiting for the
+                # pushall every published command provokes. With no publish there
+                # is no pushall, so an idle printer answered nothing and the route
+                # returned **502 "printer did not acknowledge"** for an action that
+                # was never meant to reach it — and when a status happened to
+                # arrive for unrelated reasons, it reported "Action sent to
+                # printer", which is equally untrue. See ``HMS_UI_ONLY_ACTIONS``.
                 pass
 
             case _:

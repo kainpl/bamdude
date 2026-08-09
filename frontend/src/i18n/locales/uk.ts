@@ -5831,6 +5831,7 @@ export default {
       profilesSaved: 'K-профіль збережено на {{count}} екструдерів',
       noteSaved: 'Нотатку збережено (принтер не чіпали)',
       selectAtLeastOneExtruder: 'Виберіть щонайменше один екструдер',
+      invalidKValue: 'K має бути між {{min}} і {{max}} (не включно)',
       profileDeleted: 'K-профіль видалено',
       profilesDeleted: 'Видалено {{count}} профілів',
       exportedProfiles: 'Експортовано {{count}} профілів',

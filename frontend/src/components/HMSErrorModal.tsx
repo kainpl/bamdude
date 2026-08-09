@@ -940,6 +940,25 @@ function lookupDescription(fullCode: string | undefined, shortCode: string): str
 //     with IGNORE_RESUME/PROBLEM_SOLVED_RESUME — must surface so the button can render).
 // Drops uncataloged errors WITHOUT actions: those are transient junk like the post-cancel
 // 0C00_001B echo that would re-introduce the "1 problem forever" FAILED-after-cancel noise.
+/**
+ * `REMOVE_CLOSE_BTN` is not an action — it is a dialog modifier.
+ *
+ * BambuStudio's `DeviceErrorDialog.hpp` spells it out: `REMOVE_CLOSE_BTN = 39,
+ * // special case, do not show close button`. BS scans the id list, sets a flag
+ * when it sees 39, and hides the dialog's close affordance; it never renders a
+ * button for it. We rendered one, labelled with the raw constant, that posted an
+ * action the printer has no idea about.
+ *
+ * Kept in `error.actions` rather than stripped at the backend, because the
+ * backend list is the catalogue verbatim and the "hide close" instruction is
+ * real — it is only *this* surface that must not draw it.
+ */
+export const HMS_DIALOG_MODIFIER_ACTIONS = new Set(['REMOVE_CLOSE_BTN']);
+
+export function renderableActions(actions: string[] | undefined): string[] {
+  return (actions ?? []).filter((a) => !HMS_DIALOG_MODIFIER_ACTIONS.has(a));
+}
+
 export function filterKnownHMSErrors(errors: HMSError[]): HMSError[] {
   return errors.filter((error) => {
     const codeNum = parseInt(error.code.replace('0x', ''), 16) || 0;
@@ -1075,9 +1094,9 @@ export function HMSErrorModal({ printerName, errors, onClose, printerId, hasPerm
                         </div>
                         <p className="text-sm text-bambu-gray mb-2">{description}</p>
                         {remedy && <p className="text-sm text-white mb-2">{remedy}</p>}
-                        {error.actions && error.actions.length > 0 && hasPermission('printers:control') && (
+                        {renderableActions(error.actions).length > 0 && hasPermission('printers:control') && (
                           <div className="flex flex-wrap gap-2 my-2">
-                            {error.actions.map((action) => {
+                            {renderableActions(error.actions).map((action) => {
                               const pendingVars = activateActionMutation.variables;
                               const isThisPending =
                                 activateActionMutation.isPending
