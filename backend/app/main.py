@@ -87,7 +87,7 @@ from backend.app.models.smart_plug import SmartPlug
 from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.auto_queue_scheduler import auto_queue_scheduler
 from backend.app.services.background_dispatch import background_dispatch
-from backend.app.services.bambu_mqtt import PrinterState
+from backend.app.services.bambu_mqtt import HMS_SEVERITY_NOTIFY_THRESHOLD, PrinterState
 from backend.app.services.git_backup import git_backup_service
 from backend.app.services.local_backup import local_backup_service
 from backend.app.services.mqtt_relay import mqtt_relay
@@ -1212,7 +1212,16 @@ async def _handle_pause_edge(printer_id: int, state: PrinterState):
         printer_info = printer_manager.get_printer(printer_id)
         printer_name = printer_info.name if printer_info else f"Printer {printer_id}"
 
-        hms_codes = [e.get("code") for e in (state.hms_errors or []) if isinstance(e, dict) and e.get("code")]
+        # ``state.hms_errors`` holds ``HMSError`` dataclasses, not dicts. This
+        # asked ``isinstance(e, dict)``, which is False for every one of them —
+        # so the list was ALWAYS empty and every pause fell through to
+        # "unknown". Filament runout and an open door paged the operator with
+        # the identical message.
+        #
+        # ``short_code`` is what ``PAUSE_REASON_CODES`` is keyed by
+        # (``0300_8004``); ``HMSError.code`` alone is ``0x8004`` and matches
+        # nothing, which is the second half of the same bug.
+        hms_codes = [e.short_code for e in (state.hms_errors or []) if getattr(e, "code", None)]
         expected = _expected_pause_reasons.pop(printer_id, None)
         reason_code, reason_label, hms_code = classify_pause_reason(hms_codes, expected)
 
@@ -1535,8 +1544,16 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
 
         if new_error_codes:
             # Get the actual new errors for the notification
-            # Filter to severity >= 2 (skip informational/status messages like H2D sends)
-            new_errors = [e for e in current_hms_errors if f"{e.attr:08x}" in new_error_codes and e.severity >= 2]
+            # Notify on FATAL (1) and SERIOUS (2) only. **Lower is worse** in
+            # BS's HMSMessageLevel, so the old ``>= 2`` had this exactly
+            # backwards: it dropped every FATAL and kept every INFO. The
+            # frontend has always used ``<= 2`` for its red pip, so the two
+            # halves of the product disagreed about which faults mattered.
+            new_errors = [
+                e
+                for e in current_hms_errors
+                if f"{e.attr:08x}" in new_error_codes and e.severity <= HMS_SEVERITY_NOTIFY_THRESHOLD
+            ]
 
             try:
                 from backend.app.models.printer import Printer

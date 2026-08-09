@@ -914,8 +914,10 @@ def classify_pause_reason(
     """Resolve a pause's normalised reason key + human-readable text.
 
     Args:
-        hms_codes: HMS codes currently active on the printer
-            (`PrinterState.hms_errors[*]['code']`). May be ``None``.
+        hms_codes: HMS codes currently active on the printer, in the
+            ``MMMM_EEEE`` short form this module is keyed by — i.e.
+            ``[e.short_code for e in PrinterState.hms_errors]``. May be ``None``.
+            ⚠️ Not ``HMSError.code``: that is ``0x8004`` and matches no key here.
         expected_reason: Reason hint planted by an internal pause-trigger
             (e.g. plate-detect setting ``"plate_objects"`` before issuing
             the pause command). Wins over HMS classification when set —

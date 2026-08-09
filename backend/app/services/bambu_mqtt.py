@@ -331,6 +331,59 @@ class MQTTLogEntry:
     payload: dict
 
 
+# BS ``HMSMessageLevel`` (DeviceCore/DevHMS.h). **Lower is worse**, and 0 means
+# "the printer sent a level we do not recognise" — not "harmless".
+HMS_LEVEL_UNKNOWN = 0
+HMS_LEVEL_FATAL = 1
+HMS_LEVEL_SERIOUS = 2
+HMS_LEVEL_COMMON = 3
+HMS_LEVEL_INFO = 4
+_HMS_LEVEL_MAX = 5  # BS HMS_MSG_LEVEL_MAX — the exclusive bound on a valid level
+
+# Faults at or below this rank are worth waking somebody for. Used by the
+# notification filter; the frontend applies the same ``<= 2`` for its red pip.
+HMS_SEVERITY_NOTIFY_THRESHOLD = HMS_LEVEL_SERIOUS
+
+
+def _hms_severity_from_code(code: int) -> int:
+    """BS ``DevHMSItem::parse`` — ``msg_level_int = code >> 16``, clamped.
+
+    BS falls back to ``HMS_UNKNOWN`` (0) for an out-of-range level. We fall back
+    to **SERIOUS** instead, deliberately: 0 renders as the quietest colour in
+    our own severity map, so an unrecognised level would make an unrankable
+    fault the least visible thing on the page. A fault we cannot rank is not a
+    fault we can afford to whisper.
+    """
+    level = (code >> 16) & 0xFFFF
+    if 0 < level < _HMS_LEVEL_MAX:
+        return level
+    return HMS_LEVEL_SERIOUS
+
+
+def _print_error_severity(error: int) -> int:
+    """Rank a ``print_error`` from the top nibble of its low half.
+
+    ⚠️ **This is ours, not BambuStudio's.** BS assigns ``print_error`` no level
+    at all — it looks the code up and shows a dialog
+    (``DeviceErrorDialog.cpp``), so there is no parity to copy here. The mapping
+    below is this repo's own long-standing reading of the code space,
+    documented beside the ``< 0x4000`` filter in ``_update_state``:
+    ``0x4xxx`` fatal, ``0x8xxx`` warning, ``0xCxxx`` prompt.
+
+    It replaces a hardcoded COMMON, which ranked a fatal print error the same as
+    a prompt. Anything outside the three known prefixes keeps that old constant,
+    because an unfamiliar shape is exactly where a guessed rank would be wrong.
+    """
+    nibble = (error >> 12) & 0xF
+    if nibble == 0x4:
+        return HMS_LEVEL_FATAL
+    if nibble == 0x8:
+        return HMS_LEVEL_COMMON
+    if nibble == 0xC:
+        return HMS_LEVEL_INFO
+    return HMS_LEVEL_COMMON
+
+
 @dataclass
 class HMSError:
     """Health Management System error from printer."""
@@ -354,6 +407,27 @@ class HMSError:
     # truncated 8-char short code the firmware silently rejects on H2C and hms[]-sourced
     # faults (#1830).
     full_code: str = ""
+
+    @property
+    def short_code(self) -> str:
+        """``MMMM_EEEE`` — the lossy form the catalogue and the printer's own
+        screen are keyed by (e.g. ``0300_8004``).
+
+        Reconstructed rather than stored because both producing branches already
+        derive it the same way: the ``hms[]`` path puts the module in
+        ``attr``'s high half, and the ``print_error`` path stores the whole
+        32-bit value in ``attr`` — whose high half is, again, the module.
+
+        It is a property because this formula had grown **three** copies (the
+        parser, the duplicate check, the WebSocket payload) and was about to
+        grow a fourth in the pause classifier. Three copies of a lossy
+        conversion is how one of them ends up subtly different.
+        """
+        try:
+            error = int(self.code.replace("0x", ""), 16) if self.code else 0
+        except ValueError:
+            error = 0
+        return f"{(self.attr >> 16) & 0xFFFF:04X}_{error & 0xFFFF:04X}"
 
 
 # HMS short codes the firmware emits during normal user-cancel sequences.
@@ -4186,8 +4260,19 @@ class BambuMQTTClient:
                             attr = int(attr.replace("0x", ""), 16) if attr else 0
                         if isinstance(code, str):
                             code = int(code.replace("0x", ""), 16) if code else 0
-                        # Severity is in attr byte 1 (bits 8-15)
-                        severity = (attr >> 8) & 0xF
+                        # Severity comes from ``code``, not from ``attr``.
+                        # BS ``DevHMSItem::parse`` (DeviceCore/DevHMS.cpp):
+                        #
+                        #     m_module_num  = (attr >> 16) & 0xFF
+                        #     m_part_id     = (attr >> 8)  & 0xFF
+                        #     msg_level_int = code >> 16
+                        #
+                        # This read ``(attr >> 8) & 0xF`` — BS's **part id**, a
+                        # different field entirely — so every fault was ranked
+                        # by which component reported it. On a wall of printers
+                        # the severity pip IS the triage signal, and it was
+                        # pointing at noise.
+                        severity = _hms_severity_from_code(code)
                         # Module is in attr byte 3 (bits 24-31)
                         module = (attr >> 24) & 0xFF
                         # Skip non-error status codes - all real HMS errors
@@ -4218,7 +4303,7 @@ class BambuMQTTClient:
                                 code=f"0x{code:x}" if code else "0x0",
                                 attr=attr,
                                 module=module,
-                                severity=severity if severity > 0 else 2,
+                                severity=severity,
                                 actions=actions,
                                 job_id=self.state.subtask_id,
                                 full_code=full_code,
@@ -4261,12 +4346,7 @@ class BambuMQTTClient:
                         pass  # cancel echo — silently drop
                     else:
                         # Only add if not already in HMS errors (avoid duplicates)
-                        existing_short_codes = set()
-                        for e in self.state.hms_errors:
-                            # Extract short code from existing errors
-                            e_module = (e.attr >> 16) & 0xFFFF
-                            e_error = int(e.code.replace("0x", ""), 16) if e.code else 0
-                            existing_short_codes.add(f"{e_module:04X}_{e_error:04X}")
+                        existing_short_codes = {e.short_code for e in self.state.hms_errors}
 
                         if short_code not in existing_short_codes:
                             # Bambu's HMS catalog keys by 3-letter device code (SN prefix)
@@ -4280,7 +4360,7 @@ class BambuMQTTClient:
                                     code=f"0x{error:x}",
                                     attr=print_error,  # Store full value for display
                                     module=module >> 8,  # High byte of module (e.g., 0x05)
-                                    severity=3,  # Warning level for print_error
+                                    severity=_print_error_severity(error),
                                     actions=actions,
                                     job_id=self.state.subtask_id,
                                     full_code=f"{print_error:08X}",

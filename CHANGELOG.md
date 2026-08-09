@@ -68,6 +68,14 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **Printer faults were ranked by the wrong number, and the most serious ones never reached you.** Every HMS fault carries a severity — fatal, serious, common, informational — and BamDude was reading it out of a neighbouring field that identifies *which component reported the fault*, not how bad it is. So the colour on the card and the label in the error list were both effectively random.
+
+    The knock-on effect was worse than a wrong colour. The rule deciding which faults are worth a notification had the comparison the wrong way round on top of the wrong number — it let through the informational ones and **filtered out every fatal**. A printer with a genuinely fatal fault stayed quiet while one reporting a status message sent a message. The card in the interface has always used the correct direction, so the two halves of BamDude disagreed about which faults mattered.
+
+    Print errors — the other family of faults, the ones that show as `[0500-8061]` on the printer's screen — were all filed as "warning" regardless of what they were. They are now ranked by the code itself, so a fatal one reads as fatal.
+
+- **Every pause was reported as "Unknown".** BamDude works out *why* a print paused from the fault codes active at that moment — filament runout, an open door, a plate that isn't empty — and it has done that correctly for a long time. It just never received the codes: the piece that collects them was looking for a data shape the rest of the app stopped using, so the list handed over was always empty, and every pause fell through to the catch-all. Runout and an open door paged the operator with identical wording, and the pause chip on the card said nothing useful.
+
 - **The bed-jog arrows moved the wrong way on the A2L.** Which direction the nozzle-bed gap changes depends on the machine's frame: on most Bambu printers the bed itself rides the Z axis, while on the open-frame A-series the toolhead does, and the same command means the opposite thing on the two. BamDude decided which was which from a list of model names written before the A2L existed — so on that printer the arrows were inverted, and pressing "closer" opened the gap while "further" drove the nozzle at the plate.
 
     The list is gone. The answer now comes from the printer definitions BamDude already ships — the same files Bambu Studio reads for the same decision — so a machine is classified correctly the day its definition arrives rather than the day somebody remembers to edit a list. A test now checks every shipped definition against the answer, so the two cannot drift apart again. Nothing changes on any other model: all fifteen already agreed.
