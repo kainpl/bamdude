@@ -63,6 +63,64 @@ def _base_block(data: dict) -> dict | None:
     return base if isinstance(base, dict) else None
 
 
+def _deep_merge(src: dict, dst: dict) -> None:
+    """BS ``json_diff::merge_objects`` — recursive for objects, overwrite for
+    everything else. Mutates ``dst``."""
+    for key, value in src.items():
+        if key not in dst:
+            dst[key] = value
+        elif isinstance(value, dict) and isinstance(dst[key], dict):
+            _deep_merge(value, dst[key])
+        else:
+            dst[key] = value
+
+
+def _merged_block(data: dict, firmware_version: str | None) -> dict | None:
+    """Every block up to and including ``firmware_version``, merged in order.
+
+    BS ``json_diff::load_compatible_settings``::
+
+        settings_base.clear();
+        for (auto iter = versions.begin(); iter != versions.end(); ++iter) {
+            if (iter.key() > printer_version) break;
+            merge_objects(*iter, settings_base);
+        }
+
+    …and that merged tree — not the base block — is what ``DevConfig::ParseConfig``
+    and friends read. Reading only ``"00.00.00.00"`` understates a printer by
+    every flag a later firmware turned on: **thirteen** of them on an X1C
+    (``support_ai_monitoring``, ``support_filament_backup``,
+    ``support_build_plate_marker_detect``, ``support_ams_humidity``,
+    ``support_send_to_sd``, …), seven on a P1P, and ``ipcam`` on the A-series.
+
+    ⚠️ **String comparison, exactly as BS does it.** Bambu's keys are
+    zero-padded fixed-width (``01.05.06.01``), so lexicographic ordering is
+    numeric ordering here. A key that ever stopped being padded would sort
+    wrongly — the same trap BS carries, and worth knowing rather than silently
+    "improving" into a version parser that disagrees with the reference.
+
+    ``firmware_version`` of ``None`` means "not reported yet", and returns the
+    base block alone. That is deliberately the old behaviour: a capability we
+    cannot justify from the printer's own version should be understated for the
+    seconds before the first push rather than guessed at.
+    """
+    base = _base_block(data)
+    if base is None or not firmware_version:
+        return base
+
+    merged: dict = {}
+    for key in sorted(data):
+        if key > firmware_version:
+            break
+        block = data[key]
+        if isinstance(block, dict):
+            _deep_merge(block, merged)
+    # A version older than every block still gets the base — BS's loop would
+    # merge nothing at all, but a config with no applicable block is a printer
+    # we still have to answer questions about.
+    return merged or base
+
+
 @lru_cache(maxsize=1)
 def _model_index() -> dict[str, str]:
     """Normalized model key -> config file stem, built by scanning the mirrored
@@ -100,10 +158,16 @@ def _model_index() -> dict[str, str]:
 
 
 @lru_cache(maxsize=128)
-def load_printer_config(model: str | None) -> dict | None:
-    """Return the base (``"00.00.00.00"``) config block for a model, or ``None``
-    if no mirrored JSON matches. Accepts a display name (``X2D`` / ``Bambu Lab
-    X2D``) or internal code (``N6``). Cached — the files are static app assets.
+def load_printer_config(model: str | None, firmware_version: str | None = None) -> dict | None:
+    """Return the config block for a model, or ``None`` if no mirrored JSON
+    matches. Accepts a display name (``X2D`` / ``Bambu Lab X2D``) or internal
+    code (``N6``).
+
+    With ``firmware_version`` (the printer's OTA version — BS's
+    ``parse_version()``, which is our ``PrinterState.firmware_version``) every
+    block up to that version is merged, as BS does. Without it, the base block
+    alone — which is what every caller got before, so a caller with no live
+    state keeps its current answer instead of a guessed one.
     """
     if not model:
         return None
@@ -119,7 +183,7 @@ def load_printer_config(model: str | None) -> dict | None:
     except (OSError, ValueError) as exc:
         logger.warning("printer config %s.json unreadable: %s", stem, exc)
         return None
-    return _base_block(data) if isinstance(data, dict) else None
+    return _merged_block(data, firmware_version) if isinstance(data, dict) else None
 
 
 def printer_arch(model: str | None) -> str:
@@ -163,10 +227,15 @@ def air_print_detection_position(model: str | None) -> str | None:
     return val if isinstance(val, str) else None
 
 
-def get_device_support_flags(model: str | None) -> dict:
+def get_device_support_flags(model: str | None, firmware_version: str | None = None) -> dict:
     """The ``support_*`` device-capability flags for a model (from the config's
-    ``print`` block). Empty dict when no config matches (unknown model)."""
-    cfg = load_printer_config(model)
+    ``print`` block). Empty dict when no config matches (unknown model).
+
+    Pass ``firmware_version`` wherever a live printer is in hand: without it the
+    answer is the 2023 base block, which understates every model whose later
+    firmware turned flags on.
+    """
+    cfg = load_printer_config(model, firmware_version)
     if not cfg:
         return {}
     print_block = cfg.get("print")
@@ -309,7 +378,7 @@ def airduct_fan_label(model: str | None, mode: int, sub_mode: int, part_id: int)
     return None, None
 
 
-def device_calibration_availability(model: str | None) -> dict[str, bool]:
+def device_calibration_availability(model: str | None, firmware_version: str | None = None) -> dict[str, bool]:
     """Base per-model availability of the seven device calibrations, read from
     the mirrored BambuStudio config.
 
@@ -317,7 +386,7 @@ def device_calibration_availability(model: str | None) -> dict[str, bool]:
     an unknown model still shows those two). The live ``support_*`` MQTT flags
     override individual entries via :func:`resolve_device_calibrations`.
     """
-    f = get_device_support_flags(model)
+    f = get_device_support_flags(model, firmware_version)
     return {
         # Lidar needs BOTH the lidar-cali flag and AI-monitoring (BS gate).
         "lidar": bool(f.get("support_lidar_calibration")) and bool(f.get("support_ai_monitoring")),
@@ -331,14 +400,16 @@ def device_calibration_availability(model: str | None) -> dict[str, bool]:
     }
 
 
-def resolve_device_calibrations(model: str | None, live_support: dict | None = None) -> dict[str, bool]:
+def resolve_device_calibrations(
+    model: str | None, live_support: dict | None = None, firmware_version: str | None = None
+) -> dict[str, bool]:
     """Hybrid availability: the mirrored-config per-model base, overridden by the
     printer's live ``support_*`` MQTT status flags wherever the printer reported
     them. This mirrors BambuStudio, which resolves every gate from live status
     (with the shipped JSON as the default). ``live_support`` keys are the raw
     MQTT field names (as stashed in ``PrinterState.device_cali_support``).
     """
-    avail = device_calibration_availability(model)
+    avail = device_calibration_availability(model, firmware_version)
     if not live_support:
         return avail
     if "support_bed_leveling" in live_support:

@@ -2284,7 +2284,12 @@ async def get_calibration_options(
 
     client = printer_manager.get_client(printer_id)
     live = client.state.device_cali_support if client else None
-    return resolve_device_calibrations(printer.model, live)
+    # The printer's own OTA version selects which config blocks apply. Without
+    # it the answer is the 2023 base block, where X1C carries
+    # ``support_ai_monitoring: false`` — and lidar calibration is gated on that
+    # AND the lidar flag, so the whole row was hidden on every X1C and X1.
+    firmware = client.state.firmware_version if client else None
+    return resolve_device_calibrations(printer.model, live, firmware)
 
 
 # ============================================================================
