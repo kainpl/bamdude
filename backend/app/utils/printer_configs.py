@@ -98,7 +98,12 @@ def _merged_block(data: dict, firmware_version: str | None) -> dict | None:
     seconds before the first push rather than guessed at.
     """
     base = _base_block(data)
-    if base is None or not firmware_version:
+    # Anything that is not a version string means "not reported yet". The
+    # comparison below is a plain string ``>``, so a non-str here raises
+    # TypeError and takes the whole capability lookup with it — and a capability
+    # lookup must never be the thing that fails. Callers reach this from status
+    # routes where the field is whatever the printer last sent.
+    if base is None or not firmware_version or not isinstance(firmware_version, str):
         return base
 
     merged: dict = {}

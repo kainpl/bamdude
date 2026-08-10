@@ -2490,9 +2490,21 @@ class BambuMQTTClient:
             sup["first_layer_inspector"] = data["support_first_layer_inspect"]
         if isinstance(data.get("support_save_remote_print_file_to_storage"), bool):
             sup["save_remote_to_storage"] = data["support_save_remote_print_file_to_storage"]
+        # The two AMS Settings checkboxes BS gates on named bools rather than on
+        # bits (``DeviceManager.cpp``: ``is_support_update_remain`` /
+        # ``is_support_filament_backup``). The mirrored config carries the same
+        # keys, but the live report is the printer's own answer and wins.
+        if isinstance(data.get("support_update_remain"), bool):
+            sup["update_remain"] = data["support_update_remain"]
+        if isinstance(data.get("support_filament_backup"), bool):
+            sup["filament_backup"] = data["support_filament_backup"]
 
         fun2 = _hx(data.get("fun2"))
         if fun2 is not None:
+            # BS ``is_support_update_remain_hide_display`` — a SECOND condition on
+            # the remaining-capacity checkbox, ANDed with the support flag above.
+            # A machine can support the feature and still be told not to show it.
+            sup["update_remain_hide_display"] = bool((fun2 >> 6) & 1)
             sup["plate_align"] = bool((fun2 >> 2) & 1)
             sup["purify_air"] = bool((fun2 >> 4) & 1)
             sup["fod_check"] = bool((fun2 >> 13) & 1)

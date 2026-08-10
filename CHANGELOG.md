@@ -68,6 +68,14 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **AMS Settings showed rows based on the printer's badge instead of on the AMS attached to it.** All four settings — read on insertion, read at power-on, track remaining capacity, auto-switch on runout — were offered or hidden by one rule: does this model take RFID spools. Studio asks four different questions, and the answers differ.
+
+    **Remaining capacity** follows the model's own definition file, plus two things a model list cannot express: the printer can report that the row should stay hidden even where the feature exists, and an AMS running the full firmware brings the setting back. That last one matters on the A1: its definition says no, because it ships with the AMS Lite — attach a real AMS 2 or AMS HT and the setting is genuinely there.
+
+    **Auto-switch on runout** follows its own flag, which turns it on for the A1 Mini and the A2L, where it was hidden before. **Read on insertion** is now shown only once the printer has actually reported the setting, and is hidden while the AMS runs the Lite firmware — previously a P1S with no AMS attached was offered a row about reading spools on insertion. **Read at power-on** likewise follows the printer's report.
+
+    Where the printer has not spoken yet, the old behaviour stands rather than a control disappearing mid-session — including for the X1 and X1C, which gain remaining-capacity tracking in a later firmware release and would otherwise lose the row until their version was known.
+
 - **Step-loss recovery was switched with half the command Studio sends.** The toggle went out carrying only the named field; Studio sends that plus a second, older numeric field on the same command, and some firmware revisions reject the command unless both are present — so on those printers the switch appeared to move and the printer kept its previous setting. The correct payload was in the codebase all along, in a helper with a comment explaining exactly why both fields are needed, that nothing called. It was found while auditing for code that is never reached.
 
 - **A refused AMS type switch hid the control that would let you retry it.** Switching an AMS between its personalities hides the picker as soon as the command is sent — the switch is under way, so there is nothing to choose. Only a report from the printer brings it back, and a refusal is not a report: the printer answers firmware operations on a separate channel that BamDude never read. So one declined switch left the picker gone and the button answering "a switch is already in progress" until the server was restarted. That channel is now read, and a refusal releases the control instead of stranding it.

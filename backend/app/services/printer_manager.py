@@ -119,7 +119,7 @@ STG_CUR_IDLE_BUG_MODELS = A1_MODELS | frozenset(
 def _norm_model(model: str | None) -> str:
     """Normalise a model name for set membership.
 
-    ⚠️ **Internal spaces and hyphens too**, not just the ends. The three chamber
+    ⚠️ **Internal spaces too**, not just the ends. The three chamber
     sets used ``model.strip().upper()``, which leaves the space in the middle of
     ``"H2D Pro"`` — and ``"H2D Pro"`` is exactly what ``PRINTER_MODEL_ID_MAP``
     emits, while the set spells it ``H2DPRO``. So the H2D Pro answered False to

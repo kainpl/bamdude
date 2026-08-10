@@ -5,11 +5,26 @@ from backend.app.services.bambu_mqtt import PrinterState
 
 
 def _s() -> PrinterState:
+    """A printer that has connected but reported nothing yet."""
     return PrinterState()
 
 
+def _reported() -> PrinterState:
+    """A printer whose AMS has pushed its user settings.
+
+    ⚠️ Needed since the insertion-read row started following BS, whose gate is
+    ``IsDetectOnInsertEnabled()`` holding a value at all: a machine that has said
+    nothing gets no row. The model list used to answer instead, which offered the
+    row on a P1S with no AMS attached.
+    """
+    s = PrinterState()
+    s.ams_insertion_update = False
+    s.ams_power_on_update = False
+    return s
+
+
 def test_x1c_supports_all_four_basic_flags_but_not_ams_air_print():
-    sup = compute_ams_supports(_s(), "X1C")
+    sup = compute_ams_supports(_reported(), "X1C")
     assert sup["insertion_update"] is True
     assert sup["power_on_update"] is True
     assert sup["remain_capacity"] is True
@@ -30,7 +45,7 @@ def test_a1_mini_no_rfid():
 
 
 def test_a1_full_has_air_print():
-    sup = compute_ams_supports(_s(), "A1")
+    sup = compute_ams_supports(_reported(), "A1")
     assert sup["insertion_update"] is True
     assert sup["air_print_detect"] is True
     assert sup["reorder"] is False
@@ -80,10 +95,20 @@ def test_empty_model_safe_defaults():
 
 
 def test_p1s_full_ams():
-    sup = compute_ams_supports(_s(), "P1S")
+    sup = compute_ams_supports(_reported(), "P1S")
     assert sup["insertion_update"] is True
     assert sup["auto_switch_filament"] is True
     assert sup["air_print_detect"] is False  # not A1 family
+
+
+def test_a_printer_that_has_reported_nothing_gets_no_insertion_row():
+    """BS hides it on an empty ``std::optional`` — "not reported" is not "yes".
+
+    The old model list answered from the badge on the front of the printer, so a
+    P1S with no AMS attached was offered a row about reading spools on insertion.
+    """
+    assert compute_ams_supports(_s(), "P1S")["insertion_update"] is False
+    assert compute_ams_supports(_s(), "X1C")["insertion_update"] is False
 
 
 def test_all_keys_always_present():

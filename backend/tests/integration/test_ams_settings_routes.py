@@ -26,6 +26,13 @@ def _state(connected=True, **overrides):
     s.ams_firmware_idx_run = None
     s.ams_firmware_idx_sel = None
     s.ams_firmware_status = None
+    # Same reason as the block above, and a sharper one: several AMS rows are now
+    # answered from the model's mirrored config, whose blocks are layered by
+    # firmware version. A MagicMock here is not a version string, so every lookup
+    # would fall back to the 2023 base block — which understates the X1 family
+    # exactly where these tests assert it is supported.
+    s.firmware_version = "01.08.00.00"
+    s.print_option_support = {}
     s.firmware_upgrade_status = None
     s.ext_has_filament = {}
     s.state = "IDLE"
