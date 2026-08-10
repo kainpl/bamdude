@@ -114,14 +114,19 @@ async def _process_one(run_id: int, item, sf, sem: asyncio.Semaphore) -> str:
             await _ftp_upload(item, sf)
             profile = get_firmware_profile(item.model)
             if profile.remote_apply:
-                from backend.app.services.firmware_apply import apply_remote
-
-                await _set_item(item.id, status="applying", action="remote_apply")
-                await _broadcast(run_id, item.printer_id, "applying", percent=80)
-                await apply_remote(item.printer_id, item.model, item.to_version, profile)
-                await _set_item(item.id, status="applied", finished_at=_now())
-                await _broadcast(run_id, item.printer_id, "applied", percent=100)
-                return "applied"
+                # Phase 2 is not built. This branch used to import
+                # ``backend.app.services.firmware_apply``, a module that has
+                # never existed — so it read as "implemented over there" while
+                # being an ImportError waiting for the first profile to set the
+                # flag. No profile does today, which is why nothing ever hit it.
+                #
+                # Kept as an explicit refusal rather than deleted: the flag is
+                # deliberate scaffolding (see ``FirmwareProfile.remote_apply``),
+                # and silently falling through to the manual path would tell an
+                # operator their firmware was applied remotely when it was not.
+                raise NotImplementedError(
+                    f"remote firmware apply is not implemented; {item.model} must be applied from the printer"
+                )
             await _set_item(
                 item.id,
                 status="uploaded",

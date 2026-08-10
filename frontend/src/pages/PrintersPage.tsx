@@ -2315,8 +2315,13 @@ function PrinterCard({
       // session — Auto Home just put the printer in a homed state, so the
       // next jog click shouldn't re-open the warning modal. Since #2579 this
       // is the ONLY way past the modal: the old "Move anyway" escape hatch is
-      // gone, matching Bambu Studio, which refuses the jog outright while the
-      // axis is not homed (StatusPanel::check_axis_z_at_home).
+      // gone, because it drove the move with the soft endstops disabled.
+      //
+      // ⚠️ This is stricter than Bambu Studio, not the same as it. Studio
+      // SENDS the Z jog and only then calls check_axis_z_at_home, which pops a
+      // recenter dialog — the move has already gone out. We refuse instead,
+      // deliberately: a desktop app is one window in front of the machine,
+      // while this is an HTTP surface reachable from a phone in another room.
       try {
         sessionStorage.setItem(`bamdude.bedJog.warned.${printer.id}`, '1');
       } catch {
@@ -3911,11 +3916,13 @@ function PrinterCard({
                       <div className="w-px h-5 bg-bambu-gray/30" />
 
                       {/* Bed Jog (Z-axis) — compact badge, popover holds the actual controls.
-                          When the printer isn't yet homed since finish, show a Studio-style
-                          warning modal offering Home Z or Cancel. Since #2579 there is no
-                          "Move anyway" escape hatch — Studio refuses the jog outright while
-                          the axis is unhomed. A successful Home Z is what clears the prompt
-                          for the rest of the browser session (see homeAxesMutation). */}
+                          When the printer isn't yet homed since finish, show a warning modal
+                          offering Home Z or Cancel. Since #2579 there is no "Move anyway"
+                          escape hatch — it drove the move with the soft endstops disabled.
+                          A successful Home Z is what clears the prompt for the rest of the
+                          browser session (see homeAxesMutation).
+                          ⚠️ Stricter than Studio, which sends the jog first and pops a
+                          recenter dialog afterwards — see homeAxesMutation for why. */}
                       {(() => {
                         const canControl = hasPermission('printers:control');
                         const disabled = isPrinting || !canControl;
@@ -6078,13 +6085,14 @@ function PrinterCard({
         />
       )}
 
-      {/* Bed Jog — not-homed gate (Studio-style). Shown the first time a user
-          tries to move the bed in a browser session. Since #2579 the only way
-          past it is Auto Home, which flips bamdude.bedJog.warned.<printer_id>
-          in sessionStorage on success — Bambu Studio refuses the jog outright
-          while the axis is not homed (StatusPanel::check_axis_z_at_home), and
-          the old "Move anyway" escape hatch drove the move with the soft
-          endstops disabled. */}
+      {/* Bed Jog — not-homed gate. Shown the first time a user tries to move
+          the bed in a browser session. Since #2579 the only way past it is Auto
+          Home, which flips bamdude.bedJog.warned.<printer_id> in sessionStorage
+          on success; the old "Move anyway" escape hatch drove the move with the
+          soft endstops disabled.
+          ⚠️ Do not describe this as Studio parity — it is stricter on purpose.
+          StatusPanel::check_axis_z_at_home runs AFTER Ctrl_Axis has published,
+          so Studio's unhomed Z jog happens and then advises recentering. */}
       {showNotHomedModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
           <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl w-full max-w-sm p-5">

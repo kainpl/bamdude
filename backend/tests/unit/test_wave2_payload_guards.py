@@ -7,8 +7,12 @@ says the machine can purify; it does not say it may do so right now, nor that
 it owns the fan the second mode needs. ``supports_drying`` says the unit dries;
 it does not say how hot.
 
-The fourth sub-item — ``auto_recovery``'s legacy ``option`` int — was already
-correct: ``_set_print_option`` sends both the named bool and ``option``.
+⚠️ The fourth sub-item — ``auto_recovery``'s legacy ``option`` int — was
+recorded here as "already correct" and that was **wrong**. The function checked,
+``_set_print_option``, did send both fields, but nothing called it: the live
+publisher is ``_publish_print_option_bool``, which sent the bool alone. Fixed
+under audit item 27, where measuring for dead code found the orphan. See
+``test_print_option_legacy_bitmask.py``.
 """
 
 from __future__ import annotations

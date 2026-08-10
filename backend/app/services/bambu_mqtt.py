@@ -145,6 +145,10 @@ _AMS_MODULE_PREFIXES = ("ams/", "n3f/", "n3s/")
 STUDIO_SEQ_START = 20000
 STUDIO_SEQ_END = 30000
 
+# BS ``DeviceManager.hpp``: the ``option`` bitmask on ``print_option`` has
+# exactly one bit defined, and ``PRINT_OP_MAX`` follows it immediately.
+PRINT_OP_AUTO_RECOVERY = 0
+
 # gcode_state values that mean the printer is not idle and must not be handed a
 # new start-print (#2598). Firmware rejects a project_file while busy with
 # 0500_4004 "Device is busy and cannot start a new task", and on some models
@@ -1828,6 +1832,15 @@ class BambuMQTTClient:
             system_data = payload["system"]
             logger.debug("[%s] Received system data: %s", self.serial_number, system_data)
             self._handle_system_response(system_data)
+
+        # Firmware operations answer in their own envelope, not under ``print``.
+        # BS carries a second copy of the command-error check for exactly this
+        # (``DeviceManager.cpp``, the ``j["upgrade"]`` branch) — the same
+        # ``err_code``, the same sequence-id test, a different key.
+        if "upgrade" in payload:
+            upgrade_data = payload["upgrade"]
+            if isinstance(upgrade_data, dict) and "command" in upgrade_data:
+                self._handle_upgrade_error_reply(upgrade_data)
 
         # Handle info responses (firmware version info from get_version command)
         if "info" in payload:
@@ -5426,6 +5439,65 @@ class BambuMQTTClient:
             code,
         )
 
+    def _handle_upgrade_error_reply(self, upgrade_data: dict) -> None:
+        """The other half of the command-error router — firmware's own envelope.
+
+        BS keeps two copies of this check because the printer answers firmware
+        operations under ``upgrade`` rather than ``print``. Same ``err_code``,
+        same sequence-id question, different key. Ours publishes there too:
+        ``ams_firmware_switch`` sends ``mc_for_ams_firmware_upgrade``.
+
+        ⚠️ **The ownership test defaults the other way here, and that is BS's
+        choice, not an oversight of ours.** In the ``print`` branch a reply must
+        pass ``is_studio_cmd`` to be acted on; in this one BS starts from
+        ``check_studio_cmd = true`` and only clears it when a ``sequence_id`` is
+        present and outside the band. A firmware reply carrying no sequence id at
+        all is therefore still surfaced — reasonable, because nothing but a
+        deliberate operation puts one on the wire.
+
+        **Why this is worth more than a log line.** ``ams_firmware_switch``
+        latches ``ams_firmware_status = "SWITCHING"`` the moment the publish
+        succeeds, copying BS, and only a *report* from the printer ever clears
+        it. A refusal is not a report. So one declined switch left the AMS type
+        picker hidden and ``POST`` answering 409 "already in progress" — for the
+        life of the process, with nothing on the way to say otherwise.
+        """
+        err = upgrade_data.get("err_code")
+        if not isinstance(err, int) or isinstance(err, bool) or err <= 0:
+            return
+
+        seq = upgrade_data.get("sequence_id")
+        if seq is not None and not self._is_our_sequence_id(seq):
+            return
+
+        command = upgrade_data.get("command")
+        module = (err >> 16) & 0xFFFF
+        code = err & 0xFFFF
+        self.state.last_command_error = {
+            "command": command,
+            "err_code": err,
+            "short_code": f"{module:04X}_{code:04X}",
+            "sequence_id": seq,
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
+        logger.warning(
+            "[%s] upgrade command %s failed: err_code=%s (%04X_%04X)",
+            self.serial_number,
+            command,
+            err,
+            module,
+            code,
+        )
+
+        # Release the optimistic latch, or the refusal is indistinguishable from
+        # a switch still running. Cleared to None rather than to a guessed
+        # status: what the AMS is actually on will arrive in the next report,
+        # and inventing a value here would race it.
+        if self.state.ams_firmware_status == "SWITCHING":
+            self.state.ams_firmware_status = None
+            self.state.ams_firmware_idx_sel = None
+            self.state.ams_settings_hold.pop("ams_firmware_switch", None)
+
     def _handle_set_ctt_reply(self, print_data: dict) -> None:
         """The printer's verdict on a chamber setpoint, which we asked for and
         then ignored.
@@ -5995,56 +6067,6 @@ class BambuMQTTClient:
             return True
         return False
 
-    def _set_print_option(self, option_name: str, enabled: bool) -> bool:
-        """Set a print option using the print.print_option command.
-
-        This is different from xcam_control_set and is used for options like:
-        - auto_recovery
-        - air_print_detect
-        - filament_tangle_detect
-        - nozzle_blob_detect
-        - sound_enable
-
-        Args:
-            option_name: The option to control (e.g., "auto_recovery")
-            enabled: Whether to enable or disable the option
-
-        Returns:
-            True if command was sent, False if not connected
-        """
-        if not self._client or not self.state.connected:
-            return False
-
-        self._sequence_id += 1
-
-        # Match Bambu Studio's payload exactly — they ship BOTH the explicit
-        # named bool AND a legacy ``option`` bitmask field (0/1) on the same
-        # command. Some firmware revisions reject the command when only one
-        # of the two is present, so include both. See
-        # ``DevPrintOptions.cpp::command_set_printing_option``.
-        command = {
-            "print": {
-                "command": "print_option",
-                "sequence_id": str(self._sequence_id),
-                "option": int(enabled),
-                option_name: enabled,
-            }
-        }
-
-        command_json = json.dumps(command)
-        self._client.publish(self.topic_publish, command_json, qos=1)
-        logger.debug("[%s] Set print option: %s=%s", self.serial_number, option_name, enabled)
-
-        # Set hold timer
-        hold_key = f"print_option_{option_name}"
-        self._xcam_hold_start[hold_key] = time.time()
-
-        # Update local state immediately
-        if option_name == "auto_recovery":
-            self.state.print_options.auto_recovery_step_loss = enabled
-
-        return True
-
     # ---------- Printer Settings dialog publishers (Print Options tab) ----------
     # Each publisher matches BS DeviceCore/DevPrintOptions.cpp shapes. All use
     # ``print.command = "print_option"`` with one toggle field per call;
@@ -6053,12 +6075,25 @@ class BambuMQTTClient:
     # ``state.printer_settings_hold`` so the push parser doesn't clobber
     # the optimistic value during the printer's confirm round-trip.
 
-    def _publish_print_option_bool(self, field: str, hold_key: str, enabled: bool) -> tuple[bool, str | None]:
+    def _publish_print_option_bool(
+        self, field: str, hold_key: str, enabled: bool, legacy_option_bit: int | None = None
+    ) -> tuple[bool, str | None]:
+        """Publish one ``print_option`` toggle.
+
+        ``legacy_option_bit`` adds BS's ``option`` bitmask alongside the named
+        bool. Only ``auto_recovery`` gets one: BS builds it in
+        ``command_set_printing_option``, which takes that single flag and nothing
+        else (``option = auto_recovery << PRINT_OP_AUTO_RECOVERY``, and
+        ``PRINT_OP_AUTO_RECOVERY`` is 0). The other toggles have no bit and must
+        not invent one.
+        """
         if not self._client or not self.state.connected:
             return False, None
         self._sequence_id += 1
         seq = str(self._sequence_id)
-        command = {"print": {"command": "print_option", "sequence_id": seq, field: bool(enabled)}}
+        command: dict = {"print": {"command": "print_option", "sequence_id": seq, field: bool(enabled)}}
+        if legacy_option_bit is not None:
+            command["print"]["option"] = int(enabled) << legacy_option_bit
         self._client.publish(self.topic_publish, json.dumps(command), qos=1)
         self.state.printer_settings_hold[hold_key] = time.time()
         return True, seq
@@ -6074,7 +6109,13 @@ class BambuMQTTClient:
         return True, seq
 
     def print_option_auto_recovery(self, enabled: bool) -> tuple[bool, str | None]:
-        return self._publish_print_option_bool("auto_recovery", "auto_recovery", enabled)
+        # BS ships BOTH the named bool and the legacy ``option`` bitmask on this
+        # one command; some firmware revisions reject it when only one is
+        # present. That was known here — and written down — in a helper nothing
+        # called, while the live publisher sent the bool alone.
+        return self._publish_print_option_bool(
+            "auto_recovery", "auto_recovery", enabled, legacy_option_bit=PRINT_OP_AUTO_RECOVERY
+        )
 
     def print_option_sound(self, enabled: bool) -> tuple[bool, str | None]:
         return self._publish_print_option_bool("sound_enable", "sound_enable", enabled)

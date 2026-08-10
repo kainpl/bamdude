@@ -30,19 +30,12 @@ logger = logging.getLogger(__name__)
 
 _CONFIG_DIR = Path(__file__).resolve().parent.parent / "data" / "printers"
 
-# The seven device-calibration keys, in MQTT ``option`` bit order (0..6).
-# Consumed by the calibration command builder, the resolver, and the frontend.
-DEVICE_CALIBRATIONS = (
-    "lidar",  # bit 0 (xcam_cali) — needs support_lidar_calibration AND support_ai_monitoring
-    "bed_leveling",  # bit 1 — support_bed_leveling != 0
-    "vibration",  # bit 2 — always available (BS never gates)
-    "motor_noise",  # bit 3 — LIVE runtime gate (BS parity): home_flag bit 21
-    # (P1/X1 series) OR fun bitfield bit 10 (H2/X2 series); the JSON
-    # support_motor_noise_cali is only the offline default
-    "nozzle_offset",  # bit 4 (nozzle_cali) — support_nozzle_offset_calibration
-    "high_temp_heatbed",  # bit 5 (bed_cali) — support_high_tempbed_calibration
-    "clump_pos",  # bit 6 (clumppos_cali) — support_clump_position_calibration
-)
+# A ``DEVICE_CALIBRATIONS`` tuple used to sit here, listing the same seven keys
+# in MQTT bit order above a comment claiming three consumers. It had none — the
+# command builder names its bits inline (grep ``clumppos_cali`` in
+# ``bambu_mqtt.py``) and the resolver below writes its own dict. A third copy of
+# a bit order that nothing reads is worse than no copy: editing it, on the
+# strength of that comment, changes nothing on the wire.
 
 
 def _norm(s: str | None) -> str:
@@ -408,6 +401,9 @@ def device_calibration_availability(model: str | None, firmware_version: str | N
         # Missing field defaults to 1 (on/off) so an unknown model still offers it.
         "bed_leveling": _as_int(f.get("support_bed_leveling", 1)) != 0,
         "vibration": True,
+        # ⚠️ Offline default only. The live gate is BS parity and wins:
+        # ``home_flag`` bit 21 (P1/X1) OR the ``fun`` bitfield bit 10 (H2/X2) —
+        # grep ``is_support_motor_noise_cali`` in ``bambu_mqtt.py``.
         "motor_noise": bool(f.get("support_motor_noise_cali")),
         "nozzle_offset": bool(f.get("support_nozzle_offset_calibration")),
         "high_temp_heatbed": bool(f.get("support_high_tempbed_calibration")),
