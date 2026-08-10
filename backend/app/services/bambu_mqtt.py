@@ -366,6 +366,19 @@ HMS_UI_ONLY_ACTIONS: frozenset[str] = frozenset(
 )
 
 
+def parse_hex_bitfield(value: object) -> int | None:
+    """The ``cfg`` / ``fun`` / ``aux`` / ``stat`` quartet arrive as hex STRINGS
+    on new-protocol printers and as plain ints on some builds. ``None`` when the
+    field is absent or unparseable — distinct from 0, which is "reported, all
+    bits clear"."""
+    if value is None:
+        return None
+    try:
+        return value if isinstance(value, int) else int(str(value), 16)
+    except (ValueError, TypeError):
+        return None
+
+
 def _hms_severity_from_code(code: int) -> int:
     """BS ``DevHMSItem::parse`` — ``msg_level_int = code >> 16``, clamped.
 
@@ -2317,13 +2330,7 @@ class BambuMQTTClient:
         compute_printer_supports)."""
         sup = self.state.print_option_support
 
-        def _hx(v):
-            if v is None:
-                return None
-            try:
-                return v if isinstance(v, int) else int(str(v), 16)
-            except (ValueError, TypeError):
-                return None
+        _hx = parse_hex_bitfield
 
         hf = data.get("home_flag")
         if isinstance(hf, int):
@@ -3512,15 +3519,39 @@ class BambuMQTTClient:
             self.state.is_support_pa_calibration = bool(data["support_pa_calibration"])
         if isinstance(data.get("support_auto_flow_calibration"), bool):
             self.state.is_support_auto_flow_calibration = bool(data["support_auto_flow_calibration"])
-        # Some X1 firmware reports the same capabilities via ``func`` bitfield
-        # (see BS DeviceManager.cpp:1035). Bit 15 = flow_calibration, bit 16
-        # = pa_calibration. We OR these in so neither path stomps the other.
-        if isinstance(data.get("func"), int):
-            func = int(data["func"])
-            if (func >> 16) & 0x1:
-                self.state.is_support_pa_calibration = True
-            if (func >> 15) & 0x1:
-                self.state.is_support_auto_flow_calibration = True
+        # ⚠️ This used to read a top-level ``func`` int at bits 15/16, citing BS.
+        # There is no such field: BS never reads a top-level ``func`` (its only
+        # ``"func"`` is ``part.func`` INSIDE an airduct part), and the two bit
+        # positions belong to two different fields it does read. It also OR'd,
+        # so a capability once seen could never be withdrawn.
+        #
+        # BS has three sources, later parse winning (DeviceManager.cpp):
+        #
+        #   home_flag  bit 15 -> flow, bit 16 -> pa   (legacy, parse_home_flag)
+        #   fun        bit  6 -> flow, bit  7 -> pa   (new protocol, hex string)
+        #   json ``support_flow_calibration`` -> pa   (see note below)
+        #
+        # and clamps each of the first two — see _apply_series_calibration_clamps.
+        _home_flag_raw = data.get("home_flag")
+        if isinstance(_home_flag_raw, int):
+            _hf = _home_flag_raw & 0xFFFFFFFF if _home_flag_raw < 0 else _home_flag_raw
+            self.state.is_support_auto_flow_calibration = bool((_hf >> 15) & 0x1)
+            self.state.is_support_pa_calibration = bool((_hf >> 16) & 0x1)
+            self._apply_series_calibration_clamps()
+
+        _fun_bits = parse_hex_bitfield(data.get("fun"))
+        if _fun_bits is not None:
+            self.state.is_support_auto_flow_calibration = bool((_fun_bits >> 6) & 0x1)
+            self.state.is_support_pa_calibration = bool((_fun_bits >> 7) & 0x1)
+            self._apply_series_calibration_clamps()
+
+        # NOT ported: BS also does
+        #   is_support_pa_calibration = jj["support_flow_calibration"]
+        # — assigning the **flow** key to the **pa** variable, with no
+        # counterpart reading a pa key at all. That reads as a slip in BS rather
+        # than a protocol fact, and mirroring it would switch PA support on from
+        # a flow flag. Left alone deliberately; revisit if a capture shows the
+        # firmware really only sends the flow key.
 
         # BS's legacy ``flag`` bitfield IS the printer's ``home_flag`` field
         # (BS DeviceManager.cpp:1083 ``m_home_flag = flag``). P1/X1-series
@@ -5188,6 +5219,42 @@ class BambuMQTTClient:
 
         if self.on_state_change:
             self.on_state_change(self.state)
+
+    def _apply_series_calibration_clamps(self) -> None:
+        """BS's two hardcoded overrides, applied after every bitfield read.
+
+        ``DeviceManager.cpp``, at BOTH parse sites (``parse_home_flag`` and the
+        ``fun`` parse), with Bambu's own comment::
+
+            if (is_series_o()) is_support_flow_calibration = false;
+                // todo: Temp modification due to incorrect machine push message for H2D
+            if (is_series_p()) is_support_pa_calibration = false;
+                // todo: Temp modification due to incorrect machine push message for P
+
+        This is **firmware Bambu knows is lying**: the machine advertises a
+        capability it does not have, and BS refuses to believe the bit. A
+        data-driven port misses these by construction, which is why they sit
+        here rather than in the config layer — the config is right, the *printer*
+        is wrong.
+
+        ⚠️ The series comes from ``printer_series`` in the mirrored config, not
+        from a model guess: the X2D reports ``series_x1``, so the O-clamp covers
+        the H2 family only. Getting that from a name would have caught X2D too.
+
+        Kept as its own method because it must run after **each** source — BS
+        clamps at both parse sites, and a later source that skipped the clamp
+        would silently re-enable what the earlier one refused.
+        """
+        # Local import, matching how this file reaches every other util module
+        # (printer_models is imported the same way) — keeps the import graph
+        # acyclic without anyone having to check.
+        from backend.app.utils.printer_configs import printer_series
+
+        series = printer_series(self.model)
+        if series == "series_o":
+            self.state.is_support_auto_flow_calibration = False
+        elif series == "series_p1p":
+            self.state.is_support_pa_calibration = False
 
     def _apply_mqtt_verify_state(self, verify_failed: bool) -> None:
         """Reconcile ``developer_mode`` with the printer's own verdict on our commands.

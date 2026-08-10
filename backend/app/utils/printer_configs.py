@@ -208,6 +208,21 @@ def printer_arch(model: str | None) -> str:
     return "i3" if value == "i3" else "core_xy"
 
 
+def printer_series(model: str | None) -> str:
+    """The model's ``printer_series`` string — ``series_x1`` / ``series_p1p`` /
+    ``series_o`` / … — as BS reads it in
+    ``DevPrinterConfigUtil::get_printer_series_str``.
+
+    Used for BS's two hardcoded capability clamps (see
+    ``_apply_series_calibration_clamps`` in ``bambu_mqtt``). ⚠️ Note the X2D
+    (``N6``) reports ``series_x1``, **not** ``series_o`` — the O-series clamp
+    covers the H2 family only, and a guess by model name would get that wrong.
+    """
+    cfg = load_printer_config(model) or {}
+    value = cfg.get("printer_series")
+    return value if isinstance(value, str) else ""
+
+
 def supports_safety_options(model: str | None) -> bool:
     """Whether the model exposes BS's Safety Options dialog — the top-level
     ``support_safety_options`` flag in the mirrored per-model config. Currently

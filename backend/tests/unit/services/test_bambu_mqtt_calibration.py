@@ -191,10 +191,19 @@ def test_parser_capability_flags_direct(mqtt_client):
     assert mqtt_client.state.is_support_pa_calibration is True
 
 
-def test_parser_capability_flags_via_func_bitfield(mqtt_client):
-    """Legacy X1: capabilities advertised via func bitfield bits 15/16."""
-    func = (1 << 15) | (1 << 16)  # both flow + PA
-    msg = {"print": {"command": "push_status", "func": func}}
+def test_parser_capability_flags_via_home_flag_bitfield(mqtt_client):
+    """Legacy path: ``home_flag`` bit 15 = flow, bit 16 = PA.
+
+    This test used to send a top-level ``func`` int at the same bits and assert
+    the same result. Neither half survived checking: BS reads no top-level
+    ``func`` (its only ``"func"`` is ``part.func`` inside an airduct part), and
+    the bits it does read at 15/16 belong to ``home_flag`` — while the ``fun``
+    hex string uses 6/7 for the same two capabilities. Full coverage of both
+    fields and of Bambu's series clamps lives in
+    ``test_calibration_support_bits.py``.
+    """
+    home_flag = (1 << 15) | (1 << 16)  # both flow + PA
+    msg = {"print": {"command": "push_status", "home_flag": home_flag}}
     mqtt_client._on_message(None, None, _FakeMsg(msg))
     assert mqtt_client.state.is_support_pa_calibration is True
     assert mqtt_client.state.is_support_auto_flow_calibration is True
