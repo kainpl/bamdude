@@ -292,9 +292,7 @@ async def get_printer_settings(
             )
         )
 
-    supports = PrinterSettingsSupports(
-        **compute_printer_supports(client.state, printer.model, getattr(client, "module_vers", {}))
-    )
+    supports = PrinterSettingsSupports(**compute_printer_supports(client.state, printer.model))
 
     safety = SafetyState(
         open_door=getattr(po, "open_door_check", None),
@@ -319,7 +317,7 @@ async def post_printer_settings(
     if not client or not client.state.connected:
         raise HTTPException(404, "Printer not online")
 
-    supports = compute_printer_supports(client.state, printer.model, getattr(client, "module_vers", {}))
+    supports = compute_printer_supports(client.state, printer.model)
 
     sequence_id: str | None = None
     error: str | None = None

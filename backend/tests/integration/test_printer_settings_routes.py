@@ -40,7 +40,6 @@ def _client_with_state(printer_model="X1C", connected=True):
     c.state.print_options.nozzle_blob_v2 = None
     c.state.print_options.air_print_nonvisual = None
     c.state.nozzles = []
-    c.module_vers = {}
     return c
 
 

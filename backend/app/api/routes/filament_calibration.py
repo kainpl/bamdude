@@ -162,9 +162,7 @@ async def get_capabilities(
     client = printer_manager.get_client(printer_id)
     if not client or not client.state.connected:
         raise HTTPException(404, "Printer not online")
-    return CalibCapabilities(
-        **compute_calibration_supports(client.state, printer.model, getattr(client, "module_vers", {}))
-    )
+    return CalibCapabilities(**compute_calibration_supports(client.state, printer.model))
 
 
 @router.post(

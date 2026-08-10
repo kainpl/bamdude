@@ -34,18 +34,18 @@ class TestTheLiveBitDecides:
     def test_the_h2_family_gains_the_row_when_it_reports_the_bit(self) -> None:
         """The models the old list left out entirely."""
         for model in ("H2D", "H2D Pro", "H2C", "H2S"):
-            assert compute_printer_supports(_state(open_door_check=True), model, {})["open_door_check"] is True, model
+            assert compute_printer_supports(_state(open_door_check=True), model)["open_door_check"] is True, model
 
     def test_a_printer_reporting_zero_does_not_get_the_row(self) -> None:
         """Assign, not "the model list says yes anyway"."""
-        assert compute_printer_supports(_state(open_door_check=False), "X1C", {})["open_door_check"] is False
+        assert compute_printer_supports(_state(open_door_check=False), "X1C")["open_door_check"] is False
 
     def test_the_model_list_is_still_the_fallback_before_the_first_push(self) -> None:
         """Absent from the dict means "not reported", and an X1C has the sensor —
         so the pre-push window keeps today's answer instead of hiding a row the
         machine does have."""
-        assert compute_printer_supports(_state(), "X1C", {})["open_door_check"] is True
-        assert compute_printer_supports(_state(), "P1P", {})["open_door_check"] is False
+        assert compute_printer_supports(_state(), "X1C")["open_door_check"] is True
+        assert compute_printer_supports(_state(), "P1P")["open_door_check"] is False
 
 
 class TestTheSafetyTabStillWins:
@@ -53,7 +53,7 @@ class TestTheSafetyTabStillWins:
         """BS's mutual exclusion: on X2D/P2S the control lives in Safety, and
         showing it in both places would be two switches for one setting."""
         for model in ("X2D", "P2S"):
-            assert compute_printer_supports(_state(open_door_check=True), model, {})["open_door_check"] is False, model
+            assert compute_printer_supports(_state(open_door_check=True), model)["open_door_check"] is False, model
 
 
 class TestTheBitReachesTheDictAtAll:
@@ -67,7 +67,7 @@ class TestTheBitReachesTheDictAtAll:
         c._process_message({"print": {"command": "push_status", "fun": hex(1 << 12)}})
 
         assert c.state.print_option_support.get("open_door_check") is True
-        assert compute_printer_supports(c.state, "H2D", {})["open_door_check"] is True
+        assert compute_printer_supports(c.state, "H2D")["open_door_check"] is True
 
     def test_a_printer_that_sends_no_fun_leaves_the_key_absent(self) -> None:
         """ "Not reported" has to stay distinguishable from "reported false",
@@ -88,13 +88,13 @@ class TestTheFirstLayerFallbackComesFromTheConfig:
 
     def test_the_h2_family_no_longer_claims_first_layer_inspection(self) -> None:
         for model in ("H2C", "H2D", "H2D Pro", "H2S"):
-            assert compute_printer_supports(_state(), model, {})["first_layer_inspector"] is False, model
+            assert compute_printer_supports(_state(), model)["first_layer_inspector"] is False, model
 
     def test_the_x1_family_still_has_it(self) -> None:
         for model in ("X1C", "X1E"):
-            assert compute_printer_supports(_state(), model, {})["first_layer_inspector"] is True, model
+            assert compute_printer_supports(_state(), model)["first_layer_inspector"] is True, model
 
     def test_the_live_bit_still_wins_over_the_config(self) -> None:
         """This only decides the pre-push window; a printer that says it has the
         feature is believed."""
-        assert compute_printer_supports(_state(first_layer_inspector=True), "H2D", {})["first_layer_inspector"] is True
+        assert compute_printer_supports(_state(first_layer_inspector=True), "H2D")["first_layer_inspector"] is True

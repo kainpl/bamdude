@@ -69,7 +69,7 @@ _H2_FAMILY = frozenset({"H2D", "H2DPRO", "H2C", "H2S"})
 _AI_CAPABLE = _X1_FAMILY | _H2_FAMILY
 
 
-def compute_printer_supports(state: PrinterState, printer_model: str | None, module_vers: dict) -> PrinterSupports:
+def compute_printer_supports(state: PrinterState, printer_model: str | None) -> PrinterSupports:
     m = _norm(printer_model)
     has_ai = m in _AI_CAPABLE
     is_h2 = m in _H2_FAMILY
@@ -188,11 +188,7 @@ def _as_float(value: object) -> float | None:
         return None
 
 
-def compute_calibration_supports(
-    state: PrinterState,
-    printer_model: str | None,
-    module_vers: dict,
-) -> dict:
+def compute_calibration_supports(state: PrinterState, printer_model: str | None) -> dict:
     """Per-model capability matrix for Filament Calibration wizard.
 
     auto_* gates: model must have lidar AND the printer state must report

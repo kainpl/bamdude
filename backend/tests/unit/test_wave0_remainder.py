@@ -30,7 +30,7 @@ class TestCalibrationReadsTheNozzleFieldsThatExist:
         state = PrinterState()
         state.nozzles = [NozzleInfo(nozzle_type="hardened_steel", nozzle_flow="high_flow", nozzle_diameter="0.6")]
 
-        nozzles = compute_calibration_supports(state, "H2D", {})["nozzles"]
+        nozzles = compute_calibration_supports(state, "H2D")["nozzles"]
 
         assert nozzles == [{"id": 0, "diameter": 0.6, "type": "hardened_steel", "flow_type": "high_flow"}]
 
@@ -40,14 +40,14 @@ class TestCalibrationReadsTheNozzleFieldsThatExist:
         state = PrinterState()
         state.nozzles = [NozzleInfo(nozzle_diameter="0.4")]
 
-        assert compute_calibration_supports(state, "X1C", {})["nozzles"][0]["diameter"] == 0.4
+        assert compute_calibration_supports(state, "X1C")["nozzles"][0]["diameter"] == 0.4
 
     def test_an_unreported_nozzle_answers_none_not_zero(self) -> None:
         """None means "printer has not said"; 0.0 would be a diameter."""
         state = PrinterState()
         state.nozzles = [NozzleInfo()]
 
-        n = compute_calibration_supports(state, "X1C", {})["nozzles"][0]
+        n = compute_calibration_supports(state, "X1C")["nozzles"][0]
         assert n["diameter"] is None
         assert n["type"] is None
         assert n["flow_type"] is None
@@ -58,7 +58,7 @@ class TestCalibrationReadsTheNozzleFieldsThatExist:
         state = PrinterState()
         state.nozzles = [NozzleInfo(nozzle_diameter="0.8")]
 
-        assert compute_calibration_supports(state, "X1C", {})["nozzles"][0]["diameter"] != 0.4
+        assert compute_calibration_supports(state, "X1C")["nozzles"][0]["diameter"] != 0.4
 
 
 class TestChamberLookupsSurviveTheirOwnModelNames:
