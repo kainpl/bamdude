@@ -141,12 +141,17 @@ class TestTheM106BranchIsFinallyReachable:
         assert client.set_fan_speed(FAN_PART_ID_AUX, 50) is True
 
     def test_it_goes_out_as_m106_on_the_0_255_scale(self, client: BambuMQTTClient) -> None:
-        """The two protocols disagree about the scale; 50 % is 128, not 50."""
+        """The two protocols disagree about the scale; 50 % is 127, not 50.
+
+        ⚠️ 127, not 128: BS **floors** ``gear * 25.5`` and gear 5 gives exactly
+        127.5. This test said 128 while we rounded — both were wrong together,
+        which is how a rounding difference survives having a test.
+        """
         client.set_fan_speed(FAN_PART_ID_AUX, 50)
         payload = json.loads(client._client.publish.call_args[0][1])
 
         assert payload["print"]["command"] == "gcode_line"
-        assert payload["print"]["param"].strip() == "M106 P2 S128"
+        assert payload["print"]["param"].strip() == "M106 P2 S127"
 
     def test_a_synthesised_inventory_does_not_flip_it_to_set_fan(self, client: BambuMQTTClient) -> None:
         """The protocol choice reads the raw reported parts, never the

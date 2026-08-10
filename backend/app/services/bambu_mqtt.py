@@ -7899,8 +7899,18 @@ class BambuMQTTClient:
             logger.info("[%s] set_fan part=%s speed=%s%%", self.serial_number, part_id, percent)
             return True
 
-        # Old protocol: M106 takes 0-255.
-        gcode = f"M106 P{int(part_id)} S{round(percent * 255 / 100)}\n"
+        # Old protocol: M106 takes 0-255, and BS **floors** rather than rounds —
+        # ``floor(gear * 25.5)``, a gear being ten percent
+        # (``FanControlNew::command_control_fan``). Rounding disagreed with it by
+        # one unit on gears 1, 5 and 9.
+        #
+        # ⚠️ Integer arithmetic, and not ``int(percent * 2.55)``: 2.55 has no
+        # exact binary form, so that evaluates 100 % to 254.999… and floors it to
+        # **254** — wrong at precisely the value people reach for most. BS gets
+        # away with a float because 25.5 *is* exactly representable (51/2).
+        # ``percent * 51 // 20`` is the same number with no such trap, and it
+        # matches BS on every percentage from 0 to 100, not only on gears.
+        gcode = f"M106 P{int(part_id)} S{percent * 51 // 20}\n"
         command = {
             "print": {
                 "command": "gcode_line",

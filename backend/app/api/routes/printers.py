@@ -3289,6 +3289,7 @@ async def set_fan_speed(
     printer_id: int,
     part_id: int = Query(..., description="Airduct part id as reported in status.airduct_fans"),
     percent: int = Query(..., ge=0, le=100, description="Fan speed, 0-100 %"),
+    confirm: bool = Query(False, description='Acknowledge the mid-print warning (BS "Change Anyway")'),
     _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
@@ -3327,6 +3328,18 @@ async def set_fan_speed(
         raise HTTPException(409, "This fan is forced off by the current airduct mode")
     if _control != FAN_CTRL:
         raise HTTPException(409, "This fan is driven automatically in the current airduct mode")
+
+    # BS warns before changing a fan mid-print — "Changing fan speed during
+    # printing may affect print quality", with a "Change Anyway" button
+    # (``FanOperate::check_printing_state``). It is a warning, not a refusal, so
+    # this is overridable rather than absolute.
+    #
+    # It still has to live here and not only in the browser: a warning that
+    # exists in one client is not a warning, and this endpoint is reachable by
+    # API key and by a tab left open since before the print started — the same
+    # reasoning as the shared busy guards.
+    if not confirm and is_printer_busy(printer_id):
+        raise HTTPException(409, "Changing fan speed during a print needs confirm=true")
 
     if not client.set_fan_speed(part_id, percent):
         raise HTTPException(500, "Failed to set fan speed")

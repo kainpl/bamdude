@@ -5155,9 +5155,12 @@ export const api = {
   // Airduct fan speed. Addressed by the part id the status reports, because the
   // same id is a different fan on different models (part 10 is the left aux on
   // a P2S and the right one on an X2D).
-  setFanSpeed: (printerId: number, partId: number, percent: number) =>
+  // `confirm` acknowledges the mid-print warning — BambuStudio's "Change
+  // Anyway". The server refuses without it while a print is running, so the
+  // guard survives a client that never shows the dialog.
+  setFanSpeed: (printerId: number, partId: number, percent: number, confirm = false) =>
     request<{ success: boolean; part_id: number; percent: number }>(
-      `/printers/${printerId}/fan-speed?part_id=${partId}&percent=${percent}`,
+      `/printers/${printerId}/fan-speed?part_id=${partId}&percent=${percent}&confirm=${confirm}`,
       { method: 'POST' },
     ),
 

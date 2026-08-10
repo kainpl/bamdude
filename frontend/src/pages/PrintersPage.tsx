@@ -1482,9 +1482,15 @@ function FanBadge({
     );
   }
 
-  // Steps rather than a slider: the printer's own panel offers gears, and the
-  // badge is 40 px wide.
-  const steps = [0, 25, 50, 75, 100].filter((p) => p >= fan.range_start && p <= fan.range_end);
+  // BambuStudio's own steps. Its control counts GEARS, 1..10, and turns each
+  // into a wire value — gear x 10 on the new protocol, floor(gear x 25.5) on
+  // the old one. So the printer understands 0, 10, 20 ... 100 and nothing
+  // between: the previous 0/25/50/75/100 offered three values it cannot
+  // express. Gear 0 is reached by stepping below 1, which is why "off" is a
+  // separate action below rather than another entry here.
+  const steps = Array.from({ length: 10 }, (_, i) => (i + 1) * 10).filter(
+    (p) => p >= fan.range_start && p <= fan.range_end,
+  );
   return (
     <div className="relative">
       <button onClick={onToggle} className={`${className} hover:brightness-125 transition-all`} title={title}>
@@ -1493,8 +1499,20 @@ function FanBadge({
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={onToggle} />
-          <div className="absolute bottom-full left-0 mb-1 z-50 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg py-1 min-w-[110px]">
+          <div className="absolute bottom-full left-0 mb-1 z-50 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg py-1 min-w-[110px] max-h-[280px] overflow-y-auto">
             <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-bambu-gray">{label}</div>
+            {/* Turning it off is its own action, not the first row of eleven —
+                it is the one people reach for in a hurry, and in BambuStudio it
+                is likewise not a speed but the result of stepping past the
+                lowest gear. Shown only when there is something to turn off. */}
+            {on && (
+              <button
+                onClick={() => onPick(0)}
+                className="w-full text-left px-3 py-1.5 text-xs text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white transition-colors border-b border-bambu-dark-tertiary/60"
+              >
+                {t('printers.fans.turnOff')}
+              </button>
+            )}
             {steps.map((pct) => (
               <button
                 key={pct}
@@ -1619,6 +1637,8 @@ function PrinterCard({
   const [showBedJogMenu, setShowBedJogMenu] = useState<number | null>(null);
   const [bedJogStep, setBedJogStep] = useState<number>(10);
   const [showNotHomedModal, setShowNotHomedModal] = useState<null | { distance: number }>(null);
+  // Pending fan change awaiting the mid-print acknowledgement.
+  const [showFanPrintingModal, setShowFanPrintingModal] = useState<null | { partId: number; percent: number }>(null);
   const [showSkipObjectsModal, setShowSkipObjectsModal] = useState(false);
   const [showUploadForPrint, setShowUploadForPrint] = useState(false);
   const [showPrinterInfo, setShowPrinterInfo] = useState(false);
@@ -2300,8 +2320,8 @@ function PrinterCard({
   // badge that snapped to the requested value and then drifted back would read
   // as the control being flaky rather than as the mode owning the fan.
   const fanSpeedMutation = useMutation({
-    mutationFn: ({ partId, percent }: { partId: number; percent: number }) =>
-      api.setFanSpeed(printer.id, partId, percent),
+    mutationFn: ({ partId, percent, confirm }: { partId: number; percent: number; confirm?: boolean }) =>
+      api.setFanSpeed(printer.id, partId, percent, confirm ?? false),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['printerStatus', printer.id] }),
     onError: (error: Error) =>
       showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
@@ -3822,8 +3842,24 @@ function PrinterCard({
                             )
                           }
                           onPick={(pct) => {
-                            fanSpeedMutation.mutate({ partId: f.part_id, percent: pct });
                             setShowFanMenu(null);
+                            // BambuStudio warns before a mid-print fan change and
+                            // offers "Change Anyway". Asked once per printer per
+                            // browser session, like the not-homed prompt; the
+                            // server refuses without the acknowledgement either
+                            // way, so skipping the dialog cannot skip the guard.
+                            const warned = (() => {
+                              try {
+                                return sessionStorage.getItem(`bamdude.fanSpeed.warned.${printer.id}`) === '1';
+                              } catch {
+                                return false;
+                              }
+                            })();
+                            if (isPrinting && !warned) {
+                              setShowFanPrintingModal({ partId: f.part_id, percent: pct });
+                              return;
+                            }
+                            fanSpeedMutation.mutate({ partId: f.part_id, percent: pct, confirm: isPrinting });
                           }}
                           canControl={hasPermission('printers:control')}
                         />
@@ -6096,6 +6132,54 @@ function PrinterCard({
               </button>
               <button
                 onClick={() => setShowNotHomedModal(null)}
+                className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-bambu-dark text-bambu-gray hover:bg-bambu-dark-tertiary transition-colors"
+              >
+                {t('common.cancel')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Fan speed during a print — BambuStudio's own warning
+          (FanOperate::check_printing_state), which offers "Change Anyway"
+          rather than refusing. Acknowledging it remembers the choice for this
+          printer for the rest of the browser session, as Studio's
+          "do not show again" does. The server still requires the
+          acknowledgement on every call, so this dialog is the explanation, not
+          the guard. */}
+      {showFanPrintingModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl w-full max-w-sm p-5">
+            <div className="flex items-start gap-3 mb-4">
+              <AlertTriangle className="w-5 h-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
+              <div>
+                <h3 className="text-sm font-semibold text-white mb-1">
+                  {t('printers.fans.printingWarningTitle')}
+                </h3>
+                <p className="text-xs text-bambu-gray leading-relaxed">
+                  {t('printers.fans.printingWarningMessage')}
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => {
+                  const pending = showFanPrintingModal;
+                  setShowFanPrintingModal(null);
+                  try {
+                    sessionStorage.setItem(`bamdude.fanSpeed.warned.${printer.id}`, '1');
+                  } catch {
+                    // Private mode: the dialog simply asks again next time.
+                  }
+                  fanSpeedMutation.mutate({ partId: pending.partId, percent: pending.percent, confirm: true });
+                }}
+                className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30 transition-colors"
+              >
+                {t('printers.fans.changeAnyway')}
+              </button>
+              <button
+                onClick={() => setShowFanPrintingModal(null)}
                 className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-bambu-dark text-bambu-gray hover:bg-bambu-dark-tertiary transition-colors"
               >
                 {t('common.cancel')}
