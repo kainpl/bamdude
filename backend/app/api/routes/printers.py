@@ -51,7 +51,14 @@ from backend.app.services.bambu_ftp import (
     get_storage_info_async,
     list_files_async,
 )
-from backend.app.services.bambu_mqtt import HMS_UI_ONLY_ACTIONS, airduct_fan_controllable
+from backend.app.services.bambu_mqtt import (
+    FAN_CTRL,
+    FAN_OFF,
+    HMS_UI_ONLY_ACTIONS,
+    airduct_fan_control,
+    airduct_mode_effective,
+    airduct_parts_effective,
+)
 from backend.app.services.printer_diagnostic import run_connection_diagnostic
 from backend.app.services.printer_location_service import load_tree, subtree_ids
 from backend.app.services.printer_manager import (
@@ -103,18 +110,23 @@ def _airduct_fans(model: str | None, state) -> list[AirductFan]:
     happened to send.
     """
     fans: list[AirductFan] = []
-    for part_id, part in sorted((state.airduct_parts or {}).items()):
+    mode_id = airduct_mode_effective(state)
+    for part_id, part in sorted(airduct_parts_effective(state, model).items()):
         # Air doors are in the same list (type 1) and are not fans.
         if part.get("type") not in (0, None):
             continue
-        label_key, label = airduct_fan_label(model, state.airduct_mode, state.airduct_sub_mode, part_id)
+        # The effective mode, not the raw one: an old-protocol printer keys
+        # its fan names under "-1", which is what converse_to_duct stamps.
+        label_key, label = airduct_fan_label(model, mode_id, state.airduct_sub_mode, part_id)
+        control = airduct_fan_control(state, part_id)
         fans.append(
             AirductFan(
                 part_id=part_id,
                 speed=int(part.get("state", 0)),
                 range_start=int(part.get("range_start", 0)),
                 range_end=int(part.get("range_end", 100)),
-                controllable=airduct_fan_controllable(state, part_id),
+                control=control,
+                controllable=control == FAN_CTRL,
                 label_key=label_key,
                 label=label,
             )
@@ -3304,10 +3316,17 @@ async def set_fan_speed(
     # Refuse an id this printer never reported rather than sending it. The parts
     # list is the hardware inventory, so an unknown id is a fan that is not
     # fitted — and a command for it would be accepted and do nothing.
-    if part_id not in (client.state.airduct_parts or {}):
+    if part_id not in airduct_parts_effective(client.state, printer.model):
         raise HTTPException(400, f"Printer does not report a fan with part id {part_id}")
-    if not airduct_fan_controllable(client.state, part_id):
+    # Two different refusals, because they are two different situations for
+    # whoever is looking: the mode holds this fan off, or the firmware is
+    # driving it. Answering "forced off" for an auto fan would send someone
+    # looking for a mode setting that is not the cause.
+    _control = airduct_fan_control(client.state, part_id)
+    if _control == FAN_OFF:
         raise HTTPException(409, "This fan is forced off by the current airduct mode")
+    if _control != FAN_CTRL:
+        raise HTTPException(409, "This fan is driven automatically in the current airduct mode")
 
     if not client.set_fan_speed(part_id, percent):
         raise HTTPException(500, "Failed to set fan speed")

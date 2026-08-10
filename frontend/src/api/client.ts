@@ -605,8 +605,13 @@ export interface AirductFan {
   speed: number;        // 0-100 %
   range_start: number;
   range_end: number;
-  // False when the current airduct mode forces this fan off — the printer
-  // accepts a command for it and ignores it.
+  // What the active airduct mode does with this fan — BambuStudio's own three
+  // outcomes: 'ctrl' the user may set a speed, 'off' the mode forces it off,
+  // 'auto' the firmware drives it. 'off' and 'auto' are different answers for
+  // whoever is looking: one you can change by changing the mode, one you cannot.
+  control?: 'ctrl' | 'off' | 'auto';
+  // True only for 'ctrl'. Kept because the write path asks this narrower
+  // question, and older responses carry it alone.
   controllable: boolean;
   // i18n key under printers.fans.* when BambuStudio's own name is one we
   // recognise; otherwise null and `label` carries that name verbatim.

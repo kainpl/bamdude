@@ -18,9 +18,14 @@ import pytest
 from backend.app.services.bambu_mqtt import BambuMQTTClient, PrinterState, airduct_fan_controllable
 
 
-def _client(**state_kwargs) -> BambuMQTTClient:
+def _client(model: str | None = None, **state_kwargs) -> BambuMQTTClient:
     c = BambuMQTTClient.__new__(BambuMQTTClient)
     c.serial_number = "01P00A000000000"
+    # Needed since the fan inventory learned to synthesise the old protocol:
+    # which fans a machine has is a per-model question. These tests are about
+    # the wire protocol, so None is honest — it means "no model answer", and the
+    # synthesis then offers only what every printer has.
+    c.model = model
     c._sequence_id = 0
     c._client = MagicMock()
     c.state = PrinterState()

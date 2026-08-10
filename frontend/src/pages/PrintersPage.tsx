@@ -145,13 +145,11 @@ const DRY_START_CONFIRM_MS = 30_000;
 // 5=Error, which is the failure the watch exists to report, not a success.
 const DRY_STATUS_STARTED = new Set([1, 2]);
 const DRY_STATUS_ERROR = 5;
-// Bambu models with a chamber exhaust fan (big_fan2). Open-frame models
-// (P1P, A1, A1 Mini, A2L) have no chamber fan, so its badge is hidden for
-// them. Keyed by mapModelCode() display name — our printer.model is a raw
-// SSDP code that mapModelCode() normalises.
-const MODELS_WITH_CHAMBER_FAN: ReadonlySet<string> = new Set([
-  'X1C', 'X1', 'X1E', 'X2D', 'P1S', 'P2S', 'H2D', 'H2D Pro', 'H2C', 'H2S',
-]);
+// A MODELS_WITH_CHAMBER_FAN set used to live here, deciding whether to draw the
+// chamber-fan badge. It is gone: the printer reporting a chamber fan is what
+// says it has one, and the backend now builds the whole fan list from that.
+// A hand-kept model table can only ever be wrong about a machine it has not
+// met — see the per-model-capability invariant in the vault.
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
 import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors';
 import { formatSpoolDisplayName, DEFAULT_SPOOL_DISPLAY_TEMPLATE } from '../utils/spoolName';
@@ -1423,15 +1421,28 @@ function AiDetectionBadge({ printerId }: { printerId: number }) {
   );
 }
 
-/** One badge for a fan that exists only in ``device.airduct`` (#2576).
+/** One badge per fan the printer reports, and every fan goes through here.
  *
- * Same shape as the neighbouring fan badges so the row stays uniform, plus a
- * speed menu built like the print-speed one. It is a button rather than a plain
- * tile only when the fan can actually be driven: a mode owns some fans (the
- * P2S's left aux is off in heating), and the printer accepts a command for one
- * of those and ignores it — so offering the control there would spend two
- * clicks to do nothing.
+ * There used to be three hardcoded tiles (part cooling / auxiliary / chamber)
+ * fed by flat status fields, plus this badge for "the rest" behind a
+ * `![1,2,3]` filter. That was two sources of truth for one question, and it
+ * cost real control: on an X2D the airduct reports parts 2 and 10, so the
+ * filter handed a menu to part 10 and left part 2 — fully controllable in
+ * Strong Cooling — as a plain readout.
+ *
+ * The icon and colour still follow the part id, so the row looks as it always
+ * did; what changed is that the list comes from one place.
+ *
+ * It is a button rather than a plain tile only when the fan can actually be
+ * driven. BambuStudio replaces the slider with the word "Off" or "Auto"; the
+ * badge is 40 px wide, so that reason lives in the tooltip instead.
  */
+const FAN_LOOKS: Record<number, { Icon: typeof Wind; tint: string; bg: string }> = {
+  1: { Icon: Fan, tint: 'text-cyan-400', bg: 'bg-cyan-500/10' },
+  3: { Icon: AirVent, tint: 'text-green-400', bg: 'bg-green-500/10' },
+};
+const FAN_LOOK_DEFAULT = { Icon: Wind, tint: 'text-blue-400', bg: 'bg-blue-500/10' };
+
 function FanBadge({
   fan,
   label,
@@ -1447,19 +1458,25 @@ function FanBadge({
   onPick: (percent: number) => void;
   canControl: boolean;
 }) {
+  const { t } = useTranslation();
   const on = fan.speed > 0;
-  const interactive = canControl && fan.controllable;
+  const control = fan.control ?? (fan.controllable ? 'ctrl' : 'off');
+  const interactive = canControl && control === 'ctrl';
+  const { Icon, tint, bg } = FAN_LOOKS[fan.part_id] ?? FAN_LOOK_DEFAULT;
+  const reason =
+    control === 'off' ? t('printers.fans.forcedOff') : control === 'auto' ? t('printers.fans.autoDriven') : null;
+  const title = reason ? `${label} — ${reason}` : label;
   const body = (
     <>
-      <Wind className={`w-3.5 h-3.5 ${on ? 'text-blue-400' : 'text-bambu-gray/50'}`} />
-      <span className={`text-[10px] ${on ? 'text-blue-400' : 'text-bambu-gray/50'}`}>{fan.speed}%</span>
+      <Icon className={`w-3.5 h-3.5 ${on ? tint : 'text-bambu-gray/50'}`} />
+      <span className={`text-[10px] ${on ? tint : 'text-bambu-gray/50'}`}>{fan.speed}%</span>
     </>
   );
-  const className = `flex items-center gap-1 px-1.5 py-1 rounded ${on ? 'bg-blue-500/10' : 'bg-bambu-dark'}`;
+  const className = `flex items-center gap-1 px-1.5 py-1 rounded ${on ? bg : 'bg-bambu-dark'}`;
 
   if (!interactive) {
     return (
-      <div className={className} title={label}>
+      <div className={className} title={title}>
         {body}
       </div>
     );
@@ -1470,7 +1487,7 @@ function FanBadge({
   const steps = [0, 25, 50, 75, 100].filter((p) => p >= fan.range_start && p <= fan.range_end);
   return (
     <div className="relative">
-      <button onClick={onToggle} className={`${className} hover:bg-blue-500/20 transition-colors`} title={label}>
+      <button onClick={onToggle} className={`${className} hover:brightness-125 transition-all`} title={title}>
         {body}
       </button>
       {open && (
@@ -3754,33 +3771,31 @@ function PrinterCard({
               const isPrinting = isRunning || isPaused;
               const isControlBusy = stopPrintMutation.isPending || pausePrintMutation.isPending || resumePrintMutation.isPending;
 
-              // Fan data
-              const partFan = status.cooling_fan_speed;
-              const auxFan = status.big_fan1_speed;
-              const chamberFan = status.big_fan2_speed;
-              const hasChamberFan = MODELS_WITH_CHAMBER_FAN.has(mapModelCode(printer.model));
-
-              // Fans reported only through device.airduct (#2576). Part ids
-              // 1/2/3 already have badges of their own fed by the flat
-              // cooling/big_fan1/big_fan2 fields, so only the rest get a badge
-              // here — otherwise a P2S would show its right aux fan twice.
-              // What the airduct DOES add for 2 and 3 is the model-appropriate
-              // name: "Right(Aux)" rather than a generic "Auxiliary".
+              // Every fan the printer reports, from one list. The backend
+              // supplies it for both protocols — a machine with no airduct has
+              // parts 1/2/3 synthesised from the flat status fields, the way
+              // BambuStudio's converse_to_duct does — so there is no longer a
+              // second set of hardcoded tiles beside this, and no model table
+              // deciding whether a chamber fan exists. The printer reporting one
+              // is what says it exists.
               const airductFans = status.airduct_fans ?? [];
               const fanName = (f: AirductFan) =>
-                f.label_key ? t(`printers.fans.${f.label_key}`, f.label ?? '') : (f.label ?? '');
-              const namedFan = (partId: number) => airductFans.find((f) => f.part_id === partId);
-              const auxLabel = namedFan(2) ? fanName(namedFan(2)!) : t('printers.fans.auxiliary');
-              const chamberLabel = namedFan(3) ? fanName(namedFan(3)!) : t('printers.fans.chamber');
-              // Left before right, so the badges read in the order the fans sit
-              // in the machine rather than in part-id order — which is mirrored
-              // between the P2S and the X2D.
-              const extraFans = airductFans
-                .filter((f) => ![1, 2, 3].includes(f.part_id))
-                .sort((a, b) => {
-                  const side = (f: AirductFan) => (/left/i.test(f.label ?? '') ? 0 : /right/i.test(f.label ?? '') ? 1 : 2);
-                  return side(a) - side(b) || a.part_id - b.part_id;
-                });
+                f.label_key
+                  ? t(`printers.fans.${f.label_key}`, f.label ?? '')
+                  : (f.label ??
+                    (f.part_id === 1
+                      ? t('printers.fans.partCooling')
+                      : f.part_id === 3
+                        ? t('printers.fans.chamber')
+                        : t('printers.fans.auxiliary')));
+              // Part cooling first, then left before right — the badges read in
+              // the order the fans sit in the machine rather than in part-id
+              // order, which is mirrored between the P2S and the X2D.
+              const orderedFans = [...airductFans].sort((a, b) => {
+                if ((a.part_id === 1) !== (b.part_id === 1)) return a.part_id === 1 ? -1 : 1;
+                const side = (f: AirductFan) => (/left/i.test(f.label ?? '') ? 0 : /right/i.test(f.label ?? '') ? 1 : 2);
+                return side(a) - side(b) || a.part_id - b.part_id;
+              });
 
               return (
                 <div className="mt-3">
@@ -3795,32 +3810,7 @@ function PrinterCard({
                   <div className="flex flex-wrap items-start justify-between gap-x-2 gap-y-2">
                     {/* Left: Fan Status - always visible, dynamic coloring */}
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 min-w-0">
-                      {/* Part Cooling Fan */}
-                      <div
-                        className={`flex items-center gap-1 px-1.5 py-1 rounded ${partFan && partFan > 0 ? 'bg-cyan-500/10' : 'bg-bambu-dark'}`}
-                        title={t('printers.fans.partCooling')}
-                      >
-                        <Fan className={`w-3.5 h-3.5 ${partFan && partFan > 0 ? 'text-cyan-400' : 'text-bambu-gray/50'}`} />
-                        <span className={`text-[10px] ${partFan && partFan > 0 ? 'text-cyan-400' : 'text-bambu-gray/50'}`}>
-                          {partFan ?? 0}%
-                        </span>
-                      </div>
-
-                      {/* Auxiliary Fan */}
-                      <div
-                        className={`flex items-center gap-1 px-1.5 py-1 rounded ${auxFan && auxFan > 0 ? 'bg-blue-500/10' : 'bg-bambu-dark'}`}
-                        title={auxLabel}
-                      >
-                        <Wind className={`w-3.5 h-3.5 ${auxFan && auxFan > 0 ? 'text-blue-400' : 'text-bambu-gray/50'}`} />
-                        <span className={`text-[10px] ${auxFan && auxFan > 0 ? 'text-blue-400' : 'text-bambu-gray/50'}`}>
-                          {auxFan ?? 0}%
-                        </span>
-                      </div>
-
-                      {/* Fans that exist only in the airduct — the second
-                          auxiliary fan is a kit on the P2S and factory-fitted
-                          on the X2D, and has no flat field to be read from. */}
-                      {extraFans.map((f) => (
+                      {orderedFans.map((f) => (
                         <FanBadge
                           key={f.part_id}
                           fan={f}
@@ -3838,19 +3828,6 @@ function PrinterCard({
                           canControl={hasPermission('printers:control')}
                         />
                       ))}
-
-                      {/* Chamber Fan — only on models that physically have one */}
-                      {hasChamberFan && (
-                        <div
-                          className={`flex items-center gap-1 px-1.5 py-1 rounded ${chamberFan && chamberFan > 0 ? 'bg-green-500/10' : 'bg-bambu-dark'}`}
-                          title={chamberLabel}
-                        >
-                          <AirVent className={`w-3.5 h-3.5 ${chamberFan && chamberFan > 0 ? 'text-green-400' : 'text-bambu-gray/50'}`} />
-                          <span className={`text-[10px] ${chamberFan && chamberFan > 0 ? 'text-green-400' : 'text-bambu-gray/50'}`}>
-                            {chamberFan ?? 0}%
-                          </span>
-                        </div>
-                      )}
 
                       {/* Separator */}
                       <div className="w-px h-5 bg-bambu-gray/30" />

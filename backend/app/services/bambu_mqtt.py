@@ -1082,25 +1082,191 @@ def get_stage_name(stage: int) -> str:
     return STAGE_NAMES.get(stage, f"Unknown stage ({stage})")
 
 
-def airduct_fan_controllable(state, part_id: int) -> bool:
-    """Whether an airduct fan can be driven in the mode currently active.
+# What the active airduct mode does with one fan. BS's own three outcomes
+# (``FanControlNew::update_mode``) — and the middle one is the reason a boolean
+# was never enough.
+FAN_OFF = "off"  # the mode forces it off; BS writes "Off" where the slider was
+FAN_AUTO = "auto"  # firmware drives it; BS writes "Auto" — a reading, not a control
+FAN_CTRL = "ctrl"  # the user may set a speed
 
-    A mode lists the parts it forces off (BS ``AirMode.off``). The printer
-    accepts a command for one of those and ignores it, which reads as a broken
-    control rather than as "the mode owns this fan" — the P2S's left auxiliary
-    fan is forced off in heating mode exactly this way.
+
+# BS ``enum AIR_FUN`` — the three fans the old protocol knows about.
+FAN_PART_ID_COOLING = 1  # FAN_COOLING_0_AIRDOOR
+FAN_PART_ID_AUX = 2  # FAN_REMOTE_COOLING_0_IDX
+FAN_PART_ID_CHAMBER = 3  # FAN_CHAMBER_0_IDX
+
+
+def _synthesised_part(speed: int | None) -> dict:
+    return {"type": 0, "state": int(speed or 0), "range_start": 0, "range_end": 100}
+
+
+def _fan_fitted(state, model: str | None, live_key: str, cfg_key: str) -> bool:
+    """Whether the machine physically has this fan.
+
+    The printer's own ``support_*`` bool first (BS ``DevFan::ParseV2_0``), the
+    mirrored config second, and **False** when neither says — BS's own default
+    for ``is_support_aux_fan``. Absent means absent here, unlike most flags in
+    this file: inventing a fan gives it a control that silently does nothing.
+    """
+    live = (getattr(state, "print_option_support", None) or {}).get(live_key)
+    if isinstance(live, bool):
+        return live
+    fw = getattr(state, "firmware_version", None)
+    if model and isinstance(fw, str) and fw:
+        from backend.app.utils.printer_configs import get_device_support_flags
+
+        cfg = get_device_support_flags(model, fw).get(cfg_key)
+        if isinstance(cfg, bool):
+            return cfg
+    if model:
+        from backend.app.utils.printer_configs import get_device_support_flags
+
+        cfg = get_device_support_flags(model).get(cfg_key)
+        if isinstance(cfg, bool):
+            return cfg
+    return False
+
+
+def airduct_parts_effective(state, model: str | None = None) -> dict[int, dict]:
+    """The fan inventory, with the old protocol converted to look like the new.
+
+    BS parity: ``DevFan::converse_to_duct``, which ``StatusPanel`` calls whenever
+    the printer reports no airduct modes. It builds parts 1/2/3 by hand and sets
+    the mode to ``-1``, so one widget can drive both protocols. Without the same
+    step here a P1S has an empty ``airduct_parts``, every consumer reads it, and
+    the machine ends up with **no fan controls at all** — while the ``M106``
+    branch in :meth:`set_fan_speed` sits there unreachable, because part ids only
+    ever came from the parts list it is bypassing.
+
+    ⚠️ **The aux and chamber fans are gated on support flags, NOT on whether the
+    printer reported a speed for them.** A first attempt here used the reported
+    speeds as evidence — ``big_fan1_speed`` is ``None`` until mentioned, so a
+    mentioned fan must exist. **Measured false on an A1 Mini**, which has part
+    cooling only, ignores g-code aimed at anything else, and still echoed the
+    part-cooling percentage into all three fields: setting one fan to 100 % lit
+    three badges at 100 %. The fields are published regardless of the hardware,
+    so they cannot answer a hardware question. ``support_aux_fan`` /
+    ``support_chamber_fan`` can, and both say False for the A1, A1 Mini and A2L.
+
+    ⚠️ We do read them as **two** flags where BS reads one. BS parses both into
+    separate fields and then ``GetSupportChamberFan()`` returns
+    ``is_support_aux_fan`` — the chamber field it just parsed is never used by
+    it. That is a slip in the getter, not a data model: following it would tie a
+    chamber fan to an unrelated aux fan.
+
+    Part cooling is added unconditionally, as in BS — every FDM printer has one,
+    and a printer that has not reported a speed yet shows 0 %, which is what the
+    card already displayed.
+
+    ⚠️ Synthesised parts must NOT be written into ``state.airduct_parts``. That
+    dict answers "what did the printer actually send", and
+    :meth:`set_fan_speed` picks its wire command from exactly that question —
+    invented entries there would make it publish ``set_fan`` to a machine that
+    only speaks ``M106``.
+    """
+    if state.airduct_parts:
+        return state.airduct_parts
+
+    parts: dict[int, dict] = {FAN_PART_ID_COOLING: _synthesised_part(state.cooling_fan_speed)}
+    if _fan_fitted(state, model, "aux_fan", "support_aux_fan"):
+        parts[FAN_PART_ID_AUX] = _synthesised_part(state.big_fan1_speed)
+    if _fan_fitted(state, model, "chamber_fan", "support_chamber_fan"):
+        parts[FAN_PART_ID_CHAMBER] = _synthesised_part(state.big_fan2_speed)
+    return parts
+
+
+# BS ``AIR_DUCT_NONE``. ``converse_to_duct`` stamps this on a printer whose fans
+# it had to synthesise, and everything downstream keys off it.
+AIRDUCT_MODE_NONE = -1
+
+
+def airduct_mode_effective(state) -> int | None:
+    """The airduct mode, with the old protocol reporting the mode BS gives it.
+
+    ``converse_to_duct`` does not only build the parts — it also sets
+    ``curren_mode = -1``, and that value is load-bearing twice over:
+
+    * the fan gate takes its "no lists to consult" branch on it, so a printer
+      with no airduct keeps its controls. Without it the mode falls to the
+      default ``0``, the lookup misses, and by BS's own rule that is **auto** —
+      which would silently take back every control :func:`airduct_parts_effective`
+      just restored;
+    * the mirrored configs **key their fan names by mode**, and the old-protocol
+      names live under ``"-1"``. The P1S config is literally
+      ``{"-1": {"3": "Chamber"}}``, so asking with mode ``0`` finds nothing and
+      the chamber fan goes unnamed.
+
+    Both were measured, not assumed: the second is visible in
+    ``backend/app/data/printers/C12.json``.
+
+    ⚠️ The trigger is **no mode lists**, which is BS's own condition
+    (``StatusPanel``: ``if (modes.empty()) converse_to_duct(...)``) — not "no
+    parts", which is what a first version keyed on. The two differ exactly when a
+    printer has reported its parts but not yet its modes, and there the wrong
+    predicate leaves mode ``0``, misses the lookup, and hands back **auto** for
+    every fan on the machine.
+
+    Where we do stop short of BS: it *clears* the reported parts in that case and
+    rebuilds 1/2/3. We keep them (see :func:`airduct_parts_effective`, which
+    synthesises only when there are none), because our two lists arrive in
+    separate diff frames and discarding real parts on the frame between them
+    would make an X2D's fans flicker into three generic ones and back.
+    """
+    if state.airduct_modes:
+        return state.airduct_mode
+    return AIRDUCT_MODE_NONE
+
+
+def airduct_fan_control(state, part_id: int) -> str:
+    """Which of BS's three outcomes applies to this fan in the active mode.
+
+    A mode carries two lists: the parts it forces **off**, and the parts it hands
+    over to the user (``ctrl``). BS checks them in that order and treats
+    everything left over as **auto** — its ``AirMode`` says so in a comment: *"If
+    the fan is not off or ctrl, it will be displayed as auto"*.
+
+    ⚠️ **The middle state is the one we were missing, and it is not cosmetic.**
+    Reading only ``off`` meant every auto fan looked controllable: we offered a
+    slider, the command went out, and the mode overrode it. On an X2D in Strong
+    Cooling that is a control that visibly does nothing. "Forced off by the mode"
+    and "driven by the firmware" are also different answers for whoever is
+    looking at the card — one is a state, the other is a policy.
+
+    A negative mode id is the old protocol, where BS shows the slider with no
+    checks at all: there are no mode lists to consult, so nothing can forbid the
+    fan. An unknown mode id is treated the same way — a mode we cannot look up
+    must not silently retract a control for hardware the printer is reporting.
 
     Module-level rather than a client method because the status route needs the
     same answer from a bare ``PrinterState``, and two copies of a rule is how
     this codebase keeps producing half-fixes.
-
-    Unknown mode → True: a missing mode list must not disable a fan the hardware
-    is reporting.
     """
-    mode = (state.airduct_modes or {}).get(state.airduct_mode)
-    if not mode:
-        return True
-    return part_id not in (mode.get("off") or [])
+    mode_id = airduct_mode_effective(state)
+    if mode_id is None or mode_id < 0:
+        return FAN_CTRL
+    # ⚠️ A mode we cannot look up is **auto**, not controllable — and that is BS,
+    # not a choice of ours. ``AirDuctData::modes`` is a ``std::map`` and BS
+    # indexes it with ``operator[]``, which default-constructs a missing entry:
+    # empty ``off``, empty ``ctrl``. The part is then in neither list, which is
+    # exactly the auto branch. A first version of this returned "controllable"
+    # here on the reasoning that BS had no answer. It has one; I had not worked
+    # it out.
+    mode = (state.airduct_modes or {}).get(mode_id) or {}
+    if part_id in (mode.get("off") or []):
+        return FAN_OFF
+    if part_id not in (mode.get("ctrl") or []):
+        return FAN_AUTO
+    return FAN_CTRL
+
+
+def airduct_fan_controllable(state, part_id: int) -> bool:
+    """Whether a speed may be published for this fan right now.
+
+    Thin on purpose: the write path needs a yes/no, and the only yes is
+    :data:`FAN_CTRL`. ``auto`` used to answer yes here, which is exactly how a
+    command reached a fan the mode owns.
+    """
+    return airduct_fan_control(state, part_id) == FAN_CTRL
 
 
 class BambuMQTTClient:
@@ -2494,6 +2660,15 @@ class BambuMQTTClient:
         # bits (``DeviceManager.cpp``: ``is_support_update_remain`` /
         # ``is_support_filament_backup``). The mirrored config carries the same
         # keys, but the live report is the printer's own answer and wins.
+        # Which fans the machine physically has. BS ``DevFan::ParseV2_0`` reads
+        # both, and they are the only honest answer: the printer publishes
+        # ``big_fan1_speed`` / ``big_fan2_speed`` whether or not the fan exists,
+        # so a reported speed proves nothing. Measured on an A1 Mini, which has
+        # only part cooling and still echoed 100 % into all three fields.
+        if isinstance(data.get("support_aux_fan"), bool):
+            sup["aux_fan"] = data["support_aux_fan"]
+        if isinstance(data.get("support_chamber_fan"), bool):
+            sup["chamber_fan"] = data["support_chamber_fan"]
         if isinstance(data.get("support_update_remain"), bool):
             sup["update_remain"] = data["support_update_remain"]
         if isinstance(data.get("support_filament_backup"), bool):
@@ -7701,7 +7876,7 @@ class BambuMQTTClient:
             )
             return False
 
-        part = self.state.airduct_parts.get(part_id)
+        part = airduct_parts_effective(self.state, self.model).get(part_id)
         # Clamp to the range the part declares, when it declares one — the part
         # states its own limits, so this needs no per-model table.
         low = int(part.get("range_start", 0)) if part else 0

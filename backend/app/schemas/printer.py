@@ -286,9 +286,17 @@ class AirductFan(BaseModel):
     speed: int  # 0-100 %
     range_start: int = 0
     range_end: int = 100
-    # True when the current airduct mode does not force this fan off. A mode
-    # owns some fans (the P2S's left aux is off in heating), and the printer
-    # accepts a command for one of those and ignores it.
+    # What the active airduct mode does with this fan — BS's own three outcomes
+    # (``FanControlNew::update_mode``):
+    #   "ctrl" — the user may set a speed
+    #   "off"  — the mode forces it off; BS writes "Off" where the slider was
+    #   "auto" — the firmware drives it; BS writes "Auto"
+    # ⚠️ "auto" is the one a boolean could not express, and it is not cosmetic:
+    # it used to read as controllable, so we offered a slider, sent the command
+    # and the mode overrode it.
+    control: str = "ctrl"
+    # Kept so an older frontend does not lose the control it already has; it
+    # answers the narrower question the write path asks (``control == "ctrl"``).
     controllable: bool = True
     label_key: str | None = None  # i18n key under ``printers.fans.*`` when recognised
     label: str | None = None  # BambuStudio's own name, verbatim, as the fallback

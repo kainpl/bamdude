@@ -758,6 +758,10 @@ export default {
       rightAux: 'Right Auxiliary Fan',
       leftFilter: 'Left Filter Fan',
       rightFilter: 'Right Filter Fan',
+      // Why a fan offers no speed control. BambuStudio writes these in place of
+      // the slider; our badge is 40 px wide, so they are the tooltip instead.
+      forcedOff: 'Held off by the current air duct mode',
+      autoDriven: 'Driven automatically in the current air duct mode',
       leftHeating: 'Left Heating Fan',
       rightHeating: 'Right Heating Fan'
     },
