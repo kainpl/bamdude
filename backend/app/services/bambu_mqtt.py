@@ -120,6 +120,31 @@ _install_paho_publish_guard()
 #   "n3s/<id>"  – AMS HT (H2D Pro and similar; IDs typically start at 128)
 _AMS_MODULE_PREFIXES = ("ams/", "n3f/", "n3s/")
 
+# The band of ``sequence_id`` values that means "this reply is to something WE
+# sent". BS carves out the same one (``DevUtil.h``: ``STUDIO_START_SEQ_ID``
+# 20000, ``STUDIO_END_SEQ_ID`` 30000) and tests membership with
+# ``is_studio_cmd`` before acting on any reply — the topic is shared with the
+# printer's own screen, the Bambu app and the cloud, so an untested reply is
+# somebody else's command.
+#
+# We counted from 0, which is inside nobody's range and outside our own: a reply
+# with ``sequence_id`` 5 could equally be ours or the screen's. The one place
+# that needed the answer hardcoded a literal — ``project_file`` pins "20000" so
+# a slicer-launched print can be told from ours — and 20000 is exactly
+# ``STUDIO_START_SEQ_ID``. This generalises that single case into the rule it
+# was always an instance of.
+#
+# 20000 itself stays reserved for that pin: the counter starts there and every
+# command pre-increments, so no ordinary command can be mistaken for the
+# project_file we sent.
+#
+# ⚠️ BS does NOT wrap — ``m_sequence_id`` is a static int incremented forever,
+# so after 10 000 commands its own replies stop passing ``is_studio_cmd``. That
+# is survivable in a desktop session and certain to happen in a server that
+# stays up for weeks, so we wrap instead of copying it.
+STUDIO_SEQ_START = 20000
+STUDIO_SEQ_END = 30000
+
 # gcode_state values that mean the printer is not idle and must not be handed a
 # new start-print (#2598). Firmware rejects a project_file while busy with
 # 0500_4004 "Device is busy and cannot start a new task", and on some models
@@ -933,6 +958,11 @@ class PrinterState:
     printable_objects: dict = field(default_factory=dict)
     # Objects that have been skipped during the current print
     skipped_objects: list = field(default_factory=list)
+    # The most recent command the printer refused, from the one inbound router
+    # (``_handle_command_error_reply``). Last verdict, not a list: a command error
+    # is one-shot and nothing ever un-reports it, so accumulating them would build
+    # a fault log that only grows. ``None`` until a command actually fails.
+    last_command_error: dict | None = None
     # Whether the active print's source 3MF supports per-object skipping.
     # Computed from archive.extra_data: requires both ``gcode_label_objects``
     # AND ``exclude_object`` to be True. Used to gate the skip-objects
@@ -1244,7 +1274,7 @@ class BambuMQTTClient:
         # value: (event, expected_nozzle, profiles_or_None). Same shape as
         # ``_ack_listeners`` below, deliberately — one idiom for "await a reply
         # correlated by sequence_id" in this class.
-        self._sequence_id: int = 0
+        self._sequence_id = STUDIO_SEQ_START
         self._kprofile_waiters: dict[str, tuple[asyncio.Event, str, list | None]] = {}
         # Verdicts on K-profile *writes* (``extrusion_cali_set`` /
         # ``extrusion_cali_del``), keyed by the sequence_id we sent — the printer
@@ -1351,6 +1381,40 @@ class BambuMQTTClient:
         # sweep classifies it "running" and no-ops, so re-firing after a
         # frequent stale-watchdog reconnect is harmless.
         self._startup_reconcile_done = False
+
+    @property
+    def _sequence_id(self) -> int:
+        return self.__sequence_id
+
+    @_sequence_id.setter
+    def _sequence_id(self, value: int) -> None:
+        """Keep the counter inside the band that identifies our own commands.
+
+        A property rather than a helper method on purpose: every publisher in
+        this class already writes ``self._sequence_id += 1`` inline, and that is
+        a read-then-write, so the wrap lands here without any of those twenty-odd
+        call sites having to know about it. Turning them all into calls to a
+        helper would be a wide edit whose only purpose was to reach one branch.
+
+        Wraps to ``STUDIO_SEQ_START + 1``, not to ``STUDIO_SEQ_START`` — 20000 is
+        the value ``project_file`` pins, and handing it to an ordinary command
+        once every ten thousand publishes would make that print look
+        slicer-launched.
+        """
+        self.__sequence_id = STUDIO_SEQ_START + 1 if value >= STUDIO_SEQ_END else value
+
+    def _is_our_sequence_id(self, raw: object) -> bool:
+        """BS ``DevUtil::is_studio_cmd`` — plus its cloud case.
+
+        ``is_cloud_cmd`` is ``seq == 0``, which BS accepts because a cloud-issued
+        command is still one the user asked for from Studio. We keep it for the
+        same reason: our own ``stop`` publishes ``sequence_id`` "0".
+        """
+        try:
+            seq = int(raw)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return False
+        return seq == 0 or STUDIO_SEQ_START <= seq < STUDIO_SEQ_END
 
     @property
     def topic_subscribe(self) -> str:
@@ -2052,6 +2116,11 @@ class BambuMQTTClient:
             if "command" in print_data:
                 cmd = print_data.get("command")
                 logger.debug("[%s] Received command response: %s", self.serial_number, cmd)
+                # One router for every command's verdict, ahead of the per-command
+                # branches below. BS runs the same check once for all commands
+                # (DeviceManager.cpp, guarded by is_studio_cmd/is_cloud_cmd)
+                # rather than teaching each sender to read its own reply.
+                self._handle_command_error_reply(print_data)
                 if cmd == "set_ctt":
                     self._handle_set_ctt_reply(print_data)
                 elif cmd in ("extrusion_cali_set", "extrusion_cali_del"):
@@ -5298,6 +5367,64 @@ class BambuMQTTClient:
 
         if self.on_state_change:
             self.on_state_change(self.state)
+
+    def _handle_command_error_reply(self, print_data: dict) -> None:
+        """Every command's verdict, read in one place.
+
+        BS has exactly one of these (``DeviceManager.cpp``): when a reply carries
+        both ``command`` and a numeric ``err_code``, and its ``sequence_id`` says
+        the reply is to something Studio sent, it hands the code to
+        ``add_command_error_code_dlg`` — one router for the whole protocol rather
+        than a reader bolted onto each sender. We had one reader, for ``set_ctt``,
+        added a fix ago; every other command we publish went out and its answer
+        was dropped on the floor. A refusal and a success looked identical.
+
+        Three conditions, each load-bearing:
+
+        * **``err_code > 0``.** BS treats zero and negatives as "no error" on this
+          channel — it is a status word, not a return value. (``set_ctt`` is a
+          separate mechanism on a different field: ``errno``, where the
+          informative values are *negative*. Both exist; do not merge them.)
+        * **The sequence id is ours.** This topic is shared with the printer's
+          screen, the Bambu app and the cloud. Acting on a stranger's failed
+          command would report a fault the operator did not cause and cannot
+          find.
+        * **A real command.** ``push_status`` and friends carry no verdict.
+
+        Deliberately NOT appended to ``state.hms_errors``, which is where
+        ``print_error`` goes. Those entries describe a condition the printer keeps
+        re-reporting while it lasts, so they clear when it stops. A command error
+        is one-shot — nothing ever un-reports it — so it would sit on the printer
+        card as a permanent fault. It is kept as the last verdict instead, and
+        that is also what makes it answerable: "did the thing I just asked for
+        work?" is a question about the most recent command, not a list.
+        """
+        err = print_data.get("err_code")
+        if not isinstance(err, int) or isinstance(err, bool) or err <= 0:
+            return
+        if not self._is_our_sequence_id(print_data.get("sequence_id")):
+            return
+
+        command = print_data.get("command")
+        # Same 32-bit shape as ``print_error`` — BS looks both up in the one HMS
+        # catalogue (``HMSQuery::is_internal_error`` formats it with %08X).
+        module = (err >> 16) & 0xFFFF
+        code = err & 0xFFFF
+        self.state.last_command_error = {
+            "command": command,
+            "err_code": err,
+            "short_code": f"{module:04X}_{code:04X}",
+            "sequence_id": print_data.get("sequence_id"),
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
+        logger.warning(
+            "[%s] command %s failed: err_code=%s (%04X_%04X)",
+            self.serial_number,
+            command,
+            err,
+            module,
+            code,
+        )
 
     def _handle_set_ctt_reply(self, print_data: dict) -> None:
         """The printer's verdict on a chamber setpoint, which we asked for and
