@@ -767,6 +767,27 @@ export default {
       printingWarningMessage:
         'Changing fan speed during a print may affect print quality. Asked once per printer for this session.',
       changeAnyway: 'Change anyway',
+    },
+    airduct: {
+      title: 'Air duct',
+      mode: 'Mode',
+      fans: 'Fans',
+      fanOff: 'Off',
+      fanAuto: 'Auto',
+      filter: 'Filtration',
+      filterHint: 'Redirects one fan to filter chamber air, which reduces cooling.',
+      filterPrintingWarning:
+        'Enabling filtration during a print reduces cooling and may affect quality.',
+      modeLockedWhilePrinting:
+        'The air duct mode cannot be changed while a print is running — the loaded material depends on it.',
+      // BambuStudio's own mode names (enum AIR_DUCT). A printer offers only the
+      // ids it reports, so an unlisted one never renders.
+      modes: {
+        0: 'Cooling',
+        1: 'Heating',
+        2: 'Exhaust',
+        3: 'Full cooling',
+      },
       leftHeating: 'Left Heating Fan',
       rightHeating: 'Right Heating Fan'
     },

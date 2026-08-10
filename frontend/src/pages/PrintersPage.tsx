@@ -155,6 +155,7 @@ import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors'
 import { formatSpoolDisplayName, DEFAULT_SPOOL_DISPLAY_TEMPLATE } from '../utils/spoolName';
 import { groupByLocation } from '../utils/locationGroups';
 import { LocationConditions } from '../components/zigbee/LocationConditions';
+import { AirductModal } from '../components/AirductModal';
 
 // Color names resolve via getColorName() which reads the backend color_catalog
 // (loaded once at app startup by ColorCatalogProvider). Hardcoded hex/code tables
@@ -1639,6 +1640,7 @@ function PrinterCard({
   const [showNotHomedModal, setShowNotHomedModal] = useState<null | { distance: number }>(null);
   // Pending fan change awaiting the mid-print acknowledgement.
   const [showFanPrintingModal, setShowFanPrintingModal] = useState<null | { partId: number; percent: number }>(null);
+  const [showAirductModal, setShowAirductModal] = useState(false);
   const [showSkipObjectsModal, setShowSkipObjectsModal] = useState(false);
   const [showUploadForPrint, setShowUploadForPrint] = useState(false);
   const [showPrinterInfo, setShowPrinterInfo] = useState(false);
@@ -3864,6 +3866,20 @@ function PrinterCard({
                           canControl={hasPermission('printers:control')}
                         />
                       ))}
+
+                      {/* The air duct as a whole: mode, filtration, every fan.
+                          Shown only where the printer reports modes — on the
+                          old protocol there is no mode to choose, and the
+                          badges above are already the whole story. */}
+                      {(status.airduct_modes?.length ?? 0) > 0 && (
+                        <button
+                          onClick={() => setShowAirductModal(true)}
+                          className="flex items-center gap-1 px-1.5 py-1 rounded bg-bambu-dark hover:bg-bambu-dark-tertiary transition-colors"
+                          title={t('printers.airduct.title')}
+                        >
+                          <SlidersHorizontal className="w-3.5 h-3.5 text-bambu-gray" />
+                        </button>
+                      )}
 
                       {/* Separator */}
                       <div className="w-px h-5 bg-bambu-gray/30" />
@@ -6188,6 +6204,19 @@ function PrinterCard({
           </div>
         </div>
       )}
+
+      <AirductModal
+        printerId={printer.id}
+        isOpen={showAirductModal}
+        onClose={() => setShowAirductModal(false)}
+        fans={status?.airduct_fans ?? []}
+        modes={status?.airduct_modes ?? []}
+        currentMode={status?.airduct_mode ?? -1}
+        subMode={status?.airduct_sub_mode ?? -1}
+        supportsCoolingFilter={status?.supports_cooling_filter ?? false}
+        isPrinting={status?.state === 'RUNNING' || status?.state === 'PAUSE'}
+        canControl={hasPermission('printers:control')}
+      />
 
       {/* Skip Objects Modal */}
       <SkipObjectsModal

@@ -1127,6 +1127,30 @@ def _fan_fitted(state, model: str | None, live_key: str, cfg_key: str) -> bool:
     return False
 
 
+def _fan_gear_bytes(value) -> tuple[int, int, int] | None:
+    """Unpack BS's ``fan_gear`` word into (cooling, aux, chamber) bytes.
+
+    ``DevFan::ParseV1_0``: three fan speeds live in one 32-bit field — byte 0 is
+    part cooling, byte 1 the auxiliary fan, byte 2 the chamber fan. Each byte is
+    already 0-255, with no gear conversion.
+
+    ⚠️ **This is why an A1 Mini appeared to have three fans.** The slots exist
+    whatever the hardware does, and the Mini's firmware fills all three with the
+    same number — so setting part cooling to 100 % lit three badges at 100 %.
+    The values are real; they simply do not mean three fans.
+    """
+    try:
+        packed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return packed & 0xFF, (packed >> 8) & 0xFF, (packed >> 16) & 0xFF
+
+
+def _percent_from_byte(value: int) -> int:
+    """A 0-255 fan byte as a percentage."""
+    return round(max(0, min(255, int(value))) * 100 / 255)
+
+
 def airduct_parts_effective(state, model: str | None = None) -> dict[int, dict]:
     """The fan inventory, with the old protocol converted to look like the new.
 
@@ -1178,6 +1202,13 @@ def airduct_parts_effective(state, model: str | None = None) -> dict[int, dict]:
 # BS ``AIR_DUCT_NONE``. ``converse_to_duct`` stamps this on a printer whose fans
 # it had to synthesise, and everything downstream keys off it.
 AIRDUCT_MODE_NONE = -1
+
+# BS ``enum AIR_DUCT``. Naming and the sub-mode gate only — which of these a
+# machine actually offers comes from its own ``modeList``, never from this list.
+AIRDUCT_COOLING_FILT = 0
+AIRDUCT_HEATING_INTERNAL_FILT = 1
+AIRDUCT_EXHAUST = 2
+AIRDUCT_FULL_COOLING = 3
 
 
 def airduct_mode_effective(state) -> int | None:
@@ -2641,6 +2672,9 @@ class BambuMQTTClient:
             # BS checks the second as ``is_model_support_partskip``. We had only
             # the model half, and only in the UI.
             sup["partskip"] = bool((fun >> 49) & 1)
+            # BS ``SetSupportCoolingFilter(get_flag_bits(fun, 46))``. Gates the
+            # "Filter" sub-mode, which exists only on the cooling air-duct mode.
+            sup["cooling_filter"] = bool((fun >> 46) & 1)
 
         if isinstance(data.get("support_build_plate_marker_detect"), bool):
             sup["plate_mark"] = data["support_build_plate_marker_detect"]
@@ -4010,24 +4044,6 @@ class BambuMQTTClient:
             if new_total > 0:
                 self.state.total_layers = new_total
 
-        # Fan speeds (MQTT sends as string "0"-"15" representing speed levels, or percentage)
-        # Convert to 0-100 percentage for display
-        def parse_fan_speed(value: str | int | None) -> int | None:
-            if value is None:
-                return None
-            try:
-                speed = int(value)
-                # MQTT reports 0-15 speed levels, convert to percentage (0-100)
-                # 15 = 100%, so multiply by 100/15 ≈ 6.67
-                if speed <= 15:
-                    return round(speed * 100 / 15)
-                # If already a percentage (0-255 scale from some printers), convert
-                elif speed <= 255:
-                    return round(speed * 100 / 255)
-                return speed
-            except (ValueError, TypeError):
-                return None
-
         # Log fan fields once for debugging
         if not hasattr(self, "_fan_fields_logged"):
             fan_fields = {k: v for k, v in data.items() if "fan" in k.lower()}
@@ -4035,14 +4051,23 @@ class BambuMQTTClient:
                 logger.debug("[%s] Fan fields in MQTT data: %s", self.serial_number, fan_fields)
                 self._fan_fields_logged = True
 
-        if "cooling_fan_speed" in data:
-            self.state.cooling_fan_speed = parse_fan_speed(data["cooling_fan_speed"])
-        if "big_fan1_speed" in data:
-            self.state.big_fan1_speed = parse_fan_speed(data["big_fan1_speed"])
-        if "big_fan2_speed" in data:
-            self.state.big_fan2_speed = parse_fan_speed(data["big_fan2_speed"])
-        if "heatbreak_fan_speed" in data:
-            self.state.heatbreak_fan_speed = parse_fan_speed(data["heatbreak_fan_speed"])
+        # ⚠️ The scale is decided by WHICH FIELD the number came from, never by
+        # how big it is. BS ``DevFan::ParseV1_0`` has two branches and prefers
+        # the packed one; ours guessed instead, with ``if speed <= 15`` — so a
+        # genuine 10 out of 255 (4 %) was read as gear 10 and shown as 67 %.
+        # A magnitude cannot say what scale it is in; its source can.
+        _gear_fields = ("cooling_fan_speed", "big_fan1_speed", "big_fan2_speed", "heatbreak_fan_speed")
+        if "fan_gear" in data:
+            packed = _fan_gear_bytes(data["fan_gear"])
+            if packed is not None:
+                cooling, aux, chamber = packed
+                self.state.cooling_fan_speed = _percent_from_byte(cooling)
+                self.state.big_fan1_speed = _percent_from_byte(aux)
+                self.state.big_fan2_speed = _percent_from_byte(chamber)
+        else:
+            for field in _gear_fields:
+                if field in data:
+                    setattr(self.state, field, self._percent_from_gear(data[field]))
 
         # Calibration stage tracking
         if "stg_cur" in data:
@@ -4519,11 +4544,17 @@ class BambuMQTTClient:
                 airduct_data = device.get("airduct", {})
                 if "modeCur" in airduct_data:
                     new_mode = airduct_data["modeCur"]
-                    if new_mode != self.state.airduct_mode:
-                        logger.debug(
-                            f"[{self.serial_number}] airduct_mode changed: {self.state.airduct_mode} -> {new_mode}"
-                        )
-                    self.state.airduct_mode = new_mode
+                    # A push sent before our command reached the printer still
+                    # describes the old mode; inside the hold it is stale news.
+                    _hold = self.state.printer_settings_hold.get("airduct_mode")
+                    if _hold is not None and (time.time() - _hold) < 3.0:
+                        pass
+                    else:
+                        if new_mode != self.state.airduct_mode:
+                            logger.debug(
+                                f"[{self.serial_number}] airduct_mode changed: {self.state.airduct_mode} -> {new_mode}"
+                            )
+                        self.state.airduct_mode = new_mode
                 self._parse_airduct_parts(airduct_data)
                 # Parse chamber temp - may be encoded as (target*65536+current) when > 500
                 # Check if we recently set the target locally (within 5 seconds)
@@ -7257,10 +7288,12 @@ class BambuMQTTClient:
         if not isinstance(airduct, dict):
             return
         if "subMode" in airduct:
-            try:
-                self.state.airduct_sub_mode = int(airduct["subMode"])
-            except (TypeError, ValueError):
-                pass
+            _hold = self.state.printer_settings_hold.get("airduct_sub_mode")
+            if _hold is None or (time.time() - _hold) >= 3.0:
+                try:
+                    self.state.airduct_sub_mode = int(airduct["subMode"])
+                except (TypeError, ValueError):
+                    pass
 
         modes = airduct.get("modeList")
         if isinstance(modes, list) and modes:
@@ -7812,31 +7845,97 @@ class BambuMQTTClient:
         logger.info("[%s] Set print speed mode to %s", self.serial_number, mode)
         return True
 
-    def set_airduct_mode(self, mode: str) -> bool:
-        """Set air conditioning mode (cooling or heating).
+    def _percent_from_gear(self, value) -> int | None:
+        """A named fan field as a percentage, the way BS reads it.
 
-        Args:
-            mode: "cooling" (modeId=0) or "heating" (modeId=1)
-                - Cooling: Suitable for PLA/PETG/TPU, filters and cools chamber air
-                - Heating: Suitable for ABS/ASA/PC/PA, circulates and heats chamber air,
-                           closes top exhaust flap
+        ``DevFan::ParseV1_0``: ``round(floor(v / 1.5) * 25.5)`` maps the raw
+        0-15 field onto 0-255 — which is eleven distinct steps, not sixteen.
+        Divided back down, the percentage is simply ``floor(v / 1.5) * 10``.
 
-        Returns:
-            True if command was sent, False otherwise
+        ⚠️ Our old linear ``v * 100 / 15`` disagreed on **ten of the sixteen**
+        raw values, and one disagreement mattered: raw ``1`` is **0 %** in BS —
+        the fan is off — and was shown as 7 %, i.e. running.
+
+        ⚠️ A value above 15 is not silently re-scaled. The previous code treated
+        anything up to 255 as already-a-percentage, which is what made ``10``
+        ambiguous. BS has no such branch; if hardware really sends a wider range
+        here we want to find out from the log rather than by a wrong reading.
+        """
+        if value is None:
+            return None
+        try:
+            raw = int(value)
+        except (TypeError, ValueError):
+            return None
+        if raw > 15:
+            if not getattr(self, "_wide_fan_field_logged", False):
+                logger.warning(
+                    "[%s] fan field out of the 0-15 range BS expects: %s — clamping", self.serial_number, raw
+                )
+                self._wide_fan_field_logged = True
+            return 100
+        return int(max(0, raw) / 1.5) * 10
+
+    def set_airduct_mode(self, mode: str | int, submode: int = -1) -> bool:
+        """Set the air-duct mode, and optionally its sub-mode.
+
+        BS ``DevFan::command_control_air_duct``::
+
+            {"print": {"command": "set_airduct", "modeId": <id>, "submode": <n>}}
+
+        ``mode`` accepts the numeric BS id, which is what the printer reports in
+        its own ``modeList`` and therefore the only thing worth sending. The
+        legacy ``"cooling"`` / ``"heating"`` strings are still understood because
+        ``services/preheat.py`` speaks in those terms — it chooses a mode from
+        the filament, not from a list the user picked.
+
+        ``submode`` is the "Filter" toggle and belongs to the cooling mode alone
+        (BS ``UpdatePartSubMode``): ``1`` on, ``0`` off, ``-1`` unchanged. It
+        redirects one fan to filtering, which costs cooling — hence its own
+        warning in BS, and hence the caller decides, not this method.
+
+        This publishes; it does not judge. Which modes exist, whether a print is
+        running and whether the sub-mode applies are the route's questions —
+        the same split as :meth:`set_fan_speed`.
         """
         if not self._client or not self.state.connected:
             logger.warning("[%s] Cannot set airduct mode: not connected", self.serial_number)
             return False
 
+        if isinstance(mode, str):
+            mode_id = AIRDUCT_COOLING_FILT if mode == "cooling" else AIRDUCT_HEATING_INTERNAL_FILT
+        else:
+            mode_id = int(mode)
+
         self._sequence_id += 1
-        mode_id = 0 if mode == "cooling" else 1
         command = {
-            "print": {"command": "set_airduct", "modeId": mode_id, "sequence_id": str(self._sequence_id), "submode": -1}
+            "print": {
+                "command": "set_airduct",
+                "modeId": mode_id,
+                "submode": int(submode),
+                "sequence_id": str(self._sequence_id),
+            }
         }
-        # Use QoS 1 for reliable delivery
         self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+
+        # Show the new mode at once, and hold off the push already in flight —
+        # it still carries the OLD one, and letting it land would snap the
+        # selection back a moment after the click. Same three-second contract as
+        # every other setting here (``printer_settings_hold``).
+        #
+        # ⚠️ This is an optimistic write, which elsewhere in this file is a
+        # defect — but only where nothing could ever refute it. Here the hold
+        # EXPIRES and the printer's own ``modeCur`` wins from then on, so a
+        # refused command corrects itself within seconds instead of standing
+        # forever. The bounded window is the whole difference.
+        self.state.airduct_mode = mode_id
+        self.state.printer_settings_hold["airduct_mode"] = time.time()
+        if submode != -1:
+            self.state.airduct_sub_mode = int(submode)
+            self.state.printer_settings_hold["airduct_sub_mode"] = time.time()
+
         logger.info(
-            "[%s] Set airduct mode to %s (modeId=%s, seq=%s)", self.serial_number, mode, mode_id, self._sequence_id
+            "[%s] set_airduct modeId=%s submode=%s seq=%s", self.serial_number, mode_id, submode, self._sequence_id
         )
         return True
 

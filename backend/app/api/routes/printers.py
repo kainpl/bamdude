@@ -26,7 +26,6 @@ from backend.app.models.printer_location import PrinterLocation
 from backend.app.models.slot_preset import SlotPresetMapping
 from backend.app.models.user import User
 from backend.app.schemas.printer import (
-    AirductFan,
     AmsLabelBody,
     AMSTray,
     AMSUnit,
@@ -52,6 +51,7 @@ from backend.app.services.bambu_ftp import (
     list_files_async,
 )
 from backend.app.services.bambu_mqtt import (
+    AIRDUCT_COOLING_FILT,
     FAN_CTRL,
     FAN_OFF,
     HMS_UI_ONLY_ACTIONS,
@@ -62,6 +62,7 @@ from backend.app.services.bambu_mqtt import (
 from backend.app.services.printer_diagnostic import run_connection_diagnostic
 from backend.app.services.printer_location_service import load_tree, subtree_ids
 from backend.app.services.printer_manager import (
+    _airduct_fans,
     drying_screen_only,
     find_ams_unit,
     first_drying_blocking_reason,
@@ -78,7 +79,6 @@ from backend.app.services.printer_manager import (
 )
 from backend.app.utils.filament_ids import filament_id_to_setting_id
 from backend.app.utils.http import build_content_disposition
-from backend.app.utils.printer_configs import airduct_fan_label
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/printers", tags=["printers"])
@@ -91,47 +91,6 @@ def _caller_can_view_printer_secrets(user: User | None) -> bool:
     if user is None:
         return False
     return user.has_permission(Permission.PRINTERS_UPDATE.value)
-
-
-def _airduct_fans(model: str | None, state) -> list[AirductFan]:
-    """The fans this printer reports through ``device.airduct``, named (#2576).
-
-    Presence in ``airduct_parts`` is the hardware check — the printer lists only
-    fitted parts, which matters on the P2S where the second auxiliary fan and
-    the exhaust fan are both add-on kits.
-
-    The label comes from the mirrored per-model config and depends on the
-    airduct mode, because the same part id is a different fan on different
-    models: part 10 is the LEFT aux on a P2S and the RIGHT one on an X2D. See
-    ``printer_configs.airduct_fan_label``.
-
-    Sorted by part id so the badges keep a stable order across pushes rather
-    than following dict insertion, which follows whatever order the printer
-    happened to send.
-    """
-    fans: list[AirductFan] = []
-    mode_id = airduct_mode_effective(state)
-    for part_id, part in sorted(airduct_parts_effective(state, model).items()):
-        # Air doors are in the same list (type 1) and are not fans.
-        if part.get("type") not in (0, None):
-            continue
-        # The effective mode, not the raw one: an old-protocol printer keys
-        # its fan names under "-1", which is what converse_to_duct stamps.
-        label_key, label = airduct_fan_label(model, mode_id, state.airduct_sub_mode, part_id)
-        control = airduct_fan_control(state, part_id)
-        fans.append(
-            AirductFan(
-                part_id=part_id,
-                speed=int(part.get("state", 0)),
-                range_start=int(part.get("range_start", 0)),
-                range_end=int(part.get("range_end", 100)),
-                control=control,
-                controllable=control == FAN_CTRL,
-                label_key=label_key,
-                label=label,
-            )
-        )
-    return fans
 
 
 def _serialize_printer(printer: Printer, *, include_secret: bool):
@@ -905,7 +864,10 @@ async def get_printer_status(
         stg_cur_name=get_derived_status_name(state, printer.model),
         stg=state.stg,
         stg_names=[get_stage_name(s) for s in state.stg],
-        airduct_mode=state.airduct_mode,
+        airduct_mode=airduct_mode_effective(state),
+        airduct_modes=sorted(state.airduct_modes or {}),
+        airduct_sub_mode=state.airduct_sub_mode,
+        supports_cooling_filter=bool((state.print_option_support or {}).get("cooling_filter")),
         speed_level=state.speed_level,
         chamber_light=state.chamber_light,
         active_extruder=state.active_extruder,
@@ -3345,6 +3307,76 @@ async def set_fan_speed(
         raise HTTPException(500, "Failed to set fan speed")
 
     return {"success": True, "part_id": part_id, "percent": percent}
+
+
+@router.post("/{printer_id}/airduct-mode")
+async def set_airduct_mode(
+    printer_id: int,
+    mode_id: int = Query(..., description="Air-duct mode id, as listed in status.airduct_modes"),
+    submode: int = Query(-1, description='"Filter" sub-mode: 1 on, 0 off, -1 leave alone'),
+    confirm: bool = Query(False, description="Acknowledge the mid-print filtration warning"),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set the air-duct mode, and optionally its "Filter" sub-mode.
+
+    ⚠️ **The mode and the sub-mode are governed differently, and copying one
+    rule onto the other would be wrong in both directions.** BS
+    (``FanControlPopupNew``):
+
+    * changing the **mode** while printing is **refused outright** —
+      ``on_mode_changed`` shows an OK-only dialog ("The selected material only
+      supports the current fan mode, and it can't be changed during printing")
+      and ``return``\\ s without publishing. There is no "anyway";
+    * turning **filtration on** while printing is a **warning** with a "Change
+      Anyway" button, because it costs cooling rather than contradicting the
+      material. Turning it off is not warned about at all.
+
+    So this endpoint has one absolute refusal and one overridable one, and
+    ``confirm`` lifts only the second.
+    """
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    if not await printer_manager.ensure_fresh_connection_for_printer(printer):
+        raise HTTPException(500, "Can`t re-connect printer MQTT")
+
+    client = printer_manager.get_client(printer_id)
+    if not client or not client.state.connected:
+        raise HTTPException(400, "Printer not connected")
+
+    # Offer only what the printer listed. BS builds one button per entry in the
+    # reported modeList rather than from the AIR_DUCT enum, so a mode that is
+    # merely *named* in the protocol is not necessarily one this machine has.
+    available = client.state.airduct_modes or {}
+    if not available:
+        raise HTTPException(409, "This printer does not report an air duct")
+    if mode_id not in available:
+        raise HTTPException(400, f"Printer does not offer air-duct mode {mode_id}")
+
+    busy = is_printer_busy(printer_id)
+    changing_mode = mode_id != client.state.airduct_mode
+    if changing_mode and busy:
+        raise HTTPException(409, "The air-duct mode cannot be changed while a print is running")
+
+    if submode != -1:
+        if not (client.state.print_option_support or {}).get("cooling_filter"):
+            raise HTTPException(409, "This printer has no filtration sub-mode")
+        # BS shows the toggle only on the cooling mode (``UpdatePartSubMode``),
+        # so a sub-mode sent with any other one is a setting with nowhere to land.
+        if mode_id != AIRDUCT_COOLING_FILT:
+            raise HTTPException(409, "Filtration belongs to the cooling air-duct mode")
+        # Only switching it ON is warned about — filtration redirects a fan away
+        # from cooling. Switching it off gives cooling back and needs no ask.
+        if submode == 1 and busy and not confirm:
+            raise HTTPException(409, "Enabling filtration during a print needs confirm=true")
+
+    if not client.set_airduct_mode(mode_id, submode):
+        raise HTTPException(500, "Failed to set air-duct mode")
+
+    return {"success": True, "mode_id": mode_id, "submode": submode}
 
 
 @router.post("/{printer_id}/hms/clear")

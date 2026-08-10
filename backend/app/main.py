@@ -1396,12 +1396,21 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         if state.raw_data
         else ()
     )
+    # ⚠️ The card draws its fans from ``airduct_fans`` alone, and on a machine
+    # with an air duct those speeds live nowhere else — the flat fields above
+    # cover only three of them, and not the second auxiliary fan at all. Without
+    # this the whole tile updated only when something unrelated moved.
+    airduct_key = tuple((pid, (part or {}).get("state")) for pid, part in sorted((state.airduct_parts or {}).items()))
     status_key = (
         f"{state.connected}:{state.state}:{state.progress}:{state.layer_num}:"
         f"{nozzle_temp}:{bed_temp}:{nozzle_2_temp}:{chamber_temp}:"
         f"{state.stg_cur}:{bed_target}:{nozzle_target}:"
         f"{state.cooling_fan_speed}:{state.big_fan1_speed}:{state.big_fan2_speed}:"
         f"{state.chamber_light}:{state.active_extruder}:{state.tray_now}:{vt_tray_key}:"
+        # Without these two, changing the air-duct mode changes nothing in
+        # this key, so no broadcast is sent and the card keeps the old
+        # selection until something else happens to move.
+        f"{state.airduct_mode}:{state.airduct_sub_mode}:{airduct_key}:{state.heatbreak_fan_speed}:"
         f"{ams_dry_key}:{ams_tray_key}:{state.ams_auto_switch_filament}"
     )
 

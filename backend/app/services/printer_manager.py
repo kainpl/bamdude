@@ -11,8 +11,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.printer import Printer
-from backend.app.services.bambu_mqtt import BambuMQTTClient, MQTTLogEntry, PrinterState, get_stage_name
-from backend.app.utils.printer_configs import get_device_support_flags, printer_arch
+from backend.app.schemas.printer import AirductFan
+from backend.app.services.bambu_mqtt import (
+    FAN_CTRL,
+    BambuMQTTClient,
+    MQTTLogEntry,
+    PrinterState,
+    airduct_fan_control,
+    airduct_mode_effective,
+    airduct_parts_effective,
+    get_stage_name,
+)
+from backend.app.utils.printer_configs import airduct_fan_label, get_device_support_flags, printer_arch
 
 logger = logging.getLogger(__name__)
 
@@ -1565,6 +1575,50 @@ def resolve_expected_tray(
     return None
 
 
+# Moved here from the status route: the WebSocket payload needs the same
+# list, and the card renders its fans from nothing else. Leaving it in the
+# route meant a fan speed reached the browser only on the next poll.
+def _airduct_fans(model: str | None, state) -> list[AirductFan]:
+    """The fans this printer reports through ``device.airduct``, named (#2576).
+
+    Presence in ``airduct_parts`` is the hardware check — the printer lists only
+    fitted parts, which matters on the P2S where the second auxiliary fan and
+    the exhaust fan are both add-on kits.
+
+    The label comes from the mirrored per-model config and depends on the
+    airduct mode, because the same part id is a different fan on different
+    models: part 10 is the LEFT aux on a P2S and the RIGHT one on an X2D. See
+    ``printer_configs.airduct_fan_label``.
+
+    Sorted by part id so the badges keep a stable order across pushes rather
+    than following dict insertion, which follows whatever order the printer
+    happened to send.
+    """
+    fans: list[AirductFan] = []
+    mode_id = airduct_mode_effective(state)
+    for part_id, part in sorted(airduct_parts_effective(state, model).items()):
+        # Air doors are in the same list (type 1) and are not fans.
+        if part.get("type") not in (0, None):
+            continue
+        # The effective mode, not the raw one: an old-protocol printer keys
+        # its fan names under "-1", which is what converse_to_duct stamps.
+        label_key, label = airduct_fan_label(model, mode_id, state.airduct_sub_mode, part_id)
+        control = airduct_fan_control(state, part_id)
+        fans.append(
+            AirductFan(
+                part_id=part_id,
+                speed=int(part.get("state", 0)),
+                range_start=int(part.get("range_start", 0)),
+                range_end=int(part.get("range_end", 100)),
+                control=control,
+                controllable=control == FAN_CTRL,
+                label_key=label_key,
+                label=label,
+            )
+        )
+    return fans
+
+
 def printer_state_to_dict(
     state: PrinterState,
     printer_id: int | None = None,
@@ -1861,6 +1915,13 @@ def printer_state_to_dict(
         "heatbreak_fan_speed": state.heatbreak_fan_speed,
         # Chamber light state
         "chamber_light": state.chamber_light,
+        # The air duct, so a mode change lands on the card as soon as the
+        # printer confirms it rather than at the next poll. ⚠️ A field the REST
+        # status serves but this dict omits updates only by refetch — see L14 in
+        # the printer-control registry for the eleven others still in that state.
+        "airduct_fans": [f.model_dump() for f in _airduct_fans(model, state)],
+        "airduct_mode": state.airduct_mode,
+        "airduct_sub_mode": state.airduct_sub_mode,
         # Active extruder for dual-nozzle printers (0=right, 1=left)
         "active_extruder": state.active_extruder,
         # H2C nozzle rack (tool-changer dock positions)

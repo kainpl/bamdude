@@ -80,6 +80,16 @@ All notable changes to BamDude will be documented in this file.
 
 - **A refused AMS type switch hid the control that would let you retry it.** Switching an AMS between its personalities hides the picker as soon as the command is sent — the switch is under way, so there is nothing to choose. Only a report from the printer brings it back, and a refusal is not a report: the printer answers firmware operations on a separate channel that BamDude never read. So one declined switch left the picker gone and the button answering "a switch is already in progress" until the server was restarted. That channel is now read, and a refusal releases the control instead of stranding it.
 
+- **Fan speeds and the air-duct mode now reach the screen when they change, instead of at the next refresh.** BamDude decides whether a printer update is worth pushing to the browser by comparing a hand-kept list of fields, and sends a hand-kept list of fields when it does. Neither list mentioned the air duct — so switching between cooling and heating left the old mode on the card for a while, and on machines whose fans are reported only through the air duct, the speeds themselves updated only when something unrelated happened to change. Both lists now carry them, and a test fails if a field the card draws goes missing from either.
+
+    The mode buttons also show the new selection immediately and refuse a second click while the printer is confirming, rather than staying live long enough to be pressed three times.
+
+- **The air duct has a window of its own: mode, filtration, and every fan in one place.** Printers with an air duct (X2D, P2S, H2 family) choose how air moves through the chamber — cooling, heating, exhaust — and BamDude could only read that, never set it. A control next to the fan badges now opens the whole thing. The modes offered are the ones the printer itself lists, so a machine with two gets two rather than a menu of four with half of them inert.
+
+    **Filtration is there too**, on the machines that have it. It redirects one fan to filtering the chamber air, which costs cooling — so it appears only on the cooling mode, where Studio puts it, and turning it on mid-print asks first.
+
+    **The mode cannot be changed while a print is running**, and the buttons say so rather than failing when pressed. That is Studio's rule and the reason is the material: the loaded filament is what the mode was chosen for. Changing filtration or a fan speed mid-print is still allowed, with a warning — three actions, three different answers, which is why they no longer share one dialog.
+
 - **Fan speeds now offer the steps the printer actually has, and warn before changing one mid-print.** The speed menu offered 0/25/50/75/100 %, of which the printer understands two: it counts in ten gears, so anything not a multiple of ten was rounded on arrival to something you did not pick. The menu now lists those gears, and turning a fan off is its own entry rather than hunting for zero at the top of the list.
 
     Changing a fan while a print is running now asks first — as Studio does, with a "change anyway" — and is refused outright if the request arrives without that acknowledgement, so an automation cannot do quietly what a person is warned about. You are asked once per printer per browser session.

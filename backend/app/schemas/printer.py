@@ -389,8 +389,19 @@ class PrinterStatus(BaseModel):
     stg_names: list[
         str
     ] = []  # Human-readable name per entry in ``stg`` (parallel list) — drives the calibration progress flow
-    # Air conditioning mode (0=cooling, 1=heating)
+    # Air conditioning mode (0=cooling, 1=heating, 2=exhaust, 3=full cooling)
     airduct_mode: int = 0
+    # The mode ids this printer actually offers, from its own ``modeList``.
+    # ⚠️ Never a fixed list of four: BS builds one button per reported mode
+    # (``FanControlPopupNew::CreateDuct``), so a machine that lists two gets two.
+    # Empty means the printer reports no air duct — the old protocol, where the
+    # mode is not a thing that can be chosen.
+    airduct_modes: list[int] = []
+    # ``device.airduct.subMode`` — the "Filter" toggle: 1 on, 0 off, -1 absent.
+    airduct_sub_mode: int = -1
+    # Whether that toggle exists at all (BS ``fun`` bit 46). It belongs to the
+    # cooling mode alone, so the frontend needs both this and the current mode.
+    supports_cooling_filter: bool = False
     # Print speed level (1=silent, 2=standard, 3=sport, 4=ludicrous)
     speed_level: int = 2
     # Chamber light on/off

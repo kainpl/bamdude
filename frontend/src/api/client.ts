@@ -678,7 +678,9 @@ export interface PrinterStatus {
   stg_cur_name: string | null;  // Human-readable current stage name
   stg: number[];  // List of stage numbers in calibration sequence
   stg_names?: string[];  // Human-readable name per entry in `stg` (parallel) — drives the calibration flow
-  // Air conditioning mode (0=cooling, 1=heating)
+  // Air-duct mode (0=cooling, 1=heating, 2=exhaust, 3=full cooling).
+  // -1 is the old protocol, where there is no mode to choose — BambuStudio
+  // stamps that value itself when it converts an older printer to look new.
   airduct_mode: number;
   // Print speed level (1=silent, 2=standard, 3=sport, 4=ludicrous)
   speed_level: number;
@@ -732,6 +734,15 @@ export interface PrinterStatus {
   // field at all, which is why nothing could show it. Present only on printers
   // with an airduct; the list contains only fans that physically exist.
   airduct_fans?: AirductFan[];
+  // ⚠️ The mode ids this printer OFFERS — never a fixed four. BambuStudio builds
+  // one button per entry the printer reported, so a machine that lists two gets
+  // two. Empty means no air duct.
+  airduct_modes?: number[];
+  // "Filter" sub-mode: 1 on, 0 off, -1 absent.
+  airduct_sub_mode?: number;
+  // Whether the filtration toggle exists at all. It belongs to the cooling mode
+  // alone, so both this and airduct_mode decide whether to show it.
+  supports_cooling_filter?: boolean;
   firmware_version: string | null;   // Firmware version from MQTT
   // Developer LAN mode: true = enabled, false = disabled, null = unknown
   developer_mode: boolean | null;
@@ -5161,6 +5172,15 @@ export const api = {
   setFanSpeed: (printerId: number, partId: number, percent: number, confirm = false) =>
     request<{ success: boolean; part_id: number; percent: number }>(
       `/printers/${printerId}/fan-speed?part_id=${partId}&percent=${percent}&confirm=${confirm}`,
+      { method: 'POST' },
+    ),
+
+  // Air-duct mode, and its "Filter" sub-mode. `confirm` acknowledges the
+  // mid-print filtration warning — it does NOT lift the mode-change refusal,
+  // which is absolute while a print runs (BambuStudio refuses it outright).
+  setAirductMode: (printerId: number, modeId: number, submode = -1, confirm = false) =>
+    request<{ success: boolean; mode_id: number; submode: number }>(
+      `/printers/${printerId}/airduct-mode?mode_id=${modeId}&submode=${submode}&confirm=${confirm}`,
       { method: 'POST' },
     ),
 
