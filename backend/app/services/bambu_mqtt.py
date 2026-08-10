@@ -2052,7 +2052,9 @@ class BambuMQTTClient:
             if "command" in print_data:
                 cmd = print_data.get("command")
                 logger.debug("[%s] Received command response: %s", self.serial_number, cmd)
-                if cmd in ("extrusion_cali_set", "extrusion_cali_del"):
+                if cmd == "set_ctt":
+                    self._handle_set_ctt_reply(print_data)
+                elif cmd in ("extrusion_cali_set", "extrusion_cali_del"):
                     self._route_ack(print_data)
                 elif cmd in ("extrusion_cali_sel", "ams_filament_setting"):
                     logger.debug("[%s] %s response: %s", self.serial_number, cmd, print_data)
@@ -2386,6 +2388,11 @@ class BambuMQTTClient:
             # consults and "absent" means "not reported" — a distinction
             # ``support_open_door``'s ``False`` default cannot express.
             sup["open_door_check"] = bool((fun >> 12) & 1)
+            # BS ``is_support_partskip = get_flag_bits(fun, 49)``. Skipping a
+            # part needs BOTH this and object labelling in the sliced plate —
+            # BS checks the second as ``is_model_support_partskip``. We had only
+            # the model half, and only in the UI.
+            sup["partskip"] = bool((fun >> 49) & 1)
 
         if isinstance(data.get("support_build_plate_marker_detect"), bool):
             sup["plate_mark"] = data["support_build_plate_marker_detect"]
@@ -4041,11 +4048,18 @@ class BambuMQTTClient:
             # - When > 500: encoded as (target * 65536 + current) - heater is ON
             # - When < 500: direct Celsius current temp only - heater is OFF
             if -50 < chamber_val < 100:
-                # Direct value = heater is OFF
+                # Direct value = the CURRENT temperature. It says nothing about
+                # the target — BS reads that from the separate top-level ``ctt``
+                # (``DevChamber::ParseChamberV1_0``), handled below.
                 temps["chamber"] = chamber_val
-                if not respect_local:
-                    temps["chamber_target"] = 0.0  # Heater off means target = 0
-                    logger.debug("[%s] chamber_temper direct value: %s°C (heater OFF)", self.serial_number, chamber_val)
+                if not respect_local and "ctt" not in data:
+                    # ⚠️ Asserting 0 here was an inference BS does not make: a
+                    # machine soaking at 50 °C renders as target 0, and the
+                    # history chart draws a flat zero under a rising curve. Kept
+                    # only for firmware that sends neither ``ctt`` nor
+                    # ``device.ctc`` — there it is the old behaviour, no worse.
+                    temps["chamber_target"] = 0.0
+                    logger.debug("[%s] chamber_temper direct value: %s°C, no ctt", self.serial_number, chamber_val)
             else:
                 logger.debug("[%s] chamber_temper %s out of direct range", self.serial_number, chamber_val)
                 # Try to decode if it looks like an encoded value
@@ -4064,6 +4078,25 @@ class BambuMQTTClient:
                         if 0 <= mqtt_target <= 60:
                             # Store as "decoded" target - may be overridden by explicit target fields
                             temps["_chamber_decoded_target"] = float(mqtt_target)
+        # Top-level ``ctt`` — the chamber TARGET on the V1 protocol. BS
+        # ``DevChamber::ParseChamberV1_0`` reads exactly two fields:
+        #
+        #     chamber_temper -> current
+        #     ctt            -> target
+        #
+        # ⚠️ We read the first and not the second, and inferred the target from
+        # the shape of the first instead. That inference has no counterpart in
+        # BS, and it is the reason a machine soaking at 50 °C could render with
+        # a target of 0. It also matters for the preheat stage, which waits on
+        # this number.
+        if "ctt" in data and not respect_local:
+            try:
+                _ctt = float(data["ctt"])
+            except (TypeError, ValueError):
+                _ctt = None
+            if _ctt is not None and 0 <= _ctt <= 100:
+                temps["chamber_target"] = _ctt
+
         # Chamber target temperature (set by print file or display)
         if "mc_target_cham" in data:
             mc_target = float(data["mc_target_cham"])
@@ -5266,6 +5299,52 @@ class BambuMQTTClient:
         if self.on_state_change:
             self.on_state_change(self.state)
 
+    def _handle_set_ctt_reply(self, print_data: dict) -> None:
+        """The printer's verdict on a chamber setpoint, which we asked for and
+        then ignored.
+
+        BS (``DeviceManager.cpp``, the ``set_ctt`` reply branch) surfaces two
+        codes to the operator:
+
+        * ``errno == -2`` — **refused.** Low-temperature filament (PLA/PETG/TPU)
+          is loaded, so the firmware will not heat the chamber at all.
+        * ``errno == -4`` — **silently retargeted.** A setpoint below 40 °C does
+          not activate chamber control; the printer sets the target to 0.
+
+        The second is why this matters beyond a log line: the preheat stage waits
+        for the chamber to reach its target, and under ``-4`` there is no target
+        to reach. It would wait out its whole timeout and then start the print
+        into a cold chamber, reporting nothing — the "failed soak that looks
+        exactly like a successful one".
+
+        Recorded on state rather than raised: this arrives on the MQTT thread,
+        and the caller that wants it (preheat) is elsewhere.
+        """
+        errno = print_data.get("errno")
+        if not isinstance(errno, int) or errno == 0:
+            return
+
+        self.state.temperatures["_chamber_set_errno"] = errno
+        if errno == -2:
+            logger.warning(
+                "[%s] set_ctt refused: low-temperature filament (PLA/PETG/TPU) is loaded, "
+                "the firmware will not heat the chamber",
+                self.serial_number,
+            )
+            # The setpoint did not take. Drop the optimistic local target so the
+            # soak is not waiting on a number the printer rejected.
+            self.state.temperatures["chamber_target"] = 0.0
+            self.state.temperatures.pop("_chamber_target_set_time", None)
+        elif errno == -4:
+            logger.warning(
+                "[%s] set_ctt below 40C: chamber control not activated, printer set the target to 0",
+                self.serial_number,
+            )
+            self.state.temperatures["chamber_target"] = 0.0
+            self.state.temperatures.pop("_chamber_target_set_time", None)
+        else:
+            logger.warning("[%s] set_ctt returned errno=%s", self.serial_number, errno)
+
     def _apply_series_calibration_clamps(self) -> None:
         """BS's two hardcoded overrides, applied after every bitfield read.
 
@@ -5789,102 +5868,6 @@ class BambuMQTTClient:
             return True
         return False
 
-    def set_xcam_option(
-        self, module_name: str, enabled: bool, print_halt: bool = True, sensitivity: str = "medium"
-    ) -> bool:
-        """Set an xcam (AI detection) option on the printer.
-
-        Args:
-            module_name: The xcam module to control (e.g., "spaghetti_detector",
-                        "first_layer_inspector", "printing_monitor", "buildplate_marker_detector")
-            enabled: Whether to enable or disable the feature
-            print_halt: Whether to halt print on detection (only applies to some detectors)
-            sensitivity: Sensitivity level ("low", "medium", "high", or "never_halt")
-
-        Returns:
-            True if command was sent, False if not connected
-        """
-        if not self._client or not self.state.connected:
-            return False
-
-        # auto_recovery_step_loss uses a different command format (print.print_option)
-        if module_name == "auto_recovery_step_loss":
-            return self._set_print_option("auto_recovery", enabled)
-
-        self._sequence_id += 1
-
-        # Build the xcam control command (exact OrcaSlicer format)
-        # Key findings from OrcaSlicer source:
-        # - Uses "xcam" wrapper (not "print")
-        # - print_halt is ALWAYS true (legacy protocol requirement)
-        # - Both "control" and "enable" are set to the same value
-        # - halt_print_sensitivity controls actual halt behavior
-        command = {
-            "xcam": {
-                "command": "xcam_control_set",
-                "sequence_id": str(self._sequence_id),
-                "module_name": module_name,
-                "control": enabled,
-                "enable": enabled,  # old protocol compatibility
-                "print_halt": True,  # ALWAYS true per OrcaSlicer
-            }
-        }
-
-        # Only add sensitivity if not "never_halt"
-        # OrcaSlicer uses halt_print_sensitivity for ALL detectors
-        # The module_name field determines which detector's sensitivity is being set
-        if sensitivity and sensitivity != "never_halt":
-            command["xcam"]["halt_print_sensitivity"] = sensitivity
-
-        command_json = json.dumps(command)
-        self._client.publish(self.topic_publish, command_json, qos=1)
-        logger.debug(
-            "[%s] Set xcam option: %s=%s, sensitivity=%s", self.serial_number, module_name, enabled, sensitivity
-        )
-        logger.debug("[%s] MQTT command sent: %s", self.serial_number, command_json)
-
-        # OrcaSlicer pattern: Set hold timer to ignore incoming data for 3 seconds
-        # This prevents stale MQTT data from immediately overwriting our change
-        self._xcam_hold_start[module_name] = time.time()
-
-        # Update local state immediately for responsive UI
-        # NOTE: Spaghetti and Pileup sensitivities are linked in firmware
-        # When spaghetti_detector sensitivity is changed, pileup also changes
-        if module_name == "spaghetti_detector":
-            self.state.print_options.spaghetti_detector = enabled
-            self.state.print_options.print_halt = print_halt
-            if sensitivity and sensitivity != "never_halt":
-                # spaghetti_detector controls BOTH spaghetti and pileup sensitivities
-                self.state.print_options.halt_print_sensitivity = sensitivity
-                self.state.print_options.pileup_sensitivity = sensitivity
-                self._xcam_hold_start["halt_print_sensitivity"] = time.time()
-                self._xcam_hold_start["pileup_sensitivity"] = time.time()
-        elif module_name == "first_layer_inspector":
-            self.state.print_options.first_layer_inspector = enabled
-        elif module_name == "printing_monitor":
-            self.state.print_options.printing_monitor = enabled
-        elif module_name == "buildplate_marker_detector":
-            self.state.print_options.buildplate_marker_detector = enabled
-        elif module_name == "allow_skip_parts":
-            self.state.print_options.allow_skip_parts = enabled
-        elif module_name == "pileup_detector":
-            self.state.print_options.pileup_detector = enabled
-            # Pileup sensitivity is linked to spaghetti - both are set via spaghetti_detector
-        elif module_name == "clump_detector":
-            self.state.print_options.nozzle_clumping_detector = enabled
-            if sensitivity and sensitivity != "never_halt":
-                self.state.print_options.nozzle_clumping_sensitivity = sensitivity
-                self._xcam_hold_start["nozzle_clumping_sensitivity"] = time.time()
-        elif module_name == "airprint_detector":
-            self.state.print_options.airprint_detector = enabled
-            if sensitivity and sensitivity != "never_halt":
-                self.state.print_options.airprint_sensitivity = sensitivity
-                self._xcam_hold_start["airprint_sensitivity"] = time.time()
-        elif module_name == "auto_recovery_step_loss":
-            self.state.print_options.auto_recovery_step_loss = enabled
-
-        return True
-
     def _set_print_option(self, option_name: str, enabled: bool) -> bool:
         """Set a print option using the print.print_option command.
 
@@ -6075,10 +6058,13 @@ class BambuMQTTClient:
         enabled: bool,
         sensitivity: str | None = None,
     ) -> tuple[bool, str | None]:
-        """Thin wrapper over ``set_xcam_option`` for the Printer Settings router.
+        """Publish one ``xcam_control_set`` for the Printer Settings router.
 
-        Unlike the existing ``set_xcam_option`` (which returns bool and
-        always sends ``halt_print_sensitivity``), this:
+        The single writer of this command since its predecessor was deleted.
+        That one always appended ``halt_print_sensitivity``, so toggling a
+        detector that has no sensitivity of its own — first-layer inspection,
+        the buildplate marker — still shipped a sensitivity field the printer
+        then applied to whatever detector owns it. This one:
           - returns (ok, sequence_id) for audit-trail correlation,
           - omits ``halt_print_sensitivity`` when ``sensitivity is None``,
           - stamps ``printer_settings_hold[module]``.
@@ -7331,22 +7317,21 @@ class BambuMQTTClient:
         self._client.publish(self.topic_publish, json.dumps(command), qos=1)
         logger.info("[%s] Sent skip_objects command: %s", self.serial_number, obj_list)
 
-        # Track skipped objects in state
-        grew = False
-        for oid in obj_list:
-            if oid not in self.state.skipped_objects:
-                self.state.skipped_objects.append(oid)
-                grew = True
-
-        # Fire here as well as from the ``s_obj`` branch. Recording our own
-        # command into state first means the printer's echo arrives *equal* to
-        # what we already hold, so that branch's diff sees no change and stays
-        # silent — a consumer listening only there would never hear about a skip
-        # BamDude itself made. Both paths pass the whole list, so the double
-        # notification is harmless.
-        if grew:
-            self._notify_skipped_objects_changed()
-
+        # Deliberately NOT recorded into state here. ``skipped_objects`` is what
+        # the printer says it is skipping, and the only writer is the ``s_obj``
+        # branch — BS holds the same line (``m_partskip_ids`` is filled from
+        # ``s_obj`` and from nothing else).
+        #
+        # Writing our own request in first made the state say "skipped" the
+        # instant we asked. Firmware can decline: the object may already be
+        # finished, the print may have ended between the click and the publish,
+        # or the plate may carry no object labels at all. A declined skip then
+        # showed as done, and it stayed that way — the echo that would correct
+        # it is a *diff* against what we hold, and we had already written the
+        # wrong answer into the thing it diffs against.
+        #
+        # The callback still fires, from that same branch, when the printer
+        # confirms. Later than before, and true.
         return True
 
     def _notify_skipped_objects_changed(self) -> None:
@@ -7412,8 +7397,32 @@ class BambuMQTTClient:
         Returns:
             True if command was sent, False otherwise
         """
-        # M141 sets chamber temperature
-        result = self.send_gcode(f"M141 S{target}")
+        # BS ``DevChamber::CtrlSetChamberTemp`` — a JSON command, not g-code:
+        #     {"print": {"command": "set_ctt", "ctt_val": <int>, "sequence_id": …}}
+        # gated on ``SupportChamberEdit()``, i.e. the same models our
+        # ``supports_chamber_heater`` now answers from ``support_chamber_temp_edit``.
+        #
+        # We sent ``M141 S<n>`` over ``gcode_line``. ⚠️ Whether that ever worked
+        # is UNVERIFIED in both directions — we have no chamber-heated machine
+        # here, and the often-quoted evidence (BS gating M141 on
+        # ``!is_BBL_Printer()``) is about the g-code the SLICER generates for a
+        # print, not about a live command, which is a different context. What is
+        # certain is that ``set_ctt`` is what BS sends live, so that is what we
+        # send. Two commands for one setpoint would be a second source of truth.
+        if not self._client or not self.state.connected:
+            logger.warning("[%s] Cannot set chamber temperature: not connected", self.serial_number)
+            return False
+
+        self._sequence_id += 1
+        command = {
+            "print": {
+                "command": "set_ctt",
+                "ctt_val": int(target),
+                "sequence_id": str(self._sequence_id),
+            }
+        }
+        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+        result = True
         # Track chamber target locally (MQTT reports encoded values that need filtering)
         if result:
             self.state.temperatures["chamber_target"] = float(target)

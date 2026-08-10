@@ -1,12 +1,24 @@
-"""``on_skipped_objects_changed`` has to fire from both places a skip appears.
+"""``on_skipped_objects_changed`` fires when the PRINTER says an object is
+being skipped — never when we merely asked for it.
 
 The counter it feeds (``PrintArchive.defective_count``) is only as good as the
-notification, and there is one trap in the wiring that no amount of reading the
-``s_obj`` branch alone reveals: ``skip_objects()`` records our own command into
-``state.skipped_objects`` *before* the printer echoes it back, so by the time the
-echo arrives the diff in that branch sees no change and stays silent. A listener
-attached only there would hear about skips made on the printer's screen and never
-about skips made from BamDude itself.
+notification, so the question is which event deserves to be called a skip.
+
+``skip_objects()`` used to record its own command into ``state.skipped_objects``
+before the printer echoed it back. That made the state say "skipped" the instant
+we asked, and it made the echo a no-op: the ``s_obj`` branch fires on a *diff*
+against what we hold, and we had already written the answer into the thing it
+diffs against. The notification still happened, from the send path — so these
+tests passed while the state was, for a moment, a claim rather than a fact.
+
+Firmware can decline: the object may already be finished, the print may have
+ended between the click and the publish, or the plate may carry no object labels
+to skip by. A declined skip counted as a defect and stayed counted, because the
+correcting echo could no longer register as a change.
+
+Now ``s_obj`` is the only writer, as it is in BS (``m_partskip_ids`` is filled
+from ``s_obj`` and from nothing else). The echo of our own skip is a change
+again, so it notifies — later than before, and only when it is true.
 """
 
 from unittest.mock import Mock
@@ -30,14 +42,45 @@ def client():
     return c
 
 
-def test_our_own_skip_command_notifies(client):
-    """The case the s_obj diff cannot catch on its own."""
+def test_asking_is_not_skipping(client):
+    """The command goes out; the state does not move until the printer agrees."""
     seen: list[list] = []
     client.on_skipped_objects_changed = seen.append
 
     assert client.skip_objects([941, 942]) is True
 
+    assert client.state.skipped_objects == []
+    assert seen == []
+
+
+def test_our_own_skip_notifies_when_the_printer_confirms_it(client):
+    """The case the old optimistic write was there to cover — and which the
+    echo covers by itself once that write is gone."""
+    seen: list[list] = []
+    client.on_skipped_objects_changed = seen.append
+
+    client.skip_objects([941, 942])
+    client._update_state({"s_obj": [941, 942]})
+
+    assert client.state.skipped_objects == [941, 942]
     assert seen == [[941, 942]]
+
+
+def test_a_declined_skip_never_counts(client):
+    """Firmware ignoring the request must not leave a defect on the archive.
+
+    Under the optimistic write this was unrecoverable: the id was already in
+    state, so the printer's ``s_obj`` — still empty — was not a diff and could
+    not take it back out.
+    """
+    seen: list[list] = []
+    client.on_skipped_objects_changed = seen.append
+
+    client.skip_objects([941])
+    client._update_state({"s_obj": []})  # the printer skipping nothing
+
+    assert client.state.skipped_objects == []
+    assert seen == []
 
 
 def test_printer_reported_skips_notify(client):
@@ -50,29 +93,15 @@ def test_printer_reported_skips_notify(client):
     assert seen == [[941]]
 
 
-def test_the_printers_echo_of_our_own_skip_does_not_fire_again(client):
-    """Our command already put the ids in state, so the echo is not a change.
-
-    Belt and braces for the counter: it is written as ``max(current, len(list))``
-    precisely so that a second notification carrying the same list cannot inflate
-    it, but the echo should not even reach it.
-    """
+def test_a_repeated_echo_does_not_fire_again(client):
+    """Belt and braces for the counter: it is written as ``max(current,
+    len(list))`` precisely so a repeat carrying the same list cannot inflate it,
+    but the repeat should not reach it at all."""
     seen: list[list] = []
     client.on_skipped_objects_changed = seen.append
 
-    client.skip_objects([941])
-    client._update_state({"s_obj": [941]})  # the printer confirming what we sent
-
-    assert seen == [[941]], "the echo of our own skip must not notify a second time"
-
-
-def test_re_skipping_the_same_object_does_not_fire(client):
-    """A repeat call adds nothing to the list, so there is nothing to report."""
-    seen: list[list] = []
-    client.on_skipped_objects_changed = seen.append
-
-    client.skip_objects([941])
-    client.skip_objects([941])
+    client._update_state({"s_obj": [941]})
+    client._update_state({"s_obj": [941]})
 
     assert seen == [[941]]
 
@@ -82,8 +111,8 @@ def test_the_whole_list_is_passed_not_the_delta(client):
     seen: list[list] = []
     client.on_skipped_objects_changed = seen.append
 
-    client.skip_objects([941])
-    client.skip_objects([942])
+    client._update_state({"s_obj": [941]})
+    client._update_state({"s_obj": [941, 942]})
 
     assert seen == [[941], [941, 942]]
 

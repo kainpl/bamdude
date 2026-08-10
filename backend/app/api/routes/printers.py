@@ -2093,6 +2093,19 @@ async def clear_mqtt_logs(
 # (#2533). Refuse the command rather than let the caller believe it landed.
 _DRYING_SCREEN_ONLY_DETAIL = "This printer only supports AMS drying from its own screen"
 
+# Maximum drying temperature per AMS unit type — BS ``AMSDryControl.cpp``:
+#   { N3F, 45, 65, "AMS2" }, { N3S, 45, 85, "AMS-S" }
+# Keyed by the module-name prefix the printer reports (``_AMS_MODULE_PREFIXES``).
+#
+# Only the AMS HT reaches 85; the fallback is the lower one, which is also what
+# ``PrintersPage.tsx`` has always offered (``moduleType === 'n3s' ? 85 : 65``).
+# The backend was the flat 45-85, so the two disagreed about the same unit and
+# the more permissive answer was the one an API key got. Erring low costs a
+# retry once the module name arrives; erring high drives a spool twenty degrees
+# past what its unit is rated for.
+_AMS_DRY_MAX_TEMP = {"n3f": 65, "n3s": 85}
+_AMS_DRY_MAX_TEMP_FALLBACK = 65
+
 
 @router.post("/{printer_id}/drying/start")
 async def start_drying(
@@ -2119,8 +2132,22 @@ async def start_drying(
     if not supports_drying(printer.model, firmware):
         raise HTTPException(400, "Drying not supported for this printer model or firmware version")
 
-    if temp < 45 or temp > 85:
-        raise HTTPException(400, "Temperature must be 45-85°C")
+    # Per-unit ceiling, not one flat range. BS ``AMSDryControl.cpp`` keeps a
+    # table keyed by AMS type:
+    #     N3F (AMS 2 Pro) 45-65 · N3S (AMS HT) 45-85
+    # and warns when the entered value exceeds the unit's own maximum. Our flat
+    # 45-85 let an AMS 2 Pro be asked for 85 °C — twenty degrees above what that
+    # unit is rated to do, which is not a harmless over-permission when the
+    # thing being heated is a spool of plastic.
+    #
+    # The unit's ``module_type`` comes from the module name the printer reports
+    # (see ``_AMS_MODULE_PREFIXES``): "n3f" / "n3s" / "ams".
+    target_ams = find_ams_unit(live_state.raw_data if live_state else None, ams_id)
+
+    module_type = str((target_ams or {}).get("module_type") or "").lower()
+    max_temp = _AMS_DRY_MAX_TEMP.get(module_type, _AMS_DRY_MAX_TEMP_FALLBACK)
+    if temp < 45 or temp > max_temp:
+        raise HTTPException(400, f"Temperature must be 45-{max_temp}°C for this AMS unit")
     if duration < 1 or duration > 24:
         raise HTTPException(400, "Duration must be 1-24 hours")
 
@@ -2128,7 +2155,6 @@ async def start_drying(
     # firmware silently ignores the command — #971) and backfill an empty
     # filament field from the first loaded tray so the printer doesn't reject
     # the payload.
-    target_ams = find_ams_unit(live_state.raw_data if live_state else None, ams_id)
     if target_ams is not None:
         blocker = first_drying_blocking_reason(target_ams)
         if blocker is not None:
@@ -3602,6 +3628,23 @@ async def skip_objects(
 
     if not object_ids:
         raise HTTPException(400, "No object IDs provided")
+
+    # Both halves of BS's gate, neither of which was on the server. BS needs
+    # ``is_support_partskip`` (``fun`` bit 49 — the printer can do it) AND
+    # ``is_model_support_partskip`` (the sliced plate labelled its objects, so
+    # the g-code has markers to skip by). The second was enforced in the UI
+    # only, and the first was not decoded at all — so the endpoint published a
+    # skip to any connected printer for any plate, and firmware's answer to
+    # that is silence.
+    #
+    # Read from ``print_option_support`` rather than ``compute_printer_supports``
+    # on purpose: that dict distinguishes "reported False" from "not reported
+    # yet", and only the first is a refusal. A printer we have not heard the
+    # ``fun`` word from keeps working, as it did before this guard existed.
+    if (getattr(client.state, "print_option_support", None) or {}).get("partskip") is False:
+        raise HTTPException(409, "This printer does not support skipping objects")
+    if not client.state.skip_objects_supported:
+        raise HTTPException(409, "This plate was not sliced with object labels, so its parts cannot be skipped")
 
     # Validate object IDs exist in printable_objects
     invalid_ids = [oid for oid in object_ids if oid not in client.state.printable_objects]

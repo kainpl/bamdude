@@ -158,7 +158,7 @@ class AppSettings(BaseModel):
     )
     # Preheat / heat-soak before queued prints (#1468). The scheduler stage runs on the
     # idle printer between FTP upload and start_print. Three hardware tiers: chamber heater
-    # (H2C/H2D/H2D Pro/H2S/X2D/X1E) M141 → wait for chamber sensor → soak; chamber sensor
+    # (H2C/H2D/H2D Pro/H2S/X2D/X1E) set_ctt → wait for chamber sensor → soak; chamber sensor
     # only (X1C/P2S) M140 → wait for radiant warm-up OR timeout → soak; no chamber sensor
     # (P1S/P1P/A1/A1 Mini) M140 → fixed soak timer. Chamber target derives per-print from
     # the loaded AMS filament types (max across slots); 0 skips the chamber phase but keeps
