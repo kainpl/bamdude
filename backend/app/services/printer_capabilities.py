@@ -109,7 +109,20 @@ def compute_printer_supports(state: PrinterState, printer_model: str | None, mod
         ai_monitoring_legacy=bool(sup.get("ai_monitoring_devcfg", False)) and not bool(sup.get("ai_monitoring", False)),
         # Door / air — open-door detection moves to the Safety tab on
         # safety-capable models (X2D/P2S), mirroring BS's mutual exclusion.
-        open_door_check=has_door_sensor(printer_model) and not supports_safety_options(printer_model),
+        # BS: ``is_support_door_open_check = get_flag_bits(fun, 12)``, then the
+        # row is hidden when the model has the Safety tab, because it lives
+        # there instead (PrintOptionsDialog::UpdateOptionOpenDoorCheck).
+        #
+        # ⚠️ We parsed that bit in TWO places and read it in none, gating on a
+        # hardcoded ``has_door_sensor`` list instead. That list answers "is
+        # there a door sensor", which is a different question from "does this
+        # firmware offer the door-open CHECK" — and it excluded the whole H2
+        # family, so those machines could not turn the protection on at all.
+        #
+        # ``_s`` keeps the list as the fallback for the window before the first
+        # push and for firmware that omits ``fun`` entirely.
+        open_door_check=_s("open_door_check", has_door_sensor(printer_model))
+        and not supports_safety_options(printer_model),
         purify_air=_s("purify_air", is_h2d_pro),
         # Behaviour — universal fallback; live flag wins when reported.
         auto_recovery=_s("auto_recovery", True),

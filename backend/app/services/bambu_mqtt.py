@@ -366,6 +366,13 @@ HMS_UI_ONLY_ACTIONS: frozenset[str] = frozenset(
 )
 
 
+# BS ``DevStorage::SdcardState`` (DeviceCore/DevStorage.h).
+SDCARD_NONE = 0
+SDCARD_NORMAL = 1
+SDCARD_ABNORMAL = 2
+SDCARD_READONLY = 3
+
+
 def parse_hex_bitfield(value: object) -> int | None:
     """The ``cfg`` / ``fun`` / ``aux`` / ``stat`` quartet arrive as hex STRINGS
     on new-protocol printers and as plain ints on some builds. ``None`` when the
@@ -720,7 +727,16 @@ class PrinterState:
     subtask_id: str | None = None
     hms_errors: list = field(default_factory=list)  # List of HMSError
     kprofiles: list = field(default_factory=list)  # List of KProfile
-    sdcard: bool = False  # SD card inserted
+    # BS ``DevStorage::SdcardState`` — four states, not a bool:
+    #   0 NO_SDCARD · 1 HAS_SDCARD_NORMAL · 2 HAS_SDCARD_ABNORMAL · 3 HAS_SDCARD_READONLY
+    # New-protocol printers report it in ``aux`` bits 12-13; legacy ones send a
+    # ``sdcard`` bool (BS maps that to NORMAL / NO_SDCARD).
+    sdcard_state: int = 0
+    # "A card we can actually write a print to", i.e. NORMAL only. ⚠️ This used
+    # to be a substring test — ``"HAS_SDCARD" in value`` — so ABNORMAL and
+    # READONLY both read as a healthy card, and the firmware-upload gate happily
+    # sent a .bin to a card that could not take it.
+    sdcard: bool = False
     store_to_sdcard: bool = False  # Store sent files on SD card (home_flag bit 11)
     timelapse: bool = False  # Timelapse recording active
     ipcam: bool = False  # Live view / camera streaming enabled
@@ -2363,6 +2379,13 @@ class BambuMQTTClient:
             sup["airprinting_detector"] = bool((fun >> 45) & 1)
             sup["sound"] = bool((fun >> 8) & 1)
             sup["nozzle_blob"] = bool((fun >> 13) & 1)
+            # BS ``is_support_door_open_check = get_flag_bits(fun, 12)``. It was
+            # already being decoded into ``print_options.support_open_door`` in
+            # two other places and read by nobody; stashing it HERE is what makes
+            # it reachable, because this dict is the one the capability computer
+            # consults and "absent" means "not reported" — a distinction
+            # ``support_open_door``'s ``False`` default cannot express.
+            sup["open_door_check"] = bool((fun >> 12) & 1)
 
         if isinstance(data.get("support_build_plate_marker_detect"), bool):
             sup["plate_mark"] = data["support_build_plate_marker_detect"]
@@ -4585,9 +4608,32 @@ class BambuMQTTClient:
         if "sdcard" in data:
             raw_sdcard = data["sdcard"]
             if isinstance(raw_sdcard, str):
-                self.state.sdcard = "HAS_SDCARD" in raw_sdcard.upper() or raw_sdcard.lower() in ("true", "normal", "1")
+                # ⚠️ Was ``"HAS_SDCARD" in value`` — a SUBSTRING test, so
+                # ``HAS_SDCARD_ABNORMAL`` and ``HAS_SDCARD_READONLY`` both
+                # matched and a card the printer is complaining about read as
+                # healthy. Match the state, not a prefix of its name.
+                _sd = raw_sdcard.strip().upper()
+                self.state.sdcard_state = {
+                    "HAS_SDCARD_NORMAL": SDCARD_NORMAL,
+                    "HAS_SDCARD_ABNORMAL": SDCARD_ABNORMAL,
+                    "HAS_SDCARD_READONLY": SDCARD_READONLY,
+                    "NORMAL": SDCARD_NORMAL,
+                    "TRUE": SDCARD_NORMAL,
+                    "1": SDCARD_NORMAL,
+                }.get(_sd, SDCARD_NONE)
             else:
-                self.state.sdcard = bool(raw_sdcard)
+                # BS ``DevStorage::ParseV1_0``: the legacy bool is NORMAL or nothing.
+                self.state.sdcard_state = SDCARD_NORMAL if raw_sdcard else SDCARD_NONE
+            self.state.sdcard = self.state.sdcard_state == SDCARD_NORMAL
+
+        # New protocol: ``aux`` bits 12-13 carry the same four states
+        # (BS ``m_storage->set_sdcard_state(get_flag_bits(aux, 12, 2))``).
+        # ⚠️ ``aux`` is the one member of the cfg/fun/aux/stat quartet nothing
+        # here read — the latch detected it and then parsed the other three.
+        _aux_bits = parse_hex_bitfield(data.get("aux"))
+        if _aux_bits is not None:
+            self.state.sdcard_state = (_aux_bits >> 12) & 0x3
+            self.state.sdcard = self.state.sdcard_state == SDCARD_NORMAL
 
         # Store-sent-files-to-SD toggle (home_flag bit 11).
         if home_flag is not None:

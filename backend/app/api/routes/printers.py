@@ -879,6 +879,7 @@ async def get_printer_status(
         ams_exists=ams_exists,
         vt_tray=vt_tray,
         sdcard=state.sdcard,
+        sdcard_state=state.sdcard_state,
         store_to_sdcard=state.store_to_sdcard,
         timelapse=state.timelapse,
         ipcam=state.ipcam,

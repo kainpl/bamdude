@@ -357,7 +357,14 @@ class PrinterStatus(BaseModel):
     ams: list[AMSUnit] = []
     ams_exists: bool = False
     vt_tray: list[AMSTray] = []  # Virtual tray / external spool(s)
-    sdcard: bool = False  # SD card inserted
+    # True only when the card is usable (BS ``HAS_SDCARD_NORMAL``). ABNORMAL and
+    # READONLY are cards the printer is complaining about — they used to read as
+    # healthy here because the parser matched a substring of the state name.
+    sdcard: bool = False
+    # The full BS state: 0 none · 1 normal · 2 abnormal · 3 read-only. Exposed so
+    # the UI can say WHICH problem instead of collapsing three answers into
+    # "not inserted".
+    sdcard_state: int = 0
     store_to_sdcard: bool = False  # Store sent files on SD card
     timelapse: bool = False  # Timelapse recording active
     ipcam: bool = False  # Live view enabled
