@@ -78,3 +78,23 @@ class TestTheBitReachesTheDictAtAll:
         c._process_message({"print": {"command": "push_status", "gcode_state": "IDLE"}})
 
         assert "open_door_check" not in c.state.print_option_support
+
+
+class TestTheFirstLayerFallbackComesFromTheConfig:
+    """``has_ai`` answered "does it have a camera", which is not the same
+    question. Measured across all fifteen configs: the H2 family says
+    ``support_first_layer_inspect: false`` while ``has_ai`` said yes, so four
+    models were offered a row for a feature the machine does not have."""
+
+    def test_the_h2_family_no_longer_claims_first_layer_inspection(self) -> None:
+        for model in ("H2C", "H2D", "H2D Pro", "H2S"):
+            assert compute_printer_supports(_state(), model, {})["first_layer_inspector"] is False, model
+
+    def test_the_x1_family_still_has_it(self) -> None:
+        for model in ("X1C", "X1E"):
+            assert compute_printer_supports(_state(), model, {})["first_layer_inspector"] is True, model
+
+    def test_the_live_bit_still_wins_over_the_config(self) -> None:
+        """This only decides the pre-push window; a printer that says it has the
+        feature is believed."""
+        assert compute_printer_supports(_state(first_layer_inspector=True), "H2D", {})["first_layer_inspector"] is True

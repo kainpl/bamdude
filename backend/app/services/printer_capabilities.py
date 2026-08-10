@@ -14,7 +14,11 @@ from typing import TypedDict
 
 from backend.app.services.bambu_mqtt import PrinterState
 from backend.app.services.calibration_mode_registry import mode_state_map
-from backend.app.utils.printer_configs import air_print_detection_position, supports_safety_options
+from backend.app.utils.printer_configs import (
+    air_print_detection_position,
+    get_device_support_flags,
+    supports_safety_options,
+)
 from backend.app.utils.printer_models import has_door_sensor, is_dual_nozzle_model
 
 
@@ -94,7 +98,17 @@ def compute_printer_supports(state: PrinterState, printer_model: str | None, mod
         pileup_detector=_s("pileup_detector", has_ai),
         nozzleclumping_detector=_s("nozzleclumping_detector", has_ai),
         airprinting_detector=_s("airprinting_detector", has_ai),
-        first_layer_inspector=_s("first_layer_inspector", has_ai),
+        # Fallback from the model's own config, not from "has a camera".
+        # ⚠️ Measured across all fifteen: ``has_ai`` claims first-layer
+        # inspection on H2C / H2D / H2D Pro / H2S, whose configs say
+        # ``support_first_layer_inspect: false`` — four models offered a row for
+        # a feature the machine does not have. The live bit still wins when the
+        # printer reports it; this only decides the pre-push window and firmware
+        # that omits the field, which is exactly where a guess was worst.
+        first_layer_inspector=_s(
+            "first_layer_inspector",
+            bool(get_device_support_flags(printer_model).get("support_first_layer_inspect", has_ai)),
+        ),
         ai_monitoring=_s("ai_monitoring", has_ai),
         # Sensors — legacy nozzle-blob is hidden when the smart 3-mode variant is
         # supported (BS mutual exclusion). Non-visual air-print + legacy AI
