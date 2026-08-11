@@ -3259,6 +3259,26 @@ function PrinterCard({
                   </button>
                 );
               })()}
+              {/* Firmware states in which the printer will not take work. Both
+                  come from its own push, so this is visible on a LAN-only farm
+                  with no cloud account — ``consistency_request`` in particular
+                  is what an SD-card update can leave behind when one module
+                  takes the new firmware and another does not. Without this the
+                  printer simply stops accepting jobs and the card looked
+                  perfectly ordinary. */}
+              {status?.connected && (status.firmware_consistency_request || status.firmware_force_upgrade) && (
+                <span
+                  className="flex items-center gap-1 px-2 py-1 rounded-full text-xs bg-status-error/20 text-status-error"
+                  title={
+                    status.firmware_consistency_request
+                      ? t('printers.firmwareBlocked.consistency')
+                      : t('printers.firmwareBlocked.forced')
+                  }
+                >
+                  <AlertTriangle className="w-3 h-3" />
+                  {t('printers.firmwareBlocked.badge')}
+                </span>
+              )}
               {/* SD card missing indicator — shown only when the printer is online
                   AND reports no SD card. Heartbeat flap from upstream's #899/#0D7C0D40
                   series can't happen here because our permissive sdcard parser

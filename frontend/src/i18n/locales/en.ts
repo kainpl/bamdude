@@ -768,6 +768,11 @@ export default {
         'Changing fan speed during a print may affect print quality. Asked once per printer for this session.',
       changeAnyway: 'Change anyway',
     },
+    firmwareBlocked: {
+      badge: 'Firmware',
+      consistency: 'Firmware versions disagree — the printer needs a repair update before it will print',
+      forced: 'The printer requires a firmware update before it will continue',
+    },
     airduct: {
       title: 'Air duct',
       mode: 'Mode',

@@ -32,10 +32,22 @@ import pytest
 from backend.app import main as main_module
 from backend.app.services import printer_manager as pm_module
 
-_STATUS_KEY = (
+
+def _code_only(src: str) -> str:
+    """The source with comments stripped.
+
+    ⚠️ These tests match on source text, so a field merely *named in a comment*
+    would satisfy them — and this file caught itself doing exactly that: the
+    comment explaining why ``last_ams_update`` is kept out of the key made the
+    check that it is kept out fail. Prose about a field is not the field.
+    """
+    return "\n".join(line.split("#", 1)[0] for line in src.splitlines())
+
+
+_STATUS_KEY = _code_only(
     inspect.getsource(main_module.on_printer_status_change).split("status_key = (", 1)[1].split("\n    )", 1)[0]
 )
-_WS_PAYLOAD = inspect.getsource(pm_module.printer_state_to_dict)
+_WS_PAYLOAD = _code_only(inspect.getsource(pm_module.printer_state_to_dict))
 
 
 # Fields the printer card renders live. A change in any of them should reach the
@@ -49,7 +61,29 @@ LIVE_FIELDS = [
     "big_fan2_speed",
     "heatbreak_fan_speed",
     "chamber_light",
+    "speed_level",
+    "door_open",
+    "sdcard",
+    "sdcard_state",
+    "store_to_sdcard",
+    "timelapse",
+    "ipcam",
+    "firmware_version",
+    "stg",
+    "mc_print_sub_stage",
+    "firmware_consistency_request",
+    "firmware_force_upgrade",
 ]
+
+# Carried to the browser, but deliberately not allowed to CAUSE a broadcast.
+# Each needs a reason, because the default should be that a rendered field can
+# announce itself.
+BROADCAST_EXEMPT = {
+    # ``time.time()`` stamped on every AMS push. In the key it would differ on
+    # every single message and defeat the early-return entirely — the opposite
+    # of the problem this file exists for.
+    "last_ams_update",
+}
 
 
 class TestTheWebsocketCarriesWhatTheCardDraws:
@@ -71,6 +105,19 @@ class TestAChangeCanTriggerABroadcast:
         # would rebuild them on every push.
         needle = "airduct_key" if field == "airduct_fans" else field
         assert needle in _STATUS_KEY, f"{field} does not appear in status_key — changing it alone broadcasts nothing"
+
+
+class TestAnExemptionIsDeliberate:
+    @pytest.mark.parametrize("field", sorted(BROADCAST_EXEMPT))
+    def test_it_still_travels(self, field: str) -> None:
+        """Exempt from triggering a broadcast is not exempt from being sent."""
+        assert f'"{field}"' in _WS_PAYLOAD
+
+    @pytest.mark.parametrize("field", sorted(BROADCAST_EXEMPT))
+    def test_it_is_kept_out_of_the_key(self, field: str) -> None:
+        """⚠️ If this ever starts failing, someone added a per-push timestamp to
+        the dedup key and every message now gets broadcast."""
+        assert field not in _STATUS_KEY
 
 
 class TestTheFanSignatureIsAboutSpeeds:

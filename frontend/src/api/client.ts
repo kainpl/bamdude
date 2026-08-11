@@ -734,6 +734,11 @@ export interface PrinterStatus {
   // field at all, which is why nothing could show it. Present only on printers
   // with an airduct; the list contains only fans that physically exist.
   airduct_fans?: AirductFan[];
+  // Firmware states in which the printer will not accept work. Both arrive on
+  // the ordinary LAN push — no cloud account involved — and `consistency_request`
+  // is reachable after an SD-card update leaves module versions disagreeing.
+  firmware_consistency_request?: boolean;
+  firmware_force_upgrade?: boolean;
   // ⚠️ The mode ids this printer OFFERS — never a fixed four. BambuStudio builds
   // one button per entry the printer reported, so a machine that lists two gets
   // two. Empty means no air duct.

@@ -1919,6 +1919,24 @@ def printer_state_to_dict(
         # printer confirms it rather than at the next poll. ⚠️ A field the REST
         # status serves but this dict omits updates only by refetch — see L14 in
         # the printer-control registry for the eleven others still in that state.
+        # The rest of what the card renders live. Each of these used to reach the
+        # browser only on the next refetch, because this dict is a hand-kept
+        # projection and they were never added to it — see L14 in the
+        # printer-control registry, and the test that now fails on the next
+        # omission.
+        "firmware_consistency_request": state.firmware_consistency_request,
+        "firmware_force_upgrade": state.firmware_force_upgrade,
+        "speed_level": state.speed_level,
+        "door_open": state.door_open,
+        "sdcard": state.sdcard,
+        "sdcard_state": state.sdcard_state,
+        "store_to_sdcard": state.store_to_sdcard,
+        "timelapse": state.timelapse,
+        "ipcam": state.ipcam,
+        "firmware_version": state.firmware_version,
+        "stg": state.stg,
+        "mc_print_sub_stage": state.mc_print_sub_stage,
+        "last_ams_update": state.last_ams_update,
         "airduct_fans": [f.model_dump() for f in _airduct_fans(model, state)],
         "airduct_mode": state.airduct_mode,
         "airduct_sub_mode": state.airduct_sub_mode,

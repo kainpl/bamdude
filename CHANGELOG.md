@@ -80,6 +80,10 @@ All notable changes to BamDude will be documented in this file.
 
 - **A refused AMS type switch hid the control that would let you retry it.** Switching an AMS between its personalities hides the picker as soon as the command is sent — the switch is under way, so there is nothing to choose. Only a report from the printer brings it back, and a refusal is not a report: the printer answers firmware operations on a separate channel that BamDude never read. So one declined switch left the picker gone and the button answering "a switch is already in progress" until the server was restarted. That channel is now read, and a refusal releases the control instead of stranding it.
 
+- **A printer that refuses to print because of its firmware now says so.** Two states stop a Bambu printer accepting work: its module versions disagree and it wants a repair, or it insists on an update first. BamDude read neither, so such a printer sat there looking perfectly normal and quietly took no jobs. Both now show as a warning on the card.
+
+    This matters on a printer that has never touched Bambu's cloud. The mismatch state is reachable exactly the way this farm updates — from the SD card — when one module takes the new firmware and another does not, and the flags travel on the ordinary local connection like everything else.
+
 - **Fan speeds and the air-duct mode now reach the screen when they change, instead of at the next refresh.** BamDude decides whether a printer update is worth pushing to the browser by comparing a hand-kept list of fields, and sends a hand-kept list of fields when it does. Neither list mentioned the air duct — so switching between cooling and heating left the old mode on the card for a while, and on machines whose fans are reported only through the air duct, the speeds themselves updated only when something unrelated happened to change. Both lists now carry them, and a test fails if a field the card draws goes missing from either.
 
     The mode buttons also show the new selection immediately and refuse a second click while the printer is confirming, rather than staying live long enough to be pressed three times.

@@ -864,6 +864,8 @@ async def get_printer_status(
         stg_cur_name=get_derived_status_name(state, printer.model),
         stg=state.stg,
         stg_names=[get_stage_name(s) for s in state.stg],
+        firmware_consistency_request=state.firmware_consistency_request,
+        firmware_force_upgrade=state.firmware_force_upgrade,
         airduct_mode=airduct_mode_effective(state),
         airduct_modes=sorted(state.airduct_modes or {}),
         airduct_sub_mode=state.airduct_sub_mode,

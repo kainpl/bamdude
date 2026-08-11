@@ -389,6 +389,14 @@ class PrinterStatus(BaseModel):
     stg_names: list[
         str
     ] = []  # Human-readable name per entry in ``stg`` (parallel list) — drives the calibration progress flow
+    # Firmware states that stop the printer accepting work. Both come from the
+    # printer's own push, not from any cloud account.
+    #   consistency_request — module versions disagree; BambuStudio's wording is
+    #     "The firmware version is abnormal. Repairing and updating are required
+    #     before printing." Reachable after an SD-card update.
+    #   force_upgrade — an update the printer insists on before it will continue.
+    firmware_consistency_request: bool = False
+    firmware_force_upgrade: bool = False
     # Air conditioning mode (0=cooling, 1=heating, 2=exhaust, 3=full cooling)
     airduct_mode: int = 0
     # The mode ids this printer actually offers, from its own ``modeList``.

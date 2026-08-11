@@ -1411,6 +1411,21 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         # this key, so no broadcast is sent and the card keeps the old
         # selection until something else happens to move.
         f"{state.airduct_mode}:{state.airduct_sub_mode}:{airduct_key}:{state.heatbreak_fan_speed}:"
+        # Everything else the card draws. All discrete and low-churn, so
+        # they cost nothing here — a door opens once, a speed level is
+        # chosen once. The noisy fields (progress, temperatures) were
+        # already in this key, which is why adding these changes the
+        # broadcast rate hardly at all.
+        #
+        # ⚠️ ``last_ams_update`` is deliberately NOT here. It is
+        # ``time.time()`` stamped on every AMS push, so including it
+        # would make the key differ every time and defeat the whole
+        # early-return. It rides in the WebSocket payload, where a value
+        # that changes constantly is harmless, and triggers nothing.
+        f"{state.speed_level}:{state.door_open}:{state.sdcard}:{state.sdcard_state}:"
+        f"{state.store_to_sdcard}:{state.timelapse}:{state.ipcam}:"
+        f"{state.firmware_version}:{state.mc_print_sub_stage}:"
+        f"{state.firmware_consistency_request}:{state.firmware_force_upgrade}:"
         f"{ams_dry_key}:{ams_tray_key}:{state.ams_auto_switch_filament}"
     )
 

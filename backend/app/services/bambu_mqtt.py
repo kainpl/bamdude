@@ -896,6 +896,13 @@ class PrinterState:
     # PRE_FLASH_START, PRE_FLASH_SUCCESS. Used to refuse an AMS reflash while
     # the printer is already flashing something.
     firmware_upgrade_status: str | None = None
+    # ⚠️ Two print-blocking firmware states, both from ``print.upgrade_state``
+    # and both arriving over plain LAN MQTT. ``consistency_request`` is a module
+    # version mismatch — the printer refuses to print until it is repaired, and
+    # an SD-card update is a way to end up there. Neither was read at all, so a
+    # printer in either state looked ordinary and simply took no work.
+    firmware_consistency_request: bool = False
+    firmware_force_upgrade: bool = False
     # ``device.extruder.info[].info`` bit 1 — filament present in that extruder
     # (BS ``DevExtruderSystem.cpp``: ``m_ext_has_filament = get_flag_bits(info, 1)``).
     # Keyed by extruder id. BS refuses an AMS firmware switch while any is loaded.
@@ -4833,6 +4840,26 @@ class BambuMQTTClient:
         _upgrade_state = data.get("upgrade_state")
         if isinstance(_upgrade_state, dict) and "status" in _upgrade_state:
             self.state.firmware_upgrade_status = str(_upgrade_state["status"] or "") or None
+        if isinstance(_upgrade_state, dict):
+            # Two states in which the printer will not print until its firmware
+            # is dealt with. BS ``DevUpgrade::ParseV1_0`` reads both from this
+            # same block, and they arrive over LAN like everything else here —
+            # ⚠️ despite belonging to a flow that otherwise needs the cloud.
+            #
+            # ``consistency_request`` is the one that matters on an offline
+            # farm: BS's wording is "The firmware version is abnormal. Repairing
+            # and updating are required before printing." That is a module
+            # version MISMATCH, which is exactly what an SD-card update can
+            # leave behind when one module takes the new firmware and another
+            # does not — the path our own bulk-firmware feature uses.
+            #
+            # Without these two the printer simply stops accepting work and the
+            # card shows nothing at all. Reading them does not require being
+            # able to answer them; see the registry (N3) for that half.
+            if isinstance(_upgrade_state.get("consistency_request"), bool):
+                self.state.firmware_consistency_request = _upgrade_state["consistency_request"]
+            if isinstance(_upgrade_state.get("force_upgrade"), bool):
+                self.state.firmware_force_upgrade = _upgrade_state["force_upgrade"]
 
         # ``device.extruder.info[].info`` bit 1 = filament present in that
         # extruder. Parsed here rather than beside the nozzle temperatures
