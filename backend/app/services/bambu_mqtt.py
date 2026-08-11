@@ -807,6 +807,28 @@ class PrinterState:
     # (home_flag / xcam / cfg / fun / fun2 / named support bools). Populated as
     # messages arrive; compute_printer_supports gates each row on it.
     print_option_support: dict = field(default_factory=dict)
+    # What the machine says its heaters will accept. Each is optional because
+    # "did not report" is a real answer with its own fallback — see
+    # ``utils.temperature_limits``, which owns the precedence.
+    nozzle_temp_range: list | None = None
+    bed_temp_range: list | None = None
+    bed_temperature_limit: int | None = None
+    # ⚠️ Mains voltage, ``home_flag`` bit 3. It LOWERS the bed ceiling on the X1
+    # and O series (110 instead of 120), which reads backwards until you take it
+    # as a fact about the heating element rather than about available power.
+    is_220v: bool = False
+    # Which axes the printer says are homed — ``home_flag`` bits 0/1/2 (BS
+    # ``DevAxis::IsAxisAtHomeX/Y/Z``). Keyed "x"/"y"/"z".
+    #
+    # ⚠️ **A ``home_flag`` of exactly 0 means all three ARE home**, not none.
+    # BS spells it ``m_home_flag == 0 ? true : (m_home_flag & 1) == 1`` — zero is
+    # the "nothing reported" sentinel, and reading it as "not homed" would lock
+    # every printer that omits the field out of jogging entirely.
+    axis_at_home: dict = field(default_factory=lambda: {"x": True, "y": True, "z": True})
+    # BS ``check_enable_np``: the print payload carries all four of ``cfg``,
+    # ``fun``, ``aux`` and ``stat``. It is how BS decides a machine speaks the
+    # new protocol, and it gates the per-extruder ``set_extrusion_length``.
+    enable_np: bool = False
     # The two live halves of BS ``MachineObject::is_nozzle_flow_type_supported``
     # (``DeviceManager.hpp:336`` — ``is_enable_np | has_extra_flow_type``), which
     # decides whether a K-profile's Standard / High Flow choice means anything on
@@ -918,6 +940,12 @@ class PrinterState:
     # (BS ``DevExtruderSystem.cpp``: ``m_ext_has_filament = get_flag_bits(info, 1)``).
     # Keyed by extruder id. BS refuses an AMS firmware switch while any is loaded.
     ext_has_filament: dict = field(default_factory=dict)
+    # Same word, bit 3 — a hotend is physically fitted (BS ``m_has_nozzle``).
+    # ⚠️ An absent entry means "this machine cannot tell", not "no hotend": BS
+    # initialises the field to true precisely because the A and P series have no
+    # such detection. Only an entry that exists and says False may refuse a
+    # heat request.
+    ext_has_nozzle: dict = field(default_factory=dict)
     # Hold-timer: when we publish an AMS setting command we stamp the flag
     # name here; the push parser skips overwriting the corresponding field
     # while ``time.time() - hold < 3.0``. Avoids the toggle visually flipping
@@ -1112,6 +1140,19 @@ FAN_CTRL = "ctrl"  # the user may set a speed
 FAN_PART_ID_COOLING = 1  # FAN_COOLING_0_AIRDOOR
 FAN_PART_ID_AUX = 2  # FAN_REMOTE_COOLING_0_IDX
 FAN_PART_ID_CHAMBER = 3  # FAN_CHAMBER_0_IDX
+
+# Jog feedrates, taken from the values BS passes to ``Ctrl_Axis`` at each of its
+# arrow buttons (``StatusPanel``). They are not interchangeable — the toolhead
+# moves more than three times faster than the bed, and the extruder shares the
+# bed's rate rather than the toolhead's.
+AXIS_SPEED_XY = 3000
+AXIS_SPEED_Z = 900
+AXIS_SPEED_E = 900
+
+# ⚠️ Below this, BS refuses to move the extruder at all
+# (``TEMP_THRESHOLD_ALLOW_E_CTRL``) and shows a hint instead. Cold extrusion
+# grinds a flat onto the filament and packs the gear teeth with the shavings.
+EXTRUDER_MIN_TEMP_C = 170.0
 
 
 def _synthesised_part(speed: int | None) -> dict:
@@ -2693,6 +2734,17 @@ class BambuMQTTClient:
             # BS ``SetSupportCoolingFilter(get_flag_bits(fun, 46))``. Gates the
             # "Filter" sub-mode, which exists only on the cooling air-duct mode.
             sup["cooling_filter"] = bool((fun >> 46) & 1)
+            # BS ``m_support_mqtt_bet_ctrl = get_flag_bits(fun, 39)`` (the typo
+            # is theirs). It picks which command carries a bed setpoint:
+            # ``command_set_bed`` sends ``set_bed_temp`` as JSON when this is
+            # set and falls back to ``M140`` over gcode_line when it is not.
+            sup["mqtt_bed_ctrl"] = bool((fun >> 39) & 1)
+            # The other two halves of the same protocol split, and they sit right
+            # beside it: BS ``DevAxis`` reads homing from bit 32 and axis control
+            # from bit 38. Each picks a structured MQTT command over the g-code
+            # BS falls back to — ``back_to_center`` and ``xyz_ctrl``.
+            sup["mqtt_homing"] = bool((fun >> 32) & 1)
+            sup["mqtt_axis_ctrl"] = bool((fun >> 38) & 1)
 
         if isinstance(data.get("support_build_plate_marker_detect"), bool):
             sup["plate_mark"] = data["support_build_plate_marker_detect"]
@@ -3889,12 +3941,57 @@ class BambuMQTTClient:
             self.state.is_support_auto_flow_calibration = bool((_hf >> 15) & 0x1)
             self.state.is_support_pa_calibration = bool((_hf >> 16) & 0x1)
             self._apply_series_calibration_clamps()
+            # BS ``parse_home_flag``: ``is_220V_voltage = get_flag_bits(flag, 3)``.
+            # Feeds the bed ceiling, which is LOWER at 220 V on the X1 and O
+            # series — see ``utils.temperature_limits.bed_limits``.
+            self.state.is_220v = bool((_hf >> 3) & 0x1)
+            # Bits 0/1/2 — which axes are homed (BS ``DevAxis::IsAxisAtHomeX/Y/Z``).
+            #
+            # ⚠️ **Zero means all three ARE home.** BS writes each accessor as
+            # ``m_home_flag == 0 ? true : (bit)``, so a flag of exactly 0 is the
+            # "nothing reported" sentinel and must NOT be read as "nothing
+            # homed" — that would refuse a jog on every printer omitting the
+            # field. The whole word is the sentinel, not the individual bit.
+            if _hf == 0:
+                self.state.axis_at_home = {"x": True, "y": True, "z": True}
+            else:
+                self.state.axis_at_home = {
+                    "x": bool(_hf & 0x1),
+                    "y": bool((_hf >> 1) & 0x1),
+                    "z": bool((_hf >> 2) & 0x1),
+                }
 
         _fun_bits = parse_hex_bitfield(data.get("fun"))
         if _fun_bits is not None:
             self.state.is_support_auto_flow_calibration = bool((_fun_bits >> 6) & 0x1)
             self.state.is_support_pa_calibration = bool((_fun_bits >> 7) & 0x1)
             self._apply_series_calibration_clamps()
+
+        # BS ``check_enable_np`` — the print payload carrying all four of ``cfg``,
+        # ``fun``, ``aux`` and ``stat``. Gates the per-extruder
+        # ``set_extrusion_length`` over the g-code E move.
+        #
+        # ⚠️ **STICKY, and BS's own is not.** BS re-runs this on every push and
+        # lets a sparse message set it back to False, which would make the
+        # extruder command flip protocol between one message and the next. Which
+        # protocol a machine speaks is a property of its firmware, not of the
+        # message that happened to arrive — so once seen it stays, the same
+        # reasoning as ``is_nozzle_flow_type_supported`` above.
+        if all(k in data for k in ("cfg", "fun", "aux", "stat")):
+            self.state.enable_np = True
+
+        # What the heaters will accept, as reported. BS keeps these as parsed
+        # vectors and asks their size before trusting them, so a malformed range
+        # has to end up indistinguishable from an absent one — hence storing the
+        # raw value and letting ``temperature_limits`` do the judging.
+        for _field in ("nozzle_temp_range", "bed_temp_range"):
+            _raw = data.get(_field)
+            if isinstance(_raw, list):
+                setattr(self.state, _field, _raw)
+        if isinstance(data.get("bed_temperature_limit"), int) and not isinstance(
+            data.get("bed_temperature_limit"), bool
+        ):
+            self.state.bed_temperature_limit = data["bed_temperature_limit"]
 
         # NOT ported: BS also does
         #   is_support_pa_calibration = jj["support_flow_calibration"]
@@ -4891,6 +4988,12 @@ class BambuMQTTClient:
                 except (TypeError, ValueError):
                     _ext_id = _idx
                 self.state.ext_has_filament[_ext_id] = bool((_info_int >> 1) & 0x1)
+                # Bit 3 of the same word — BS ``m_has_nozzle``, which gates the
+                # nozzle temperature control. ⚠️ Absence is NOT "no hotend": BS
+                # defaults the field to true with the reason in a comment ("A/P
+                # series does not support nozzle detection"), so only a machine
+                # that reports the word at all may ever answer False here.
+                self.state.ext_has_nozzle[_ext_id] = bool((_info_int >> 3) & 0x1)
 
         _ams_fw = _upgrade_state.get("mc_for_ams_firmware") if isinstance(_upgrade_state, dict) else None
         if isinstance(_ams_fw, dict):
@@ -7803,8 +7906,25 @@ class BambuMQTTClient:
         """
         self._ack_listeners[seq_id] = (event, result)
 
+    def temperature_limits(self) -> dict[str, tuple[int, int]]:
+        """What this machine's three heaters will accept.
+
+        One answer serving the clamp below and the status snapshot the UI bounds
+        its inputs with — two readings of the same rule is how they drift apart,
+        and the one that drifts is always the one nobody is looking at.
+        """
+        from backend.app.utils.temperature_limits import limits_for
+
+        return limits_for(self.model, self.state)
+
     def set_bed_temperature(self, target: int) -> bool:
         """Set the bed target temperature.
+
+        ⚠️ Which command carries it is not ours to choose — BS's
+        ``command_set_bed`` branches on ``m_support_mqtt_bet_ctrl`` (``fun``
+        bit 39): a JSON ``set_bed_temp`` where the machine offers it, ``M140``
+        where it does not. We sent ``M140`` unconditionally, which is the legacy
+        half of a two-way split.
 
         Args:
             target: Target temperature in Celsius (0 to turn off)
@@ -7812,7 +7932,75 @@ class BambuMQTTClient:
         Returns:
             True if command was sent, False otherwise
         """
-        return self.send_gcode(f"M140 S{target}")
+        from backend.app.utils.temperature_limits import clamp_target
+
+        target = clamp_target(int(target), self.temperature_limits()["bed"])
+
+        if not self.state.print_option_support.get("mqtt_bed_ctrl"):
+            return self.send_gcode(f"M140 S{target}")
+
+        if not self._client or not self.state.connected:
+            logger.warning("[%s] Cannot set bed temperature: not connected", self.serial_number)
+            return False
+
+        self._sequence_id += 1
+        command = {
+            "print": {
+                "command": "set_bed_temp",
+                "temp": target,
+                "sequence_id": str(self._sequence_id),
+            }
+        }
+        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+        return True
+
+    def set_nozzle_temperature(self, target: int, extruder_index: int = 0) -> bool:
+        """Set a nozzle's target temperature.
+
+        ⚠️ Two commands again, and the split is by nozzle COUNT, not by the
+        printer's age: BS sends the legacy ``M104`` only while the machine has a
+        single extruder (``TEMP_OF_NORMAL_TYPE``), and ``set_nozzle_temp`` with
+        an explicit ``extruder_index`` as soon as there are two — the deputy
+        nozzle has no ``M104`` form at all, since the g-code cannot name which
+        one it means.
+
+        Args:
+            target: Target temperature in Celsius (0 to turn off)
+            extruder_index: 0 = main, 1 = deputy. Ignored on single-nozzle
+                machines, which have only one thing it could mean.
+
+        Returns:
+            True if command was sent, False otherwise
+        """
+        from backend.app.utils.temperature_limits import clamp_target
+
+        target = clamp_target(int(target), self.temperature_limits()["nozzle"])
+
+        # BS asks ``GetTotalExtderCount()``, which is the live report. We keep
+        # the model as a second opinion because ours starts False and only turns
+        # true once ``device.extruder.info`` has arrived — and a dual-nozzle
+        # machine that has not sent it yet would otherwise take the ``M104``
+        # path, where "which nozzle" cannot be said at all.
+        from backend.app.utils.printer_models import is_dual_nozzle_model
+
+        if extruder_index == 0 and not (self._is_dual_nozzle or is_dual_nozzle_model(self.model)):
+            return self.send_gcode(f"M104 S{target}")
+
+        if not self._client or not self.state.connected:
+            logger.warning("[%s] Cannot set nozzle temperature: not connected", self.serial_number)
+            return False
+
+        self._sequence_id += 1
+        command = {
+            "print": {
+                "command": "set_nozzle_temp",
+                "extruder_index": int(extruder_index),
+                "target_temp": target,
+                "sequence_id": str(self._sequence_id),
+            }
+        }
+        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+        return True
 
     def set_chamber_temperature(self, target: int) -> bool:
         """Set the chamber target temperature.
@@ -7838,6 +8026,10 @@ class BambuMQTTClient:
         if not self._client or not self.state.connected:
             logger.warning("[%s] Cannot set chamber temperature: not connected", self.serial_number)
             return False
+
+        from backend.app.utils.temperature_limits import clamp_target
+
+        target = clamp_target(int(target), self.temperature_limits()["chamber"])
 
         self._sequence_id += 1
         command = {
@@ -8131,8 +8323,140 @@ class BambuMQTTClient:
         home XY → home Z). Partial-axis variants like ``G28 Z`` skip the
         toolhead-park step and can crash the bed into the toolhead on H2C
         / H2D / H2S / X1 where Z-home moves the bed UP — upstream #1052.
+
+        Machines that offer it get BS's ``back_to_center`` instead (``fun``
+        bit 32) — the firmware's own homing routine, which is the same safe
+        sequence asked for by name rather than by g-code.
+
+        ⚠️ BS's g-code fallback is ``G28 X`` *while printing* and a bare ``G28``
+        otherwise. We never send the partial form, and the divergence is safe
+        only because ``/home-axes`` refuses outright during a print. If that
+        guard is ever lifted, this becomes a live difference.
         """
+        if self.state.print_option_support.get("mqtt_homing"):
+            if not self._client or not self.state.connected:
+                logger.warning("[%s] Cannot home: not connected", self.serial_number)
+                return False
+            self._sequence_id += 1
+            command = {"print": {"command": "back_to_center", "sequence_id": str(self._sequence_id)}}
+            self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+            return True
+
         return self.send_gcode("G28")
+
+    def move_axis(self, axis: str, distance: float, speed: int | None = None) -> bool:
+        """Jog one axis by a relative distance — BS ``DevAxis::Ctrl_Axis``.
+
+        ``axis`` is "X", "Y", "Z" or "E"; ``distance`` is signed millimetres.
+        On Z the sign follows BS's own convention, where **negative closes the
+        nozzle-bed gap** ("up" in the UI). On E, negative retracts.
+
+        ⚠️ **Y and Z are inverted on non-CoreXY machines, X and E are not.**
+        On a bed-slinger the Z axis carries the toolhead rather than the bed, so
+        the same command means the opposite motion — the crash in upstream
+        #1334. BS applies the flip to Y as well, which only becomes visible once
+        Y is controllable at all.
+
+        ⚠️ **The MQTT path cannot carry a distance.** ``xyz_ctrl`` has room for a
+        direction and a coarse/fine ``mode`` (BS: ``mode = abs(value) >= 10``),
+        and nothing else — so on a machine that speaks it, 3 mm and 9 mm are the
+        same request, as are 10 mm and 200 mm. That is BS's protocol, not a
+        simplification made here, and it is why callers must not promise a
+        precise distance without checking which path this returns on.
+        """
+        axis = axis.upper()
+        if axis not in ("X", "Y", "Z", "E"):
+            logger.warning("[%s] Refusing to move unknown axis %r", self.serial_number, axis)
+            return False
+        if not distance:
+            return False
+
+        from backend.app.utils.printer_configs import is_bed_slinger
+
+        # BS: ``if (!IsArchCoreXY()) { if (axis == "Y" || axis == "Z") value = -value; }``
+        if is_bed_slinger(self.model) and axis in ("Y", "Z"):
+            distance = -distance
+
+        if self.state.print_option_support.get("mqtt_axis_ctrl"):
+            if not self._client or not self.state.connected:
+                logger.warning("[%s] Cannot move axis: not connected", self.serial_number)
+                return False
+            self._sequence_id += 1
+            command = {
+                "print": {
+                    "command": "xyz_ctrl",
+                    "axis": axis,
+                    "dir": 1 if distance > 0 else -1,
+                    "mode": 1 if abs(distance) >= 10 else 0,
+                    "sequence_id": str(self._sequence_id),
+                }
+            }
+            self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+            return True
+
+        if axis == "E":
+            # ⚠️ No endstop or ref-mode wrapper here, and that is BS's shape, not
+            # an omission: the extruder has no soft endstops to push, and no
+            # reference frame a jog could disturb.
+            speed = AXIS_SPEED_E if speed is None else speed
+            return self.send_gcode(f"M83\nG0 E{distance:.1f} F{speed}")
+
+        speed = (AXIS_SPEED_XY if axis in ("X", "Y") else AXIS_SPEED_Z) if speed is None else speed
+        return self.send_gcode(
+            "\n".join(
+                [
+                    "M211 S",
+                    "M211 X1 Y1 Z1",
+                    "M1002 push_ref_mode",
+                    "G91",
+                    f"G1 {axis}{distance:.1f} F{speed}",
+                    "M1002 pop_ref_mode",
+                    "M211 R",
+                ]
+            )
+        )
+
+    def extruder_control(self, length: float, extruder_index: int = 0) -> bool:
+        """Push or pull filament by hand — BS ``command_extruder_control``.
+
+        ``length`` is signed millimetres; negative retracts, which is what BS's
+        "up" arrow sends.
+
+        ⚠️ Machines on the new protocol get ``set_extrusion_length``, which names
+        the extruder. The g-code fallback cannot: ``G0 E`` acts on whichever
+        extruder is active, so on a dual-nozzle H2D it is unable to address the
+        second one at all — the same gap the nozzle temperature had.
+
+        ⚠️ **The caller owns the temperature check.** BS refuses below 170 °C
+        (``TEMP_THRESHOLD_ALLOW_E_CTRL``) and it is not decoration: cold
+        extrusion grinds a flat onto the filament and packs the gear teeth.
+        """
+        if self.state.enable_np:
+            if not self._client or not self.state.connected:
+                logger.warning("[%s] Cannot control extruder: not connected", self.serial_number)
+                return False
+            self._sequence_id += 1
+            command = {
+                "print": {
+                    "command": "set_extrusion_length",
+                    "extruder_index": int(extruder_index),
+                    # BS casts to int — the protocol carries whole millimetres.
+                    "length": int(length),
+                    "sequence_id": str(self._sequence_id),
+                }
+            }
+            self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+            return True
+
+        return self.move_axis("E", length)
+
+    def disable_steppers(self) -> bool:
+        """Release the motors so the toolhead can be pushed by hand (``M84``).
+
+        BS has no MQTT command for this and publishes the g-code, so there is
+        only one path.
+        """
+        return self.send_gcode("M84")
 
     def ams_load_filament(self, tray_id: int, extruder_id: int | None = None) -> bool:
         """Load filament from a specific AMS tray.

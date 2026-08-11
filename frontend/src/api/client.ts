@@ -743,6 +743,26 @@ export interface PrinterStatus {
   // field at all, which is why nothing could show it. Present only on printers
   // with an airduct; the list contains only fans that physically exist.
   airduct_fans?: AirductFan[];
+  // What each heater will accept, as [min, max]. Server-supplied because the
+  // answer depends on the model, on what the printer reported, and on the mains
+  // voltage — a table in the browser would be a second source of truth that
+  // disagrees the moment any of those changes.
+  temperature_limits?: { nozzle?: [number, number]; bed?: [number, number]; chamber?: [number, number] };
+  // Per-extruder "a hotend is fitted". ⚠️ A MISSING key means the machine cannot
+  // detect this at all (A and P series); only an explicit `false` means no
+  // hotend. Treating absent as false would disable the control everywhere.
+  ext_has_nozzle?: Record<number, boolean>;
+  // Whether the chamber can be COMMANDED, not merely read: the X1C and P2S
+  // report a chamber temperature they cannot change.
+  supports_chamber_heater?: boolean;
+  // Which axes the PRINTER says are homed. ⚠️ This is its own answer, not a
+  // browser-session guess — the guess was wrong in both directions: homing from
+  // the machine's screen still prompted, and losing home after our command did
+  // not. Absent keys mean the printer never reported, which reads as homed.
+  axis_at_home?: { x?: boolean; y?: boolean; z?: boolean };
+  // Per-extruder "filament is loaded". Drives whether the extruder graphic shows
+  // filament — a picture that always did would be a small lie told often.
+  ext_has_filament?: Record<number, boolean>;
   // Firmware states in which the printer will not accept work. Both arrive on
   // the ordinary LAN push — no cloud account involved — and `consistency_request`
   // is reachable after an SD-card update leaves module versions disagreeing.
@@ -5191,6 +5211,49 @@ export const api = {
       `/printers/${printerId}/fan-speed?part_id=${partId}&percent=${percent}&confirm=${confirm}`,
       { method: 'POST' },
     ),
+
+  // One heater's target temperature. `target` of 0 turns it off — that is the
+  // only value exempt from the range, and BambuStudio treats it the same way
+  // (`TempInput::AddTemp(0)`).
+  //
+  // Bounds come from `status.temperature_limits` rather than from constants
+  // here: they depend on the model, on what the printer reported, and on the
+  // mains voltage, so a copy in the browser would disagree the first time any
+  // of those changed. `extruder_index` is ignored for bed and chamber.
+  //
+  // ⚠️ There is deliberately no `confirm` — unlike the fans, adjusting a
+  // temperature mid-print is ordinary tuning and BambuStudio gates none of the
+  // three on print state.
+  setTemperature: (
+    printerId: number,
+    part: 'nozzle' | 'bed' | 'chamber',
+    target: number,
+    extruderIndex = 0,
+  ) =>
+    request<{ success: boolean; part: string; target: number; limits: number[] }>(
+      `/printers/${printerId}/temperature?part=${part}&target=${target}&extruder_index=${extruderIndex}`,
+      { method: 'POST' },
+    ),
+
+  // Move one axis by hand. `distance` is signed millimetres; on Z and E
+  // negative is the UI's "up" (closing the nozzle-bed gap / retracting).
+  //
+  // ⚠️ The backend picks the wire protocol per printer, and on machines that
+  // speak the newer one the distance collapses to a direction plus a
+  // coarse/fine flag (BambuStudio's `xyz_ctrl` carries nothing else). So do NOT
+  // present this as a precise measurement — offer the same fixed 1 mm / 10 mm
+  // steps BambuStudio does.
+  jogAxis: (printerId: number, axis: 'x' | 'y' | 'z' | 'e', distance: number, extruderIndex = 0) =>
+    request<{ success: boolean; axis: string; distance: number }>(
+      `/printers/${printerId}/jog?axis=${axis}&distance=${distance}&extruder_index=${extruderIndex}`,
+      { method: 'POST' },
+    ),
+
+  // Release the stepper motors (M84) so the toolhead can be pushed by hand.
+  // ⚠️ This drops whatever Z was holding — the bed on most machines, the
+  // toolhead on a bed-slinger.
+  disableSteppers: (printerId: number) =>
+    request<{ success: boolean }>(`/printers/${printerId}/disable-steppers`, { method: 'POST' }),
 
   // Air-duct mode, and its "Filter" sub-mode. `confirm` acknowledges the
   // mid-print filtration warning — it does NOT lift the mode-change refusal,

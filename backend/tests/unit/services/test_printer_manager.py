@@ -14,13 +14,13 @@ from backend.app.services.printer_manager import (
     get_derived_status_name,
     has_stg_cur_idle_bug,
     init_printer_connections,
-    is_bed_slinger,
     parse_plate_id,
     printer_state_to_dict,
     supports_chamber_temp,
     supports_drying,
     supports_drying_while_printing,
 )
+from backend.app.utils.printer_configs import is_bed_slinger
 
 
 class TestPrinterManager:
@@ -834,6 +834,19 @@ class TestPrinterStateToDict:
         state.raw_data = {}
         state.stg_cur = -1  # No calibration stage active
         state.firmware_version = None
+        # The heater bounds the projection publishes. A MagicMock answers every
+        # attribute with another MagicMock, so these have to be set to real
+        # values or the comparison against them is Mock-vs-int — which is a fact
+        # about the fixture, not about the code: production only ever passes a
+        # PrinterState, whose fields are typed and whose MQTT parse already
+        # rejects anything that is not an int.
+        state.nozzle_temp_range = None
+        state.bed_temp_range = None
+        state.bed_temperature_limit = None
+        state.is_220v = False
+        state.ext_has_nozzle = {}
+        state.axis_at_home = {"x": True, "y": True, "z": True}
+        state.ext_has_filament = {}
         return state
 
     def test_basic_conversion(self, mock_state):
@@ -1178,6 +1191,16 @@ class TestStatusKeyDryingDedup:
         state.tray_now = None
         state.wifi_signal = -50
         state.stg_cur = -1
+        # Real values for the heater bounds — see the note on ``mock_state``: a
+        # MagicMock would answer these with more Mocks, which the projection then
+        # compares against integers.
+        state.nozzle_temp_range = None
+        state.bed_temp_range = None
+        state.bed_temperature_limit = None
+        state.is_220v = False
+        state.ext_has_nozzle = {}
+        state.axis_at_home = {"x": True, "y": True, "z": True}
+        state.ext_has_filament = {}
 
         # First state: drying active with 30 minutes remaining
         state.raw_data = {"ams": [{"id": 0, "dry_time": 30, "module_type": "n3f", "tray": [{"id": 0}]}]}

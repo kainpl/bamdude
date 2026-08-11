@@ -44,6 +44,28 @@ All notable changes to BamDude will be documented in this file.
 
 ### Added
 
+- **The toolhead and the extruder can be moved, not just the bed.** BamDude could nudge the bed up and down and run an auto-home, and that was the whole of manual movement — X and Y did not exist, and neither did pushing filament through the nozzle. A new **Motion Control** dialog adds a proper directional pad for the toolhead, the nozzle-bed gap on its own column, retract and extrude for the filament, and a button to release the motors so the head can be pushed by hand.
+
+    **The steps are 1 mm and 10 mm, and that is the printer's constraint rather than a simplification.** Newer machines take these moves over a command that carries a direction and a coarse/fine flag — nothing more — so on those, 3 mm and 9 mm arrive as the same request. Offering a free number field would promise a precision the machine never receives. Older machines still get the G-code sequence with the exact distance, and BamDude picks per printer, as BambuStudio does.
+
+    **Nothing moves until the printer is homed**, and BamDude now knows that from the printer itself rather than from a note it kept in the browser. The old guess was wrong in both directions: homing from the machine's own screen still produced the warning, and a printer that lost its home after BamDude homed it did not. Homing itself also uses the printer's own routine where the machine offers it.
+
+    **The extruder will not run below 170 °C.** Cold extrusion grinds a flat onto the filament and packs the gear teeth with the shavings, so the buttons stay disabled and say what temperature they are waiting for. On dual-nozzle machines each extruder is selected and checked separately — a warm nozzle no longer vouches for its cold neighbour.
+
+    Moving an axis during a print is refused outright, as is releasing the motors.
+
+- **The bed jog now moves at BambuStudio's own speed.** It was 50 % slower than the reference it claimed to copy — the sequence matched, the feedrate did not.
+
+- **The nozzle, bed and chamber can be set from BamDude, not only read.** The printer card showed three temperatures and offered no way to change any of them — the only thing that ever set one was the optional preheat stage before a print. A new **Temperature Control** dialog opens from the temperature row: type a value, step it with the arrows, or turn a heater off outright. Dual-nozzle machines get both nozzles, addressed separately.
+
+    **The limits are the printer's own, not a number we picked.** Each field shows the range that machine actually accepts, and it is not the same everywhere: the chamber stops at 60 °C on an X1E and 65 °C on the H2 family, and — the one that surprises people — **an X1 on 220 V mains accepts a lower bed temperature than one on 110 V**, because the limit is about the heating element rather than the power available. BamDude reads all of that from the printer and from BambuStudio's own per-model data, so the bounds in front of you are the bounds the machine will honour. Anything higher is trimmed to the maximum rather than rejected, which is what BambuStudio does too.
+
+    **Off is a first-class value.** Zero is exempt from the range on purpose — a bed whose minimum is 20 °C can still be switched off, which is the whole point of the button. And unlike the fan controls, this dialog asks nothing extra during a print: adjusting a temperature mid-print is ordinary tuning, not something to be talked out of.
+
+    Two things it will refuse. A chamber that is only measured cannot be commanded — the X1C and P2S report a chamber temperature they have no heater for, and the dialog says so instead of failing silently. And on a machine that detects its hotends, an extruder with none fitted will not be told to heat. ⚠️ Printers that cannot detect a hotend at all (the A and P series) are unaffected — "cannot tell" is treated as fitted, exactly as BambuStudio treats it.
+
+    Under the hood two commands were also wrong or missing. The bed setpoint was always sent as `M140` g-code; printers that offer the newer MQTT command now get it, as BambuStudio does. And a second nozzle could not have been addressed at all — the g-code form cannot say which nozzle it means — so dual-nozzle machines now use the command that carries an extruder index.
+
 - **Bark, for a notification that can wake you at three in the morning.** A new notification provider for [Bark](https://bark.day.app/), the free iOS push app that needs no account — install it, copy the device key it shows you, paste it in. Everything else is optional: point it at your own `bark-server` instead of the public relay, put BamDude's notifications in their own group, choose a sound.
 
     The reason it is worth having next to ntfy and Pushover is the **interruption level**. Set it to **Critical** and iOS delivers the notification through Silent mode and through Focus — the print that stopped at 03:00 gets through, where every other channel waits politely until morning. **Time Sensitive** breaks through scheduled summaries without going that far, and **Passive** arrives with no sound at all, for the events you want recorded but not announced.

@@ -52,6 +52,7 @@ from backend.app.services.bambu_ftp import (
 )
 from backend.app.services.bambu_mqtt import (
     AIRDUCT_COOLING_FILT,
+    EXTRUDER_MIN_TEMP_C,
     FAN_CTRL,
     FAN_OFF,
     HMS_UI_ONLY_ACTIONS,
@@ -68,17 +69,18 @@ from backend.app.services.printer_manager import (
     first_drying_blocking_reason,
     get_derived_status_name,
     get_stage_name,
-    is_bed_slinger,
     is_printer_busy,
     printer_manager,
     resolve_expected_tray,
     resolve_plate_id,
+    supports_chamber_heater,
     supports_chamber_temp,
     supports_drying,
     supports_drying_while_printing,
 )
 from backend.app.utils.filament_ids import filament_id_to_setting_id
 from backend.app.utils.http import build_content_disposition
+from backend.app.utils.temperature_limits import is_within, limits_for
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/printers", tags=["printers"])
@@ -972,6 +974,11 @@ async def get_printer_status(
         big_fan2_speed=state.big_fan2_speed,
         heatbreak_fan_speed=state.heatbreak_fan_speed,
         airduct_fans=_airduct_fans(printer.model, state),
+        temperature_limits={k: list(v) for k, v in limits_for(printer.model, state).items()},
+        ext_has_nozzle=dict(state.ext_has_nozzle),
+        supports_chamber_heater=supports_chamber_heater(printer.model),
+        axis_at_home=dict(state.axis_at_home),
+        ext_has_filament=dict(state.ext_has_filament),
         firmware_version=state.firmware_version,
         developer_mode=state.developer_mode if state else None,
         ams_auto_switch_filament=state.ams_auto_switch_filament if state else None,
@@ -3148,9 +3155,13 @@ async def bed_jog(
 ):
     """Adjust the nozzle-bed gap by a relative distance.
 
-    Emits a short G-code sequence via MQTT, mirroring Bambu Studio's own jog
-    byte-for-byte (``DevAxis::Ctrl_Axis``, BS ``DeviceCore/DevAxisCtrl.cpp:49``,
-    published over the same ``gcode_line`` transport we use).
+    A thin wrapper over ``move_axis("Z", …)``, kept because its contract is the
+    nozzle-bed GAP rather than an axis — which is the question the card asks.
+
+    ⚠️ This used to send its own copy of the sequence at ``F600`` while claiming
+    to mirror BS "byte-for-byte". The sequence did match; the feedrate did not
+    (BS drives Z at 900), and BS offers fixed 1 mm / 10 mm steps where this takes
+    any distance. Both are now BS's — see ``DevAxis::Ctrl_Axis``.
 
     Soft-endstop policy (upstream #2579, adapted). The printer's software travel
     limits are the only thing between a jog button and a bed crash. Bambu's own
@@ -3196,26 +3207,110 @@ async def bed_jog(
         # API key and by a tab opened before the print started.
         raise HTTPException(409, "Printer is busy — cannot jog while a job is on it")
 
-    # Model-aware direction flip — see docstring for the physics.
-    z_distance = -distance if is_bed_slinger(printer.model) else distance
-
-    # Byte-for-byte BS's jog sequence (DevAxisCtrl.cpp:49): push the endstop
-    # state, turn all three soft endstops ON, bracket the relative move in
-    # push/pop ref-mode, then pop the endstop state back. Never emit M211 S0.
-    lines = [
-        "M211 S",
-        "M211 X1 Y1 Z1",
-        "M1002 push_ref_mode",
-        "G91",
-        f"G1 Z{z_distance:.2f} F600",
-        "M1002 pop_ref_mode",
-        "M211 R",
-    ]
-
-    if not client.send_gcode("\n".join(lines)):
+    # One implementation for every axis — ``BambuMQTTClient.move_axis`` mirrors
+    # ``DevAxis::Ctrl_Axis``, including the bed-slinger flip described above and
+    # the choice between the g-code sequence and ``xyz_ctrl``.
+    if not client.move_axis("Z", distance):
         raise HTTPException(500, "Failed to send bed-jog command")
 
     return {"success": True, "message": f"Bed jog {distance:+.1f} mm sent"}
+
+
+@router.post("/{printer_id}/jog")
+async def jog_axis(
+    printer_id: int,
+    axis: str = Query(..., description="Which axis: x | y | z | e"),
+    distance: float = Query(..., description="Signed millimetres. On Z and E, negative is the UI's 'up'."),
+    extruder_index: int = Query(0, ge=0, le=1, description="E only: 0 = main, 1 = deputy"),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Move one axis by hand — BambuStudio's ``Ctrl_Axis``, gates included.
+
+    ⚠️ **X and Y are refused when the printer is not homed; Z is not.** That
+    asymmetry is BS's own and worth keeping straight: ``on_axis_ctrl_xy`` checks
+    ``IsAxisAtHomeX/Y`` *before* moving and returns without publishing, while the
+    Z handlers call ``Ctrl_Axis`` first and only then pop a recenter dialog — the
+    move has already gone. So refusing X/Y here is parity, and the stricter
+    not-homed modal the frontend puts in front of Z remains our own deliberate
+    divergence (an HTTP surface reachable from another room is not a desktop
+    window in front of the machine).
+
+    ⚠️ **The extruder is refused below 170 °C.** BS's own threshold; cold
+    extrusion grinds a flat onto the filament and packs the gear teeth.
+    """
+    axis = axis.lower()
+    if axis not in ("x", "y", "z", "e"):
+        raise HTTPException(400, "axis must be one of: x, y, z, e")
+    if distance == 0 or abs(distance) > 200:
+        raise HTTPException(400, "Distance must be non-zero and <= 200 mm")
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    if not client or not client.state.connected:
+        raise HTTPException(400, "Printer not connected")
+
+    if is_printer_busy(printer_id):
+        # Moving anything under a running or paused print destroys it. The
+        # frontend hides the controls, but this route is reachable by API key
+        # and by a tab opened before the print started.
+        raise HTTPException(409, "Printer is busy — cannot move an axis while a job is on it")
+
+    if axis in ("x", "y") and not client.state.axis_at_home.get(axis, True):
+        raise HTTPException(409, f"{axis.upper()} axis is not homed — run Auto Home first")
+
+    if axis == "e":
+        if extruder_index == 1 and not client._is_dual_nozzle:
+            raise HTTPException(400, "This printer has only one extruder")
+        temps = client.state.temperatures or {}
+        current = temps.get("nozzle_2" if extruder_index == 1 else "nozzle")
+        if current is None or current < EXTRUDER_MIN_TEMP_C:
+            raise HTTPException(
+                409,
+                f"Nozzle is below {EXTRUDER_MIN_TEMP_C:.0f} °C — heat it before moving filament",
+            )
+        if not client.extruder_control(distance, extruder_index):
+            raise HTTPException(500, "Failed to send extruder command")
+        return {"success": True, "axis": axis, "distance": distance, "extruder_index": extruder_index}
+
+    if not client.move_axis(axis.upper(), distance):
+        raise HTTPException(500, f"Failed to move {axis.upper()} axis")
+
+    return {"success": True, "axis": axis, "distance": distance}
+
+
+@router.post("/{printer_id}/disable-steppers")
+async def disable_steppers(
+    printer_id: int,
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Release the motors so the toolhead can be pushed by hand (``M84``).
+
+    ⚠️ Releasing Z drops whatever the axis was holding. On a bed-on-Z machine
+    that is the bed; on a bed-slinger it is the toolhead. Refused during a print
+    for the same reason a jog is.
+    """
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    if not client or not client.state.connected:
+        raise HTTPException(400, "Printer not connected")
+
+    if is_printer_busy(printer_id):
+        raise HTTPException(409, "Printer is busy — cannot release the motors while a job is on it")
+
+    if not client.disable_steppers():
+        raise HTTPException(500, "Failed to release the motors")
+
+    return {"success": True}
 
 
 @router.post("/{printer_id}/home-axes")
@@ -3373,6 +3468,74 @@ async def set_fan_speed(
         raise HTTPException(500, "Failed to set fan speed")
 
     return {"success": True, "part_id": part_id, "percent": percent}
+
+
+@router.post("/{printer_id}/temperature")
+async def set_temperature(
+    printer_id: int,
+    part: str = Query(..., description="Which heater: nozzle | bed | chamber"),
+    target: int = Query(..., ge=0, description="Target °C. 0 turns the heater off."),
+    extruder_index: int = Query(0, ge=0, le=1, description="Nozzle only: 0 = main, 1 = deputy"),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set one heater's target temperature.
+
+    ⚠️ **Deliberately not guarded on "printing".** Every sibling control here
+    asks for ``confirm`` mid-print, and this one must not: adjusting a nozzle or
+    bed while a print runs is ordinary tuning, and BS gates none of the three on
+    print state either. A guard copied from the fans would be an obstacle in
+    front of the normal use.
+
+    The bounds come from ``BambuMQTTClient.temperature_limits`` — the same
+    answer the status snapshot publishes, so a client that bounds its input the
+    way the status told it to can never be refused here.
+    """
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    if part not in ("nozzle", "bed", "chamber"):
+        raise HTTPException(400, "part must be one of: nozzle, bed, chamber")
+
+    if not await printer_manager.ensure_fresh_connection_for_printer(printer):
+        raise HTTPException(500, "Can`t re-connect printer MQTT")
+
+    client = printer_manager.get_client(printer_id)
+    if not client or not client.state.connected:
+        raise HTTPException(400, "Printer not connected")
+
+    if part == "chamber" and not supports_chamber_heater(printer.model):
+        # BS shows the chamber field read-only unless ``SupportChamberEdit()``.
+        # A sensor is not a heater: X1C and P2S report a chamber temperature they
+        # cannot change.
+        raise HTTPException(409, "This printer has no controllable chamber heater")
+
+    if part == "nozzle":
+        if extruder_index == 1 and not client._is_dual_nozzle:
+            raise HTTPException(400, "This printer has only one nozzle")
+        # ⚠️ Only a machine that reported the bit may refuse. An absent entry
+        # means the machine cannot detect a hotend at all (A and P series), and
+        # BS defaults it to installed for exactly that reason.
+        if client.state.ext_has_nozzle.get(extruder_index) is False:
+            raise HTTPException(409, "No hotend detected on this extruder")
+
+    limits = client.temperature_limits()[part]
+    if not is_within(target, limits):
+        raise HTTPException(400, f"{part} target must be 0 (off) or between {limits[0]} and {limits[1]} °C")
+
+    if part == "nozzle":
+        sent = client.set_nozzle_temperature(target, extruder_index)
+    elif part == "bed":
+        sent = client.set_bed_temperature(target)
+    else:
+        sent = client.set_chamber_temperature(target)
+
+    if not sent:
+        raise HTTPException(500, f"Failed to set {part} temperature")
+
+    return {"success": True, "part": part, "target": target, "limits": list(limits)}
 
 
 @router.post("/{printer_id}/airduct-mode")

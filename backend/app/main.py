@@ -1427,7 +1427,17 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         f"{state.store_to_sdcard}:{state.timelapse}:{state.ipcam}:"
         f"{state.firmware_version}:{state.mc_print_sub_stage}:"
         f"{state.firmware_consistency_request}:{state.firmware_force_upgrade}:"
-        f"{ams_dry_key}:{ams_tray_key}:{state.ams_auto_switch_filament}"
+        f"{ams_dry_key}:{ams_tray_key}:{state.ams_auto_switch_filament}:"
+        # The bounds the temperature inputs are drawn with. They arrive late and
+        # rarely — a reported range, or the mains-voltage bit that lowers the bed
+        # ceiling — and land in no other field here, so without them the browser
+        # would keep whatever bounds happened to be true at the first broadcast.
+        f"{state.nozzle_temp_range}:{state.bed_temp_range}:{state.bed_temperature_limit}:"
+        f"{state.is_220v}:{sorted(state.ext_has_nozzle.items())}:"
+        # Homed-ness drives whether the jog controls are offered at all,
+        # and it changes exactly when somebody homes the machine — which is
+        # otherwise a moment nothing else in this key notices.
+        f"{sorted(state.axis_at_home.items())}:{sorted(state.ext_has_filament.items())}"
     )
 
     # MQTT relay - publish status (before dedup check - always publish to MQTT)

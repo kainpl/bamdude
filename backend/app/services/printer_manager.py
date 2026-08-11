@@ -22,7 +22,8 @@ from backend.app.services.bambu_mqtt import (
     airduct_parts_effective,
     get_stage_name,
 )
-from backend.app.utils.printer_configs import airduct_fan_label, get_device_support_flags, printer_arch
+from backend.app.utils.printer_configs import airduct_fan_label, get_device_support_flags
+from backend.app.utils.temperature_limits import limits_for
 
 logger = logging.getLogger(__name__)
 
@@ -289,31 +290,11 @@ def is_printer_busy(printer_id: int) -> bool:
     return client.state.state in BUSY_PRINT_STATES
 
 
-def is_bed_slinger(model: str | None) -> bool:
-    """Whether the printer's Z axis controls the *toolhead*, not the bed.
-
-    Open-frame bed-slingers (``printer_arch: "i3"``) move the bed on Y and the
-    toolhead on X+Z. On a CoreXY machine (X1, P1, H2 family, P2S, X2D) the bed
-    moves on Z and the toolhead is fixed in Z.
-
-    G-code direction is opposite on these two families. ``G1 Z-10`` reduces the
-    nozzle-bed gap on both, but on bed-on-Z machines it does so by moving the
-    BED up, while on bed-slingers it does so by moving the TOOLHEAD down —
-    which is what crashed the nozzle in upstream Bambuddy #1334.
-
-    **The answer comes from the mirrored config, because that is where BS gets
-    it.** ``DevAxis::IsArchCoreXY()`` is ``get_printer_arch() == ARCH_CORE_XY``,
-    read from ``printer_arch`` in ``resources/printers/<code>.json`` — the exact
-    files we ship. The hardcoded model set this replaced listed A1 and A1 mini
-    and **not the A2L**, whose own config says ``i3``: that machine jogged the
-    wrong way, which is #1334 again on a model nobody re-checked.
-
-    ⚠️ Do not reintroduce a model list here. See
-    ``inv-per-model-capability-from-mirrored-config`` — a list cannot learn
-    about a machine released after it was written, and this particular list
-    decides which way a nozzle moves.
-    """
-    return printer_arch(model) == "i3"
+# ``is_bed_slinger`` moved to ``utils.printer_configs``, beside the
+# ``printer_arch`` value it reads — ``bambu_mqtt`` needs the same flip for the
+# axis jog and cannot import this module back. Import it from there; a second
+# copy of a rule that decides which way a nozzle moves is not an option, and
+# neither is a re-export that hides where it lives.
 
 
 # Minimum firmware versions for AMS drying support (confirmed via capture testing)
@@ -1937,6 +1918,15 @@ def printer_state_to_dict(
         "stg": state.stg,
         "mc_print_sub_stage": state.mc_print_sub_stage,
         "last_ams_update": state.last_ams_update,
+        # What the heaters will accept, so the UI can bound its inputs off the
+        # same rule the backend clamps with instead of a second copy of it.
+        "temperature_limits": {k: list(v) for k, v in limits_for(model, state).items()},
+        # Which extruders report a hotend fitted. Absent = the machine cannot
+        # tell, which is NOT the same as "none fitted" — see ``ext_has_nozzle``.
+        "ext_has_nozzle": dict(state.ext_has_nozzle),
+        "supports_chamber_heater": supports_chamber_heater(model),
+        "axis_at_home": dict(state.axis_at_home),
+        "ext_has_filament": dict(state.ext_has_filament),
         "airduct_fans": [f.model_dump() for f in _airduct_fans(model, state)],
         "airduct_mode": state.airduct_mode,
         "airduct_sub_mode": state.airduct_sub_mode,

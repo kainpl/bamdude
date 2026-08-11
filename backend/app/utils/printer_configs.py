@@ -255,6 +255,49 @@ def get_device_support_flags(model: str | None, firmware_version: str | None = N
     return print_block if isinstance(print_block, dict) else {}
 
 
+def is_bed_slinger(model: str | None) -> bool:
+    """Whether the printer's Z axis controls the *toolhead*, not the bed.
+
+    Open-frame bed-slingers (``printer_arch: "i3"``) move the bed on Y and the
+    toolhead on X+Z. On a CoreXY machine (X1, P1, H2 family, P2S, X2D) the bed
+    moves on Z and the toolhead is fixed in Z.
+
+    G-code direction is opposite on these two families. ``G1 Z-10`` reduces the
+    nozzle-bed gap on both, but on bed-on-Z machines it does so by moving the
+    BED up, while on bed-slingers it does so by moving the TOOLHEAD down —
+    which is what crashed the nozzle in upstream Bambuddy #1334.
+
+    **The answer comes from the mirrored config, because that is where BS gets
+    it.** ``DevAxis::IsArchCoreXY()`` is ``get_printer_arch() == ARCH_CORE_XY``,
+    read from ``printer_arch`` in ``resources/printers/<code>.json`` — the exact
+    files we ship. The hardcoded model set this replaced listed A1 and A1 mini
+    and **not the A2L**, whose own config says ``i3``: that machine jogged the
+    wrong way, which is #1334 again on a model nobody re-checked.
+
+    ⚠️ Do not reintroduce a model list here. See
+    ``inv-per-model-capability-from-mirrored-config`` — a list cannot learn
+    about a machine released after it was written, and this particular list
+    decides which way a nozzle moves.
+    """
+    return printer_arch(model) == "i3"
+
+
+def chamber_temperature_range(model: str | None, firmware_version: str | None = None) -> list | None:
+    """The model's ``support_chamber_temp_edit_range``, or ``None`` if it ships
+    none — BS's ``DevConfig::ParsePrintOptionsConfig`` reads the same key.
+
+    ⚠️ This is the ONLY one of the three temperature ranges that comes from the
+    mirrored config rather than from the live report. BS reads it off the print
+    message, but the shipped per-model files carry exactly the same key and the
+    same pairs ([0, 60] on the H2D, [0, 65] on the rest of the H2 family), so
+    the answer exists before a printer connects. ``temperature_limits`` supplies
+    the fallback for a model we ship no config for.
+    """
+    flags = get_device_support_flags(model, firmware_version)
+    value = flags.get("support_chamber_temp_edit_range")
+    return value if isinstance(value, list) else None
+
+
 def has_remote_storage_toggle(model: str | None, live_support: dict | None = None) -> bool:
     """Whether the printer exposes a reachable control for the "Store sent files
     on external storage" option.

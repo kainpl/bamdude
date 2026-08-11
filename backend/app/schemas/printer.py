@@ -491,6 +491,28 @@ class PrinterStatus(BaseModel):
     # from the mirrored per-model config and depend on the airduct mode — the
     # same part id is a different fan on the P2S and the X2D.
     airduct_fans: list[AirductFan] = Field(default_factory=list)
+    # What each heater will accept, as ``{"nozzle": [min, max], "bed": …,
+    # "chamber": …}``. Published so the UI bounds its inputs off the same rule
+    # the backend clamps with — a second copy in the browser is a copy that
+    # disagrees the first time a printer reports a range of its own.
+    temperature_limits: dict[str, list[int]] = Field(default_factory=dict)
+    # Per-extruder "a hotend is fitted", keyed by extruder id. ⚠️ A MISSING key
+    # means the machine cannot detect this at all (the A and P series), which is
+    # not the same as False — only an explicit False may refuse a heat request.
+    ext_has_nozzle: dict[int, bool] = Field(default_factory=dict)
+    # Whether the chamber can be COMMANDED, not merely read. The X1C and P2S
+    # report a chamber temperature they have no way of changing, so without
+    # this the UI would offer a control the backend answers 409 to.
+    supports_chamber_heater: bool = False
+    # Which axes the printer reports as homed, keyed "x"/"y"/"z".
+    # ⚠️ This is the printer's own answer, replacing a per-browser-session
+    # guess that was wrong in both directions: homing from the machine's own
+    # screen still prompted, and losing home after our command did not.
+    axis_at_home: dict[str, bool] = Field(default_factory=dict)
+    # Per-extruder "filament is loaded", keyed by extruder id. Parsed since the
+    # AMS-firmware guard needed it; published so the extruder graphic can show
+    # what is actually in the machine instead of a picture that always agrees.
+    ext_has_filament: dict[int, bool] = Field(default_factory=dict)
     # Firmware version (from info.module[name="ota"].sw_ver)
     firmware_version: str | None = None
     # Developer LAN mode: True = enabled, False = disabled (MQTT encryption), None = unknown

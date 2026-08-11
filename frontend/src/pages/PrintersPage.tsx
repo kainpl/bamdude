@@ -68,6 +68,8 @@ import {
   Flame,
   Gauge,
   LineChart,
+  Move,
+  Thermometer,
   ArrowLeftRight,
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -156,6 +158,8 @@ import { formatSpoolDisplayName, DEFAULT_SPOOL_DISPLAY_TEMPLATE } from '../utils
 import { groupByLocation } from '../utils/locationGroups';
 import { LocationConditions } from '../components/zigbee/LocationConditions';
 import { AirductModal } from '../components/AirductModal';
+import { TemperatureModal } from '../components/TemperatureModal';
+import { MotionModal } from '../components/MotionModal';
 
 // Color names resolve via getColorName() which reads the backend color_catalog
 // (loaded once at app startup by ColorCatalogProvider). Hardcoded hex/code tables
@@ -1641,6 +1645,8 @@ function PrinterCard({
   // Pending fan change awaiting the mid-print acknowledgement.
   const [showFanPrintingModal, setShowFanPrintingModal] = useState<null | { partId: number; percent: number }>(null);
   const [showAirductModal, setShowAirductModal] = useState(false);
+  const [showTemperatureModal, setShowTemperatureModal] = useState(false);
+  const [showMotionModal, setShowMotionModal] = useState(false);
   const [showSkipObjectsModal, setShowSkipObjectsModal] = useState(false);
   const [showUploadForPrint, setShowUploadForPrint] = useState(false);
   const [showPrinterInfo, setShowPrinterInfo] = useState(false);
@@ -3746,6 +3752,33 @@ function PrinterCard({
                         {Math.round(status.temperatures.chamber || 0)}°C
                       </p>
                     </div>
+                  )}
+                  {/* Setpoints — the readout above is the display, this is the
+                      control surface, the same division BambuStudio makes. */}
+                  {hasPermission('printers:control') && (
+                    <button
+                      type="button"
+                      onClick={() => setShowTemperatureModal(true)}
+                      className="px-2 py-1.5 bg-bambu-dark rounded-lg flex flex-col justify-center items-center text-bambu-gray hover:text-white transition-colors"
+                      title={t('printers.temperatureControl.title')}
+                      aria-label={t('printers.temperatureControl.title')}
+                    >
+                      <Thermometer className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  {/* Motion — head, bed gap and extruder. Separate from the
+                      temperature dialog because they answer different questions
+                      about the same machine, the same split Studio makes. */}
+                  {hasPermission('printers:control') && (
+                    <button
+                      type="button"
+                      onClick={() => setShowMotionModal(true)}
+                      className="px-2 py-1.5 bg-bambu-dark rounded-lg flex flex-col justify-center items-center text-bambu-gray hover:text-white transition-colors"
+                      title={t('printers.motion.title')}
+                      aria-label={t('printers.motion.title')}
+                    >
+                      <Move className="w-3.5 h-3.5" />
+                    </button>
                   )}
                   {/* Heater history — opens the nozzle/bed/chamber temperature chart */}
                   <button
@@ -6229,6 +6262,29 @@ function PrinterCard({
             </div>
           </div>
         </div>
+      )}
+
+      {status && (
+        <MotionModal
+          printerId={printer.id}
+          isOpen={showMotionModal}
+          onClose={() => setShowMotionModal(false)}
+          status={status}
+          isDualNozzle={printer.nozzle_count === 2 || status.temperatures?.nozzle_2 !== undefined}
+          canControl={hasPermission('printers:control')}
+        />
+      )}
+
+      {status && (
+        <TemperatureModal
+          printerId={printer.id}
+          isOpen={showTemperatureModal}
+          onClose={() => setShowTemperatureModal(false)}
+          status={status}
+          isDualNozzle={printer.nozzle_count === 2 || status.temperatures?.nozzle_2 !== undefined}
+          supportsChamberHeater={status.supports_chamber_heater ?? false}
+          canControl={hasPermission('printers:control')}
+        />
       )}
 
       <AirductModal

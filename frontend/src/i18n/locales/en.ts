@@ -294,6 +294,33 @@ export default {
       bed: 'Bed',
       chamber: 'Chamber'
     },
+    motion: {
+      title: 'Motion Control',
+      toolhead: 'Toolhead',
+      gap: 'Nozzle-bed gap',
+      extruder: 'Extruder',
+      home: 'Auto Home',
+      bed: 'Bed',
+      main: 'Main',
+      auxiliary: 'Auxiliary',
+      retract: 'Retract',
+      extrude: 'Extrude',
+      releaseMotors: 'Release motors',
+      notHomed: 'The toolhead is not homed — X and Y moves are refused until you run Auto Home.',
+      printingBlocked: 'A job is on this printer. Moving anything now would ruin it.',
+      tooCold: 'Nozzle is {{temp}} °C. Heat it to at least 170 °C before moving filament.'
+    },
+    temperatureControl: {
+      title: 'Temperature Control',
+      nozzleLeft: 'Nozzle L',
+      nozzleRight: 'Nozzle R',
+      turnOff: 'Off',
+      increase: 'Increase temperature',
+      decrease: 'Decrease temperature',
+      noHotend: 'No hotend detected on this extruder',
+      sensorOnly: 'This printer reads the chamber temperature but cannot change it',
+      noPermission: 'You do not have permission to control this printer'
+    },
     heaterHistory: {
       title: 'Heater History',
       nozzle: 'Nozzle',

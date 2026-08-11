@@ -61,6 +61,17 @@ def _state(connected: bool, state: str = "IDLE") -> SimpleNamespace:
         mc_print_sub_stage=0,
         firmware_consistency_request=False,
         firmware_force_upgrade=False,
+        # The temperature bounds the dedup key reads. They belong here rather
+        # than behind a getattr in ``main``: the key is meant to fail loudly when
+        # a field it needs is missing, and a default would hide a real state
+        # object that stopped carrying one.
+        nozzle_temp_range=None,
+        bed_temp_range=None,
+        bed_temperature_limit=None,
+        is_220v=False,
+        ext_has_nozzle={},
+        axis_at_home={"x": True, "y": True, "z": True},
+        ext_has_filament={},
         chamber_light="",
         active_extruder=0,
         tray_now=0,

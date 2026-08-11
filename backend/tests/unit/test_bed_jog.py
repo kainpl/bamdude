@@ -10,6 +10,24 @@ from unittest.mock import MagicMock, patch
 import pytest
 from httpx import AsyncClient
 
+from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+
+def _jog_client(model: str = "P1S", ok: bool = True):
+    """A real ``BambuMQTTClient`` with only the wire stubbed.
+
+    ⚠️ Deliberately not a bare ``MagicMock``. ``/bed-jog`` delegates to
+    ``move_axis``, which is where the model lookup and the #1334 sign flip live —
+    a mock would answer that call with a truthy stub and these tests would pass
+    while checking nothing. Stubbing ``send_gcode`` alone keeps the assertions
+    pointed at the g-code that actually gets built.
+    """
+    client = BambuMQTTClient(ip_address="1.2.3.4", serial_number="JOG1", access_code="12345678", model=model)
+    client._client = MagicMock()
+    client.state.connected = True
+    client.send_gcode = MagicMock(return_value=ok)
+    return client
+
 
 class TestBedJogAPI:
     @pytest.mark.asyncio
@@ -42,8 +60,7 @@ class TestBedJogAPI:
     @pytest.mark.asyncio
     async def test_bed_jog_send_failure(self, async_client: AsyncClient, printer_factory):
         printer = await printer_factory(name="P1")
-        mock_client = MagicMock()
-        mock_client.send_gcode.return_value = False
+        mock_client = _jog_client(ok=False)
         with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
             mock_pm.get_client.return_value = mock_client
             response = await async_client.post(f"/api/v1/printers/{printer.id}/bed-jog?distance=10")
@@ -57,8 +74,7 @@ class TestBedJogAPI:
         leaves the endstops off, so enabling them here is what keeps the move
         clamped at the travel limit (#2579)."""
         printer = await printer_factory(name="P1")
-        mock_client = MagicMock()
-        mock_client.send_gcode.return_value = True
+        mock_client = _jog_client()
         with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
             mock_pm.get_client.return_value = mock_client
             response = await async_client.post(f"/api/v1/printers/{printer.id}/bed-jog?distance=10")
@@ -69,7 +85,7 @@ class TestBedJogAPI:
                 "M211 X1 Y1 Z1",
                 "M1002 push_ref_mode",
                 "G91",
-                "G1 Z10.00 F600",
+                "G1 Z10.0 F900",
                 "M1002 pop_ref_mode",
                 "M211 R",
             ]
@@ -84,8 +100,7 @@ class TestBedJogAPI:
         from a stale client is ignored — FastAPI drops the unknown query param —
         and the move still enables the endstops."""
         printer = await printer_factory(name="P1")
-        mock_client = MagicMock()
-        mock_client.send_gcode.return_value = True
+        mock_client = _jog_client()
         with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
             mock_pm.get_client.return_value = mock_client
             response = await async_client.post(f"/api/v1/printers/{printer.id}/bed-jog?distance=-5&force=true")
@@ -94,7 +109,7 @@ class TestBedJogAPI:
             assert "M211 S0" not in sent_gcode, f"must never disable endstops, got: {sent_gcode!r}"
             assert "M211 S1" not in sent_gcode
             assert "M211 X1 Y1 Z1" in sent_gcode
-            assert "G1 Z-5.00" in sent_gcode
+            assert "G1 Z-5.0" in sent_gcode
 
     # --- Direction-flip regression on bed-slingers (upstream #1334) ---
     #
@@ -113,15 +128,14 @@ class TestBedJogAPI:
     async def test_bed_on_z_models_pass_through(self, async_client: AsyncClient, printer_factory, model):
         """Every bed-on-Z model still emits the literal sign the UI sent."""
         printer = await printer_factory(name=f"BedOnZ-{model}", model=model)
-        mock_client = MagicMock()
-        mock_client.send_gcode.return_value = True
+        mock_client = _jog_client(model)
         with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
             mock_pm.get_client.return_value = mock_client
             # UI "Up" = negative distance = decrease nozzle-bed gap
             response = await async_client.post(f"/api/v1/printers/{printer.id}/bed-jog?distance=-10")
             assert response.status_code == 200
             sent_gcode = mock_client.send_gcode.call_args[0][0]
-            assert "G1 Z-10.00" in sent_gcode, f"{model} should pass through the negative sign"
+            assert "G1 Z-10.0" in sent_gcode, f"{model} should pass through the negative sign"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -131,28 +145,26 @@ class TestBedJogAPI:
     async def test_bed_slinger_models_invert_sign(self, async_client: AsyncClient, printer_factory, model):
         """A1 family inverts the sign so UI "Up" drives the toolhead UP, not into the bed."""
         printer = await printer_factory(name=f"Slinger-{model}", model=model)
-        mock_client = MagicMock()
-        mock_client.send_gcode.return_value = True
+        mock_client = _jog_client(model)
         with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
             mock_pm.get_client.return_value = mock_client
             # UI "Up" = negative distance, but on bed-slinger we want toolhead UP
             response = await async_client.post(f"/api/v1/printers/{printer.id}/bed-jog?distance=-10")
             assert response.status_code == 200
             sent_gcode = mock_client.send_gcode.call_args[0][0]
-            assert "G1 Z10.00" in sent_gcode, f"{model} should invert the sign (toolhead goes up)"
+            assert "G1 Z10.0" in sent_gcode, f"{model} should invert the sign (toolhead goes up)"
 
     @pytest.mark.asyncio
     async def test_bed_slinger_down_arrow_drops_toolhead(self, async_client: AsyncClient, printer_factory):
         """Symmetric: UI "Down arrow" (positive distance) on A1 produces G1 Z-, dropping the toolhead toward the bed."""
         printer = await printer_factory(name="A1-down", model="A1")
-        mock_client = MagicMock()
-        mock_client.send_gcode.return_value = True
+        mock_client = _jog_client("A1")
         with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
             mock_pm.get_client.return_value = mock_client
             response = await async_client.post(f"/api/v1/printers/{printer.id}/bed-jog?distance=5")
             assert response.status_code == 200
             sent_gcode = mock_client.send_gcode.call_args[0][0]
-            assert "G1 Z-5.00" in sent_gcode
+            assert "G1 Z-5.0" in sent_gcode
 
 
 class TestHomeAxesAPI:
