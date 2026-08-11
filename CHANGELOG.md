@@ -80,6 +80,10 @@ All notable changes to BamDude will be documented in this file.
 
 - **A refused AMS type switch hid the control that would let you retry it.** Switching an AMS between its personalities hides the picker as soon as the command is sent — the switch is under way, so there is nothing to choose. Only a report from the printer brings it back, and a refusal is not a report: the printer answers firmware operations on a separate channel that BamDude never read. So one declined switch left the picker gone and the button answering "a switch is already in progress" until the server was restarted. That channel is now read, and a refusal releases the control instead of stranding it.
 
+- **A two-colour spool is no longer shown, or named, as one colour.** A spool can carry several colours, and the printer reports all of them — BamDude read the first and painted the slot with it, which is a small thing to look at and a large thing to be told: a black-and-white spool labelled "Black" is one somebody will reach for when they need black. The slot dot now divides into equal segments, one per colour, and the name lists them rather than picking a winner. Spools that blend rather than band are drawn blended, the way Studio draws them.
+
+    The digit inside the dot picks its contrast from the average of the colours, so the same spool does not switch between a black and a white number depending on which end the printer happened to list first.
+
 - **A printer that refuses to print because of its firmware now says so.** Two states stop a Bambu printer accepting work: its module versions disagree and it wants a repair, or it insists on an update first. BamDude read neither, so such a printer sat there looking perfectly normal and quietly took no jobs. Both now show as a warning on the card.
 
     This matters on a printer that has never touched Bambu's cloud. The mismatch state is reachable exactly the way this farm updates — from the SD card — when one module takes the new firmware and another does not, and the flags travel on the ordinary local connection like everything else.

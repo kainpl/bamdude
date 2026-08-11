@@ -522,6 +522,15 @@ export interface AMSTray {
   tray_id_name: string | null;  // Bambu filament ID like "A00-Y2" (can decode to color)
   tray_info_idx: string | null;  // Filament preset ID like "GFA00" - maps to cloud setting_id
   remain: number;
+  // Every colour this spool carries; a single-colour spool gets a one-item list,
+  // so there is only one shape to handle. Hex WITHOUT the leading '#'.
+  cols?: string[];
+  // BambuStudio's DevFilaColorType. ⚠️ 0 = MULTI, 1 = GRADIENT, 2 = SINGLE —
+  // the numbering is not what the names suggest, so 0 does NOT mean "none".
+  // ⚠️ And the drawing rule inverts them again: MULTI blends first→last, while
+  // everything else with more than one colour draws equal bands. Copied from
+  // AMSItem.cpp rather than reasoned about.
+  ctype?: number | null;
   k: number | null;  // Pressure advance value (from tray or K-profile lookup)
   cali_idx: number | null;  // Calibration index for K-profile lookup
   tag_uid: string | null;  // RFID tag UID (any tag)

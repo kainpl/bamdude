@@ -93,6 +93,39 @@ def _caller_can_view_printer_secrets(user: User | None) -> bool:
     return user.has_permission(Permission.PRINTERS_UPDATE.value)
 
 
+# BS ``DevFilaColorType`` — ⚠️ 0 is MULTI and 2 is SINGLE, not the other way
+# round, so a bare ``ctype: 0`` must never be read as "no type".
+FILA_CTYPE_MULTI = 0
+FILA_CTYPE_GRADIENT = 1
+FILA_CTYPE_SINGLE = 2
+
+
+def _tray_colours(tray: dict, fallback_colour: str | None) -> tuple[list[str], int]:
+    """Every colour a tray carries, plus how it should be read.
+
+    BS applies both fallbacks in each of its two tray parsers, and we follow
+    them so a caller never has to special-case a firmware that omits a field:
+
+    * no ``cols`` → the single ``tray_color``, as a one-item list;
+    * no ``ctype`` → derived from the list, ``len > 1`` being MULTI.
+
+    Colours are returned without the leading ``#`` and lower-cased, matching
+    ``tray_color`` elsewhere in this response so the frontend has one shape to
+    handle.
+    """
+    raw = tray.get("cols")
+    cols: list[str] = []
+    if isinstance(raw, list):
+        cols = [str(c).replace("#", "").lower() for c in raw if isinstance(c, str) and c]
+    if not cols and fallback_colour:
+        cols = [fallback_colour.replace("#", "").lower()]
+
+    ctype = tray.get("ctype")
+    if not isinstance(ctype, int) or isinstance(ctype, bool):
+        ctype = FILA_CTYPE_MULTI if len(cols) > 1 else FILA_CTYPE_SINGLE
+    return cols, ctype
+
+
 def _serialize_printer(printer: Printer, *, include_secret: bool):
     """Serialize a printer, including the access_code MQTT credential only when the
     caller holds PRINTERS_UPDATE (see ``_caller_can_view_printer_secrets``)."""
@@ -622,10 +655,13 @@ async def get_printer_status(
                 if k_value is None and cali_idx is not None and cali_idx in kprofile_map:
                     k_value = kprofile_map[cali_idx]
 
+                _tray_cols, _tray_ctype = _tray_colours(tray_data, tray_data.get("tray_color"))
                 trays.append(
                     AMSTray(
                         id=tray_data.get("id", 0),
                         tray_color=tray_data.get("tray_color"),
+                        cols=_tray_cols,
+                        ctype=_tray_ctype,
                         tray_type=tray_data.get("tray_type"),
                         tray_sub_brands=tray_data.get("tray_sub_brands"),
                         tray_id_name=tray_data.get("tray_id_name"),
@@ -726,11 +762,17 @@ async def get_printer_status(
                 vt_k_value = kprofile_map[vt_cali_idx]
 
             tray_id = int(vt_data.get("id", 254))
+            # The external spool carries the same colour fields as an AMS tray —
+            # BS parses them in both places, so a multi-colour spool on the
+            # external holder is not a different case.
+            _vt_cols, _vt_ctype = _tray_colours(vt_data, vt_data.get("tray_color"))
             vt_tray.append(
                 AMSTray(
                     id=tray_id,
                     tray_color=vt_data.get("tray_color"),
                     tray_type=vt_data.get("tray_type"),
+                    cols=_vt_cols,
+                    ctype=_vt_ctype,
                     tray_sub_brands=vt_data.get("tray_sub_brands"),
                     tray_id_name=vt_data.get("tray_id_name"),
                     tray_info_idx=vt_data.get("tray_info_idx"),

@@ -219,6 +219,20 @@ class AMSTray(BaseModel):
     tray_id_name: str | None = None  # Bambu filament ID like "A00-Y2" (can decode to color)
     tray_info_idx: str | None = None  # Filament preset ID like "GFA00"
     remain: int = 0
+    # Every colour this spool carries. A single-colour spool gets a one-item
+    # list, so callers never have to ask which shape they got — BS applies the
+    # same fallback (``cols = [tray_color]`` when the field is absent).
+    cols: list[str] = []
+    # BS ``DevFilaColorType``. ⚠️ The numbering is not what the names suggest:
+    # **0 = MULTI, 1 = GRADIANT, 2 = SINGLE** — so a ``ctype`` of 0 means
+    # multi-colour, not "none". Absent → derived from the list length, as BS
+    # does: more than one colour is MULTI, otherwise SINGLE.
+    #
+    # ⚠️ And the rendering rule is the reverse of the names again (AMSItem.cpp):
+    # CTYPE_MULTI draws a smooth GRADIENT between the first and last colour,
+    # while everything else with more than one colour draws equal stripes.
+    # Copied as found; it is the reference behaviour, not a mistake to correct.
+    ctype: int | None = None
     k: float | None = None  # Pressure advance value (from tray or K-profile lookup)
     cali_idx: int | None = None  # Calibration index for K-profile lookup
     tag_uid: str | None = None  # RFID tag UID (any tag)

@@ -151,7 +151,7 @@ const DRY_STATUS_ERROR = 5;
 // A hand-kept model table can only ever be wrong about a machine it has not
 // met — see the per-model-capability invariant in the vault.
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
-import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors';
+import { getColorName, parseFilamentColor, isLightColor, resolveMultiColorName } from '../utils/colors';
 import { formatSpoolDisplayName, DEFAULT_SPOOL_DISPLAY_TEMPLATE } from '../utils/spoolName';
 import { groupByLocation } from '../utils/locationGroups';
 import { LocationConditions } from '../components/zigbee/LocationConditions';
@@ -4381,7 +4381,7 @@ function PrinterCard({
                                     || cloudInfo?.name
                                     || tray.tray_sub_brands
                                     || tray.tray_type,
-                                  colorName: getColorName(tray.tray_color || ''),
+                                  colorName: resolveMultiColorName(tray.cols) ?? getColorName(tray.tray_color || ''),
                                   colorHex: tray.tray_color || null,
                                   kFactor: formatKValue(tray.k),
                                   fillLevel: effectiveFill,
@@ -4432,6 +4432,8 @@ function PrinterCard({
                                     {/* Filament color circle with 1-based slot number centered inside */}
                                     <FilamentSlotCircle
                                       trayColor={tray?.tray_color}
+                                      trayColors={tray?.cols}
+                                      ctype={tray?.ctype}
                                       trayType={tray?.tray_type}
                                       isEmpty={isEmpty}
                                       slotNumber={slotIdx + 1}
@@ -4741,7 +4743,7 @@ function PrinterCard({
                             || cloudInfo?.name
                             || tray.tray_sub_brands
                             || tray.tray_type,
-                          colorName: getColorName(tray.tray_color || ''),
+                          colorName: resolveMultiColorName(tray.cols) ?? getColorName(tray.tray_color || ''),
                           colorHex: tray.tray_color || null,
                           kFactor: formatKValue(tray.k),
                           fillLevel: htEffectiveFill,
@@ -4792,6 +4794,8 @@ function PrinterCard({
                             {/* Filament color circle with 1-based slot number centered inside */}
                             <FilamentSlotCircle
                               trayColor={tray?.tray_color}
+                              trayColors={tray?.cols}
+                              ctype={tray?.ctype}
                               trayType={tray?.tray_type}
                               isEmpty={isEmpty}
                               slotNumber={1}
@@ -5167,7 +5171,7 @@ function PrinterCard({
                                   || extTray.tray_sub_brands
                                   || extTray.tray_type
                                   || 'Unknown',
-                                colorName: getColorName(extTray.tray_color || ''),
+                                colorName: resolveMultiColorName(extTray.cols) ?? getColorName(extTray.tray_color || ''),
                                 colorHex: extTray.tray_color || null,
                                 kFactor: formatKValue(extTray.k),
                                 fillLevel: extEffectiveFill,
@@ -5182,6 +5186,8 @@ function PrinterCard({
                                   {/* Filament color circle with 1-based slot number centered inside */}
                                   <FilamentSlotCircle
                                     trayColor={extTray.tray_color}
+                                    trayColors={extTray.cols}
+                                    ctype={extTray.ctype}
                                     trayType={extTray.tray_type}
                                     isEmpty={isEmpty}
                                     slotNumber={isDualNozzle ? (extTrayId === 254 ? 'L' : 'R') : slotTrayId + 1}
