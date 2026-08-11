@@ -219,6 +219,13 @@ class AMSTray(BaseModel):
     tray_id_name: str | None = None  # Bambu filament ID like "A00-Y2" (can decode to color)
     tray_info_idx: str | None = None  # Filament preset ID like "GFA00"
     remain: int = 0
+    # Grams left, as the firmware itself computes them. ⚠️ -1 means "not
+    # provided", which is what BS's own default is and what most hardware
+    # returns: no AMS weighs anything, and the figure is derived from RFID plus
+    # spool rotation, so it exists only for tagged spools. Present here so a
+    # reading is used when there is one — BS prefers it over the percentage for
+    # the same reason we do (see ``DevAmsTray::get_filament_remain_weight``).
+    remain_g: int = -1
     # Every colour this spool carries. A single-colour spool gets a one-item
     # list, so callers never have to ask which shape they got — BS applies the
     # same fallback (``cols = [tray_color]`` when the field is absent).

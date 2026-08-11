@@ -100,6 +100,26 @@ FILA_CTYPE_GRADIENT = 1
 FILA_CTYPE_SINGLE = 2
 
 
+def _tray_remain_g(tray: dict) -> int:
+    """The firmware's own grams-remaining for a tray, or -1 when it has none.
+
+    BS reads this from both its tray parsers with a default of -1
+    (``DevFilaSystemParser`` and ``parse_vt_tray``), and prefers it over the
+    percentage wherever it is present.
+
+    ⚠️ **This is not a weight measurement, and no hardware measures weight.**
+    Bambu's AMS — including the 2 Pro — derives remaining filament from the RFID
+    tag plus how far the spool has turned; a load cell is an open feature
+    request, not a product. So the figure exists only for tagged spools and is
+    ``-1`` everywhere else. Reading it costs nothing and means the number is
+    used the day firmware or hardware starts providing it.
+    """
+    raw = tray.get("remain_g")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return -1
+    return int(raw)
+
+
 def _tray_colours(tray: dict, fallback_colour: str | None) -> tuple[list[str], int]:
     """Every colour a tray carries, plus how it should be read.
 
@@ -667,6 +687,7 @@ async def get_printer_status(
                         tray_id_name=tray_data.get("tray_id_name"),
                         tray_info_idx=tray_data.get("tray_info_idx"),
                         remain=tray_data.get("remain", 0),
+                        remain_g=_tray_remain_g(tray_data),
                         k=k_value,
                         cali_idx=cali_idx,
                         tag_uid=tag_uid,
@@ -777,6 +798,7 @@ async def get_printer_status(
                     tray_id_name=vt_data.get("tray_id_name"),
                     tray_info_idx=vt_data.get("tray_info_idx"),
                     remain=vt_data.get("remain", 0),
+                    remain_g=_tray_remain_g(vt_data),
                     k=vt_k_value,
                     cali_idx=vt_cali_idx,
                     tag_uid=vt_tag_uid,

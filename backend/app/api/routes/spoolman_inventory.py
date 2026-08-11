@@ -63,6 +63,7 @@ from backend.app.utils.filament_ids import (
     MATERIAL_TEMPS,
     normalize_slicer_filament,
 )
+from backend.app.utils.filament_remaining import grams_remaining
 
 logger = logging.getLogger(__name__)
 
@@ -1362,7 +1363,14 @@ async def sync_spoolman_ams_weights(
             skipped += 1
             continue
 
-        remaining = round(label_weight * remain_val / 100.0, 1)
+        # ``grams_remaining``, not ``grams_used`` — Spoolman is told what is
+        # LEFT. The firmware's own grams win where offered, which also means
+        # this path no longer needs the label weight at all in that case.
+        _remaining = grams_remaining(tray.get("remain_g"), remain_val, label_weight)
+        if _remaining is None:
+            skipped += 1
+            continue
+        remaining = round(_remaining, 1)
         try:
             async with _translate_spoolman_errors():
                 await client.update_spool_full(assignment.spoolman_spool_id, remaining_weight=remaining)

@@ -111,6 +111,7 @@ from backend.app.services.spoolman_tracking import (
     store_print_data as _store_spoolman_print_data,
 )
 from backend.app.services.stock_forecast_alerts import stock_forecast_alerts
+from backend.app.utils.filament_remaining import grams_used
 
 
 # =============================================================================
@@ -1998,9 +1999,11 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                     remain_val = int(remain_raw)
                                 except (TypeError, ValueError):
                                     remain_val = -1
-                                if 1 <= remain_val <= 100:
-                                    lw = existing_assignment.spool.label_weight or 1000
-                                    new_used = round(lw * (100 - remain_val) / 100.0, 1)
+                                _new_used = grams_used(
+                                    tray.get("remain_g"), remain_val, existing_assignment.spool.label_weight
+                                )
+                                if _new_used is not None:
+                                    new_used = _new_used
                                     current_used = existing_assignment.spool.weight_used or 0
                                     if new_used > current_used + 1:
                                         logger.info(
