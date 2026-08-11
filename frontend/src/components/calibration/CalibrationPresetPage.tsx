@@ -1103,6 +1103,7 @@ export function CalibrationPresetPage({
               <option value="standard">Standard</option>
               <option value="high_flow">High Flow</option>
               <option value="tpu_high_flow">TPU High Flow</option>
+              <option value="e3d_high_flow">E3D High Flow</option>
               <option value="hybrid">Hybrid</option>
             </select>
           </label>

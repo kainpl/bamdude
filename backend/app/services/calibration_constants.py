@@ -43,6 +43,9 @@ class NozzleVolumeType(str, Enum):
     HIGH_FLOW = "high_flow"
     TPU_HIGH_FLOW = "tpu_high_flow"
     HYBRID = "hybrid"
+    # BS ``nvtE3DHighFlow``. ⚠️ Its enum value is 5, not 4 — the numbering skips
+    # one — so nothing here may assume the set is contiguous.
+    E3D_HIGH_FLOW = "e3d_high_flow"
 
 
 # Maps for nozzle_id encoder
@@ -51,6 +54,9 @@ _VOL_TYPE_CHARS = {
     NozzleVolumeType.HIGH_FLOW: "H",
     NozzleVolumeType.TPU_HIGH_FLOW: "U",
     NozzleVolumeType.HYBRID: "Y",
+    # ⚠️ "B", not "E": BS spells E3D High Flow with a B and uses E for plain
+    # High Flow (``_generate_nozzle_id`` / ``_str2_nozzle_flow_type``).
+    NozzleVolumeType.E3D_HIGH_FLOW: "B",
 }
 
 # Diameter to two-digit code (BS-format): 0.2→"00", 0.4→"20", 0.6→"40", 0.8→"60"

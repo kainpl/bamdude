@@ -561,7 +561,13 @@ _NOZZLE_MATERIAL_CODE_MAP: dict[str, str] = {
     "05": "tungsten_carbide",
 }
 
-# 4-char-code flow letters (position 1). S/X/A → standard, H/E → high_flow, U → tpu_high_flow.
+# 4-char-code flow letters (position 1), copied from BS ``_str2_nozzle_flow_type``.
+#
+# ⚠️ **``E`` is plain High Flow and ``B`` is the E3D one** — not the other way
+# round, which is what the letter shapes suggest. BS maps ``E -> H_FLOW`` and
+# ``B -> E_FLOW``, and we were missing ``B`` entirely: an ``HB00`` nozzle fell
+# through to the default and was labelled Standard, so touching the field in the
+# UI wrote back a flow class the nozzle does not have.
 _NOZZLE_FLOW_LETTER_MAP: dict[str, str] = {
     "S": "standard",
     "H": "high_flow",
@@ -569,6 +575,7 @@ _NOZZLE_FLOW_LETTER_MAP: dict[str, str] = {
     "X": "standard",
     "E": "high_flow",
     "U": "tpu_high_flow",
+    "B": "e3d_high_flow",
 }
 
 
@@ -603,7 +610,7 @@ class NozzleInfo:
     Stores the *decoded* values per BS — ``nozzle_type`` is the canonical
     material name ("stainless_steel" / "hardened_steel" / ...), not the
     raw 4-char code. ``nozzle_flow`` is the parsed flow class
-    ("standard" / "high_flow" / "tpu_high_flow"). Diameter stays as the
+    ("standard" / "high_flow" / "tpu_high_flow" / "e3d_high_flow"). Diameter stays as the
     string the firmware reported.
     """
 

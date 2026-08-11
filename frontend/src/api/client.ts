@@ -562,7 +562,7 @@ export interface AMSUnit {
 
 export interface NozzleInfo {
   nozzle_type: string;  // canonical material: "stainless_steel" / "hardened_steel" / ...
-  nozzle_flow: string;  // parsed flow: "standard" / "high_flow" / "tpu_high_flow"
+  nozzle_flow: string;  // "standard" / "high_flow" / "tpu_high_flow" / "e3d_high_flow"
   nozzle_diameter: string;  // e.g., "0.4"
 }
 
@@ -4580,7 +4580,10 @@ export type CaliMode =
 
 export type CaliMethod = 'auto' | 'manual';
 
-export type NozzleVolumeType = 'standard' | 'high_flow' | 'tpu_high_flow' | 'hybrid';
+// BambuStudio's NozzleVolumeType. ⚠️ Its numbering skips a value (E3D is 5, not
+// 4), and its 4-char code spells E3D High Flow with a **B** while **E** means
+// plain High Flow — the letters read backwards from what you would guess.
+export type NozzleVolumeType = 'standard' | 'high_flow' | 'tpu_high_flow' | 'hybrid' | 'e3d_high_flow';
 
 export type CalibModeState = 'disabled' | 'verification' | 'production';
 

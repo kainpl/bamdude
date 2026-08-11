@@ -1349,6 +1349,7 @@ _NOZZLE_PREFIX_TO_VOL_TYPE = {
     "HS": "standard",
     "HH": "high_flow",
     "HU": "tpu_high_flow",
+    "HB": "e3d_high_flow",
     "HY": "hybrid",
 }
 
