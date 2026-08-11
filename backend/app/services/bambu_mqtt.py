@@ -586,6 +586,10 @@ def _parse_nozzle_type(raw: str | None) -> tuple[str, str]:
     formats: canonical long names ("stainless_steel"), 4-char codes
     ("HS00"), and "N/A". Returns ("", "") when the value is empty or
     unrecognized so callers can leave NozzleInfo defaults intact.
+
+    The device's ``nozzle_type`` is the short code; a calibration ``nozzle_id``
+    is the long form ("HS00-0.4"). Both are read by the same slice positions,
+    which is why the length check is ``>= 4`` and not ``== 4``.
     """
     if not raw:
         return "", ""

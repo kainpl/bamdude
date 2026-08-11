@@ -46,7 +46,7 @@ def test_extrusion_cali_start_payload(mqtt_client):
                 "nozzle_temp": 220,
                 "ams_id": 0,
                 "slot_id": 0,
-                "nozzle_id": "HS20",
+                "nozzle_id": "HS00-0.4",
                 "nozzle_diameter": "0.4",
                 "max_volumetric_speed": "12.0",
             }
@@ -76,7 +76,7 @@ def test_flow_rate_cali_start_payload(mqtt_client):
                 "nozzle_temp": 220,
                 "ams_id": 0,
                 "slot_id": 0,
-                "nozzle_id": "HS20",
+                "nozzle_id": "HS00-0.4",
                 "nozzle_diameter": "0.4",
                 "max_volumetric_speed": "12.0",
                 "flow_rate": 0.98,

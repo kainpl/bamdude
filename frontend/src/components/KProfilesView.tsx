@@ -61,9 +61,18 @@ const getFlowTypeLabel = (nozzleId: string) => {
 // ``printer_configs.supports_nozzle_flow_type``, which mirrors BS's own gate for
 // this dialog. On a printer that does not offer the choice the field is not
 // shown; on one that does, this is its default.
+//
+// ⚠️ Characters 2-3 are the nozzle MATERIAL, and every id generated today puts
+// stainless ("00") there. Older BamDude versions wrote a diameter code into
+// those two characters instead — "HH60" for a high-flow 0.8 — so profiles
+// created by the calibration wizard before that was fixed still come back from
+// the printer with a prefix matching none of the entries in the dropdown below,
+// which left the field showing a selection nobody chose. The flow letter has
+// always been in the same place, so keep it and put the material back. A
+// well-formed id passes through this untouched.
 const getNozzleTypePrefix = (nozzleId: string) => {
-  const match = nozzleId.match(/^([A-Z]{2}\d{2})/);
-  return match ? match[1] : 'HS00';
+  const match = nozzleId.match(/^([A-Z]{2})\d{2}/);
+  return match ? `${match[1]}00` : 'HS00';
 };
 
 // Extract filament name from profile name (e.g., "High Flow_Devil Design PLA Basic" -> "Devil Design PLA Basic")

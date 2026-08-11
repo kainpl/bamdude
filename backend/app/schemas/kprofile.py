@@ -8,7 +8,9 @@ class KProfile(BaseModel):
 
     slot_id: int  # Storage slot on printer (limited capacity ~20 slots)
     extruder_id: int = 0  # 0 or 1 for dual nozzle printers
-    nozzle_id: str  # e.g., "HS00-0.4" (hardened steel 0.4mm)
+    # H + flow letter + material + "-" + diameter. "HS00-0.4" is a standard-flow
+    # stainless 0.4 — "00" is stainless, not hardened ("01").
+    nozzle_id: str
     nozzle_diameter: str  # e.g., "0.4"
     filament_id: str  # Bambu filament identifier
     name: str  # User-defined name for the profile

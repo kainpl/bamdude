@@ -146,7 +146,7 @@ async def test_start_calibration_auto_pa(service, db_session, printer_factory, m
     call = mock_client.extrusion_cali_start.call_args.kwargs
     assert call["cali_mode"] == 0
     assert call["filaments"][0]["filament_id"] == "GFG00"
-    assert call["filaments"][0]["nozzle_id"] == "HS20"
+    assert call["filaments"][0]["nozzle_id"] == "HS00-0.4"
 
 
 @pytest.mark.asyncio
@@ -502,7 +502,7 @@ async def test_submit_manual_pa_computes_k(service, db_session, printer_factory,
                     "tray_id": 0,
                     "filament_id": "GFG00",
                     "setting_id": "GFG00_60@BBL",
-                    "nozzle_id": "HS20",
+                    "nozzle_id": "HS00-0.4",
                     "nozzle_diameter": "0.4",
                     "nozzle_temp": 220,
                 }
