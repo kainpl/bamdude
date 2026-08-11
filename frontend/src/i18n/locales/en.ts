@@ -4051,6 +4051,7 @@ export default {
     project: 'Project',
     archive: 'Archive',
     noProjectsFound: 'No projects found',
+    archiveLinkHint: 'Puts a shortcut on that archive that opens this folder. One archive can be linked to one folder only.',
     noArchivesFound: 'No archives found',
     unlink: 'Unlink',
     link: 'Link',

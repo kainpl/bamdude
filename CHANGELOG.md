@@ -44,6 +44,10 @@ All notable changes to BamDude will be documented in this file.
 
 ### Added
 
+- **Linking a folder to an archive now says what it does, and one archive belongs to one folder.** The field offered no hint of its purpose — the link puts an "open source folder" shortcut on the **archive**, nothing on the folder, so it read as a setting with no effect. It now says so.
+
+    It was also many-to-one: several folders could claim the same archive, while the archive only ever showed the first one it found. The second binding existed in the database and nowhere on screen. Linking an archive that another folder already holds is now refused, naming that folder, rather than silently taking it away from a folder you are not looking at. ⚠️ On upgrade, any archive already claimed by several folders keeps its **most recent** link and the others are cleared — each one written to the log with both folder names.
+
 - **Archived projects no longer clutter the pickers.** Binding a file, a folder or an archive to a project offered every project ever created, archived ones included, labelled `• archived` in small print that nobody reads in a long list. Archiving means "I am done with this" — the same thing it means for a printer, which disappears from the choices rather than being annotated. ⚠️ A project something is **already** bound to stays on the list even when archived: hiding it would show the field as empty and save that emptiness back. Completed projects are still offered — finished is not the same as put away, and a reprint still belongs somewhere.
 
 - **A timelapse is no longer promised to a printer that cannot record one.** BamDude ticked the box and sent the request to any printer, including one with no SD card in it — the flag went nowhere and the print finished with no video and no explanation. Two checks now stand where BambuStudio puts them.

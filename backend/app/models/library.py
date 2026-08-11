@@ -25,7 +25,16 @@ class LibraryFolder(Base):
 
     # Link to archive (optional). Project links live in the
     # ``library_folder_projects`` pivot — see ``projects`` below.
+    #
+    # ⚠️ **One archive belongs to at most one folder** — the unique index in
+    # ``__table_args__`` (and m133 for existing installs). It was a plain FK, so
+    # several folders could claim one archive while the archive page only ever
+    # drew the first it found: the second binding existed in the database and
+    # nowhere on screen. NULLs are exempt from a unique index on both back ends,
+    # which is what makes "unlinked" the ordinary case it should be.
     archive_id: Mapped[int | None] = mapped_column(ForeignKey("print_archives.id", ondelete="SET NULL"), nullable=True)
+
+    __table_args__ = (Index("ix_library_folders_archive_id_unique", "archive_id", unique=True),)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

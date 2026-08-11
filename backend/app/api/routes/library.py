@@ -937,6 +937,26 @@ async def get_folders_by_archive(
     return folders
 
 
+async def _assert_archive_unclaimed(db: AsyncSession, archive_id: int, folder_id: int | None = None) -> None:
+    """One archive belongs to at most one folder.
+
+    ⚠️ **Refuses rather than steals.** Re-pointing an archive silently would
+    unlink whichever folder held it — a folder the person doing this is not
+    looking at and may not know exists. Naming the holder costs one extra step
+    and destroys nothing; the database index (m133) is what makes it true, and
+    this is what makes it explainable instead of a 500.
+    """
+    query = select(LibraryFolder).where(LibraryFolder.archive_id == archive_id)
+    if folder_id is not None:
+        query = query.where(LibraryFolder.id != folder_id)
+    holder = (await db.execute(query)).scalars().first()
+    if holder is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This archive is already linked to the folder '{holder.name}'. Unlink it there first.",
+        )
+
+
 @router.post("/folders", response_model=FolderResponse)
 @router.post("/folders/", response_model=FolderResponse)
 async def create_folder(
@@ -962,6 +982,7 @@ async def create_folder(
         if not archive:
             raise HTTPException(status_code=404, detail="Archive not found")
         archive_name = archive.print_name
+        await _assert_archive_unclaimed(db, data.archive_id)
 
     folder = LibraryFolder(
         name=data.name,
@@ -1201,6 +1222,7 @@ async def update_folder(
             archive_result = await db.execute(select(PrintArchive).where(PrintArchive.id == data.archive_id))
             if not archive_result.scalar_one_or_none():
                 raise HTTPException(status_code=404, detail="Archive not found")
+            await _assert_archive_unclaimed(db, data.archive_id, folder.id)
             folder.archive_id = data.archive_id
 
     await db.commit()

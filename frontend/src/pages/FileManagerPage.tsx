@@ -552,6 +552,11 @@ function LinkFolderModal({ folder, onClose, onLink, isLoading, t }: LinkFolderMo
               {/* Currently linked archive — surfaced above the picker so the
                   per-link unlink affordance (× clears the selection) is
                   obvious without scrolling through the whole archive list. */}
+              {/* ⚠️ The whole point of this field is invisible from here: the link
+                  puts an "open source folder" shortcut on the ARCHIVE, not anything on
+                  the folder. Unsaid, it reads as a setting with no effect — which is
+                  exactly how it was read. */}
+              <p className="text-xs text-bambu-gray leading-snug">{t('fileManager.archiveLinkHint')}</p>
               {selectedArchiveId != null && (
                 <div className="flex items-center justify-between gap-2 bg-bambu-dark rounded-lg px-3 py-2">
                   <div className="flex items-center gap-2 text-sm text-white truncate">
