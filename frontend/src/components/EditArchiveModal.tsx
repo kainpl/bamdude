@@ -1,10 +1,11 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { X, Save, Tag, Camera, Trash2, Loader2, Plus, FolderKanban, Hash, Link, PackageX } from 'lucide-react';
 import { api } from '../api/client';
 import type { Archive } from '../api/client';
 import { Button } from './Button';
+import { selectableProjects } from '../utils/projects';
 
 // Keys for failure reasons - translated at render time
 const FAILURE_REASON_KEYS = [
@@ -79,10 +80,17 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
     queryFn: api.getPrinters,
   });
 
-  const { data: projects } = useQuery({
+  const { data: allProjects } = useQuery({
     queryKey: ['projects'],
     queryFn: () => api.getProjects(),
   });
+
+  // Keep the archive's own project on the list even when archived — dropping it
+  // would render the field as "no project" and save that back.
+  const projects = useMemo(
+    () => selectableProjects(allProjects, projectId != null ? [projectId] : null),
+    [allProjects, projectId],
+  );
 
   // Fetch all tags using the dedicated API
   const { data: tagsData } = useQuery({

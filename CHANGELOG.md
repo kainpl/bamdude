@@ -44,6 +44,8 @@ All notable changes to BamDude will be documented in this file.
 
 ### Added
 
+- **Archived projects no longer clutter the pickers.** Binding a file, a folder or an archive to a project offered every project ever created, archived ones included, labelled `• archived` in small print that nobody reads in a long list. Archiving means "I am done with this" — the same thing it means for a printer, which disappears from the choices rather than being annotated. ⚠️ A project something is **already** bound to stays on the list even when archived: hiding it would show the field as empty and save that emptiness back. Completed projects are still offered — finished is not the same as put away, and a reprint still belongs somewhere.
+
 - **A timelapse is no longer promised to a printer that cannot record one.** BamDude ticked the box and sent the request to any printer, including one with no SD card in it — the flag went nowhere and the print finished with no video and no explanation. Two checks now stand where BambuStudio puts them.
 
     **When you pick printers, the box tells you.** A printer with no card, an unreadable card or a read-only card is named, with which of the three it is. ⚠️ Three separate answers, not one: a card that is in the slot and unusable is a different problem from an empty slot. A machine with internal timelapse storage or a timelapse kit is unaffected — neither needs the card at all, and neither is guessable from the model name.

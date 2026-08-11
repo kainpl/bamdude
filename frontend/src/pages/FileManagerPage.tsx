@@ -85,6 +85,7 @@ import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
 import { FileTagsPopover, type TagsPopoverAnchor } from '../components/FileTagsPopover';
 import { QueueSequencer } from '../components/QueueSequencer';
 import { libraryTagsQueryKey } from '../utils/libraryTagsQuery';
+import { selectableProjects } from '../utils/projects';
 
 type SortField = 'name' | 'date' | 'size' | 'type';
 type SortDirection = 'asc' | 'desc';
@@ -410,10 +411,16 @@ function LinkFolderModal({ folder, onClose, onLink, isLoading, t }: LinkFolderMo
   );
   const [selectedArchiveId, setSelectedArchiveId] = useState<number | null>(folder.archive_id);
 
-  const { data: projects } = useQuery({
+  const { data: allProjects } = useQuery({
     queryKey: ['projects'],
     queryFn: () => api.getProjects(),
   });
+
+  // Whatever this folder is already in stays offered, archived or not.
+  const projects = useMemo(
+    () => selectableProjects(allProjects, selectedProjectIds),
+    [allProjects, selectedProjectIds],
+  );
 
   const { data: archives } = useQuery({
     queryKey: ['archives-for-link'],
@@ -617,10 +624,16 @@ function LinkFileModal({ file, onClose, onLink, isLoading, t }: LinkFileModalPro
     () => new Set(file.project_ids ?? []),
   );
 
-  const { data: projects } = useQuery({
+  const { data: allProjects } = useQuery({
     queryKey: ['projects'],
     queryFn: () => api.getProjects(),
   });
+
+  // Whatever this folder is already in stays offered, archived or not.
+  const projects = useMemo(
+    () => selectableProjects(allProjects, selectedProjectIds),
+    [allProjects, selectedProjectIds],
+  );
 
   const toggleProject = (projectId: number) => {
     setSelectedProjectIds((prev) => {
