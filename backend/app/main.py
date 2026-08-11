@@ -1437,7 +1437,10 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         # Homed-ness drives whether the jog controls are offered at all,
         # and it changes exactly when somebody homes the machine — which is
         # otherwise a moment nothing else in this key notices.
-        f"{sorted(state.axis_at_home.items())}:{sorted(state.ext_has_filament.items())}"
+        f"{sorted(state.axis_at_home.items())}:{sorted(state.ext_has_filament.items())}:"
+        # Whether a timelapse is possible changes when a card is pulled or
+        # fills up — moments nothing else in this key notices.
+        f"{state.sdcard_state}:{state.has_timelapse_kit}:{sorted(state.timelapse_storage.items())}"
     )
 
     # MQTT relay - publish status (before dedup check - always publish to MQTT)

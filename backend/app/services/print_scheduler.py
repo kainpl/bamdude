@@ -149,6 +149,25 @@ class _StaggerSlot:
         self.interval_seconds = interval_seconds  # per-printer or system default
 
 
+def _timelapse_storage_full(printer_id: int) -> bool:
+    """Whether this printer has run out of room for a timelapse.
+
+    ⚠️ Answers False whenever the figure is unknown — no client, no camera
+    report, or a machine that keeps its timelapses on an SD card we cannot
+    measure. Pausing a queue on a number nobody has would strand a farm over a
+    guess, which is worse than the missing video this is meant to protect.
+    """
+    from backend.app.services.printer_manager import printer_manager as _pm
+    from backend.app.utils.timelapse import is_storage_low
+
+    client = _pm.get_client(printer_id)
+    if client is None:
+        return False
+
+    storage = (client.state.print_option_support or {}).get("internal_timelapse")
+    return is_storage_low(client.state.timelapse_storage or {}, "internal" if storage else "external")
+
+
 class PrintScheduler:
     """Background scheduler that processes the print queue."""
 
@@ -341,6 +360,29 @@ class PrintScheduler:
                 # Get printer_id from queue
                 printer_id = item.queue.printer_id if item.queue else None
                 if not printer_id:
+                    continue
+
+                # ⚠️ A timelapse that was asked for and has nowhere to go PAUSES
+                # the queue rather than printing without one. That is a farm
+                # decision, not BambuStudio's: Studio offers to delete the oldest
+                # recording or to untick the box, both of which need somebody
+                # present. Unattended, the only choice that does not quietly
+                # throw away what was asked for is to stop and say so.
+                #
+                # ⚠️ Only the SPACE check lives here. Whether the machine can
+                # record at all is asked in the scheduling dialog, where a person
+                # is choosing printers and can act on the answer — pausing for a
+                # missing card would strand work nobody can un-strand from here.
+                if getattr(item, "timelapse", False) and _timelapse_storage_full(printer_id):
+                    if not item.queue.is_paused:
+                        item.queue.is_paused = True
+                        logger.warning(
+                            "[Scheduler] Queue for printer %s paused: item %s wants a timelapse and "
+                            "the printer is out of space for one",
+                            printer_id,
+                            item.id,
+                        )
+                    skip_reasons["timelapse_storage_full"] = skip_reasons.get("timelapse_storage_full", 0) + 1
                     continue
 
                 # Check scheduled time first (scheduled_time is stored in UTC from ISO string)

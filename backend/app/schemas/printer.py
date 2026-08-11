@@ -513,6 +513,11 @@ class PrinterStatus(BaseModel):
     # AMS-firmware guard needed it; published so the extruder graphic can show
     # what is actually in the machine instead of a picture that always agrees.
     ext_has_filament: dict[int, bool] = Field(default_factory=dict)
+    # Whether a timelapse can be recorded, where it would go, and whether that
+    # place is nearly full. ⚠️ ``can_enable`` is the printer's answer, not the
+    # model's: a missing, unreadable or read-only card each refuse it, and
+    # internal storage or a timelapse kit each excuse the card entirely.
+    timelapse_capability: dict = Field(default_factory=dict)
     # Firmware version (from info.module[name="ota"].sw_ver)
     firmware_version: str | None = None
     # Developer LAN mode: True = enabled, False = disabled (MQTT encryption), None = unknown

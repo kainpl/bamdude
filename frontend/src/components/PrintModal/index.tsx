@@ -274,6 +274,55 @@ export function PrintModal({
     return selectedPrinters.some((id) => printers.find((p) => p.id === id)?.nozzle_count === 2);
   }, [isAutoMode, autoModeOptions.target_model, printers, selectedPrinters, DUAL_NOZZLE_MODELS]);
 
+  // ⚠️ Which selected printers cannot record a timelapse, asked HERE because
+  // here there is somebody who can act on the answer. The same query key the
+  // printer selector already uses, so these come out of the cache rather than
+  // off the wire.
+  //
+  // Auto mode is deliberately excluded: no printer is chosen yet, so there is
+  // nothing to check and nothing to name.
+  const timelapseStatuses = useQueries({
+    queries: (isAutoMode ? [] : selectedPrinters).map((id) => ({
+      queryKey: ['printerStatus', id],
+      queryFn: () => api.getPrinterStatus(id),
+      staleTime: 5000,
+    })),
+  });
+  // Selected printers whose timelapse storage is nearly full. Separate from the
+  // blockers above because this one is FIXABLE from here — the printer can drop
+  // its oldest recording — whereas a missing card cannot.
+  const timelapseLowSpace = useMemo(() => {
+    if (isAutoMode) return [];
+    return selectedPrinters.flatMap((id, i) => {
+      const capability = timelapseStatuses[i]?.data?.timelapse_capability;
+      if (!capability?.storage_low || !capability.supports_internal) return [];
+      const name = printers?.find((pr) => pr.id === id)?.name ?? `#${id}`;
+      return [{ printerId: id, name }];
+    });
+  }, [isAutoMode, selectedPrinters, timelapseStatuses, printers]);
+
+  const freeTimelapseSpace = useMutation({
+    mutationFn: (printerId: number) =>
+      api.deleteOldestTimelapse(printerId, timelapseTotalLayers ?? 1),
+    onSuccess: (_data, printerId) => {
+      // The printer republishes its free space in the next status push, so the
+      // fresh number arrives by re-reading rather than in this reply.
+      queryClient.invalidateQueries({ queryKey: ['printerStatus', printerId] });
+    },
+  });
+
+  const timelapseBlockers = useMemo(() => {
+    if (isAutoMode) return [];
+    return selectedPrinters.flatMap((id, i) => {
+      const capability = timelapseStatuses[i]?.data?.timelapse_capability;
+      // Absent means we have not heard yet — not a refusal. Naming a printer as
+      // broken because its status has not arrived would be worse than silence.
+      if (!capability || capability.can_enable !== false) return [];
+      const name = printers?.find((p) => p.id === id)?.name ?? `#${id}`;
+      return [{ name, reason: capability.reason ?? 'unsupported' }];
+    });
+  }, [isAutoMode, selectedPrinters, timelapseStatuses, printers]);
+
   // Which calibration steps expose the 3-position off/auto/on control for the
   // effective model. Non-auto models get the plain off/on toggle.
   const autoCaps = useMemo(() => autoCalibrationCaps(effectivePrinterModel), [effectivePrinterModel]);
@@ -392,6 +441,19 @@ export function PrintModal({
 
   // Combine filament requirements from either source
   const effectiveFilamentReqs = isLibraryFile ? libraryFilamentReqs : archiveFilamentReqs;
+  // How many layers the storage question is about. ⚠️ Per PLATE — a container's
+  // plates routinely differ by hundreds, so the file has no single answer. With
+  // several plates picked, the largest is the honest worst case for "will it
+  // fit"; with none picked yet there is nothing to ask about.
+  const timelapseTotalLayers = useMemo(() => {
+    const plates = platesData?.plates ?? [];
+    const chosen = plates.filter((pl) => selectedPlates.has(pl.index));
+    const counts = (chosen.length ? chosen : plates)
+      .map((pl) => pl.total_layers)
+      .filter((n): n is number => typeof n === 'number' && n > 0);
+    return counts.length ? Math.max(...counts) : null;
+  }, [platesData, selectedPlates]);
+
   const selectedPlateName = useMemo(() => {
     if (selectedPlate === null || !platesData?.plates?.length) {
       return undefined;
@@ -1291,7 +1353,7 @@ export function PrintModal({
 
             {/* Print options */}
             {(mode === 'reprint' || effectivePrinterCount > 0 || isAutoMode) && (
-              <PrintOptionsPanel options={printOptions} onChange={setPrintOptions} defaultExpanded={!!initialSelectedPrinterIds?.length} showDualNozzleOptions={showDualNozzleOptions} autoCaps={autoCaps} />
+              <PrintOptionsPanel options={printOptions} onChange={setPrintOptions} defaultExpanded={!!initialSelectedPrinterIds?.length} showDualNozzleOptions={showDualNozzleOptions} autoCaps={autoCaps} timelapseBlockers={timelapseBlockers} selectedPrinterCount={selectedPrinters.length} timelapseLowSpace={timelapseLowSpace} onFreeTimelapseSpace={(id) => freeTimelapseSpace.mutate(id)} freeingTimelapseSpace={freeTimelapseSpace.isPending} />
             )}
 
             {/* Swap-mode macros — only relevant when at least one selected

@@ -847,6 +847,8 @@ class TestPrinterStateToDict:
         state.ext_has_nozzle = {}
         state.axis_at_home = {"x": True, "y": True, "z": True}
         state.ext_has_filament = {}
+        state.has_timelapse_kit = False
+        state.timelapse_storage = {}
         return state
 
     def test_basic_conversion(self, mock_state):
@@ -1201,6 +1203,8 @@ class TestStatusKeyDryingDedup:
         state.ext_has_nozzle = {}
         state.axis_at_home = {"x": True, "y": True, "z": True}
         state.ext_has_filament = {}
+        state.has_timelapse_kit = False
+        state.timelapse_storage = {}
 
         # First state: drying active with 30 minutes remaining
         state.raw_data = {"ams": [{"id": 0, "dry_time": 30, "module_type": "n3f", "tray": [{"id": 0}]}]}

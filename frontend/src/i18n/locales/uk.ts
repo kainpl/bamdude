@@ -5503,6 +5503,14 @@ export default {
     flowCalibrationDesc: 'Калібрування потоку екструзії',
     layerInspectionDesc: 'AI-інспекція першого шару',
     timelapseDesc: 'Запис таймлапс-відео',
+    timelapseLowSpace: '{{printer}}: майже не лишилось місця під таймлапс',
+    timelapseFreeSpace: 'Звільнити',
+    timelapseBlocked: {
+      unsupported: 'цей принтер не вміє записувати таймлапс',
+      no_storage: 'немає SD-картки',
+      storage_unavailable: 'SD-картка не читається',
+      storage_readonly: 'SD-картка лише для читання'
+    },
     meshModeFastCheck: 'Швидка перевірка вібрації',
     meshModeFastCheckDesc: 'Запускається один раз перед друком, щоб переконатися, що натяг ременів у нормі. Вимкніть, щоб пропустити для цього друку.',
     gcodeInjection: 'Вставити G-code-сніпети',

@@ -5493,6 +5493,14 @@ export default {
     flowCalibrationDesc: 'Calibrate extrusion flow',
     layerInspectionDesc: 'AI inspection of first layer',
     timelapseDesc: 'Record timelapse video',
+    timelapseLowSpace: '{{printer}}: almost no room left for a timelapse',
+    timelapseFreeSpace: 'Free space',
+    timelapseBlocked: {
+      unsupported: 'this printer cannot record a timelapse',
+      no_storage: 'no SD card',
+      storage_unavailable: 'the SD card is unreadable',
+      storage_readonly: 'the SD card is read-only'
+    },
     meshModeFastCheck: 'Quick Vibration Check',
     meshModeFastCheckDesc: 'Runs once before printing to confirm belt tension is normal. Disable to skip for this job.',
     gcodeInjection: 'Inject G-code snippets',

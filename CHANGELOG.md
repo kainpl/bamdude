@@ -44,6 +44,16 @@ All notable changes to BamDude will be documented in this file.
 
 ### Added
 
+- **A timelapse is no longer promised to a printer that cannot record one.** BamDude ticked the box and sent the request to any printer, including one with no SD card in it — the flag went nowhere and the print finished with no video and no explanation. Two checks now stand where BambuStudio puts them.
+
+    **When you pick printers, the box tells you.** A printer with no card, an unreadable card or a read-only card is named, with which of the three it is. ⚠️ Three separate answers, not one: a card that is in the slot and unusable is a different problem from an empty slot. A machine with internal timelapse storage or a timelapse kit is unaffected — neither needs the card at all, and neither is guessable from the model name.
+
+    **When a queued print starts, a full disk pauses the queue rather than losing the recording.** Deleting the video you asked for and printing anyway is a decision nobody was there to make, so that printer's queue stops and says why. ⚠️ It never pauses on a figure the printer did not report — stranding a farm on a number nobody has would be worse than the missing video. Where the printer keeps timelapses itself, the print dialog also offers to free space by dropping the oldest recording.
+
+    Under the hood this reads four things BamDude was not reading: whether the model supports timelapse at all, whether it has internal storage, whether a timelapse kit is fitted, and how much room is left.
+
+- **Each plate of a multi-plate file now carries its own layer count.** It is read from that plate's own G-code, because plates of one file routinely differ by hundreds of layers — plate 1 can be 200 and plate 5 eighty. Existing files are re-read once on upgrade to fill it in.
+
 - **The toolhead and the extruder can be moved, not just the bed.** BamDude could nudge the bed up and down and run an auto-home, and that was the whole of manual movement — X and Y did not exist, and neither did pushing filament through the nozzle. A new **Motion Control** dialog adds a proper directional pad for the toolhead, the nozzle-bed gap on its own column, retract and extrude for the filament, and a button to release the motors so the head can be pushed by hand.
 
     **The steps are 1 mm and 10 mm, and that is the printer's constraint rather than a simplification.** Newer machines take these moves over a command that carries a direction and a coarse/fine flag — nothing more — so on those, 3 mm and 9 mm arrive as the same request. Offering a free number field would promise a precision the machine never receives. Older machines still get the G-code sequence with the exact distance, and BamDude picks per printer, as BambuStudio does.

@@ -259,6 +259,40 @@ async def _apply_calibrations_for_print(
                 )
 
 
+def _timelapse_or_off(printer_id: int, printer, requested: bool) -> bool:
+    """The timelapse flag actually sent, with the printer's own veto applied.
+
+    ⚠️ **The browser disabling the checkbox is not the guard.** This path is also
+    reached from the API, from the Telegram bot, and from a queue item created
+    hours before somebody pulled the SD card out — the same reasoning as every
+    other gate that refuses to live only in one client.
+
+    A refusal is silent by design: BambuStudio's own answer to "this printer
+    cannot record one" is to untick the box, not to abandon the print. Losing a
+    timelapse is not a reason to not print.
+    """
+    if not requested:
+        return False
+
+    from backend.app.services.printer_manager import printer_manager as _pm
+    from backend.app.utils.timelapse import capability_for
+
+    client = _pm.get_client(printer_id)
+    if client is None:
+        return requested
+
+    capability = capability_for(getattr(printer, "model", None), client.state)
+    if capability.get("can_enable"):
+        return True
+
+    logger.info(
+        "[%s] Timelapse was requested but the printer cannot record one (%s) — sending it off",
+        printer_id,
+        capability.get("reason"),
+    )
+    return False
+
+
 class DispatchJobCancelled(Exception):
     """Raised when a dispatch job is cancelled by the user."""
 
@@ -1263,7 +1297,9 @@ class BackgroundDispatchService:
                 # toolhead off the part every layer on prints the user opted out of.
                 # Finish-photo capture is now driven by the stg_cur=22 transition in
                 # bambu_mqtt.py (on_finish_photo_moment) with a FINISH-state fallback.
-                effective_timelapse = bool(job.options.get("timelapse", False))
+                effective_timelapse = _timelapse_or_off(
+                    job.printer_id, printer, bool(job.options.get("timelapse", False))
+                )
                 started = printer_manager.start_print(
                     job.printer_id,
                     remote_filename,
@@ -1801,7 +1837,9 @@ class BackgroundDispatchService:
                 # toolhead off the part every layer on prints the user opted out of.
                 # Finish-photo capture is now driven by the stg_cur=22 transition in
                 # bambu_mqtt.py (on_finish_photo_moment) with a FINISH-state fallback.
-                effective_timelapse = bool(job.options.get("timelapse", False))
+                effective_timelapse = _timelapse_or_off(
+                    job.printer_id, printer, bool(job.options.get("timelapse", False))
+                )
                 started = printer_manager.start_print(
                     job.printer_id,
                     remote_filename,

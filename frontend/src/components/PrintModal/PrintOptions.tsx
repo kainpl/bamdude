@@ -37,6 +37,11 @@ export function PrintOptionsPanel({
   defaultExpanded = false,
   showDualNozzleOptions = false,
   autoCaps,
+  timelapseBlockers = [],
+  selectedPrinterCount = 0,
+  timelapseLowSpace = [],
+  onFreeTimelapseSpace,
+  freeingTimelapseSpace = false,
 }: PrintOptionsProps) {
   const { t } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
@@ -103,26 +108,71 @@ export function PrintOptionsPanel({
               autoSupported={autoCaps?.[key] ?? false}
             />
           ))}
-          {TOGGLE_OPTIONS_CONFIG.map(({ key, labelKey, descKey }) => (
-            <label key={key} className="flex items-center justify-between gap-3 cursor-pointer group">
-              <div className="min-w-0 flex-1">
-                <span className="text-sm text-white">{t(labelKey)}</span>
-                <p className="text-xs text-bambu-gray">{t(descKey)}</p>
-              </div>
-              <div
-                className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${
-                  options[key] ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
-                }`}
-                onClick={() => handleToggle(key)}
-              >
-                <div
-                  className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
-                    options[key] ? 'translate-x-5' : 'translate-x-0.5'
+          {TOGGLE_OPTIONS_CONFIG.map(({ key, labelKey, descKey }) => {
+            /* ⚠️ Whether a printer can record at all is asked HERE, while a
+               person is choosing printers and can do something about it — put a
+               card in, pick a different machine, untick the box. The queue
+               cannot: by the time an item dispatches there is nobody to ask, so
+               that path only checks for free SPACE and pauses. */
+            const blocked = key === 'timelapse' && timelapseBlockers.length > 0;
+            const allBlocked = blocked && timelapseBlockers.length >= Math.max(1, selectedPrinterCount);
+            return (
+              <div key={key}>
+                <label
+                  className={`flex items-center justify-between gap-3 group ${
+                    allBlocked ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
                   }`}
-                />
+                >
+                  <div className="min-w-0 flex-1">
+                    <span className="text-sm text-white">{t(labelKey)}</span>
+                    <p className="text-xs text-bambu-gray">{t(descKey)}</p>
+                  </div>
+                  <div
+                    className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${
+                      options[key] ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
+                    }`}
+                    onClick={() => !allBlocked && handleToggle(key)}
+                  >
+                    <div
+                      className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                        options[key] ? 'translate-x-5' : 'translate-x-0.5'
+                      }`}
+                    />
+                  </div>
+                </label>
+                {blocked && (
+                  /* Named, not counted: with several printers selected, which
+                     ones cannot record is the whole of the useful information. */
+                  <p className="text-[11px] text-amber-400 mt-1 leading-snug">
+                    {timelapseBlockers
+                      .map((b) => `${b.name} — ${t(`printModal.timelapseBlocked.${b.reason}`)}`)
+                      .join('; ')}
+                  </p>
+                )}
+                {key === 'timelapse' &&
+                  options.timelapse &&
+                  timelapseLowSpace.map((p) => (
+                    /* Offered only where the printer keeps timelapses itself —
+                       that is the only storage this can manage. Nothing is
+                       deleted without this click, and the printer chooses which
+                       recording goes. */
+                    <div key={p.printerId} className="flex items-center gap-2 mt-1">
+                      <p className="text-[11px] text-amber-400 leading-snug flex-1 min-w-0">
+                        {t('printModal.timelapseLowSpace', { printer: p.name })}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => onFreeTimelapseSpace?.(p.printerId)}
+                        disabled={freeingTimelapseSpace}
+                        className="px-2 h-6 rounded bg-bambu-dark-tertiary text-[10px] text-bambu-gray hover:text-white disabled:opacity-40 shrink-0 transition-colors"
+                      >
+                        {t('printModal.timelapseFreeSpace')}
+                      </button>
+                    </div>
+                  ))}
               </div>
-            </label>
-          ))}
+            );
+          })}
 
           {/* Preheat / heat-soak per-item override (#1468). Defaults to
               'inherit' which means the global Settings → Printing toggle

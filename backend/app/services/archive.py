@@ -359,10 +359,9 @@ class ThreeMFParser:
             with zf.open(gcode_path) as f:
                 header = f.read(4096).decode("utf-8", errors="ignore")
 
-            # Look for "; total layer number: XX" pattern
-            match = re.search(r";\s*total\s+layer\s+number[:\s]+(\d+)", header, re.IGNORECASE)
-            if match:
-                self.metadata["total_layers"] = int(match.group(1))
+            layers = read_total_layers(zf, gcode_path)
+            if layers is not None:
+                self.metadata["total_layers"] = layers
 
             # Look for printer_model in gcode header (fallback if not found in slice_info)
             # Format: "; printer_model = Bambu Lab X1 Carbon" or "; printer_model = X1C"
@@ -1124,6 +1123,26 @@ def build_plate_objects_payload(data: bytes, plate_idx: int) -> dict:
     }
 
 
+def read_total_layers(zf: zipfile.ZipFile, gcode_path: str) -> int | None:
+    """Layer count from one plate's g-code header, or ``None``.
+
+    BambuStudio writes it as ``; total layer number: N`` (``GCodeProcessor.cpp``),
+    in the first few lines, so only the head of the entry is read — these files
+    are tens of megabytes and the answer is in the first kilobyte.
+
+    ⚠️ **This is per PLATE, not per file.** Plate 1 of a container can be 200
+    layers and plate 5 eighty; a single number for the whole 3MF would be a
+    guess dressed as a fact. Both callers pass the plate they mean.
+    """
+    try:
+        with zf.open(gcode_path) as f:
+            header = f.read(4096).decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+    match = re.search(r";\s*total\s+layer\s+number[:\s]+(\d+)", header, re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
 def parse_plates_from_3mf(zf: zipfile.ZipFile) -> list[dict]:
     """Build the full per-plate metadata list for one 3MF.
 
@@ -1137,7 +1156,7 @@ def parse_plates_from_3mf(zf: zipfile.ZipFile) -> list[dict]:
     Per-plate fields:
         ``index``, ``name``, ``objects`` (list of names),
         ``object_count``, ``has_thumbnail``,
-        ``print_time_seconds``, ``filament_used_grams``,
+        ``print_time_seconds``, ``filament_used_grams``, ``total_layers``,
         ``filaments`` (list of {slot_id, type, color, used_grams, used_meters}),
         ``bed_type`` (per-plate ``curr_bed_type``, or None),
         ``printable_objects`` (dict[identify_id, name]),
@@ -1367,6 +1386,10 @@ def parse_plates_from_3mf(zf: zipfile.ZipFile) -> list[dict]:
                 "has_thumbnail": has_thumbnail,
                 "print_time_seconds": meta.get("prediction"),
                 "filament_used_grams": meta.get("weight"),
+                # ⚠️ Read from this plate's own g-code, not shared across the
+                # file: plates of one container routinely differ by hundreds of
+                # layers. ``None`` for a source-only 3MF that was never sliced.
+                "total_layers": read_total_layers(zf, f"Metadata/plate_{idx}.gcode"),
                 "filaments": meta.get("filaments", []),
                 "bed_type": meta.get("bed_type"),
                 "printable_objects": printable_objects,

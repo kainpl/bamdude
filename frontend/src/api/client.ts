@@ -763,6 +763,17 @@ export interface PrinterStatus {
   // Per-extruder "filament is loaded". Drives whether the extruder graphic shows
   // filament — a picture that always did would be a small lie told often.
   ext_has_filament?: Record<number, boolean>;
+  // Whether a timelapse can be recorded, where it would go, and whether that
+  // place is nearly full. ⚠️ `reason` is a code, not a sentence — the backend
+  // does not know the user's language. Keys: `printModal.timelapseBlocked.*`.
+  timelapse_capability?: {
+    can_enable?: boolean;
+    reason?: string | null;
+    storage?: string;
+    storage_low?: boolean;
+    supports_internal?: boolean;
+    free_kb?: number | null;
+  };
   // Firmware states in which the printer will not accept work. Both arrive on
   // the ordinary LAN push — no cloud account involved — and `consistency_request`
   // is reachable after an SD-card update leaves module versions disagreeing.
@@ -5232,6 +5243,23 @@ export const api = {
   ) =>
     request<{ success: boolean; part: string; target: number; limits: number[] }>(
       `/printers/${printerId}/temperature?part=${part}&target=${target}&extruder_index=${extruderIndex}`,
+      { method: 'POST' },
+    ),
+
+  // Ask the printer whether there is room for this print's timelapse.
+  // ⚠️ The answer does NOT come back here — the printer republishes its free
+  // space in the next status push, so callers re-read the status after asking.
+  checkTimelapseStorage: (printerId: number, totalLayer: number) =>
+    request<{ success: boolean; storage: string; storage_low: boolean; free_kb: number | null }>(
+      `/printers/${printerId}/timelapse/check-storage?total_layer=${totalLayer}`,
+      { method: 'POST' },
+    ),
+
+  // Delete the oldest recording to make room. ⚠️ Destructive, and the printer
+  // chooses which file goes. Offered only where it has internal storage.
+  deleteOldestTimelapse: (printerId: number, totalLayer: number) =>
+    request<{ success: boolean; storage: string }>(
+      `/printers/${printerId}/timelapse/delete-oldest?total_layer=${totalLayer}`,
       { method: 'POST' },
     ),
 

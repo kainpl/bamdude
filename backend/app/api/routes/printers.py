@@ -81,6 +81,7 @@ from backend.app.services.printer_manager import (
 from backend.app.utils.filament_ids import filament_id_to_setting_id
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.temperature_limits import is_within, limits_for
+from backend.app.utils.timelapse import capability_for as timelapse_capability_for
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/printers", tags=["printers"])
@@ -979,6 +980,7 @@ async def get_printer_status(
         supports_chamber_heater=supports_chamber_heater(printer.model),
         axis_at_home=dict(state.axis_at_home),
         ext_has_filament=dict(state.ext_has_filament),
+        timelapse_capability=timelapse_capability_for(printer.model, state),
         firmware_version=state.firmware_version,
         developer_mode=state.developer_mode if state else None,
         ams_auto_switch_filament=state.ams_auto_switch_filament if state else None,
@@ -3281,6 +3283,70 @@ async def jog_axis(
         raise HTTPException(500, f"Failed to move {axis.upper()} axis")
 
     return {"success": True, "axis": axis, "distance": distance}
+
+
+@router.post("/{printer_id}/timelapse/check-storage")
+async def check_timelapse_storage(
+    printer_id: int,
+    total_layer: int = Query(..., ge=1, description="Layer count of the print about to start"),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ask the printer whether there is room for this print's timelapse.
+
+    ⚠️ **The answer does not come back in a reply.** BambuStudio's
+    ``ipcam_get_media_info`` is a nudge — the printer republishes
+    ``device.cam.tl_*_free_kb`` in its status, which is where the figure is read
+    from. So this returns the capability as currently known and the caller
+    re-reads the status a moment later, rather than pretending to be a query.
+    """
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    if not client or not client.state.connected:
+        raise HTTPException(400, "Printer not connected")
+
+    capability = timelapse_capability_for(printer.model, client.state)
+    if not client.check_timelapse_storage(capability["storage"], total_layer):
+        raise HTTPException(500, "Failed to ask the printer about timelapse storage")
+
+    return {"success": True, **capability}
+
+
+@router.post("/{printer_id}/timelapse/delete-oldest")
+async def delete_oldest_timelapse(
+    printer_id: int,
+    total_layer: int = Query(..., ge=1, description="Layer count of the print about to start"),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Drop the oldest recording to make room — the "Confirm & Print" branch of
+    BambuStudio's low-storage dialog.
+
+    ⚠️ Deletes a file on the printer, and the printer chooses which one. Offered
+    only where the machine has internal timelapse storage, because that is the
+    only place this manages.
+    """
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    if not client or not client.state.connected:
+        raise HTTPException(400, "Printer not connected")
+
+    capability = timelapse_capability_for(printer.model, client.state)
+    if not capability.get("supports_internal"):
+        raise HTTPException(409, "This printer has no internal timelapse storage to manage")
+
+    if not client.delete_oldest_timelapse(capability["storage"], total_layer):
+        raise HTTPException(500, "Failed to delete the oldest timelapse")
+
+    return {"success": True, "storage": capability["storage"]}
 
 
 @router.post("/{printer_id}/disable-steppers")

@@ -282,6 +282,22 @@ def is_bed_slinger(model: str | None) -> bool:
     return printer_arch(model) == "i3"
 
 
+def supports_timelapse(model: str | None, firmware_version: str | None = None) -> bool:
+    """Whether the model can record a timelapse at all — ``support_timelapse``
+    in the mirrored per-model config.
+
+    ⚠️ **Read from the config rather than defaulted.** BS initialises its own
+    ``is_support_timelapse`` to FALSE and fills it from the live push, so a
+    printer that has not sent that field yet would have its timelapse refused
+    outright. All fifteen shipped configs say ``true``, so the config is both
+    the honest answer and the one that does not take a working feature away in
+    the seconds before the first push. A live report still wins over this.
+    """
+    flags = get_device_support_flags(model, firmware_version)
+    value = flags.get("support_timelapse")
+    return bool(value) if isinstance(value, bool) else False
+
+
 def chamber_temperature_range(model: str | None, firmware_version: str | None = None) -> list | None:
     """The model's ``support_chamber_temp_edit_range``, or ``None`` if it ships
     none — BS's ``DevConfig::ParsePrintOptionsConfig`` reads the same key.

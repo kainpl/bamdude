@@ -946,6 +946,13 @@ class PrinterState:
     # such detection. Only an entry that exists and says False may refuse a
     # heat request.
     ext_has_nozzle: dict = field(default_factory=dict)
+    # BS ``m_has_timelapse_kit`` (``aux`` bit 26) — the add-on that gives a
+    # machine somewhere to write a timelapse without an SD card.
+    has_timelapse_kit: bool = False
+    # ``device.cam.tl_*_kb`` — free and total space on each timelapse target.
+    # Absent keys mean the camera never reported, which is NOT the same as zero
+    # free: BS only warns on a value it actually has (``free_kb >= 0``).
+    timelapse_storage: dict = field(default_factory=dict)
     # Hold-timer: when we publish an AMS setting command we stamp the flag
     # name here; the push parser skips overwriting the corresponding field
     # while ``time.time() - hold < 3.0``. Avoids the toggle visually flipping
@@ -2745,6 +2752,10 @@ class BambuMQTTClient:
             # BS falls back to — ``back_to_center`` and ``xyz_ctrl``.
             sup["mqtt_homing"] = bool((fun >> 32) & 1)
             sup["mqtt_axis_ctrl"] = bool((fun >> 38) & 1)
+            # BS ``is_support_internal_timelapse = get_flag_bits(fun, 28)``. A
+            # machine with somewhere of its own to put a timelapse — which makes
+            # the SD card irrelevant to whether one can be recorded at all.
+            sup["internal_timelapse"] = bool((fun >> 28) & 1)
 
         if isinstance(data.get("support_build_plate_marker_detect"), bool):
             sup["plate_mark"] = data["support_build_plate_marker_detect"]
@@ -2771,6 +2782,8 @@ class BambuMQTTClient:
         # only part cooling and still echoed 100 % into all three fields.
         if isinstance(data.get("support_aux_fan"), bool):
             sup["aux_fan"] = data["support_aux_fan"]
+        if isinstance(data.get("support_timelapse"), bool):
+            sup["timelapse"] = data["support_timelapse"]
         if isinstance(data.get("support_chamber_fan"), bool):
             sup["chamber_fan"] = data["support_chamber_fan"]
         if isinstance(data.get("support_update_remain"), bool):
@@ -3967,6 +3980,15 @@ class BambuMQTTClient:
             self.state.is_support_pa_calibration = bool((_fun_bits >> 7) & 0x1)
             self._apply_series_calibration_clamps()
 
+        # Room left for a timelapse, as the camera reports it. BS keeps these in
+        # ``DevStorage`` and never asks for them — ``ipcam_get_media_info`` is a
+        # separate question, and this is the number the pre-print warning reads.
+        _cam = (data.get("device") or {}).get("cam") if isinstance(data.get("device"), dict) else None
+        if isinstance(_cam, dict):
+            for _key in ("tl_internal_free_kb", "tl_internal_total_kb", "tl_external_free_kb", "tl_external_total_kb"):
+                if isinstance(_cam.get(_key), int) and not isinstance(_cam.get(_key), bool):
+                    self.state.timelapse_storage[_key] = _cam[_key]
+
         # BS ``check_enable_np`` — the print payload carrying all four of ``cfg``,
         # ``fun``, ``aux`` and ``stat``. Gates the per-extruder
         # ``set_extrusion_length`` over the g-code E move.
@@ -5108,6 +5130,10 @@ class BambuMQTTClient:
         if _aux_bits is not None:
             self.state.sdcard_state = (_aux_bits >> 12) & 0x3
             self.state.sdcard = self.state.sdcard_state == SDCARD_NORMAL
+            # BS ``m_has_timelapse_kit = get_flag_bits(aux, 26, 1)``. An add-on
+            # that gives a machine somewhere to write a timelapse when its card
+            # slot cannot — which is why it can excuse a missing SD card.
+            self.state.has_timelapse_kit = bool((_aux_bits >> 26) & 0x1)
 
         # Store-sent-files-to-SD toggle (home_flag bit 11).
         if home_flag is not None:
@@ -8449,6 +8475,42 @@ class BambuMQTTClient:
             return True
 
         return self.move_axis("E", length)
+
+    def _camera_command(self, command: str, **fields) -> bool:
+        """Publish on the ``camera`` envelope — a third namespace beside ``print``
+        and ``system``, which is why it does not go through the usual helper."""
+        if not self._client or not self.state.connected:
+            logger.warning("[%s] Cannot send %s: not connected", self.serial_number, command)
+            return False
+        self._sequence_id += 1
+        payload = {"camera": {"command": command, "sequence_id": str(self._sequence_id), **fields}}
+        self._client.publish(self.topic_publish, json.dumps(payload), qos=1)
+        return True
+
+    def check_timelapse_storage(self, storage: str, total_layer: int) -> bool:
+        """Ask whether there is room for a timelapse of this many layers.
+
+        BS ``command_ipcam_check_timelapse_storage``. ⚠️ The answer arrives in
+        the push as ``device.cam.tl_*_free_kb`` rather than as a reply to this
+        message, so a caller wanting a fresh number asks and then reads state —
+        the command is a nudge, not a query with a return value.
+        """
+        return self._camera_command(
+            "ipcam_get_media_info",
+            sub_command="is_timelapse_storage_enough",
+            storage=storage,
+            total_layer=int(total_layer),
+        )
+
+    def delete_oldest_timelapse(self, storage: str, total_layer: int) -> bool:
+        """Free space by dropping the oldest recording — BS
+        ``command_ipcam_delete_oldest_timelapse``, the "Confirm & Print" branch
+        of its low-storage dialog."""
+        return self._camera_command(
+            "ipcam_delete_oldest_timelapse",
+            storage=storage,
+            total_layer=int(total_layer),
+        )
 
     def disable_steppers(self) -> bool:
         """Release the motors so the toolhead can be pushed by hand (``M84``).

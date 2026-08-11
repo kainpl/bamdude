@@ -24,6 +24,7 @@ from backend.app.services.bambu_mqtt import (
 )
 from backend.app.utils.printer_configs import airduct_fan_label, get_device_support_flags
 from backend.app.utils.temperature_limits import limits_for
+from backend.app.utils.timelapse import capability_for as timelapse_capability_for
 
 logger = logging.getLogger(__name__)
 
@@ -1927,6 +1928,7 @@ def printer_state_to_dict(
         "supports_chamber_heater": supports_chamber_heater(model),
         "axis_at_home": dict(state.axis_at_home),
         "ext_has_filament": dict(state.ext_has_filament),
+        "timelapse_capability": timelapse_capability_for(model, state),
         "airduct_fans": [f.model_dump() for f in _airduct_fans(model, state)],
         "airduct_mode": state.airduct_mode,
         "airduct_sub_mode": state.airduct_sub_mode,

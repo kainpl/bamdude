@@ -24,6 +24,12 @@ export interface PlateMetadata {
   thumbnail_url: string | null;
   print_time_seconds: number | null;
   filament_used_grams: number | null;
+  // ⚠️ This plate's own layer count, read from its g-code header — plates of one
+  // file routinely differ by hundreds. OPTIONAL rather than merely nullable:
+  // `null` is a plate that was never sliced, while an ABSENT key is a cache
+  // written before m132 whose 3MF is no longer on disk to re-read. Callers that
+  // need a number must handle both.
+  total_layers?: number | null;
   filaments: PlateFilament[];
   // Skip-objects + label-object metadata (added 0.4.1+).
   // ``printable_objects`` is keyed by identify_id so the printer can address

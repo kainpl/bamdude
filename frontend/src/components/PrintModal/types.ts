@@ -271,7 +271,23 @@ export interface FilamentMappingProps {
 /**
  * Props for the PrintOptions component.
  */
+/** A selected printer that cannot record a timelapse, and why. */
+export interface TimelapseBlocker {
+  name: string;
+  /** Key under `printModal.timelapseBlocked.*` — the backend sends a reason
+   *  code rather than a sentence, since it does not know the user's language. */
+  reason: string;
+}
+
 export interface PrintOptionsProps {
+  timelapseBlockers?: TimelapseBlocker[];
+  selectedPrinterCount?: number;
+  /** Selected printers whose timelapse storage is nearly full. Kept apart from
+   *  the blockers because this one is FIXABLE from here — the printer can drop
+   *  its oldest recording — whereas a missing card cannot. */
+  timelapseLowSpace?: { printerId: number; name: string }[];
+  onFreeTimelapseSpace?: (printerId: number) => void;
+  freeingTimelapseSpace?: boolean;
   options: PrintOptions;
   onChange: (options: PrintOptions) => void;
   defaultExpanded?: boolean;
