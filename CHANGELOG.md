@@ -8,6 +8,12 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- **Addresses that point at a cloud provider's metadata service are refused by name, not only by number.** Every address BamDude will fetch from — Home Assistant, Spoolman, the slicer services, Obico, ntfy, Bark, webhooks, and an SSO provider's issuer and icon — is checked before it is saved. That check already rejected the numeric forms of the metadata endpoints cloud servers expose to anything running on them, which is where an attacker would go looking for credentials. It did not reject the **names** for the same thing, so a URL written as `metadata.google.internal` went through where the equivalent IP did not. It no longer does. An address with no host in it at all — `https:///realms/main` — was likewise accepted as though it named a server, and is now refused.
+
+    Only reachable by someone who can already edit your settings, and no BamDude installation is known to have been reached this way. Found by comparing our checks against upstream Bambuddy's, which had both rules while we had neither.
+
 ### Fixed
 
 - **A printer whose dispatch was interrupted no longer refuses work for ever.** If BamDude was stopped, restarted or killed in the moment between accepting a queued job and sending the file — a container restart, an update, a power cut — that printer stayed marked as busy. Nothing ever cleared the mark: every routine that releases a printer needs either an archived print or a message from the printer saying it finished, and a job that never left the building has neither. The queue went on showing the job as printing, the printer was skipped for everything after it, and the farm quietly worked one machine short until somebody noticed.

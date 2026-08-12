@@ -14,7 +14,12 @@ from __future__ import annotations
 import ipaddress
 from urllib.parse import urlparse
 
-from backend.app.api.routes._url_safety import CLOUD_METADATA_IPS, NUMERIC_IP_RE, unwrap_ipv4_mapped
+from backend.app.api.routes._url_safety import (
+    CLOUD_METADATA_HOSTNAMES,
+    CLOUD_METADATA_IPS,
+    NUMERIC_IP_RE,
+    unwrap_ipv4_mapped,
+)
 
 
 def assert_safe_public_https_url(url: str) -> None:
@@ -50,6 +55,17 @@ def assert_safe_public_https_url(url: str) -> None:
         raise ValueError("icon URL must use https://")
 
     hostname = (parsed.hostname or "").lower()
+
+    # "https:///path" parses to an empty hostname — it would otherwise reach the
+    # ``ip_address()`` ValueError branch below and be waved through as a symbolic
+    # host.
+    if not hostname:
+        raise ValueError("icon URL must include a hostname")
+
+    # The DNS form of the metadata endpoints blocked by IP further down. No
+    # resolution happens here, so the IP set alone never sees these.
+    if hostname in CLOUD_METADATA_HOSTNAMES:
+        raise ValueError("icon URL must not point to a cloud metadata endpoint")
 
     if NUMERIC_IP_RE.match(hostname):
         raise ValueError("icon URL must not use numeric-encoded IP addresses")

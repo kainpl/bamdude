@@ -37,6 +37,10 @@ DANGEROUS = [
     ("http://[::ffff:169.254.169.254]/", "IPv4-mapped metadata"),
     ("http://224.0.0.1/", "multicast"),
     ("http://0.0.0.0/", "unspecified"),
+    # Ported from upstream v1.2.5.2 (they had both, we had neither).
+    ("http:///latest/meta-data/", "empty hostname"),
+    ("http://metadata.google.internal/computeMetadata/v1/", "GCP metadata, DNS form"),
+    ("http://metadata.goog/", "GCP metadata, short DNS form"),
 ]
 
 # The topology the LAN policy exists to keep working.
@@ -100,6 +104,27 @@ class TestPublicInternetPolicy:
 
     def test_accepts_a_real_issuer(self) -> None:
         assert _validate_issuer_url("https://sso.example.com/realms/main") is not None
+
+    def test_rejects_an_empty_hostname(self) -> None:
+        """``https:///realms/main`` parses to an empty hostname. Nothing can
+        resolve it, and without an explicit check it falls through to the
+        ``ip_address()`` ValueError branch and is accepted as though it were an
+        ordinary symbolic host."""
+        with pytest.raises(ValueError):
+            _validate_issuer_url("https:///realms/main")
+
+    def test_rejects_a_cloud_metadata_hostname(self) -> None:
+        """The DNS form of a target we already blocked by IP.
+
+        Neither guard resolves hostnames — by design, because resolving in a
+        validator is a TOCTOU and a network call — so an IP blocklist alone
+        cannot catch these. A literal-string match needs no resolution and costs
+        nothing. Ported from upstream, which had this while we did not: we were
+        accepting ``https://metadata.google.internal/`` as an OIDC issuer.
+        """
+        for url in ("https://metadata.google.internal/", "https://metadata.goog/"):
+            with pytest.raises(ValueError):
+                _validate_issuer_url(url)
 
     def test_the_message_names_the_field_not_the_icon(self) -> None:
         """The guard is shared with the icon-URL check; its wording is rewritten

@@ -43,6 +43,23 @@ CLOUD_METADATA_IPS = frozenset(
     }
 )
 
+# The DNS-name form of the same targets. Neither guard resolves hostnames — by
+# design, since resolving inside a validator is a TOCTOU and a network call it
+# has no business making — so the IP set above cannot catch these. A literal
+# string match needs no resolution and costs nothing. These names resolve only
+# inside the respective cloud, so no BamDude integration has a reason to point
+# at one.
+#
+# Ported from upstream Bambuddy v1.2.5.2, which had it while we did not: both
+# guards route through here, so we were accepting
+# ``https://metadata.google.internal/`` as an OIDC issuer URL.
+CLOUD_METADATA_HOSTNAMES = frozenset(
+    {
+        "metadata.google.internal",  # GCP
+        "metadata.goog",  # GCP short form
+    }
+)
+
 
 # libc and browsers parse numeric-encoded IP forms (decimal ``2130706433``
 # for 127.0.0.1, hex ``0x7f000001``) but Python's ``ipaddress.ip_address``
@@ -104,6 +121,15 @@ def assert_safe_lan_service_url(url: str, *, label: str) -> None:
         raise ValueError(f"{label} must use http or https")
 
     hostname = (parsed.hostname or "").lower()
+
+    # "http:///path" parses to an empty hostname. Never a valid destination, and
+    # without this it falls through to the ``ip_address()`` ValueError branch
+    # below and is accepted as though it were a symbolic hostname.
+    if not hostname:
+        raise ValueError(f"{label} must include a hostname")
+
+    if hostname in CLOUD_METADATA_HOSTNAMES:
+        raise ValueError(f"{label} must not point to a cloud metadata endpoint")
 
     if NUMERIC_IP_RE.match(hostname):
         raise ValueError(f"{label} must not use numeric-encoded IP addresses; use standard dotted-decimal notation")
