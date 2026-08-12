@@ -21,7 +21,37 @@
   <a href="https://t.me/+3KQl2uNtOwo3NTgy"><img alt="Telegram Community" src="https://img.shields.io/badge/Telegram-BamDude%20Friends-26A5E4?style=flat-square&logo=telegram&logoColor=white"></a>
   <a href="https://hub.docker.com/r/kainpl/bamdude"><img alt="Docker Hub" src="https://img.shields.io/badge/Docker-Hub-2496ED?style=flat-square&logo=docker&logoColor=white"></a>
   <a href="https://github.com/kainpl/bamdude/releases"><img alt="Latest Release" src="https://img.shields.io/github/v/release/kainpl/bamdude?style=flat-square&logo=github"></a>
+  <a href="https://send.monobank.ua/jar/2vREyf3SrF"><img alt="Support BamDude" src="https://img.shields.io/badge/Support-monobank%20jar-ffd60a?style=flat-square&logo=buymeacoffee&logoColor=black"></a>
+  <a href="https://app.drukarmy.org.ua/inv/ujnv7w8i"><img alt="Join DrukArmy" src="https://img.shields.io/badge/%F0%9F%87%BA%F0%9F%87%A6-Join%20DrukArmy-005bbb?style=flat-square"></a>
 </p>
+
+---
+
+## Where this came from
+
+BamDude grew out of a volunteer workshop. Its author volunteers with
+[**DrukArmy**](https://drukarmy.org.ua/ua/about-us) — Ukraine's largest volunteer 3D-printing
+effort for the front line — printing, and running the FPV direction as senior curator.
+
+Batches, deadlines and a farm that has to keep moving around the clock do not fit any
+off-the-shelf tool, so every feature here earned its place on a real order first. That is also
+why Ukrainian is a first-class locale rather than an afterthought.
+
+If you have a printer and want it to do something useful:
+**[join DrukArmy](https://app.drukarmy.org.ua/inv/ujnv7w8i)**.
+
+---
+
+## Support
+
+BamDude is free and stays free — AGPL-3.0, no paid tiers, no pro edition. The most valuable
+support is a bug report, a translation PR or a star. If you would rather chip in:
+
+| | |
+|---|---|
+| **Monobank jar** | https://send.monobank.ua/jar/2vREyf3SrF |
+| **PayPal** | `pushkar.valeriy@gmail.com` |
+| **USDT (TRC20)** | `TWe1MaXz7mpDZZqDkY7Az7NdZ6s9H5fvMF` |
 
 ---
 
@@ -341,34 +371,6 @@ DEBUG=true uvicorn backend.app.main:app --reload
 # Frontend (separate terminal)
 cd frontend && npm install && npm run dev
 ```
-
----
-
-## Where this came from
-
-BamDude grew out of a volunteer workshop. Its author volunteers with
-[**DrukArmy**](https://drukarmy.org.ua/ua/about-us) — Ukraine's largest volunteer 3D-printing
-effort for the front line — printing, and running the FPV direction as senior curator.
-
-Batches, deadlines and a farm that has to keep moving around the clock do not fit any
-off-the-shelf tool, so every feature here earned its place on a real order first. That is also
-why Ukrainian is a first-class locale rather than an afterthought.
-
-If you have a printer and want it to do something useful:
-**[join DrukArmy](https://app.drukarmy.org.ua/inv/ujnv7w8i)**.
-
----
-
-## Support
-
-BamDude is free and stays free — AGPL-3.0, no paid tiers, no pro edition. The most valuable
-support is a bug report, a translation PR or a star. If you would rather chip in:
-
-| | |
-|---|---|
-| **Monobank jar** | https://send.monobank.ua/jar/2vREyf3SrF |
-| **PayPal** | `pushkar.valeriy@gmail.com` |
-| **USDT (TRC20)** | `TWe1MaXz7mpDZZqDkY7Az7NdZ6s9H5fvMF` |
 
 ---
 
