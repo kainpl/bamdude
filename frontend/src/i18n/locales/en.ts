@@ -1014,6 +1014,7 @@ export default {
       rootFolder: 'Library root',
       action: 'Save',
       saved: 'Saved to the library.',
+      viewInLibrary: 'View in library',
       alreadyThere: 'This file is already in the library — the existing copy was kept.'
     },
     card: {

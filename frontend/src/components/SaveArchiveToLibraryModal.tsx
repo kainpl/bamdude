@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FolderInput, Loader2, X } from 'lucide-react';
+import { Check, FileBox, FolderInput, FolderOpen, Loader2, X } from 'lucide-react';
 import { api, ApiError } from '../api/client';
-import { writableFolders } from '../utils/folderTree';
 import { Button } from './Button';
+import { FolderTreePicker } from './FolderTreePicker';
 
 /**
  * Copy an archived print's 3MF into the library, into a folder you choose.
@@ -14,13 +14,14 @@ import { Button } from './Button';
  * and the content-hash dedupe are not reimplemented here — this dialog only
  * picks the destination.
  *
- * ⚠️ **Read-only external folders are left out of the list.** The backend
- * answers those with 403, and offering a choice that cannot work is worse than
- * not offering it.
+ * The destination comes from the same `FolderTreePicker` the "Move files"
+ * dialog uses, so the two read alike — including leaving read-only external
+ * folders out, which the backend answers with 403.
  *
  * ⚠️ **Saving the same print twice does not make a second copy.** The server
- * dedupes on content hash and hands back the row already there; the dialog says
- * so rather than pretending it wrote something.
+ * dedupes on content hash and hands back the row already there; this says so
+ * rather than claiming to have written something, and still offers the way to
+ * go and look at it.
  */
 
 interface Props {
@@ -35,7 +36,7 @@ export function SaveArchiveToLibraryModal({ archiveId, archiveName, isOpen, onCl
   const queryClient = useQueryClient();
   const [folderId, setFolderId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<{ already: boolean } | null>(null);
+  const [result, setResult] = useState<{ already: boolean; folderId: number | null } | null>(null);
 
   const foldersQuery = useQuery({
     queryKey: ['library-folders'],
@@ -47,7 +48,7 @@ export function SaveArchiveToLibraryModal({ archiveId, archiveName, isOpen, onCl
     mutationFn: () => api.saveArchiveToLibrary(archiveId, folderId),
     onSuccess: (data) => {
       setError(null);
-      setResult({ already: data.already_in_library });
+      setResult({ already: data.already_in_library, folderId: data.folder_id });
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
     },
@@ -59,7 +60,7 @@ export function SaveArchiveToLibraryModal({ archiveId, archiveName, isOpen, onCl
 
   if (!isOpen) return null;
 
-  const folders = writableFolders(foldersQuery.data);
+  const done = result !== null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
@@ -68,55 +69,83 @@ export function SaveArchiveToLibraryModal({ archiveId, archiveName, isOpen, onCl
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-bambu-dark-tertiary">
-          <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-            <FolderInput className="w-4 h-4" />
-            {t('archives.saveToLibrary.title')}
+          <h3 className="text-sm font-semibold text-white flex items-center gap-2 min-w-0">
+            <FolderInput className="w-4 h-4 shrink-0" />
+            <span className="truncate">{t('archives.saveToLibrary.title')}</span>
           </h3>
-          <button onClick={onClose} className="text-bambu-gray hover:text-white transition-colors">
+          <button onClick={onClose} className="text-bambu-gray hover:text-white transition-colors shrink-0">
             <X className="w-4 h-4" />
           </button>
         </div>
 
         <div className="p-4 space-y-3">
-          <p className="text-xs text-bambu-gray leading-snug">
-            {t('archives.saveToLibrary.description', { name: archiveName })}
-          </p>
+          {/* What is being saved, named rather than described — the archive's
+              own name is the thing you recognise it by. */}
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-bambu-dark text-sm text-white">
+            <FileBox className="w-4 h-4 text-bambu-gray shrink-0" />
+            <span className="truncate">{archiveName}</span>
+          </div>
 
-          <label className="block">
-            <span className="text-[10px] uppercase tracking-wider text-bambu-gray">
-              {t('archives.saveToLibrary.folder')}
-            </span>
-            <select
-              value={folderId ?? ''}
-              onChange={(e) => setFolderId(e.target.value ? Number(e.target.value) : null)}
-              disabled={save.isPending}
-              className="mt-1 w-full px-2 py-1.5 rounded bg-bambu-dark-tertiary text-white text-sm border border-transparent focus:border-bambu-green focus:outline-none"
+          {!done && (
+            <>
+              <div className="text-[10px] uppercase tracking-wider text-bambu-gray">
+                {t('archives.saveToLibrary.folder')}
+              </div>
+              <div className="bg-bambu-dark rounded-lg p-2">
+                <FolderTreePicker
+                  folders={foldersQuery.data}
+                  value={folderId}
+                  onChange={setFolderId}
+                  rootLabel={t('archives.saveToLibrary.rootFolder')}
+                  className="max-h-56"
+                />
+                {foldersQuery.isLoading && (
+                  <p className="text-sm text-bambu-gray text-center py-4">{t('common.loading')}</p>
+                )}
+              </div>
+            </>
+          )}
+
+          {done && (
+            <div
+              className={`flex items-start gap-2 px-3 py-2 rounded-lg text-[11px] leading-snug ${
+                result.already ? 'bg-amber-500/10 text-amber-400' : 'bg-bambu-green/10 text-bambu-green'
+              }`}
             >
-              <option value="">{t('archives.saveToLibrary.rootFolder')}</option>
-              {folders.map(({ folder, depth }) => (
-                <option key={folder.id} value={folder.id}>
-                  {`${'— '.repeat(depth)}${folder.name}`}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          {result && (
-            <p className={`text-[11px] leading-snug ${result.already ? 'text-amber-400' : 'text-bambu-green'}`}>
-              {result.already ? t('archives.saveToLibrary.alreadyThere') : t('archives.saveToLibrary.saved')}
-            </p>
+              <Check className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+              <span>{result.already ? t('archives.saveToLibrary.alreadyThere') : t('archives.saveToLibrary.saved')}</span>
+            </div>
           )}
           {error && <p className="text-[11px] text-red-400 leading-relaxed">{error}</p>}
         </div>
 
         <div className="px-4 py-3 border-t border-bambu-dark-tertiary flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose}>
-            {result ? t('common.close') : t('common.cancel')}
-          </Button>
-          <Button variant="primary" onClick={() => save.mutate()} disabled={save.isPending || result !== null}>
-            {save.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
-            {t('archives.saveToLibrary.action')}
-          </Button>
+          {done ? (
+            <>
+              <Button
+                variant="secondary"
+                onClick={() =>
+                  window.location.assign(result.folderId ? `/files?folder=${result.folderId}` : '/files')
+                }
+              >
+                <FolderOpen className="w-4 h-4" />
+                <span className="ml-1.5">{t('archives.saveToLibrary.viewInLibrary')}</span>
+              </Button>
+              <Button variant="primary" onClick={onClose}>
+                {t('common.close')}
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button variant="secondary" onClick={onClose}>
+                {t('common.cancel')}
+              </Button>
+              <Button variant="primary" onClick={() => save.mutate()} disabled={save.isPending}>
+                {save.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+                <span className={save.isPending ? 'ml-1.5' : ''}>{t('archives.saveToLibrary.action')}</span>
+              </Button>
+            </>
+          )}
         </div>
       </div>
     </div>

@@ -13,20 +13,17 @@ import {
 } from 'recharts';
 import { api } from '../api/client';
 import { getSwatchStyle } from '../utils/colors';
+import {
+  buildSkuGroups,
+  collectGroupHistory,
+  groupTotals,
+  type SkuGroup,
+} from '../utils/forecastGroups';
 import type { InventorySpool, SpoolUsageRecord, FilamentSkuSettings, ShoppingListItem } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-
-interface SkuGroup {
-  key: string;
-  material: string;
-  subtype: string | null;
-  brand: string | null;
-  colorName: string | null;
-  spools: InventorySpool[];
-}
 
 interface SkuForecast {
   group: SkuGroup;
@@ -224,17 +221,10 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
     return m;
   }, [usageHistory]);
 
-  const groups = useMemo((): SkuGroup[] => {
-    const map = new Map<string, SkuGroup>();
-    for (const spool of spools) {
-      if (spool.archived_at) continue;
-      const key = skuKey(spool.material, spool.subtype, spool.brand, spool.color_name);
-      const g = map.get(key) ?? { key, material: spool.material, subtype: spool.subtype, brand: spool.brand, colorName: spool.color_name, spools: [] };
-      g.spools.push(spool);
-      map.set(key, g);
-    }
-    return [...map.values()];
-  }, [spools]);
+  const groups = useMemo(
+    () => buildSkuGroups(spools, usageBySpoolId, skuKey),
+    [spools, usageBySpoolId],
+  );
 
   const forecasts = useMemo((): SkuForecast[] => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -251,25 +241,8 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
       const marginValue = skuSettings?.safety_margin_value ?? 14;
       const marginUnit = skuSettings?.safety_margin_unit ?? 'days';
 
-      const totalRemainingG = group.spools.reduce((s, sp) => s + Math.max(0, sp.label_weight - sp.weight_used), 0);
-      const totalLabelG = group.spools.reduce((s, sp) => s + sp.label_weight, 0);
-      // Per-SKU consumed totals follow the same baseline-aware convention
-      // as InventoryPage's "Total Consumed" — so the per-SKU "Used" column
-      // matches the dashboard's resettable counter (#1390).
-      const totalUsedG = group.spools.reduce(
-        (s, sp) => s + Math.max(0, sp.weight_used - (sp.weight_used_baseline ?? 0)),
-        0,
-      );
-
-      // Only include history from spools that haven't been reset — pre-reset
-      // events on a reset spool have no anchor timestamp so they'd inflate the
-      // rate. Spools without a baseline are clean and keep their records.
-      const groupHistory: SpoolUsageRecord[] = [];
-      for (const s of group.spools) {
-        if ((s.weight_used_baseline ?? 0) === 0) {
-          groupHistory.push(...(usageBySpoolId.get(s.id) ?? []));
-        }
-      }
+      const { totalRemainingG, totalLabelG, totalSpools, totalUsedG } = groupTotals(group);
+      const groupHistory = collectGroupHistory(group, usageBySpoolId);
 
       let dailyRateG: number | null = null;
       let dailyRateStdDev: number | null = null;
@@ -281,7 +254,7 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
         dailyRateStdDev = histResult.stdDev;
         rateTier = 'history';
       } else {
-        const delta = computeDeltaRate(group.spools);
+        const delta = computeDeltaRate(group.allSpools);
         if (delta !== null) { dailyRateG = delta; rateTier = 'delta'; }
       }
 
@@ -309,7 +282,7 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
 
       return {
         group, settings: skuSettings,
-        totalRemainingG, totalLabelG, totalSpools: group.spools.length, totalUsedG,
+        totalRemainingG, totalLabelG, totalSpools, totalUsedG,
         dailyRateG, dailyRateStdDev,
         rateTier,
         effectiveLeadTimeDays, safetyStockG, reorderPointG,
@@ -878,7 +851,9 @@ function ForecastRow({
   const label = [f.group.brand, f.group.material, f.group.subtype, f.group.colorName].filter(Boolean).join(' ');
   // Use getSwatchStyle so a Clear (alpha=00) lead spool renders as a
   // checkerboard rather than collapsing to solid black (#1545).
-  const colorStyle = f.group.spools[0]?.rgba ? getSwatchStyle(f.group.spools[0].rgba) : { backgroundColor: '#4B5563' };
+  // `allSpools` — the swatch describes the SKU, so it must not go grey the
+  // moment the last spool of that colour is archived.
+  const colorStyle = f.group.allSpools[0]?.rgba ? getSwatchStyle(f.group.allSpools[0].rgba) : { backgroundColor: '#4B5563' };
   const remainPct = f.totalLabelG > 0 ? Math.round((f.totalRemainingG / f.totalLabelG) * 100) : 0;
 
   const daysColor = snoozed ? 'text-bambu-gray'
@@ -1809,8 +1784,10 @@ function AddToCartModal({
   const spoolsForDuration = useMemo(() => {
     if (!f.dailyRateG || f.dailyRateG <= 0) return null;
     const neededG = f.dailyRateG * Number(durationDays);
-    const avgSpoolG = f.group.spools.length > 0
-      ? f.group.spools.reduce((s, sp) => s + sp.label_weight, 0) / f.group.spools.length
+    // `allSpools` — "how big is a spool of this SKU" is answered by every spool
+    // you have ever had of it, and the 1000 g fallback is a guess by comparison.
+    const avgSpoolG = f.group.allSpools.length > 0
+      ? f.group.allSpools.reduce((s, sp) => s + sp.label_weight, 0) / f.group.allSpools.length
       : 1000;
     return Math.ceil(neededG / avgSpoolG);
   }, [f, durationDays]);

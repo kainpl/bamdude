@@ -6,7 +6,6 @@ import {
   Folder,
   File,
   ChevronLeft,
-  ChevronDown,
   Download,
   Trash2,
   Loader2,
@@ -34,7 +33,7 @@ import { GcodeViewer } from './GcodeViewer';
 import type { PlateMetadata } from '../types/plates';
 import { useToast } from '../contexts/ToastContext';
 import { formatFileSize } from '../utils/file';
-import { flattenFolderTree } from '../utils/folderTree';
+import { FolderTreePicker } from './FolderTreePicker';
 
 // Depth-first flatten of the library folder tree for a single <select>.
 // Mirror of the helper in VirtualPrinterCard / MakerworldPage — kept inline
@@ -923,33 +922,24 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
             </div>
             <div className="p-4 space-y-3">
               <div>
-                <label
-                  htmlFor="import-folder-select"
-                  className="text-white text-sm font-medium block mb-1"
-                >
+                <div className="text-white text-sm font-medium block mb-1">
                   {t('printerFiles.importDialog.folderLabel')}
-                </label>
-                <div className="relative">
-                  <select
-                    id="import-folder-select"
-                    value={importFolderId ?? ''}
-                    onChange={(e) =>
-                      setImportFolderId(e.target.value === '' ? null : Number(e.target.value))
-                    }
-                    disabled={importMutation.isPending}
-                    className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm appearance-none cursor-pointer disabled:opacity-50 pr-10"
-                  >
-                    <option value="">{t('printerFiles.importDialog.rootFolder')}</option>
-                    {(libraryFolders ?? [])
-                      .filter((f) => !(f.is_external && f.external_readonly))
-                      .flatMap((f) => flattenFolderTree(f))
-                      .map(({ folder, depth }) => (
-                        <option key={folder.id} value={folder.id}>
-                          {`${'— '.repeat(depth)}${folder.name}`}
-                        </option>
-                      ))}
-                  </select>
-                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
+                </div>
+                {/* The same picker the file manager's Move dialog uses — a
+                    dropdown collapsed the nesting into em-dashes, which is
+                    most of what you are choosing between. */}
+                <div
+                  className={`bg-bambu-dark border border-bambu-dark-tertiary rounded-md p-2 ${
+                    importMutation.isPending ? 'opacity-50 pointer-events-none' : ''
+                  }`}
+                >
+                  <FolderTreePicker
+                    folders={libraryFolders}
+                    value={importFolderId}
+                    onChange={setImportFolderId}
+                    rootLabel={t('printerFiles.importDialog.rootFolder')}
+                    className="max-h-52"
+                  />
                 </div>
               </div>
               <p className="text-xs text-bambu-gray">{t('printerFiles.importDialog.hint')}</p>

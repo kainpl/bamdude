@@ -12,7 +12,7 @@ import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
 import { VirtualPrinterDiagnosticModal } from './VirtualPrinterDiagnosticModal';
 import { useToast } from '../contexts/ToastContext';
-import { flattenFolderTree } from '../utils/folderTree';
+import { FolderTreeSelect } from './FolderTreeSelect';
 
 type LocalMode = 'print_queue' | 'auto_queue' | 'file_manager' | 'proxy';
 type DisplayMode = 'print_queue' | 'file_manager' | 'proxy';
@@ -262,16 +262,14 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
     updateMutation.mutate({ target_printer_id: printerId }, rebindOpts);
   };
 
-  const handleTargetFolderChange = (raw: string) => {
+  const handleTargetFolderChange = (id: number | null) => {
     setPendingAction('targetFolder');
-    if (raw === '') {
+    if (id === null) {
       // Library root — explicit clear (Pydantic can't tell "absent" from "null").
       setLocalTargetFolderId(null);
       updateMutation.mutate({ clear_target_folder: true });
       return;
     }
-    const id = parseInt(raw, 10);
-    if (Number.isNaN(id)) return;
     setLocalTargetFolderId(id);
     updateMutation.mutate({ target_folder_id: id });
   };
@@ -725,25 +723,15 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                 <p className="text-xs text-bambu-gray mb-2">
                   {t('virtualPrinter.targetFolder.description')}
                 </p>
-                <div className="relative">
-                  <select
-                    value={localTargetFolderId ?? ''}
-                    onChange={(e) => handleTargetFolderChange(e.target.value)}
-                    disabled={pendingAction === 'targetFolder'}
-                    className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm appearance-none cursor-pointer disabled:opacity-50 pr-10"
-                  >
-                    <option value="">{t('virtualPrinter.targetFolder.root')}</option>
-                    {(libraryFolders ?? [])
-                      .filter((f) => !(f.is_external && f.external_readonly))
-                      .flatMap((f) => flattenFolderTree(f))
-                      .map(({ folder, depth }) => (
-                        <option key={folder.id} value={folder.id}>
-                          {`${'— '.repeat(depth)}${folder.name}`}
-                        </option>
-                      ))}
-                  </select>
-                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                </div>
+                <FolderTreeSelect
+                  folders={libraryFolders}
+                  value={localTargetFolderId}
+                  onChange={handleTargetFolderChange}
+                  rootLabel={t('virtualPrinter.targetFolder.root')}
+                  disabled={pendingAction === 'targetFolder'}
+                  className="w-full"
+                  buttonClassName="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm cursor-pointer"
+                />
               </div>
             )}
 

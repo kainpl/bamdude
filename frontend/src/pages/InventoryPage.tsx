@@ -31,6 +31,16 @@ import { formatDateInput, parseUTCDate, type DateFormat } from '../utils/date';
 import { formatSlotLabel } from '../utils/amsHelpers';
 import { aggregateGroupSpool } from '../utils/inventoryGrouping';
 import {
+  loadFilters,
+  saveFilters,
+  withCurrentValue,
+  withCurrentId,
+  type ArchiveFilter,
+  type UsageFilter,
+  type StockFilter,
+  type ViewMode,
+} from '../utils/inventoryFilters';
+import {
   inventoryLocationsQueryKey,
   invalidateSpoolAndLocationQueries,
 } from '../utils/inventoryQueries';
@@ -41,9 +51,6 @@ import {
 } from '../utils/spoolName';
 // filterSpoolsByQuery — imported from utils/inventorySearch by Spoolman-mode upstream PR #1241; reserved for future Spoolman-side filtering paths.
 
-type ArchiveFilter = 'active' | 'archived';
-type UsageFilter = 'all' | 'used' | 'new' | 'lowstock';
-type ViewMode = 'table' | 'cards' | 'forecast';
 type SortDirection = 'asc' | 'desc';
 type SortState = { column: string; direction: SortDirection } | null;
 
@@ -690,20 +697,26 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
 
   const clearSelection = () => setSelectedIds(new Set());
 
-  const [archiveFilter, setArchiveFilter] = useState<ArchiveFilter>('active');
-  const [usageFilter, setUsageFilter] = useState<UsageFilter>('all');
-  const [materialFilter, setMaterialFilter] = useState('');
-  const [brandFilter, setBrandFilter] = useState('');
+  // Filters are restored from localStorage — see `loadFilters`. Read ONCE into
+  // the initialisers rather than pushed in by an effect: a later write would be
+  // a second render with a different list, and the selection-clearing effect
+  // below would fire on it.
+  const [storedFilters] = useState(loadFilters);
+
+  const [archiveFilter, setArchiveFilter] = useState<ArchiveFilter>(storedFilters.archiveFilter);
+  const [usageFilter, setUsageFilter] = useState<UsageFilter>(storedFilters.usageFilter);
+  const [materialFilter, setMaterialFilter] = useState(storedFilters.materialFilter);
+  const [brandFilter, setBrandFilter] = useState(storedFilters.brandFilter);
   // Filter by resolved colour NAME (single source of truth via the colour
   // catalog), with options drawn from existing (non-archived) spools only.
-  const [colorFilter, setColorFilter] = useState('');
+  const [colorFilter, setColorFilter] = useState(storedFilters.colorFilter);
   // Re-resolve colour-name options once the colour catalog finishes loading.
   const colorCatalogVersion = useColorCatalogVersion();
-  const [categoryFilter, setCategoryFilter] = useState('');
-  const [spoolFilter, setSpoolFilter] = useState('');
-  const [stockFilter, setStockFilter] = useState<'all' | 'stock' | 'configured'>('all');
-  const [search, setSearch] = useState('');
-  const [viewMode, setViewMode] = useState<ViewMode>('table');
+  const [categoryFilter, setCategoryFilter] = useState(storedFilters.categoryFilter);
+  const [spoolFilter, setSpoolFilter] = useState(storedFilters.spoolFilter);
+  const [stockFilter, setStockFilter] = useState<StockFilter>(storedFilters.stockFilter);
+  const [search, setSearch] = useState(storedFilters.search);
+  const [viewMode, setViewMode] = useState<ViewMode>(storedFilters.viewMode);
   const [sortState, setSortState] = useState<SortState>(loadSortState);
   const [columnConfig, setColumnConfig] = useState<ColumnConfig[]>(loadColumnConfig);
   const [showColumnModal, setShowColumnModal] = useState(false);
@@ -1431,12 +1444,27 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     [pagedItems],
   );
 
+  // Remember the filters. One effect rather than a write in each of the ~20
+  // places a filter changes — including `clearAllFilters`, which is how a clear
+  // becomes a cleared key without a second code path to keep in step.
+  useEffect(() => {
+    saveFilters({
+      archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter,
+      categoryFilter, spoolFilter, stockFilter, search, viewMode,
+    });
+  }, [archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter,
+      categoryFilter, spoolFilter, stockFilter, search, viewMode]);
+
   // Drop the selection whenever the visible set changes underneath it. A
   // toolbar reading "12 selected" over a list that no longer contains those
   // rows is how a Delete lands on the wrong spools.
+  //
+  // ⚠️ Category, spool, storage location and stock were missing from this list,
+  // so narrowing by those kept a selection made under the previous one.
   useEffect(() => {
     setSelectedIds(new Set());
-  }, [archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, search, groupSimilar, spoolmanMode]);
+  }, [archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, categoryFilter,
+      spoolFilter, storageLocationFilter, stockFilter, search, groupSimilar, spoolmanMode]);
 
   const selectedSpools = useMemo(
     () => filteredSpools.filter((sp) => selectedIds.has(sp.id)),
@@ -1905,7 +1933,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           }`}
         >
           <option value="">{t('inventory.material')}</option>
-          {uniqueMaterials.map((m) => (
+          {withCurrentValue(uniqueMaterials, materialFilter).map((m) => (
             <option key={m} value={m}>{m}</option>
           ))}
         </select>
@@ -1921,7 +1949,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           }`}
         >
           <option value="">{t('inventory.brand')}</option>
-          {uniqueBrands.map((b) => (
+          {withCurrentValue(uniqueBrands, brandFilter).map((b) => (
             <option key={b} value={b}>{b}</option>
           ))}
         </select>
@@ -1940,7 +1968,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             }`}
           >
             <option value="">{t('inventory.color')}</option>
-            {uniqueColors.map((c) => (
+            {withCurrentValue(uniqueColors, colorFilter).map((c) => (
               <option key={c} value={c}>{c}</option>
             ))}
           </select>
@@ -1959,10 +1987,12 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             }`}
           >
             <option value="">{t('inventory.category')}</option>
-            {uniqueCategories.map((c) => (
+            {/* `__none__` is a real value with its own option below, so it must
+                not be folded in as a literal alongside it. */}
+            {withCurrentValue(uniqueCategories, categoryFilter === '__none__' ? '' : categoryFilter).map((c) => (
               <option key={c} value={c}>{c}</option>
             ))}
-            {hasUncategorized && (
+            {(hasUncategorized || categoryFilter === '__none__') && (
               <option value="__none__">{t('inventory.categoryNone')}</option>
             )}
           </select>
@@ -1992,7 +2022,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         )}
 
         {/* Spool name dropdown chip */}
-        {uniqueSpoolCatalogIds.length > 0 && (
+        {/* `|| spoolFilter` — a restored filter whose catalog entry is gone
+            must still have a chip to clear it from. */}
+        {(uniqueSpoolCatalogIds.length > 0 || spoolFilter) && (
           <select
             value={spoolFilter}
             onChange={(e) => { setSpoolFilter(e.target.value); resetPage(); }}
@@ -2003,7 +2035,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             }`}
           >
             <option value="">{t('inventory.spoolName')}</option>
-            {uniqueSpoolCatalogIds.map((id) => (
+            {withCurrentId(uniqueSpoolCatalogIds, spoolFilter).map((id) => (
               <option key={id} value={id}>{catalogMap[id]?.name || `#${id}`}</option>
             ))}
           </select>

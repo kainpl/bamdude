@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { AlertCircle, ArrowRight, Check, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, ExternalLink, FolderOpen, History, Images, Loader2, Trash2, X } from 'lucide-react';
 import { MakerWorldIcon } from '../components/BrandIcons';
-import { flattenFolderTree } from '../utils/folderTree';
+import { FolderTreeSelect } from '../components/FolderTreeSelect';
 
 import {
   api,
@@ -683,22 +683,13 @@ export function MakerworldPage() {
                 <label className="text-xs text-gray-600 dark:text-gray-400">
                   {t('makerworld.importTo')}
                 </label>
-                <select
-                  value={selectedFolderId ?? ''}
-                  onChange={(e) => setSelectedFolderId(e.target.value ? Number(e.target.value) : null)}
-                  className="text-sm px-2 py-1 border rounded bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-700"
+                <FolderTreeSelect
+                  folders={foldersQuery.data}
+                  value={selectedFolderId}
+                  onChange={setSelectedFolderId}
+                  rootLabel={t('makerworld.folderAuto')}
                   disabled={bulkProgress !== null}
-                >
-                  <option value="">{t('makerworld.folderAuto')}</option>
-                  {(foldersQuery.data ?? [])
-                    .filter((f) => !(f.is_external && f.external_readonly))
-                    .flatMap((f) => flattenFolderTree(f))
-                    .map(({ folder, depth }) => (
-                      <option key={folder.id} value={folder.id}>
-                        {`${'— '.repeat(depth)}${folder.name}`}
-                      </option>
-                    ))}
-                </select>
+                />
                 <Button
                   variant="primary"
                   size="sm"

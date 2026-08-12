@@ -1,20 +1,21 @@
 import type { LibraryFolderTree } from '../api/client';
 
-/** One folder plus how deep it sits, so a flat `<select>` can indent its label. */
+/** One folder plus how deep it sits, so a flat list can indent its label. */
 export type FlatFolder = { folder: LibraryFolderTree; depth: number };
 
 /**
  * Depth-first flatten of the library folder tree.
  *
- * The API returns folders nested; every picker needs them flat with the nesting
- * preserved as an indent. This existed as three byte-identical private copies —
- * in the file-manager modal, the virtual-printer card and the MakerWorld page —
- * before a fourth was nearly written.
+ * The API returns folders nested; a picker needs them flat with the nesting
+ * preserved as an indent. This existed as FOUR private copies — the
+ * file-manager modal, the virtual-printer card, the MakerWorld page, and the
+ * "Move files" dialog, that last one returning a different shape.
  *
- * ⚠️ Callers still apply their own filter. A picker that writes into the chosen
- * folder must drop read-only external ones (`is_external && external_readonly`),
- * because the backend answers those with 403 — but a picker that only reads has
- * no reason to hide them, so the rule belongs at the call site rather than here.
+ * Nothing outside `FolderTreePicker` calls either of these now: the picker is
+ * the one place a folder tree becomes a list. Both stay exported because the
+ * picker needs `writableFolders` for the normal case and this primitive for
+ * `includeReadOnly` — a picker that only READS folders has no reason to hide
+ * the read-only ones.
  */
 export function flattenFolderTree(
   tree: LibraryFolderTree,
@@ -28,7 +29,16 @@ export function flattenFolderTree(
   return out;
 }
 
-/** Folders that can be written into — everything except read-only external mounts. */
+/**
+ * Folders that can be written into, flattened.
+ *
+ * ⚠️ Read-only external mounts are dropped because the backend answers a write
+ * into one with **403** — an upload, and equally a move, which says "Cannot
+ * move files to a read-only external folder". Offering a choice that cannot
+ * work is worse than not offering it. Every picker had this same filter inline;
+ * extracting `flattenFolderTree` alone would have replaced copies of a function
+ * with copies of its filter.
+ */
 export function writableFolders(trees: LibraryFolderTree[] | undefined | null): FlatFolder[] {
   return (trees ?? [])
     .filter((f) => !(f.is_external && f.external_readonly))
