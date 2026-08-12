@@ -26,10 +26,13 @@ to produce the final installer .exe under ``build/output/``.
 from __future__ import annotations
 
 import argparse
+import http.client
 import os
 import shutil
 import subprocess
 import sys
+import time
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -83,16 +86,61 @@ def log(msg: str) -> None:
     print(f"[build] {msg}", flush=True)
 
 
+# Three artifacts are fetched from three different hosts (python.org, PyPA,
+# GitHub's release CDN) in the one code path that runs on a release tag. That is
+# the worst possible moment for a network blip and there was nothing to absorb
+# one: v0.5.2's installer failed outright because the CDN closed the connection
+# mid-transfer on ffmpeg, and a re-run of the whole job was the only remedy.
+_DOWNLOAD_ATTEMPTS = 3
+_DOWNLOAD_TIMEOUT = 60  # seconds without progress on a single connection
+
+
 def download(url: str, dest: Path) -> Path:
-    """Download ``url`` to ``dest`` if not already present."""
+    """Download ``url`` to ``dest`` if not already present.
+
+    Transient failures are retried with a widening pause. An HTTP 4xx is not:
+    the request is wrong, and asking three more times will be wrong three more
+    times. 408 and 429 are the exceptions — those are the server telling us to
+    come back later, which is precisely what a retry does.
+    """
     if dest.exists():
         log(f"already downloaded: {dest.name}")
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
-    log(f"downloading {url}")
-    with urllib.request.urlopen(url) as resp, open(dest, "wb") as f:  # noqa: S310 — pinned URLs
-        shutil.copyfileobj(resp, f)
-    return dest
+
+    # Written beside the target and renamed only once the transfer finished.
+    # The `dest.exists()` check above accepts any file as complete, so a
+    # half-written one left behind by an interrupted build would be unzipped
+    # into the installer as though it were whole — and a truncated ffmpeg.zip
+    # fails far from here, in a way that does not name the download.
+    partial = dest.parent / (dest.name + ".part")
+    partial.unlink(missing_ok=True)
+
+    for attempt in range(1, _DOWNLOAD_ATTEMPTS + 1):
+        suffix = f" (attempt {attempt}/{_DOWNLOAD_ATTEMPTS})" if attempt > 1 else ""
+        log(f"downloading {url}{suffix}")
+        try:
+            with urllib.request.urlopen(url, timeout=_DOWNLOAD_TIMEOUT) as resp, open(partial, "wb") as f:  # noqa: S310 — pinned URLs
+                shutil.copyfileobj(resp, f)
+            partial.replace(dest)
+            return dest
+        except urllib.error.HTTPError as exc:
+            if 400 <= exc.code < 500 and exc.code not in (408, 429):
+                raise
+            failure: Exception = exc
+        except (OSError, http.client.HTTPException) as exc:
+            # Covers RemoteDisconnected, connection resets, DNS blips and read
+            # timeouts. urllib.error.URLError is an OSError, so it lands here.
+            failure = exc
+
+        partial.unlink(missing_ok=True)
+        if attempt == _DOWNLOAD_ATTEMPTS:
+            raise RuntimeError(f"could not download {url} after {_DOWNLOAD_ATTEMPTS} attempts: {failure}") from failure
+        pause = 2**attempt
+        log(f"  {type(failure).__name__}: {failure} — retrying in {pause}s")
+        time.sleep(pause)
+
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def unzip(zip_path: Path, dest: Path) -> None:
