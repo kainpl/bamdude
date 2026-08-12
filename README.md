@@ -57,26 +57,50 @@ support is a bug report, a translation PR or a star. If you would rather chip in
 
 ## What's different from Bambuddy?
 
-BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focused on print farm operators who need deeper automation and Telegram-based control. Key additions:
+BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy), aimed at print farm operators. It still tracks upstream — each release is adapted through a tracked audit rather than a blind merge — so what the two projects share is deliberately **not** listed here. Everything below exists only in BamDude.
 
-- **Full Telegram bot** (aiogram 3.x) — printer control, status, maintenance, queue from Telegram
-- **Multi-chat authorization** — each Telegram chat gets a role (group) with granular permissions
-- **Actionable notifications** — "Clear plate", "Mark maintenance done" buttons right in Telegram notifications
-- **Per-chat notification settings** — event types, quiet hours, daily digest per chat
-- **Printer maintenance in bot** — view overdue items, mark done, edit hours
-- **Clear plate from bot** — confirm plate cleared for queue auto-dispatch
-- **Print from Library** — select file, pick printer (model-filtered), print now or add to queue
-- **Queue management** — paginated list, detail, move, cancel, add to queue
-- **Add Printer via bot** — enter IP, auto-detect serial/name/model via SSDP, enter access code
-- **Camera snapshots** — `/camera` command and inline button per printer
-- **Speed control** — change print speed mode from bot
-- **Printer calibration** — model-aware UI and bot (bed leveling, vibration, motor noise, nozzle offset, high-temp)
-- **Ukrainian locale** — full UI + bot + notification templates
-- **Backend i18n system** — JSON-file-based translations for bot UI (easy to add languages)
-- **MarkdownV2** — Telegram messages with proper formatting
-- **Notification template editor** — MarkdownV2 toolbar with formatting buttons
-- **Virtual Printer File Manager mode** — saves 3MF directly to library without archiving
-- Various fixes: ghost print prevention, MQTT connection freshness, SD card cleanup, server-side pagination
+### A queue built for a farm, in two tiers
+
+- **One queue per printer, plus an Auto-Queue that distributes between them.** Work you have already assigned waits in that printer's own queue. Work you have not goes to the Auto-Queue, which routes it to whichever printer can take it — matching filament type and colour, and preferring an idle printer without refusing a busy one.
+- **A single dispatch layer.** Queued prints, prints started from the printer's own screen, and files sent straight from a slicer all leave through one dispatcher. It claims the printer for the whole plate change, creates exactly one archive per physical print, and runs the swap macro before letting the next job in.
+
+### Telegram as a full second interface
+
+Upstream has no Telegram integration at all. BamDude's is a complete aiogram 3.x bot:
+
+- Live status, printer control, camera snapshots and print-speed mode
+- **Print from the library** — pick a file, pick a model-compatible printer, print now or queue it
+- **Queue management** — paginated list, detail, reorder, cancel
+- **Maintenance** — see what is overdue, mark it done, edit the hours
+- **Add a printer** — type an IP and let SSDP fill in the serial, name and model
+- **Multi-chat with roles** — every chat gets its own permission group, so a shop-floor chat and an admin chat are not the same thing
+- **Per-chat notification settings** — event types, quiet hours and the daily digest belong to the chat, not to a global switch
+- **Actionable notifications** — "Clear plate" and "Mark maintenance done" are buttons in the message itself
+
+### Zigbee, with no hub in between
+
+- **BamDude drives the radio itself.** A dongle over USB or Ethernet — no Home Assistant, no Zigbee2MQTT, no broker. Smart plugs and temperature/humidity sensors pair into a network BamDude owns.
+- **Reporting intervals per device**, defaulted from ZHA's own values and changed from the device's card.
+- **Measurement history** — power draw and room conditions recorded as they arrive and kept for a month, charted per plug and per sensor. It is written above the plug drivers, so all five plug types get it rather than only the Zigbee ones.
+- **Sensor alarms** — a lowest and/or highest value for anything a sensor measures, including its own battery.
+
+### Locations that nest
+
+- A workshop holds shelves, a shelf holds printers. Printers, sensors and spool storage attach at whichever level fits, and the printers, queues and maintenance views group by them.
+
+### More of the printer, and more of it writable
+
+- **Printer Settings and AMS Settings dialogs** mirroring BambuStudio's own, written through MQTT, with every applied change recorded in an audit table.
+- **Filament calibration wizard** — Pressure Advance end to end, with K-profiles read back from the printer itself, per nozzle and per extruder.
+- **G-code macros** — sequences you define, sent over MQTT, with plate-swap macros firing automatically between queued prints.
+- **3MF patching on the way to the printer** — mesh-mode flags and G-code injection are applied to a copy, so the archived file on disk stays the unpatched original.
+
+### Smaller, but still ours
+
+- **Ukrainian.** Upstream ships twelve locales and Ukrainian is not among them. BamDude ships English and Ukrainian only, and both are strict: a key missing from either fails CI, and so does a placeholder that drifted between them.
+- **Git backup to GitHub or GitLab**, where upstream backs up to GitHub.
+- **An Auto-Queue mode for the Virtual Printer**, alongside its queue, library and proxy modes.
+- **Notes on library files**, and **print-dialog options remembered per user and per printer model**.
 
 ---
 
