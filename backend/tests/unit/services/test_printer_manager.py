@@ -1635,15 +1635,19 @@ class TestIsBedSlinger:
         This is what makes a future model correct on the day its config lands,
         instead of on the day somebody remembers to edit a frozenset.
         """
-        import glob
         import json
-        from pathlib import Path
+
+        # Ask the loader where the folder is rather than naming it relative to the
+        # repo root. CI runs pytest from backend/, so a root-relative glob matched
+        # nothing at all and every assertion below was skipped — the `checked >= 14`
+        # floor is the only reason that was ever visible.
+        from backend.app.utils.printer_configs import _CONFIG_DIR
 
         checked = 0
-        for path in glob.glob("backend/app/data/printers/*.json"):
-            if "blacklist" in path:
+        for path in sorted(_CONFIG_DIR.glob("*.json")):
+            if "blacklist" in path.name:
                 continue
-            base = json.loads(Path(path).read_text(encoding="utf-8")).get("00.00.00.00") or {}
+            base = json.loads(path.read_text(encoding="utf-8")).get("00.00.00.00") or {}
             name = (base.get("display_name") or "").replace("Bambu Lab ", "")
             if not name:
                 continue

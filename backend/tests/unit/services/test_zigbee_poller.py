@@ -280,7 +280,8 @@ async def test_a_settings_change_is_pushed_when_the_device_next_answers(monkeypa
     """Reporting parameters live IN the device: changing a setting does nothing
     until configure_reporting is re-issued, and for a sleeper the only safe
     moment is when it has just proved it is awake."""
-    from backend.app.services.zigbee import reporting as reporting_module
+    from backend.app.core import database as database_module
+    from backend.app.services.zigbee import device_settings as device_settings_module, reporting as reporting_module
 
     rebinds: list[str] = []
 
@@ -288,8 +289,18 @@ async def test_a_settings_change_is_pushed_when_the_device_next_answers(monkeypa
         rebinds.append(ieee)
         return {"temperature": {"state": "ok", "verification": "verified"}}
 
+    async def _desired(db, info):
+        return {"temperature": {"min_interval": 30, "max_interval": 1800, "reportable_change": 0.5}}
+
     monkeypatch.setattr(poller_module, "read_sensor_once", _reads_into([], answered=True))
     monkeypatch.setattr(reporting_module, "bind_sensor", fake_bind)
+    # ``reapply_if_settings_changed`` lives in reporting.py and imports its own
+    # dependencies inside the function, so the poller-level fakes in ``sensor_db``
+    # never reached it: it opened a real session, raised, and its own
+    # `except Exception` logged the failure at DEBUG and returned quietly. The
+    # assertion below then measured a swallowed error rather than the behaviour.
+    monkeypatch.setattr(database_module, "async_session", _session_factory([]))
+    monkeypatch.setattr(device_settings_module, "resolve_reporting", _desired)
     poller_module.sensor_store.forget("ee")
     poller_module.zigbee_coordinator.forget_reporting("ee")
 

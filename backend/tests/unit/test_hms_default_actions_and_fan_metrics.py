@@ -65,8 +65,11 @@ class TestTheDefaultBucketIsReachable:
     def test_the_bundled_catalogue_still_carries_the_bucket(self) -> None:
         """A fetcher change that drops ``default`` would silently re-break this,
         and the lookup alone cannot tell an empty bucket from a missing one."""
-        data_file = Path("backend/app/data/hms_actions.json")
-        raw = json.loads(data_file.read_text(encoding="utf-8"))
+        # The module already resolves this from its own location; naming the path
+        # relative to the repo root broke the moment CI ran pytest from backend/.
+        from backend.app.services.hms_actions import _DATA_FILE
+
+        raw = json.loads(_DATA_FILE.read_text(encoding="utf-8"))
         assert "default" in raw and raw["default"], "hms_actions.json lost its default bucket"
 
 

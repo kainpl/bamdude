@@ -62,7 +62,10 @@ def test_115_belongs_to_the_zigbee_branch():
     ambiguous, which is what the gap was reserved to prevent."""
     from pathlib import Path
 
-    migrations = Path("backend/app/migrations")
+    # Located from the migration package itself, not from the repo root: CI runs
+    # pytest with backend/ as the working directory, where a root-relative path
+    # finds an empty folder and the guard silently passes on zero files.
+    migrations = Path(m116_require_previous_success.__file__).resolve().parent
     found = sorted(p.name for p in migrations.glob("m115_*.py"))
     assert found == ["m115_zigbee_plug.py"], f"m115 is the zigbee migration's slot, found: {found}"
 
