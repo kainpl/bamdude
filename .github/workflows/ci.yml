@@ -88,7 +88,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: check-duplicate
     if: needs.check-duplicate.outputs.should_skip != 'true' && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
 
@@ -127,7 +126,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: backend-lint
     if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
-    continue-on-error: true  # Some pre-existing tests may fail
     steps:
       - uses: actions/checkout@v7
       # Single interpreter on purpose: 3.12 is the floor in pyproject.toml, what
@@ -161,8 +159,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: backend-lint
     if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
-    # Deliberately NOT continue-on-error, unlike Backend Tests: this job has no
-    # pre-existing failures to tolerate, and a red result here means PostgreSQL
+    # This was the ONE job that enforced its result, back when Backend Tests and
+    # both security scans were continue-on-error; that is no longer a distinction
+    # — every job here now gates. A red result means PostgreSQL
     # installs are broken. A fresh install on PG was impossible from 0.4.2 until
     # 2026-07-27 precisely because nothing exercised it — every other PG test
     # mocks the engine and asserts on SQL text, which cannot catch a statement
@@ -246,7 +245,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: check-duplicate
     if: needs.check-duplicate.outputs.should_skip != 'true' && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
 
@@ -348,7 +346,9 @@ jobs:
   docker-test:
     name: Docker Build
     runs-on: ubuntu-latest
-    needs: [backend-tests, frontend-build]
+    # postgres-scenarios joins the list: it was a hard gate that gated nothing
+    # downstream, so a red PostgreSQL run still paid for a full image build.
+    needs: [backend-tests, postgres-scenarios, frontend-build]
     if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     timeout-minutes: 20
     steps:
@@ -368,7 +368,6 @@ jobs:
       - name: Build backend test image
         run: docker compose -f docker-compose.test.yml build backend-test
       - name: Run backend tests in Docker
-        continue-on-error: true
         run: docker compose -f docker-compose.test.yml run --rm backend-test
 
       # Test 3: Frontend Unit Tests in Docker
@@ -413,7 +412,6 @@ jobs:
       - name: Build integration test runner
         run: docker compose -f docker-compose.test.yml build integration-test-runner
       - name: Run integration test suite
-        continue-on-error: true
         run: docker compose -f docker-compose.test.yml run --rm integration-test-runner
 
       - name: Show logs on failure
