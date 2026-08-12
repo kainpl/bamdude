@@ -64,6 +64,12 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy), aimed
 - **One queue per printer, plus an Auto-Queue that distributes between them.** Work you have already assigned waits in that printer's own queue. Work you have not goes to the Auto-Queue, which routes it to whichever printer can take it — matching filament type and colour, and preferring an idle printer without refusing a busy one.
 - **A single dispatch layer.** Queued prints, prints started from the printer's own screen, and files sent straight from a slicer all leave through one dispatcher. It claims the printer for the whole plate change, creates exactly one archive per physical print, and runs the swap macro before letting the next job in.
 
+### Firmware for the whole farm, not one printer at a time
+
+- **A console for bulk firmware updates.** Upstream updates a printer. BamDude takes a set of them, groups the set by model, downloads each model's firmware **once** into a shared store, and fans the transfer out under a concurrency cap — applying remotely where the model allows it.
+- **A printer that is printing is skipped, not interrupted**, and one printer failing does not stop the rest of the batch.
+- It is deliberately a separate orchestrator from print dispatch: firmware is not a print, and the single-dispatch rule stays intact.
+
 ### Telegram as a full second interface
 
 Upstream can send a Telegram message — a notification channel, one way, over the Bot API. BamDude's is a complete aiogram 3.x bot you can hold a conversation with:
@@ -97,6 +103,12 @@ Upstream can send a Telegram message — a notification channel, one way, over t
 - **A reconciliation sweep** compares what BamDude believes is printing against what the printers actually report, so a job that ended in a way nobody saw does not sit there forever claiming to be running.
 - **Two hashes per archive, because the file that prints is not always the file you handed over.** BamDude patches the 3MF on its way to the printer, so an archive records both the original and the bytes actually sent. Deduplication on disk keys off the original — the same plate printed on five printers is stored once — and deleting an archive removes the file only when the last reference to it goes.
 
+### Projects that plan the work, not just group it
+
+- **A print plan** — per-file copies with live filament, time and cost totals and per-row printed/remaining counters, applied back to the project's own targets in one click.
+- **Defective parts count against the target.** A project that needs forty usable parts is not finished because forty came off the plates. Scrap is recorded per print and subtracted.
+- **A file or folder can belong to several projects at once** — many-to-many, with per-chip unlink rather than one owner per file.
+
 ### Locations that nest
 
 - A workshop holds shelves, a shelf holds printers. Printers, sensors and spool storage attach at whichever level fits, and the printers, queues and maintenance views group by them.
@@ -122,6 +134,9 @@ Also here:
 
 - **Ukrainian.** Upstream ships twelve locales and Ukrainian is not among them. BamDude ships English and Ukrainian only, and both are strict: a key missing from either fails CI, and so does a placeholder that drifted between them.
 - **Swap Mode** — driving an A1 / A1 Mini plate swapper, with Kit, STL and JobOx profiles, swap files detected automatically, and the swap macro fired between queued prints.
+- **A connection watchdog** that keeps retrying a printer whose link dropped, instead of leaving it offline until something else happens to notice.
+- **Low-stock forecast alerts** — the reorder forecast raises a notification rather than only colouring a panel nobody has open.
+- **An audit row for every applied change** to printer settings, AMS settings and calibration — what was sent, when, and by whom.
 - **Notes on library files**, and **print-dialog options remembered per user and per printer model**.
 
 ---
@@ -193,6 +208,7 @@ Also here:
 - **Quick Vibration Check toggle** — per-job toggle; when disabled, 3MF gcode post-processor comments out `M970` commands, recalculates MD5 sidecars, repacks archive
 - **Auto-Print G-code Injection** — per-job toggle that splices operator-defined snippets into the plate gcode at `; MACHINE_START_GCODE_END` (start) / EOF (end), with `{placeholder}` substitution from 3MF header (incl. PrusaSlicer→Bambu aliases). Snippets stored as per-printer-model JSON in settings; folded into the same single 3MF open/repack cycle as Quick Vibration Check so multi-plate 50+ MB files aren't unzipped twice
 - **G-code macros** — execute from printer menu, ACK-based MQTT confirmation, `stg_cur` completion tracking, real-time status on printer card
+- **Bulk firmware updates** — a console that takes a whole set of printers, groups them by model, fetches each model's firmware once into a shared store and fans the transfer out under a concurrency cap; printers that are mid-print are skipped rather than interrupted, and one failure does not abort the batch
 - Model-aware maintenance types with history tracking and Excel export
 - Clear plate confirmation between prints
 - Smart plug integration (Tasmota, HA, MQTT, REST/webhook, and **Zigbee** — BamDude drives the dongle itself, no Home Assistant or Zigbee2MQTT needed)
