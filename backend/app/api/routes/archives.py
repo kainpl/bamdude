@@ -2951,6 +2951,81 @@ async def get_plate_preview(
         raise HTTPException(500, f"Error extracting plate preview: {str(e)}")
 
 
+@router.post("/{archive_id}/save-to-library")
+async def save_archive_to_library(
+    archive_id: int,
+    folder_id: int | None = Query(None, description="Target library folder; root when omitted"),
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.ARCHIVES_READ_ALL,
+            Permission.ARCHIVES_READ_OWN,
+        )
+    ),
+    _upload: User | None = RequirePermission(Permission.LIBRARY_UPLOAD),
+):
+    """Copy an archived print's 3MF into the library.
+
+    Reads the bytes off disk and hands them to ``save_3mf_bytes_to_library`` —
+    the same helper MakerWorld import and slicer output use — so the metadata
+    parse, thumbnail extraction, per-plate cache and content-hash dedupe all
+    behave identically to any other way a file arrives.
+
+    ⚠️ **The archive's copy on disk is the UNPATCHED original**, which is
+    exactly what belongs in a library: the patched variant is built per dispatch
+    and thrown away. See the archive chain-of-custody notes in CLAUDE.md.
+
+    ⚠️ **An archive may legitimately have no file.** When a print starts from the
+    printer's own screen and the 3MF cannot be pulled, the row is created with an
+    empty ``file_path`` and a retry marker. That is a 409 with an explanation,
+    not a 404 — the archive is real, the file is what is missing.
+    """
+    from backend.app.api.routes.library import save_3mf_bytes_to_library
+    from backend.app.models.library import LibraryFolder
+
+    user, can_read_all = auth_result
+    service = ArchiveService(db)
+    archive = _ensure_archive_visible(await service.get_archive(archive_id), user, can_read_all)
+
+    if not archive.file_path:
+        raise HTTPException(
+            status_code=409,
+            detail="This archive has no 3MF stored — it was printed from the printer's own screen and the file could not be retrieved.",
+        )
+
+    file_path = settings.base_dir / archive.file_path
+    if not file_path.is_file():
+        raise HTTPException(404, "The archive's file is no longer on disk")
+
+    folder = None
+    if folder_id is not None:
+        folder = (await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))).scalar_one_or_none()
+        if folder is None:
+            raise HTTPException(404, "Folder not found")
+
+    library_file, already_there = await save_3mf_bytes_to_library(
+        db,
+        content=file_path.read_bytes(),
+        filename=archive.filename,
+        folder=folder,
+        created_by_id=user.id if user else None,
+        # A new provenance value. Nothing branches on it beyond the readiness
+        # tag, which treats it as sliced — a file that came out of a print
+        # necessarily is.
+        source_type="archive",
+    )
+
+    return {
+        "success": True,
+        "file_id": library_file.id,
+        "filename": library_file.filename,
+        "folder_id": folder.id if folder else None,
+        # The helper dedupes on content hash, so re-saving the same print
+        # returns the row that is already there instead of a second copy.
+        "already_in_library": already_there,
+    }
+
+
 @router.get("/{archive_id}/plates")
 async def get_archive_plates(
     archive_id: int,

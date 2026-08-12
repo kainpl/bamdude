@@ -953,6 +953,7 @@ export default {
       exportFailed: 'Export failed'
     },
     menu: {
+      saveToLibrary: 'Save to library',
       retryDownload: 'Retry 3MF download',
       print: 'Print',
       schedule: 'Schedule',
@@ -997,6 +998,7 @@ export default {
       plateLabel: 'Plate {{index}}',
     },
     permission: {
+      noSaveToLibrary: 'You do not have permission to add files to the library',
       noReprint: 'You do not have permission to reprint this archive',
       noAddToQueue: 'You do not have permission to add to queue',
       noUpdateArchives: 'You do not have permission to update archives',
@@ -1004,6 +1006,15 @@ export default {
       noDownload: 'You do not have permission to download archives',
       noCopyLink: 'You do not have permission to copy download links',
       noDelete: 'You do not have permission to delete this archive'
+    },
+    saveToLibrary: {
+      title: 'Save to library',
+      description: 'Copies the 3MF of "{{name}}" into your library, reading its metadata the same way an upload would.',
+      folder: 'Folder',
+      rootFolder: 'Library root',
+      action: 'Save',
+      saved: 'Saved to the library.',
+      alreadyThere: 'This file is already in the library — the existing copy was kept.'
     },
     card: {
       previousPlate: 'Previous plate',

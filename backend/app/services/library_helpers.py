@@ -107,7 +107,11 @@ def compute_file_tags(
     # wins over the file-type-derived ``project`` / ``geometry`` because
     # the source_type signal is more specific (a sliced .3mf is no
     # longer a project).
-    if source_type == "sliced":
+    if source_type in ("sliced", "archive"):
+        # ⚠️ A file saved out of a print archive is sliced by definition — it was
+        # printed. Without this it would fall through to no readiness tag at all,
+        # because ``detect_file_type`` collapses ``.gcode.3mf`` to ``gcode`` and
+        # the ``project`` branch below only catches a bare ``3mf``.
         tags.append("sliced")
     elif file_type == "3mf":
         # ``detect_file_type`` already collapses sliced .gcode.3mf to

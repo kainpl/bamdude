@@ -6,12 +6,13 @@ import {
   ChevronDown, ChevronRight, ArrowRightLeft, Trash2, X, Copy, Stethoscope,
 } from 'lucide-react';
 import { api, multiVirtualPrinterApi } from '../api/client';
-import type { LibraryFolderTree, VirtualPrinterConfig } from '../api/client';
+import type { VirtualPrinterConfig } from '../api/client';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
 import { VirtualPrinterDiagnosticModal } from './VirtualPrinterDiagnosticModal';
 import { useToast } from '../contexts/ToastContext';
+import { flattenFolderTree } from '../utils/folderTree';
 
 type LocalMode = 'print_queue' | 'auto_queue' | 'file_manager' | 'proxy';
 type DisplayMode = 'print_queue' | 'file_manager' | 'proxy';
@@ -30,14 +31,6 @@ const DISPLAY_MODES: readonly DisplayMode[] = ['print_queue', 'file_manager', 'p
 // Each row carries depth for indented labels — same pattern used by
 // MakerworldPage's "Import to" picker. Inlined here to avoid widening the
 // shared API module for one consumer.
-type FlatFolder = { folder: LibraryFolderTree; depth: number };
-function flattenFolderTree(tree: LibraryFolderTree, depth = 0, out: FlatFolder[] = []): FlatFolder[] {
-  out.push({ folder: tree, depth });
-  for (const child of tree.children ?? []) {
-    flattenFolderTree(child, depth + 1, out);
-  }
-  return out;
-}
 
 interface VirtualPrinterCardProps {
   printer: VirtualPrinterConfig;

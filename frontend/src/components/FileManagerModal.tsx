@@ -25,7 +25,7 @@ import {
   Box,
   Eraser,
 } from 'lucide-react';
-import { api, type LibraryFolderTree } from '../api/client';
+import { api } from '../api/client';
 import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
@@ -34,19 +34,12 @@ import { GcodeViewer } from './GcodeViewer';
 import type { PlateMetadata } from '../types/plates';
 import { useToast } from '../contexts/ToastContext';
 import { formatFileSize } from '../utils/file';
+import { flattenFolderTree } from '../utils/folderTree';
 
 // Depth-first flatten of the library folder tree for a single <select>.
 // Mirror of the helper in VirtualPrinterCard / MakerworldPage — kept inline
 // rather than promoted to a shared module since each consumer has subtly
 // different filtering needs (read-only externals, project scope, etc.).
-type FlatFolder = { folder: LibraryFolderTree; depth: number };
-function flattenFolderTree(tree: LibraryFolderTree, depth = 0, out: FlatFolder[] = []): FlatFolder[] {
-  out.push({ folder: tree, depth });
-  for (const child of tree.children ?? []) {
-    flattenFolderTree(child, depth + 1, out);
-  }
-  return out;
-}
 
 const LIBRARY_IMPORT_EXTS = new Set(['3mf', 'gcode']);
 function isLibraryImportable(filename: string): boolean {

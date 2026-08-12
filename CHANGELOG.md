@@ -44,6 +44,8 @@ All notable changes to BamDude will be documented in this file.
 
 ### Added
 
+- **A printed file can be saved back into the library.** Asked for by a user. Pick a folder, and the archive's 3MF is copied in — read the same way an upload is, so it arrives with its metadata, thumbnail, per-plate details and badges already filled in rather than as an anonymous file. ⚠️ Saving the same print twice does not make a second copy: the library recognises identical content and keeps the one already there, and says so. An archive whose file could not be retrieved from the printer explains that instead of failing silently.
+
 - **Linking a folder to an archive now says what it does, and one archive belongs to one folder.** The field offered no hint of its purpose — the link puts an "open source folder" shortcut on the **archive**, nothing on the folder, so it read as a setting with no effect. It now says so.
 
     It was also many-to-one: several folders could claim the same archive, while the archive only ever showed the first one it found. The second binding existed in the database and nowhere on screen. Linking an archive that another folder already holds is now refused, naming that folder, rather than silently taking it away from a folder you are not looking at. ⚠️ On upgrade, any archive already claimed by several folders keeps its **most recent** link and the others are cleared — each one written to the log with both folder names.

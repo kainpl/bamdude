@@ -7796,6 +7796,23 @@ export const api = {
   },
 
   // Library (File Manager)
+  // Copy an archived print's 3MF into the library. Goes through the same
+  // helper as MakerWorld import and slicer output, so the metadata parse,
+  // thumbnail, per-plate cache and content-hash dedupe behave identically.
+  // ⚠️ `already_in_library` comes back true when the same bytes are already
+  // there — the row returned is the existing one, not a second copy.
+  saveArchiveToLibrary: (archiveId: number, folderId: number | null) =>
+    request<{
+      success: boolean;
+      file_id: number;
+      filename: string;
+      folder_id: number | null;
+      already_in_library: boolean;
+    }>(
+      `/archives/${archiveId}/save-to-library${folderId != null ? `?folder_id=${folderId}` : ''}`,
+      { method: 'POST' },
+    ),
+
   getLibraryFolders: () => request<LibraryFolderTree[]>('/library/folders'),
   createLibraryFolder: (data: LibraryFolderCreate) =>
     request<LibraryFolder>('/library/folders', {

@@ -28,6 +28,7 @@ import {
   Star,
   Tag,
   StickyNote,
+  FolderInput,
   FolderOpen,
   Calendar,
   AlertCircle,
@@ -79,6 +80,7 @@ import { ConfirmModal } from '../components/ConfirmModal';
 import { PurgeArchivesModal } from '../components/PurgeArchivesModal';
 import { TrashSplitButton } from '../components/TrashSplitButton';
 import { EditArchiveModal } from '../components/EditArchiveModal';
+import { SaveArchiveToLibraryModal } from '../components/SaveArchiveToLibraryModal';
 import { ContextMenu, type ContextMenuItem } from '../components/ContextMenu';
 import { BatchTagModal } from '../components/BatchTagModal';
 import { BatchProjectModal } from '../components/BatchProjectModal';
@@ -209,6 +211,7 @@ function ArchiveCard({
   const useSlicerApi: boolean = !!(cardSettings as Record<string, unknown> | undefined)?.use_slicer_api;
   const [showViewer, setShowViewer] = useState(false);
   const [showReprint, setShowReprint] = useState(false);
+  const [showSaveToLibrary, setShowSaveToLibrary] = useState(false);
   const [showSlice, setShowSlice] = useState(false);
   const [showPlateObjects, setShowPlateObjects] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -466,6 +469,19 @@ function ArchiveCard({
         },
         disabled: !archive.file_path,
         title: !archive.file_path ? t('archives.card.noFileForReprint') : undefined,
+      },
+      {
+        label: t('archives.menu.saveToLibrary'),
+        icon: <FolderInput className="w-4 h-4" />,
+        onClick: () => setShowSaveToLibrary(true),
+        // ⚠️ Same file gate as reprint: an archive whose 3MF could not be
+        // pulled from the printer has a row but no bytes to copy.
+        disabled: !archive.file_path || !hasPermission('library:upload'),
+        title: !archive.file_path
+          ? t('archives.card.noFileForReprint')
+          : !hasPermission('library:upload')
+            ? t('archives.permission.noSaveToLibrary')
+            : undefined,
       },
     ] : [
       {
@@ -1349,6 +1365,13 @@ function ArchiveCard({
       )}
 
       {/* Reprint Modal */}
+      <SaveArchiveToLibraryModal
+        archiveId={archive.id}
+        archiveName={archive.print_name || archive.filename}
+        isOpen={showSaveToLibrary}
+        onClose={() => setShowSaveToLibrary(false)}
+      />
+
       {showReprint && (
         <PrintModal
           mode="reprint"
@@ -1693,6 +1716,7 @@ function ArchiveListRow({
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showPlateObjects, setShowPlateObjects] = useState(false);
   const [showReprint, setShowReprint] = useState(false);
+  const [showSaveToLibrary, setShowSaveToLibrary] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
   const [showSlice, setShowSlice] = useState(false);
   const [showViewer, setShowViewer] = useState(false);
@@ -1903,6 +1927,19 @@ function ArchiveListRow({
         },
         disabled: !archive.file_path,
         title: !archive.file_path ? t('archives.card.noFileForReprint') : undefined,
+      },
+      {
+        label: t('archives.menu.saveToLibrary'),
+        icon: <FolderInput className="w-4 h-4" />,
+        onClick: () => setShowSaveToLibrary(true),
+        // ⚠️ Same file gate as reprint: an archive whose 3MF could not be
+        // pulled from the printer has a row but no bytes to copy.
+        disabled: !archive.file_path || !hasPermission('library:upload'),
+        title: !archive.file_path
+          ? t('archives.card.noFileForReprint')
+          : !hasPermission('library:upload')
+            ? t('archives.permission.noSaveToLibrary')
+            : undefined,
       },
     ] : [
       {
@@ -2527,6 +2564,13 @@ function ArchiveListRow({
       )}
 
       {/* Reprint Modal */}
+      <SaveArchiveToLibraryModal
+        archiveId={archive.id}
+        archiveName={archive.print_name || archive.filename}
+        isOpen={showSaveToLibrary}
+        onClose={() => setShowSaveToLibrary(false)}
+      />
+
       {showReprint && (
         <PrintModal
           mode="reprint"
