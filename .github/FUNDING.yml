@@ -1,3 +1,9 @@
-# BamDude — funding disabled (fork)
-# Original project: github: maziggy / ko_fi: maziggy
+# BamDude funding — the Sponsor button on GitHub.
+#
+# The upstream project this was forked from used `github: maziggy` / `ko_fi: maziggy`;
+# those are theirs, not ours, which is what the old "funding disabled (fork)" note here
+# was about. Funding IS enabled — it just points at our own jar.
+#
+# PayPal (pushkar.valeriy@gmail.com) and USDT TRC20 are listed in README.md and on
+# bamdude.top instead: `custom` takes URLs, and neither of those is one.
 custom: ["https://send.monobank.ua/jar/2vREyf3SrF"]
