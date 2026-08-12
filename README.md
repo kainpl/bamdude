@@ -134,7 +134,6 @@ Also here:
 
 - **Ukrainian.** Upstream ships twelve locales and Ukrainian is not among them. BamDude ships English and Ukrainian only, and both are strict: a key missing from either fails CI, and so does a placeholder that drifted between them.
 - **Swap Mode** — driving an A1 / A1 Mini plate swapper, with Kit, STL and JobOx profiles, swap files detected automatically, and the swap macro fired between queued prints.
-- **A connection watchdog** that keeps retrying a printer whose link dropped, instead of leaving it offline until something else happens to notice.
 - **Low-stock forecast alerts** — the reorder forecast raises a notification rather than only colouring a panel nobody has open.
 - **An audit row for every applied change** to printer settings, AMS settings and calibration — what was sent, when, and by whom.
 - **Notes on library files**, and **print-dialog options remembered per user and per printer model**.
