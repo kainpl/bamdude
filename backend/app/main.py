@@ -7264,6 +7264,24 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logging.warning("Failed to auto-connect to Spoolman: %s", e)
 
+    # Give back any printer claimed by a dispatch that died mid-flight. This has
+    # to happen BEFORE the scheduler's first tick: check_queue seeds
+    # busy_printers straight from PrinterQueue.status='printing', so a claim left
+    # by the previous process would keep that printer out of dispatch for the
+    # whole run. Best-effort — a farm must still start if this fails.
+    try:
+        from backend.app.services.print_reconciliation import release_interrupted_dispatch_claims
+
+        async with async_session() as db:
+            _released = await release_interrupted_dispatch_claims(db)
+            if _released:
+                await db.commit()
+                logging.warning(
+                    "Startup: released %d printer claim(s) left behind by an interrupted dispatch", _released
+                )
+    except Exception:  # noqa: BLE001 — never block startup on a recovery sweep
+        logging.exception("Startup: could not release interrupted dispatch claims")
+
     # Start the print scheduler
     spawn_background_task(print_scheduler.run(), name="print-scheduler")
 

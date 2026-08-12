@@ -455,3 +455,97 @@ async def reconcile_printer_prints(
             await db.commit()
     except Exception:  # noqa: BLE001 — a background sweep must never crash the connect path
         logger.exception("reconcile: connect-edge sweep failed for printer %d", printer_id)
+
+
+async def release_interrupted_dispatch_claims(db: AsyncSession) -> int:
+    """Give back printers claimed by a dispatch that died before it archived anything.
+
+    ``_start_print`` commits the claim — the item to ``printing`` and
+    ``PrinterQueue.status='printing'`` — and only then spawns the FTP pipeline.
+    The dispatcher creates the archive *before* the upload starts, so a process
+    that dies between those two points leaves a claim with no archive behind it,
+    and nothing was ever sent to the printer.
+
+    Nothing reclaimed that. Every other release path needs evidence this case
+    does not produce: :func:`_reconcile` selects ``PrintArchive.status=='printing'``
+    and finds none, the ``on_print_*`` handlers need a completion event for a
+    print that never started, and the in-process bail-out died with the process.
+    ``check_queue`` then seeds ``busy_printers`` from a bare
+    ``status='printing'`` select with no age check and no cross-check against the
+    printer, so the claim reads as live for ever. m120's docstring names the
+    outcome: "claims the printer forever and the farm quietly stops taking work".
+
+    **Startup only, and it must run before the scheduler's first tick.** No age
+    threshold is needed or wanted: at startup everything in flight is dead by
+    definition, because the process that owned it is gone. Running this while the
+    dispatcher is live would race the very window it exists to clean up.
+
+    m120 refused to repair these rows because "a stale ``printing`` row and a live
+    one are the same row". They are not, at startup, given the right evidence —
+    but the discriminator has to be evidence and not a heuristic, so a claim is
+    released only when all three hold:
+
+    1. the queue names the item holding the claim. An external or direct print
+       claims with ``current_item_id=None``; its truth lives in MQTT, not in our
+       tables, and we have nothing to prove here — left alone.
+    2. that item is still ``printing``.
+    3. **the printer has no archive in ``printing``.** This is the load-bearing
+       one. An archive means the dispatcher got past its own creation, so the
+       print may be running; releasing then would double-dispatch onto a busy
+       printer, which is the failure the claim exists to prevent.
+
+    Returns the number of claims released, and does not commit — the caller owns
+    the transaction.
+    """
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.queue_counters import set_queue_idle, update_queue_counters
+
+    claimed = (
+        (
+            await db.execute(
+                select(PrinterQueue)
+                .where(PrinterQueue.status == "printing")
+                .where(PrinterQueue.current_item_id.is_not(None))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not claimed:
+        return 0
+
+    released = 0
+    for queue in claimed:
+        item = (
+            await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == queue.current_item_id))
+        ).scalar_one_or_none()
+        if item is None or item.status != "printing":
+            continue
+
+        live_archive = (
+            await db.execute(
+                select(PrintArchive.id)
+                .where(PrintArchive.printer_id == queue.printer_id)
+                .where(PrintArchive.status == "printing")
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if live_archive is not None:
+            continue
+
+        logger.warning(
+            "Startup: queue %s claimed printer %s for item %s, but no archive was ever created — "
+            "the dispatch died before anything reached the printer. Releasing the claim and "
+            "returning the item to pending.",
+            queue.id,
+            queue.printer_id,
+            item.id,
+        )
+        item.status = "pending"
+        item.started_at = None
+        item.error_message = None
+        await set_queue_idle(db, queue.id)
+        await update_queue_counters(db, queue.id)
+        released += 1
+
+    return released

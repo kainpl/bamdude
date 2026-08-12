@@ -291,8 +291,12 @@ class PrintScheduler:
 
             # Seed busy_printers from PrinterQueue.status='printing'. This is
             # the authoritative "this printer is currently dispatched" marker —
-            # set_queue_busy() atomically flips queue.status='printing' at
-            # dispatch time (whether item, external, or direct-print). Without
+            # set_queue_printing() sets queue.status='printing' at dispatch time
+            # (whether item, external, or direct-print). Read with no age check
+            # and no cross-check against the printer, so a claim left behind by a
+            # process that died mid-dispatch would read as live for ever; that is
+            # what release_interrupted_dispatch_claims() clears at startup, and
+            # why it must run before the first tick here. Without
             # this guard the H2D / P1 IDLE→RUNNING MQTT transition lag made the
             # next check_queue tick see IDLE via _is_printer_idle() and double-
             # dispatch onto the already-running printer (upstream #950286ad /

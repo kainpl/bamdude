@@ -8,6 +8,12 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A printer whose dispatch was interrupted no longer refuses work for ever.** If BamDude was stopped, restarted or killed in the moment between accepting a queued job and sending the file — a container restart, an update, a power cut — that printer stayed marked as busy. Nothing ever cleared the mark: every routine that releases a printer needs either an archived print or a message from the printer saying it finished, and a job that never left the building has neither. The queue went on showing the job as printing, the printer was skipped for everything after it, and the farm quietly worked one machine short until somebody noticed.
+
+    BamDude now hands those printers back on startup, and returns their jobs to the queue to be sent again. It only does so where it can **prove** nothing reached the printer: the file is archived before it is uploaded, so an archive that does not exist means the upload never started. A printer with a print behind it is left alone, and so is one running a job started from its own screen — those are read from the printer itself, not from our records.
+
 ## [0.5.2] - 2026-08-12
 
 Image: `ghcr.io/kainpl/bamdude:0.5.2` / `kainpl/bamdude:0.5.2` (`:latest` tracks this).
