@@ -8,6 +8,20 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-08-12
+
+Image: `ghcr.io/kainpl/bamdude:0.5.2` / `kainpl/bamdude:0.5.2` (`:latest` tracks this).
+
+**Two large additions, and a long list of things that were quietly wrong.**
+
+**BamDude now drives a Zigbee radio itself — no Home Assistant, no Zigbee2MQTT, no broker in between.** Plug a dongle in over USB or Ethernet, open a pairing window from Settings → Smart plugs, and smart plugs and temperature/humidity sensors join a network BamDude owns. Every device gets a name, a place and its own reporting intervals; what it measures is recorded as it arrives and kept for a month, and drawn as a chart on the printer card and in the sidebar; a sensor can raise an alarm when a reading leaves the range you set. Where a printer stands is now a real location picked from a list rather than typed twice, and locations nest — a workshop holds shelves, a shelf holds printers.
+
+**The printer card stopped being read-only.** It could show three temperatures and nudge the bed up and down; it can now set the nozzle, the bed and the chamber, move the toolhead and the extruder, drive every fan the machine has, and open the air duct in a window of its own. All of it follows Bambu Studio's own sequences, and refuses what the machine would refuse — a cold extruder will not turn, an axis will not move during a print, and a fan says so before it changes mid-job. Behind that sits a long run of protocol corrections: the nozzle flow class read from the field that holds it, AMS settings shown for the AMS actually attached rather than for the badge on the printer, per-model capabilities taken from Bambu's own definitions instead of guessed, faults ranked by their real severity, and the printer's answer to a command finally read back instead of dropped.
+
+**Prints that ended badly no longer leave their queue entries behind.** The causes are fixed, and what they already left is cleared once — which is the one thing in this release that happens without asking, so please read the note below before updating.
+
+Elsewhere: tags you create and badges BamDude assigns became one thing with one row of filters; all five "which folder?" pickers became the same tree; the filament manager remembers what you filtered to, and its forecast stops forgetting a spool the moment you archive it; a printed file can be saved back into the library; projects count scrap against their target; Bark joins the notification providers, and an SSO provider can be declared entirely in environment variables.
+
 > ### ⚠️ Before you update: let your printers finish
 >
 > **This update empties the print queue and the Auto-Queue.** Both are cleared once, on first start, and it happens without asking.

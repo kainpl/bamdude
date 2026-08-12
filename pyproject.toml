@@ -1,6 +1,6 @@
 [project]
 name = "bamdude"
-version = "0.5.1.3"
+version = "0.5.2"
 description = "Self-hosted print archive, management and automation system for Bambu Lab 3D printers"
 # 3.12 is the floor because it is what the distributions we target ship by
 # default: Ubuntu 24.04 LTS gives 3.12, Debian 13 (trixie) gives 3.13. Pinning
