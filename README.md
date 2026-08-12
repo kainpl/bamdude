@@ -66,7 +66,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy), aimed
 
 ### Telegram as a full second interface
 
-Upstream has no Telegram integration at all. BamDude's is a complete aiogram 3.x bot:
+Upstream can send a Telegram message — a notification channel, one way, over the Bot API. BamDude's is a complete aiogram 3.x bot you can hold a conversation with:
 
 - Live status, printer control, camera snapshots and print-speed mode
 - **Print from the library** — pick a file, pick a model-compatible printer, print now or queue it
@@ -79,7 +79,7 @@ Upstream has no Telegram integration at all. BamDude's is a complete aiogram 3.x
 
 ### Zigbee, with no hub in between
 
-- **BamDude drives the radio itself.** A dongle over USB or Ethernet — no Home Assistant, no Zigbee2MQTT, no broker. Smart plugs and temperature/humidity sensors pair into a network BamDude owns.
+- **BamDude drives the radio itself.** Upstream reaches Zigbee devices only *through* a Zigbee2MQTT bridge, as MQTT topics; BamDude talks to the dongle over USB or Ethernet, so smart plugs and temperature/humidity sensors pair into a network it owns — no Home Assistant, no Zigbee2MQTT, no broker to keep alive.
 - **Reporting intervals per device**, defaulted from ZHA's own values and changed from the device's card.
 - **Measurement history** — power draw and room conditions recorded as they arrive and kept for a month, charted per plug and per sensor. It is written above the plug drivers, so all five plug types get it rather than only the Zigbee ones.
 - **Sensor alarms** — a lowest and/or highest value for anything a sensor measures, including its own battery.
@@ -88,6 +88,14 @@ Upstream has no Telegram integration at all. BamDude's is a complete aiogram 3.x
 
 - **A file sent from the slicer lands in the file library, not in the print archive.** Upstream's virtual printer archives whatever it receives, or holds it for review. BamDude's default mode saves the 3MF into the library as a file you can browse, tag, move into a folder and print later — which leaves the archive as what it is meant to be, a record of prints that actually happened.
 - **It can also feed either queue tier** — a printer's own queue, or the Auto-Queue — as well as relay to a real printer.
+
+### The archive is a record of prints, and it is kept honest
+
+- **One record, not two.** Upstream keeps a print log beside the archive. BamDude has no separate log because the archive *is* the log: every print is a row there — with its file, its plate, its filament, its energy and how it ended — so there is never a second list to reconcile against the first.
+- **A print nobody queued is still archived.** Started from the printer's own screen, or sent straight from a slicer — BamDude notices it and builds the archive around it.
+- **If the file could not be fetched at the time, BamDude keeps trying.** A printer that was busy, offline or mid-reconnect leaves an archive with no 3MF behind it; a retry service fills it in later from four separate triggers — a sweep at startup, the printer reconnecting, the print finishing, and a button.
+- **A reconciliation sweep** compares what BamDude believes is printing against what the printers actually report, so a job that ended in a way nobody saw does not sit there forever claiming to be running.
+- **Two hashes per archive, because the file that prints is not always the file you handed over.** BamDude patches the 3MF on its way to the printer, so an archive records both the original and the bytes actually sent. Deduplication on disk keys off the original — the same plate printed on five printers is stored once — and deleting an archive removes the file only when the last reference to it goes.
 
 ### Locations that nest
 
@@ -113,7 +121,7 @@ Also here:
 ### Smaller, but still ours
 
 - **Ukrainian.** Upstream ships twelve locales and Ukrainian is not among them. BamDude ships English and Ukrainian only, and both are strict: a key missing from either fails CI, and so does a placeholder that drifted between them.
-- **Git backup to GitHub or GitLab**, where upstream backs up to GitHub.
+- **Swap Mode** — driving an A1 / A1 Mini plate swapper, with Kit, STL and JobOx profiles, swap files detected automatically, and the swap macro fired between queued prints.
 - **Notes on library files**, and **print-dialog options remembered per user and per printer model**.
 
 ---
@@ -139,11 +147,12 @@ Also here:
 - **Per-plate awareness** — multi-plate prints record which plate of the source 3MF was actually printed; thumbnail, print info, G-code preview, and 3D model all reflect that plate (m038 backfills historical archives)
 - 3D model preview (Three.js) with build-volume wireframe matching the printer's bed
 - Duplicate detection & full-text search (source-hash chain-of-custody for patched files)
+- **Save a printed file back into the library** — pick a folder and the archive's 3MF is read in the way an upload is, arriving with its metadata, thumbnail, per-plate detail and badges filled in. Saving the same print twice keeps the one already there rather than making a second copy
+- **Per-plate layer counts** — read from each plate's own G-code, because plates of one file routinely differ by hundreds of layers
 - Photo attachments & failure analysis
 - Timelapse editor (trim, speed, music)
 - Re-print to any printer with AMS mapping
 - Archive comparison, tag management
-- Print Log with filtering and pagination
 
 ### Monitoring & Control
 - **Printer calibration** — bed leveling, vibration, motor noise, nozzle offset, high-temp heatbed (model-aware, from UI and Telegram bot)
@@ -187,7 +196,11 @@ Also here:
 - Model-aware maintenance types with history tracking and Excel export
 - Clear plate confirmation between prints
 - Smart plug integration (Tasmota, HA, MQTT, REST/webhook, and **Zigbee** — BamDude drives the dongle itself, no Home Assistant or Zigbee2MQTT needed)
-- Energy consumption tracking
+- **Zigbee environment sensors** — pair temperature / humidity sensors onto the same dongle, name them, place them, and set how often each one reports. Battery devices are deliberately never polled, since a sleeper answers on its own schedule
+- **Sensor alarms** — a lowest and/or a highest value on anything a sensor measures, including its own battery. The two are independent rather than a range, so "never above 30" needs no invented floor
+- **Measurement history** — power draw and room conditions recorded as they arrive and kept for a month, charted over 6 h / a day / two days / a week per plug and per sensor. Written above the plug drivers, so all five plug types are covered
+- Energy consumption tracking, per print as well as over time
+- **Nested locations** — a workshop holds shelves, a shelf holds printers; printers, sensors and spool storage attach at whichever level fits, and the printers, queues and maintenance pages group by them
 - Auto power-on/off
 - Background print dispatch with WebSocket progress
 - **Slicer Pipelines** — save a slice setup (printer / process / per-slot filament presets + bed type) once, then slice-and-queue any library file or archive in one click; target a specific printer or a whole model class (fanned out across matching printers via the auto-queue distributor), with a pre-flight compatibility check, multi-copy fanout, a live per-copy runs dashboard, and retry-failed
@@ -238,7 +251,7 @@ Also here:
 - 13 handler modules, 171 i18n keys (EN/UK), MarkdownV2 formatting
 
 ### Notifications
-- Telegram (auto-restart bot on config change), Discord, Email, Pushover, ntfy, CallMeBot
+- Telegram (auto-restart bot on config change), Discord, Email, Pushover, ntfy, CallMeBot, **Bark** (free iOS push, no account)
 - Home Assistant, custom webhooks
 - Customizable message templates (MarkdownV2 editor)
 - Per-chat quiet hours & daily digest (Telegram)
@@ -257,7 +270,8 @@ Also here:
 - **Mass actions on the Filament tab** — tick rows (or the whole page, or everything matching the filter) and Edit / Print labels / Reset usage / Archive / Restore / Delete in one go; works in both built-in and Spoolman modes
 - Spool catalog, color catalog, low-stock alerts
 - **Managed storage-locations catalog** — pick shelves/drawers/dryboxes from a managed list instead of free-text
-- **Colour-aware reorder forecasting** — per-colour runway with material/brand filters and lead-time overrides
+- **Colour-aware reorder forecasting** — per-colour runway with material/brand filters and lead-time overrides. Spools you archived still count as **what you burned** while no longer counting as **what you have**, so retiring an empty spool does not collapse the rate onto its fresh replacement; a material you have run out of entirely stays on the panel for 90 days, because that is precisely the one to reorder
+- **The manager remembers what you filtered to** — material, brand, colour, category, name, the archived tab, the usage and stock chips, the search box and the view all survive leaving the page, and "Clear filters" clears the memory too
 - **CSV import / export** of the local inventory
 - Opt-out toggle for auto-adding unknown RFID spools
 - Spoolman integration
@@ -276,8 +290,9 @@ Also here:
 
 ### Virtual Printer & Remote Printing
 - Proxy Mode for remote printing via TLS relay
-- Archive, Review, Queue, **File Manager (NEW)**, or Proxy modes
-- **File Manager mode** — saves received 3MF files to the library instead of archiving or printing
+- Four modes: **File Manager** (the default), **Printer Queue**, **Auto-Queue**, and **Proxy**
+- **File Manager mode** — saves received 3MF files into the library rather than archiving them, so the archive stays a record of prints that actually ran
+- **Queue modes** — hand a received file straight to one printer's queue, or to the Auto-Queue to be routed across the farm
 - SSDP discovery or manual IP
 - **Per-VP G-code injection toggle** for auto-eject / plate-clear rigs; Bambu Studio "Send all plates" queues one item per plate
 - **Tailscale reach** — when the host runs Tailscale, the VP card shows the tailnet IP and MagicDNS name to paste into the slicer. The CLI ships in the Docker image; mount `/var/run/tailscale/tailscaled.sock` (see `docker-compose.yml`) to enable it. Trust still goes through the one-time `bbl_ca.crt` import — slicers validate MQTT only against the bundled BBL CA store, so a publicly-signed cert can't replace it
