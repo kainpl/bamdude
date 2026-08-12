@@ -348,6 +348,34 @@ cd frontend && npm install && npm run dev
 
 ---
 
+## Where this came from
+
+BamDude grew out of a volunteer workshop. Its author volunteers with
+[**DrukArmy**](https://drukarmy.org.ua/ua/about-us) — Ukraine's largest volunteer 3D-printing
+effort for the front line — printing, and running the FPV direction as senior curator.
+
+Batches, deadlines and a farm that has to keep moving around the clock do not fit any
+off-the-shelf tool, so every feature here earned its place on a real order first. That is also
+why Ukrainian is a first-class locale rather than an afterthought.
+
+If you have a printer and want it to do something useful:
+**[join DrukArmy](https://app.drukarmy.org.ua/inv/ujnv7w8i)**.
+
+---
+
+## Support
+
+BamDude is free and stays free — AGPL-3.0, no paid tiers, no pro edition. The most valuable
+support is a bug report, a translation PR or a star. If you would rather chip in:
+
+| | |
+|---|---|
+| **Monobank jar** | https://send.monobank.ua/jar/2vREyf3SrF |
+| **PayPal** | `pushkar.valeriy@gmail.com` |
+| **USDT (TRC20)** | `TWe1MaXz7mpDZZqDkY7Az7NdZ6s9H5fvMF` |
+
+---
+
 ## License
 
 AGPL-3.0 License — see [LICENSE](LICENSE) for details.
