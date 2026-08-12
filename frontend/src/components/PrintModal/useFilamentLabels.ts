@@ -39,11 +39,9 @@ interface FilamentReqLike {
 
 /**
  * Resolve per-slot human-readable labels for the schedule modal's filament
- * panels (#1718). Both the model-mode ``FilamentOverride`` and the printer-
- * mode ``FilamentMapping`` consume this so the two panels render the same
- * sub-brand + disambiguated color for the same sliced 3MF. Extracted from
- * the inline implementation in ``FilamentOverride`` so the two callers can't
- * drift.
+ * panels (#1718). Consumed by ``FilamentMapping``. Extracted out of a panel
+ * body back when a second one rendered the same sliced 3MF, so the sub-brand
+ * + disambiguated colour could not drift between them.
  *
  * Three queries back the resolution:
  *   - ``/cloud/builtin-filaments`` → Bambu factory SKU → name map (GFA01 →

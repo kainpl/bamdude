@@ -1,10 +1,11 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { X, FolderKanban, Loader2, XCircle } from 'lucide-react';
 import { api } from '../api/client';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
+import { selectableProjects } from '../utils/projects';
 
 interface BatchProjectModalProps {
   selectedIds: number[];
@@ -15,10 +16,14 @@ export function BatchProjectModal({ selectedIds, onClose }: BatchProjectModalPro
   const queryClient = useQueryClient();
   const { showToast } = useToast();
 
-  const { data: projects, isLoading } = useQuery({
+  const { data: allProjects, isLoading } = useQuery({
     queryKey: ['projects'],
     queryFn: () => api.getProjects(),
   });
+
+  // Nothing is bound yet here — this applies one project to many files — so
+  // there is no current value to preserve.
+  const projects = useMemo(() => selectableProjects(allProjects), [allProjects]);
 
   // Close on Escape key
   useEffect(() => {

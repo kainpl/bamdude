@@ -6,7 +6,7 @@ import { Search, Filter, RefreshCw, Droplet, Settings2, Printer as PrinterIcon, 
 import { api } from '../api/client';
 import type { OrcaProfileListResponse, OrcaProfileMeta, Printer } from '../api/client';
 import { Button } from './Button';
-import { FilterDropdown } from '../pages/ProfilesPage';
+import { FilterDropdown } from './FilterDropdown';
 import { formatRelativeTime } from '../utils/date';
 
 /**

@@ -5,7 +5,7 @@ from backend.app.services.printer_capabilities import compute_calibration_suppor
 
 
 def _supports(model: str | None):
-    return compute_printer_supports(PrinterState(), model, module_vers={})
+    return compute_printer_supports(PrinterState(), model)
 
 
 def test_x1c_supports_ai_monitoring_and_door():
@@ -96,7 +96,7 @@ def test_cali_supports_manual_modes_unconditionally_on():
     """Sidecar gating happens at the entry-point (UI hides kebab) + at
     start_calibration; the supports matrix itself just reflects per-model
     capability."""
-    s = compute_calibration_supports(PrinterState(), "X1C", module_vers={})
+    s = compute_calibration_supports(PrinterState(), "X1C")
     assert s["pa_manual"] is True
     assert s["flow_manual"] is True
     assert s["temp_tower"] is True
@@ -111,12 +111,12 @@ def test_cali_supports_pa_auto_requires_lidar():
     state.is_support_pa_calibration = True
     state.is_support_auto_flow_calibration = True
     # X1C has lidar — pa_auto + flow_auto unlocked when state reports support
-    s = compute_calibration_supports(state, "X1C", module_vers={})
+    s = compute_calibration_supports(state, "X1C")
     assert s["pa_auto"] is True
     assert s["flow_auto"] is True
 
     # P1S has no lidar — pa_auto off regardless of state flags
-    s = compute_calibration_supports(state, "P1S", module_vers={})
+    s = compute_calibration_supports(state, "P1S")
     assert s["pa_auto"] is False
     assert s["flow_auto"] is False
 
@@ -127,7 +127,7 @@ def test_cali_supports_mode_state_map_present():
     every value is the literal string 'disabled' until phases flip them."""
     from backend.app.services.calibration_constants import CaliMode
 
-    s = compute_calibration_supports(PrinterState(), "X1C", module_vers={})
+    s = compute_calibration_supports(PrinterState(), "X1C")
     assert "mode_state" in s
     assert isinstance(s["mode_state"], dict)
     # Every CaliMode is covered

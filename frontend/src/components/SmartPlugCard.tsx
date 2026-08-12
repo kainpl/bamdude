@@ -1,12 +1,15 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
-import { Plug, Power, PowerOff, Loader2, Trash2, Settings2, Thermometer, Clock, Wifi, WifiOff, Edit2, Bell, Calendar, LayoutGrid, ExternalLink, Home, Radio, Eye, Globe } from 'lucide-react';
+import { Plug, Power, PowerOff, Loader2, Trash2, Settings2, Thermometer, Clock, Wifi, WifiOff, Edit2, Bell, Calendar, LayoutGrid, ExternalLink, Home, Radio, Eye, Globe, SlidersHorizontal } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import type { SmartPlug, SmartPlugUpdate } from '../api/client';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
+import { DeviceReportingModal } from './zigbee/DeviceReportingModal';
+import { useAuth } from '../contexts/AuthContext';
+import { ZigbeeStatusBadge } from './zigbee/ZigbeeStatusBadge';
 import { useToast } from '../contexts/ToastContext';
 
 interface SmartPlugCardProps {
@@ -18,7 +21,9 @@ export function SmartPlugCard({ plug, onEdit }: SmartPlugCardProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const { hasPermission } = useAuth();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [configuring, setConfiguring] = useState(false);
   const [showPowerOnConfirm, setShowPowerOnConfirm] = useState(false);
   const [showPowerOffConfirm, setShowPowerOffConfirm] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -90,6 +95,11 @@ export function SmartPlugCard({ plug, onEdit }: SmartPlugCardProps) {
   const deleteMutation = useMutation({
     mutationFn: () => api.deleteSmartPlug(plug.id),
     onSuccess: () => {
+      // removeQueries, not invalidateQueries: this card's 30 s status interval
+      // outlives the row until the refreshed list unmounts it, and every tick
+      // in between asks about a plug that no longer exists. That is where the
+      // burst of 404s after deleting a plug came from.
+      queryClient.removeQueries({ queryKey: ['smart-plug-status', plug.id] });
       queryClient.invalidateQueries({ queryKey: ['smart-plugs'] });
       // Also invalidate printer card HA entity queries
       if (plug.printer_id) {
@@ -135,23 +145,68 @@ export function SmartPlugCard({ plug, onEdit }: SmartPlugCardProps) {
                   <Home className={`w-5 h-5 ${isReachable ? (isOn ? 'text-bambu-green' : 'text-bambu-gray') : 'text-red-600 dark:text-red-400'}`} />
                 ) : plug.plug_type === 'rest' ? (
                   <Globe className={`w-5 h-5 ${isReachable ? (isOn ? 'text-bambu-green' : 'text-bambu-gray') : 'text-red-600 dark:text-red-400'}`} />
+                ) : plug.plug_type === 'zigbee' ? (
+                  <Radio className={`w-5 h-5 ${isReachable ? (isOn ? 'text-bambu-green' : 'text-bambu-gray') : 'text-red-600 dark:text-red-400'}`} />
                 ) : (
                   <Plug className={`w-5 h-5 ${isReachable ? (isOn ? 'text-bambu-green' : 'text-bambu-gray') : 'text-red-600 dark:text-red-400'}`} />
                 )}
               </div>
               <div className="min-w-0">
                 <h3 className="font-medium text-white truncate">{plug.name}</h3>
+                {/* Zigbee shows the IEEE rather than a friendly model name:
+                    SmartPlug does not store the model, and fetching the device
+                    list on the printers page would be traffic spent on
+                    cosmetics. The model is visible in Settings, where that list
+                    is loaded anyway. */}
                 <p
                   className="text-sm text-bambu-gray truncate"
-                  title={plug.plug_type === 'mqtt' ? plug.mqtt_topic ?? undefined : plug.plug_type === 'homeassistant' ? plug.ha_entity_id ?? undefined : plug.plug_type === 'rest' ? plug.rest_on_url ?? plug.rest_off_url ?? undefined : plug.ip_address ?? undefined}
+                  title={plug.plug_type === 'mqtt' ? plug.mqtt_topic ?? undefined : plug.plug_type === 'homeassistant' ? plug.ha_entity_id ?? undefined : plug.plug_type === 'rest' ? plug.rest_on_url ?? plug.rest_off_url ?? undefined : plug.plug_type === 'zigbee' ? plug.zigbee_ieee ?? undefined : plug.ip_address ?? undefined}
                 >
-                  {plug.plug_type === 'mqtt' ? plug.mqtt_topic : plug.plug_type === 'homeassistant' ? plug.ha_entity_id : plug.plug_type === 'rest' ? (plug.rest_on_url || plug.rest_off_url) : plug.ip_address}
+                  {plug.plug_type === 'mqtt' ? plug.mqtt_topic : plug.plug_type === 'homeassistant' ? plug.ha_entity_id : plug.plug_type === 'rest' ? (plug.rest_on_url || plug.rest_off_url) : plug.plug_type === 'zigbee' ? plug.zigbee_ieee : plug.ip_address}
                 </p>
               </div>
             </div>
 
-            {/* Status indicator */}
+            {/* Status indicator, and the two actions that are about the plug
+                itself. They used to live at the bottom of the automation
+                accordion, which meant changing a plug's printer required
+                guessing that its identity lived under "automation" — the reason
+                rebinding read as an unimplemented feature. */}
             <div className="flex flex-col items-end gap-1 flex-shrink-0">
+              <div className="flex items-center gap-1">
+                {/* Radio settings, so only for the class that has a radio.
+                    Gated on smart_plugs:update because that is the permission
+                    the settings endpoint checks -- for sensors too. */}
+                {plug.plug_type === 'zigbee' && plug.zigbee_ieee && hasPermission('smart_plugs:update') && (
+                  <button
+                    type="button"
+                    onClick={() => setConfiguring(true)}
+                    title={t('settings.zigbee.reporting.title')}
+                    aria-label={t('settings.zigbee.reporting.title')}
+                    className="p-1.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
+                  >
+                    <SlidersHorizontal className="w-4 h-4" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => onEdit(plug)}
+                  title={t('smartPlugs.edit')}
+                  aria-label={t('smartPlugs.edit')}
+                  className="p-1.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
+                >
+                  <Edit2 className="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowDeleteConfirm(true)}
+                  title={t('smartPlugs.delete')}
+                  aria-label={t('smartPlugs.delete')}
+                  className="p-1.5 rounded text-bambu-gray hover:text-red-500 hover:bg-bambu-dark-tertiary transition-colors"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
               {statusLoading ? (
                 <Loader2 className="w-4 h-4 text-bambu-gray animate-spin" />
               ) : plug.plug_type === 'mqtt' ? (
@@ -185,6 +240,10 @@ export function SmartPlugCard({ plug, onEdit }: SmartPlugCardProps) {
                   <span>{t('smartPlugs.offline')}</span>
                 </div>
               )}
+              {/* Why the plug stopped answering, when the cause is the radio
+                  rather than the plug. Different problems, different fixes. */}
+              {plug.plug_type === 'zigbee' && <ZigbeeStatusBadge variant="inline" />}
+
               {/* Admin page link - only for Tasmota */}
               {adminUrl && (
                 <a
@@ -487,30 +546,18 @@ export function SmartPlugCard({ plug, onEdit }: SmartPlugCardProps) {
                 </>
               )}
 
-              {/* Action Buttons */}
-              <div className="flex gap-2 pt-2">
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => onEdit(plug)}
-                  className="flex-1"
-                >
-                  <Edit2 className="w-4 h-4" />
-                  {t('smartPlugs.edit')}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => setShowDeleteConfirm(true)}
-                  className="text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </Button>
-              </div>
             </div>
           )}
         </CardContent>
       </Card>
+
+      {configuring && plug.zigbee_ieee && (
+        <DeviceReportingModal
+          ieee={plug.zigbee_ieee}
+          deviceName={plug.name}
+          onClose={() => setConfiguring(false)}
+        />
+      )}
 
       {/* Delete Confirmation */}
       {showDeleteConfirm && (

@@ -106,6 +106,12 @@ export default {
     left: 'Ліворуч',
     right: 'Праворуч',
     showingRange: '{{from}}-{{to}} з {{total}}',
+    showingRangeItems: '{{from}}-{{to}} з {{total}} {{items}}',
+    pageOf: 'Сторінка {{page}} з {{total}}',
+    firstPage: 'Перша сторінка',
+    previousPage: 'Попередня сторінка',
+    nextPage: 'Наступна сторінка',
+    lastPage: 'Остання сторінка',
     show: 'Показати',
     total: 'всього',
     history: 'Історія',
@@ -169,6 +175,19 @@ export default {
 
   // Printers page
   printers: {
+    ungrouped: 'Без розташування',
+    locations: {
+      parent: 'Усередині',
+      noParent: 'Верхній рівень',
+      hasChildren: 'містить локацій: {{count}}',
+      title: 'Розташування',
+      addShort: '+ Нове',
+      add: 'Додати розташування',
+      empty: 'Розташувань ще немає. Додайте, щоб групувати принтери й датчики за місцем.',
+      inUse: 'Це розташування ще використовується. Спершу перенесіть те, що в ньому.',
+      nameTaken: 'Розташування з такою назвою вже існує.',
+      counts: '{{printers}} принтерів · {{sensors}} датчиків · {{queued}} у черзі'
+    },
     title: 'Принтери',
     addPrinter: 'Додати принтер',
     addPreflight: {
@@ -282,6 +301,33 @@ export default {
       nozzle: 'Сопло',
       bed: 'Стіл',
       chamber: 'Камера'
+    },
+    motion: {
+      title: 'Керування рухом',
+      toolhead: 'Голова',
+      gap: 'Зазор сопло-стіл',
+      extruder: 'Екструдер',
+      home: 'Автопарковка',
+      bed: 'Стіл',
+      main: 'Основний',
+      auxiliary: 'Допоміжний',
+      retract: 'Втягнути',
+      extrude: 'Подати',
+      releaseMotors: 'Відпустити мотори',
+      notHomed: 'Голова не запаркована — рух по X та Y відхиляється, доки не виконати автопарковку.',
+      printingBlocked: 'На принтері йде завдання. Рух зараз його зіпсує.',
+      tooCold: 'Сопло {{temp}} °C. Прогрій щонайменше до 170 °C, перш ніж рухати філамент.'
+    },
+    temperatureControl: {
+      title: 'Керування температурою',
+      nozzleLeft: 'Сопло Л',
+      nozzleRight: 'Сопло П',
+      turnOff: 'Вимкнути',
+      increase: 'Підвищити температуру',
+      decrease: 'Знизити температуру',
+      noHotend: 'На цьому екструдері не виявлено хотенда',
+      sensorOnly: 'Цей принтер вимірює температуру камери, але не може її змінювати',
+      noPermission: 'У вас немає прав керувати цим принтером'
     },
     heaterHistory: {
       title: 'Історія нагрівачів',
@@ -522,6 +568,15 @@ export default {
       connected: 'Підключено',
       offline: 'Офлайн'
     },
+    // Бейдж AI-детекції збоїв на картці принтера
+    ai: {
+      idle: 'AI очікує',
+      safe: 'AI норма',
+      warning: 'AI увага',
+      failure: 'AI збій',
+      idleTitle: 'AI-детекція збоїв увімкнена для цього принтера; зараз нічого не відстежується.',
+      scoreTitle: 'AI-детекція збоїв — поточна оцінка {{score}}. Натисніть, щоб побачити повний стан та історію.'
+    },
     plateStatus: {
       markCleared: 'Позначити стіл як очищений',
       cleared: 'Стіл чистий',
@@ -730,7 +785,48 @@ export default {
     fans: {
       partCooling: 'Вентилятор охолодження деталі',
       auxiliary: 'Допоміжний вентилятор',
-      chamber: 'Вентилятор камери'
+      chamber: 'Вентилятор камери',
+      // Власні назви BambuStudio для вентиляторів airduct — по моделі й режиму.
+      // Той самий part id це різний вентилятор на P2S і X2D, тож за id їх ніколи
+      // не обирають: бекенд визначає назву з дзеркаленого конфігу принтера й
+      // надсилає ключ. Незнайома назва приходить англійською від BS, а не ключем.
+      leftAux: 'Лівий допоміжний',
+      rightAux: 'Правий допоміжний',
+      leftFilter: 'Лівий фільтрувальний',
+      rightFilter: 'Правий фільтрувальний',
+      forcedOff: 'Вимкнено поточним режимом повітроводу',
+      autoDriven: 'Керується автоматично в поточному режимі повітроводу',
+      turnOff: 'Вимкнути',
+      printingWarningTitle: 'Змінити швидкість вентилятора під час друку?',
+      printingWarningMessage:
+        'Зміна швидкості вентилятора під час друку може вплинути на якість. Питаємо раз на принтер за сесію.',
+      changeAnyway: 'Все одно змінити',
+    },
+    firmwareBlocked: {
+      badge: 'Прошивка',
+      consistency: 'Версії прошивки не збігаються — принтеру потрібне відновлювальне оновлення, інакше він не друкуватиме',
+      forced: 'Принтер вимагає оновлення прошивки, щоб продовжити',
+    },
+    airduct: {
+      title: 'Повітровід',
+      mode: 'Режим',
+      fans: 'Вентилятори',
+      fanOff: 'Вимкнено',
+      fanAuto: 'Авто',
+      filter: 'Фільтрація',
+      filterHint: 'Перенаправляє один вентилятор на фільтрацію повітря, що знижує охолодження.',
+      filterPrintingWarning:
+        'Увімкнення фільтрації під час друку знижує охолодження і може вплинути на якість.',
+      modeLockedWhilePrinting:
+        'Режим повітроводу не можна змінювати під час друку — від нього залежить заряджений матеріал.',
+      modes: {
+        0: 'Охолодження',
+        1: 'Нагрів',
+        2: 'Витяжка',
+        3: 'Повне охолодження',
+      },
+      leftHeating: 'Лівий нагрівальний',
+      rightHeating: 'Правий нагрівальний'
     },
     // HMS errors
     clickToViewHmsErrors: 'Натисніть для перегляду помилок HMS',
@@ -862,6 +958,7 @@ export default {
       exportFailed: 'Помилка експорту'
     },
     menu: {
+      saveToLibrary: 'Зберегти в бібліотеку',
       retryDownload: 'Повторити завантаження 3MF',
       print: 'Друкувати',
       schedule: 'Запланувати',
@@ -906,6 +1003,7 @@ export default {
       plateLabel: 'Плита {{index}}',
     },
     permission: {
+      noSaveToLibrary: 'У вас немає прав додавати файли в бібліотеку',
       noReprint: 'У вас немає дозволу на передрук цього архіву',
       noAddToQueue: 'У вас немає дозволу додавати до черги',
       noUpdateArchives: 'У вас немає дозволу оновлювати архіви',
@@ -913,6 +1011,16 @@ export default {
       noDownload: 'У вас немає дозволу завантажувати архіви',
       noCopyLink: 'У вас немає дозволу копіювати посилання для завантаження',
       noDelete: 'У вас немає дозволу видаляти цей архів'
+    },
+    saveToLibrary: {
+      title: 'Зберегти в бібліотеку',
+      description: 'Копіює 3MF друку «{{name}}» у бібліотеку, читаючи його метадані так само, як при завантаженні.',
+      folder: 'Тека',
+      rootFolder: 'Корінь бібліотеки',
+      action: 'Зберегти',
+      saved: 'Збережено в бібліотеку.',
+      viewInLibrary: 'Показати в бібліотеці',
+      alreadyThere: 'Цей файл уже є в бібліотеці — лишили наявну копію.'
     },
     card: {
       previousPlate: 'Попередня платформа',
@@ -943,6 +1051,7 @@ export default {
       layers: '{{count}} шарів',
       object: '{{count}} об\'єкт',
       objects: '{{count}} об\'єктів',
+      defectiveTitle: 'Бракованих деталей: {{count}}',
       slicedFor: 'Нарізано для {{model}}',
       uploadedBy: 'Завантажив',
       noPermissionReprint: 'У вас немає дозволу на передрук',
@@ -1017,6 +1126,10 @@ export default {
       matchAnyColor: 'Збіг з БУДЬ-ЯКИМ вибраним кольором',
       matchAllColors: 'Збіг з УСІМА вибраними кольорами',
       archivesAutoCreated: 'Архіви створюються автоматично після завершення друку',
+      archiveCount_one: 'архівний запис',
+      archiveCount_few: 'архівні записи',
+      archiveCount_many: 'архівних записів',
+      archiveCount_other: 'архівних записів',
       unknownPrinter: 'Невідомий',
       slicedFor: 'Нарізано для {{model}}',
       noPrinter: 'Без принтера',
@@ -1042,7 +1155,8 @@ export default {
       printTime: 'Час друку',
       estimated: 'Орієнтовно',
       actual: 'Фактично',
-      accuracy: 'Точність'
+      accuracy: 'Точність',
+      sortBy: 'Сортувати за'
     }
   },
 
@@ -1144,6 +1258,7 @@ export default {
 
   // QueueCard component
   queueCard: {
+    ungrouped: 'Без розташування',
     status: {
       idle: 'Очікує',
       printing: 'Друкує',
@@ -1238,7 +1353,6 @@ export default {
     noPending: 'Немає елементів в очікуванні',
     pending: 'в очікуванні',
     manualStart: 'Вручну',
-    ungrouped: 'Без розташування'
   },
 
   backgroundDispatch: {
@@ -1364,6 +1478,11 @@ export default {
     longestPrint: 'Найдовший друк',
     heaviestPrint: 'Найважчий друк',
     mostExpensivePrint: 'Найдорожчий',
+    // Розкладка під рекордом «Найдорожчий». Показується лише коли розумна
+    // розетка справді зміряла електрику, щоб суму можна було звірити зі
+    // сторінкою самого друку, а не читати як помилкову вартість філаменту.
+    filamentCostShort: 'філамент',
+    energyCostShort: 'е/е',
     busiestDay: 'Найзавантаженіший день',
     successStreak: 'Серія успіхів',
     streakPrint: 'послідовний друк',
@@ -1555,6 +1674,128 @@ export default {
 
   // Settings page
   settings: {
+    zigbee: {
+      removedLeft: 'Пристрій вилучено з мережі.',
+      removedForced: 'Пристрій вилучено в BamDude, але він не відповів — мережевий ключ у нього лишився, і при ввімкненні він може повернутись. Скиньте його на самому пристрої, якщо це не те, чого ви хочете.',
+      title: 'Zigbee-координатор',
+      description:
+        'BamDude керує Zigbee-донглом самостійно — без Home Assistant і без Zigbee2MQTT.',
+      enabled: 'Увімкнути Zigbee-координатор',
+      transport: "З'єднання",
+      transport_ethernet: 'Ethernet',
+      transport_usb: 'USB',
+      path: 'Адреса',
+      pathEthernetHint: 'Хост і порт донгла, наприклад 192.168.1.50:6638.',
+      pathUsbHint: 'Виберіть послідовний порт, у який вставлений донгл.',
+      pickPort: 'Виберіть порт…',
+      noSerialPorts: 'На цій машині послідовних портів не знайдено.',
+      refreshPorts: 'Оновити список портів',
+      connect: 'Підключити',
+      reconnect: 'Перепідключити',
+      channel: 'канал',
+      pairDevice: 'Спарувати пристрій',
+      pairingCountdown: 'Готово до спарювання ще {{seconds}} с — натисніть і тримайте кнопку на розетці.',
+      pairingJoining: "Пристрій приєднується…",
+      pairingPaired: '{{name}} спаровано.',
+      pairingRejected:
+        '{{name}} відхилено й видалено з мережі: BamDude не може ним ні перемикати, ні щось із нього читати. Лише розетки й датчики.',
+      pairedDevices: 'Спаровані пристрої',
+      noPairedDevices: 'Поки нічого не спаровано.',
+      boundTo: "прив'язано до {{name}}",
+      inUse: 'уже додано',
+      capabilityEnergy: 'перемикання + енергія',
+      capabilitySwitchOnly: 'лише перемикання',
+      capabilitySensor: 'вимірює: {{what}}',
+      capabilityUnsupported: 'не підтримується',
+      sensors: {
+        title: 'Датчики',
+        notOnNetwork: 'Не в мережі',
+        notOnNetworkHint: "Ім'я й місце збережені. Покази повернуться разом із ним.",
+        notAnswering: 'Не відповідає',
+        battery: 'Батарея {{percent}} %',
+        batteryVoltage: '{{volts}} В',
+        mainsPowered: 'Живлення від мережі',
+        add: 'Додати датчик',
+        empty: 'Датчиків ще не додано.',
+        emptyHint: 'Спаруйте пристрій вище, потім додайте його тут.',
+        radioDown:
+          'Zigbee-рація лежить, тож покази не надходять. Датчики показані з тим, що про них було відомо востаннє.',
+        adoptTitle: 'Додати датчик',
+        editTitle: 'Редагувати датчик',
+        device: 'Пристрій',
+        pickDevice: 'Оберіть спарований датчик…',
+        noFreeDevices: 'Усі спаровані датчики вже додані. Спаруйте ще один вище.',
+        nameLabel: "Ім'я",
+        unbindTitle: 'Прибрати {{name}} зі списку?',
+        unbindBody:
+          'Пристрій лишається в Zigbee-мережі й зберігає налаштування, тож додавання назад поверне те, що в нього було. Вигнати його з мережі — окрема дія, в картці координатора вище, і після неї датчик доведеться парувати руками біля пристрою.',
+        unbindConfirm: 'Прибрати зі списку',
+      },
+      thresholds: {
+        title: 'Межі тривоги',
+        hint: 'Порожнє поле — межі немає. Запас — наскільки показ має повернутись усередину межі, щоб тривога знялась.',
+        min: 'мінімум',
+        max: 'максимум',
+        deadband: 'запас',
+      },
+      measurement: {
+        temperature: 'температуру',
+        humidity: 'вологість',
+        co2: 'CO₂',
+        pm25: 'PM2.5',
+        battery: 'заряд',
+        battery_voltage: 'напругу батареї',
+      },
+      removeDevice: 'Видалити пристрій',
+      addAsSensor: 'Додати як датчик',
+      reporting: {
+        pending: 'Нове ще не підтверджено',
+        unknown: 'Ще не питали',
+        refused: 'Пристрій відмовив',
+        unanswered: 'Пристрій не відповів',
+        mismatch: 'Пристрій зберіг інше',
+        verified: 'Підтверджено пристроєм',
+        unchecked: 'Прийнято, не перевірено',
+        title: 'Параметри репортування',
+        minInterval: 'Найкоротша пауза',
+        maxInterval: 'Найдовше мовчання',
+        change: 'Зміна на',
+        seconds: 'с',
+        minutesHint: '≈ {{minutes}} хв',
+        poll: 'Опитувати кожні',
+        pollUnsupported:
+          'Цей пристрій спить між репортами, тож опитувати його не можна. Він звітує сам — змініть, як часто.',
+        staleAfter: 'Довіряти показу',
+        reset: 'Повернути до загальних налаштувань',
+        savedAwake: 'Збережено й застосовано.',
+        savedAsleep: 'Збережено. Застосується, коли пристрій прокинеться.',
+        storedInstead: 'зберіг {{value}} с',
+        storedDifferent: 'зберіг інше значення',
+      },
+      removeDeviceConfirm:
+        'Видалити {{name}} із Zigbee-мережі? Він перестане відповідати, доки ви не спаруєте його знову вручну.',
+      radioDownShort: 'Zigbee-радіо не працює',
+      disconnect: 'Відключити',
+      radioChangedTitle: 'Це інший Zigbee-донгл',
+      radioChangedBody:
+        'Донгл носить мережу з собою, тож пристрої, спаровані з попереднім ({{previous}}), на цьому відсутні й показуватимуться як недосяжні. Поверніть старий донгл, щоб їх отримати, або відновіть бекап, зроблений коли він працював — бекапи містять Zigbee-мережу.',
+      forgetTitle: 'Забути Zigbee-мережу',
+      forgetHint:
+        'Стирає мережевий ключ. Після цього кожну розетку доведеться спаровувати вручну, підійшовши до неї. «Відключити» вище лише зупиняє радіо й нічого не коштує.',
+      forgetAction: 'Забути мережу',
+      forgetConfirm:
+        'Стерти цю Zigbee-мережу? Пристрої й далі вважатимуть, що належать їй, тож кожну розетку доведеться переспаровувати особисто, там де вона встановлена. Ваші розетки та їхні налаштування зберігаються й запрацюють самі після переспарювання. Бекап, зроблений раніше, здатен відновити мережу.',
+      forgetDone_one: 'Zigbee-мережу стерто. {{count}} розетку збережено — запрацює після переспарювання.',
+      forgetDone_few: 'Zigbee-мережу стерто. {{count}} розетки збережено — запрацюють після переспарювання.',
+      forgetDone_many: 'Zigbee-мережу стерто. {{count}} розеток збережено — запрацюють після переспарювання.',
+      forgetDone_other: 'Zigbee-мережу стерто. {{count}} розеток збережено — запрацюють після переспарювання.',
+      state: {
+        disabled: 'Вимкнено',
+        starting: 'Запускається',
+        up: 'Підключено',
+        error: 'Проблема',
+      },
+    },
     title: 'Налаштування',
     general: 'Загальне',
     // Tab names
@@ -1931,12 +2172,11 @@ export default {
     webhookEndpoints: 'Кінцеві точки вебхуків',
     webhookApiKeyHint: 'Використовуйте ваш API ключ у заголовку X-API-Key.',
     webhook: {
-      getAllStatus: 'Отримати стан усіх принтерів',
-      getSpecificStatus: 'Отримати стан конкретного принтера',
-      addToQueue: 'Додати до черги друку',
-      pausePrint: 'Призупинити друк',
-      resumePrint: 'Продовжити друк',
-      stopPrint: 'Зупинити друк'
+      queueStatus: 'Стан черги всіх принтерів, або одного через ?printer_id=',
+      printerStatus: 'Стан одного принтера',
+      startNext: 'Запустити наступний друк із черги',
+      stopPrint: 'Зупинити поточний друк',
+      cancelPrint: 'Скасувати поточний або призупинений друк'
     },
     apiBrowser: 'API браузер',
     apiBrowserDescription: 'Досліджуйте та тестуйте всі доступні API ендпоінти.',
@@ -2112,6 +2352,14 @@ export default {
     costTracking: 'Відстеження витрат',
     printsOnly: 'Лише друки',
     totalConsumption: 'Загальне споживання',
+    retention: {
+      title: 'Історія вимірів',
+      help: 'Скільки зберігати кожен вид показів. Старіші рядки прибираються раз на добу.',
+      ams: 'Вологість і температура AMS (днів)',
+      printerSensors: 'Температури принтера (днів)',
+      plugPower: 'Потужність розеток (днів)',
+      sensors: 'Покази датчиків (днів)'
+    },
     dataManagement: 'Керування даними',
     storageUsage: 'Використання сховища',
     storageUsageDescription: 'Розподіл використання даних за категоріями',
@@ -2278,6 +2526,8 @@ export default {
     orcaslicerApiUrlDescription: 'Порожнє значення повертає до значення SLICER_API_URL з оточення.',
     bambuStudioApiUrl: 'URL API BambuStudio',
     bambuStudioApiUrlDescription: 'Порожнє значення повертає до значення BAMBU_STUDIO_API_URL з оточення.',
+    slicerStallTimeout: 'Таймаут простою слайсера (хвилини)',
+    slicerStallTimeoutDescription: 'Скільки чекати, поки від сайдкара немає жодного прогресу. Це не обмеження на тривалість нарізки — важка модель, яка продовжує звітувати, дорахується до кінця. На сайдкарі, який не звітує прогрес, це обмежує загальний час нарізки.',
     bothSlicersHint: 'Коли обидва URL задані та доступні, модальне вікно «Нарізати» дозволяє вибрати потрібний слайсер для кожного файлу.',
     sidebarOrderDescription: 'Перетягніть елементи в бічній панелі для зміни порядку. Скинути до порядку за замовчуванням тут.',
     setDefault: 'Встановити за замовчуванням',
@@ -2313,6 +2563,8 @@ export default {
     styleGlow: 'Світіння',
     styleVibrant: 'Яскравий',
     themeToggleHint: 'Перемикайте між темним, світлим і системним режимом за допомогою іконки в бічній панелі.',
+    progressInTitle: 'Показувати прогрес друку у вкладці браузера',
+    progressInTitleHint: 'У заголовку вкладки з\'явиться відсоток друку, який завершиться найшвидше, а іконкою вкладки стане відповідне кільце прогресу. Діє лише в цьому браузері.',
     saveThumbnailsDescription: 'Витягувати та зберігати мініатюри з 3MF файлів',
     captureFinishPhotoDescription: 'Зробити фото з камери принтера при завершенні друку. BamDude записує короткий таймлапс під час друку, щоб отримати фото з моменту перед опусканням столу; файл таймлапсу зберігається, якщо ви увімкнули таймлапс для цього друку, інакше він автоматично видаляється після зйомки фото.',
     ffmpegNotInstalled: 'ffmpeg не встановлено',
@@ -2417,8 +2669,12 @@ export default {
     retryDelay: 'Затримка повтору',
     connectionTimeout: 'Таймаут з\'єднання',
     time_one: '{{count}} раз',
+    time_few: '{{count}} рази',
+    time_many: '{{count}} разів',
     time_other: '{{count}} разів',
     second_one: '{{count}} секунда',
+    second_few: '{{count}} секунди',
+    second_many: '{{count}} секунд',
     second_other: '{{count}} секунд',
     nSeconds: '{{count}} секунд',
     increaseForWeakWifi: 'Збільште для принтерів зі слабким WiFi',
@@ -2455,7 +2711,7 @@ export default {
     metricsPrintsTotal: 'Всього друків за результатом',
     metricsMore: '...та більше (шари, вентилятори, черга, використання філаменту)',
     // Smart Plugs
-    smartPlugsDescription: 'Підключіть розумні розетки (Tasmota або Home Assistant) для автоматизації керування живленням та відстеження енергоспоживання принтерів.',
+    smartPlugsDescription: 'Підключіть розумні розетки — Zigbee, Tasmota, Home Assistant, MQTT або REST-вебхук — для автоматизації керування живленням та відстеження енергоспоживання принтерів.',
     allOn: 'Увімкнути всі',
     allOff: 'Вимкнути всі',
     addSmartPlug: 'Додати розумну розетку',
@@ -2527,6 +2783,10 @@ export default {
     },
     oidc: {
       title: 'SSO / OIDC провайдери',
+      // #2593: цей провайдер оголошений змінними BAMDUDE_OIDC_* і переписується
+      // на кожному старті, тому його контроли відсутні, а не вимкнені.
+      envManaged: 'З оточення',
+      envManagedHint: 'Налаштований змінними оточення BAMDUDE_OIDC_* і застосовується наново при кожному перезапуску. Щоб змінити — правте ці змінні; щоб повернути керування цій сторінці — приберіть їх.',
       desc: 'Налаштуйте OpenID Connect-провайдери для єдиного входу через зовнішні ідентифікаційні сервіси.',
       addProvider: 'Додати провайдера',
       newProvider: 'Новий провайдер',
@@ -2572,6 +2832,8 @@ export default {
     noErrors: 'Немає помилок',
     viewOnWiki: 'Переглянути на Bambu Lab Wiki',
     unknownCode: 'Невідомий код HMS — деталі дивіться у вікі Bambu Lab.',
+    mqttVerifyFailedRemedy:
+      'Як полагодити: увімкніть на принтері режим розробника (LAN Mode) і перезавантажте принтер. Порада самої Bambu Lab для цього коду — оновити Bambu Studio чи Handy — не стосується друку, надісланого з BamDude.',
     clearInstructions: 'Очистіть помилки на принтері, щоб прибрати їх тут.',
     clearErrors: 'Очистити помилки',
     clearSuccess: 'Помилки HMS очищено',
@@ -2661,7 +2923,7 @@ export default {
       cancel: 'Скасувати'
     },
     toast: {
-      filesDeleted: 'Видалено {{count}} файлів',
+      filesDeleted: 'Видалено {{count}} файл(ів)',
       deleteFailed: 'Помилка видалення: {{error}}',
       clearing: 'Очищення SD-карти...',
       sdCardCleared: 'SD-карту очищено - видалено {{count}} файлів',
@@ -3412,6 +3674,11 @@ export default {
     printer: 'Профіль принтера',
     useEmbedded: 'Використати вбудовані налаштування файлу',
     useEmbeddedHint: 'Нарізати саме так, як налаштував дизайнер — кількість стінок, заповнення та філамент беруться з файлу, а не з профілів нижче. Доступно лише коли обраний принтер збігається з цільовим у дизайні.',
+    designSettings: 'Налаштування друку від дизайнера',
+    designSettingsHint: 'У цьому файлі {{count}} налаштувань відрізняються від стокового профілю. Позначені перенесуться на профіль, який ви оберете.',
+    designSettingsSelected: '{{selected}} з {{total}}',
+    designSettingsPrinterCoupled: 'під машину',
+    designSettingsPrinterCoupledHint: 'Підібрано під принтер дизайнера — швидкості, прискорення, температури. Перенесення на іншу машину може зіпсувати нарізку або взагалі бути відхилене, тож ці значення пропонуються, але не позначені за замовчуванням.',
     process: 'Профіль процесу',
     filament: 'Профіль філаменту',
     filamentSlot: 'Філамент {{index}} ({{type}})',
@@ -3491,7 +3758,9 @@ export default {
       noImage: 'У цьому файлі немає зображення плити.',
       empty: 'На цій плиті об’єктів не знайдено.',
       plate: 'Плита {{index}}',
-      objectCount: '{{count}} об’єкт',
+      objectCount_one: '{{count}} об’єкт',
+      objectCount_few: '{{count}} об’єкти',
+      objectCount_many: '{{count}} об’єктів',
       objectCount_other: '{{count}} об’єктів',
     },
     tags: {
@@ -3726,6 +3995,23 @@ export default {
     tags: {
       title: 'Теги',
       subtitle: 'Позначайте файли для наскрізної фільтрації — іграшки, безпечні для дітей, лише PETG, будь-що.',
+      systemSection: 'Призначає система',
+      systemHint: 'BamDude визначає їх із самого файла. Їх не можна перейменувати, видалити чи зняти з файла.',
+      mineSection: 'Ваші теги',
+      deletePrompt_one: 'Видалити «{{name}}» з {{count}} файла?',
+      deletePrompt_few: 'Видалити «{{name}}» з {{count}} файлів?',
+      deletePrompt_many: 'Видалити «{{name}}» з {{count}} файлів?',
+      deletePrompt_other: 'Видалити «{{name}}» з {{count}} файлів?',
+      deletePromptUnused: 'Видалити «{{name}}»?',
+      deleteSelected_one: 'Видалити {{count}} тег',
+      deleteSelected_few: 'Видалити {{count}} теги',
+      deleteSelected_many: 'Видалити {{count}} тегів',
+      deleteSelected_other: 'Видалити {{count}} тегів',
+      deleteSelectedPrompt_one: 'Видалити {{count}} тег?',
+      deleteSelectedPrompt_few: 'Видалити {{count}} теги?',
+      deleteSelectedPrompt_many: 'Видалити {{count}} тегів?',
+      deleteSelectedPrompt_other: 'Видалити {{count}} тегів?',
+      newTagPlaceholder: 'Назва нового тега',
       manage: 'Теги',
       manageTitle: 'Керування каталогом тегів',
       add: 'Новий тег',
@@ -3793,6 +4079,7 @@ export default {
     project: 'Проєкт',
     archive: 'Архів',
     noProjectsFound: 'Проєкти не знайдено',
+    archiveLinkHint: 'Додає на той архів ярлик, який відкриває цю теку. Один архів можна привʼязати лише до однієї теки.',
     noArchivesFound: 'Архіви не знайдено',
     unlink: 'Від\'єднати',
     link: 'Прив\'язати',
@@ -3855,6 +4142,11 @@ export default {
       truncated: 'Скорочено',
     },
     allTypes: 'Усі типи',
+    printedTimes_one: 'Надруковано {{count}} раз',
+    printedTimes_few: 'Надруковано {{count}} рази',
+    printedTimes_many: 'Надруковано {{count}} разів',
+    printedTimes_other: 'Надруковано {{count}} разів',
+    unprintedOnly: 'Не друковані',
     ascending: 'За зростанням',
     descending: 'За спаданням',
     resultsCount: '{{showing}} з {{total}} файлів',
@@ -3873,13 +4165,14 @@ export default {
     deleteFolder: 'Видалити папку',
     deleteFile: 'Видалити файл',
     deleteFilesCount: 'Видалити {{count}} файлів',
-    deleteFolderConfirm: 'Ви впевнені, що хочете видалити цю папку? Усі файли всередині також будуть видалені.',
+    deleteFolderConfirm: 'Видалити цю папку? Файли всередині потраплять у корзину, звідки їх можна відновити.',
     deleteFileConfirm: 'Ви впевнені, що хочете видалити цей файл?',
-    deleteFilesConfirm: 'Ви впевнені, що хочете видалити {{count}} вибраних файлів? Цю дію не можна скасувати.',
+    deleteFilesConfirm: 'Видалити {{count}} вибраних файлів? Вони потраплять у корзину, звідки їх можна відновити.',
     deleting: 'Видалення...',
     noPermissionRenameFolder: 'У вас немає дозволу перейменовувати папки',
     noPermissionLinkFolder: "У вас немає дозволу прив'язувати папки",
     noPermissionDeleteFolder: 'У вас немає дозволу видаляти папки',
+    onlyEmptyFolders: 'Ви можете видаляти лише порожні папки',
     noPermissionPrint: 'У вас немає дозволу друкувати',
     noPermissionAddToQueue: 'У вас немає дозволу додавати до черги',
     noPermissionSlice: 'У вас немає дозволу нарізати моделі',
@@ -3901,6 +4194,9 @@ export default {
     externalPathHelp: 'Абсолютний шлях до директорії на Docker хості. Повинен бути підмонтований у контейнер.',
     readOnly: 'Тільки для читання',
     readOnlyHelp: 'забороняє завантаження та видалення',
+    // Підказка на назві теки. Саме «активність», а не «змінено»: значення — це
+    // найсвіжіше з усього піддерева теки, а не mtime самої теки.
+    lastActivity: 'Остання активність',
     showHiddenFiles: 'Показувати приховані файли (dotfiles)',
     externalFolder: 'Зовнішня папка',
     scanFolder: 'Сканувати',
@@ -3908,7 +4204,8 @@ export default {
       folderCreated: 'Папку створено',
       folderDeleted: 'Папку видалено',
       fileDeleted: 'Файл видалено',
-      filesDeleted: 'Видалено {{count}} файлів',
+      filesDeleted: 'Переміщено в корзину: {{count}}',
+      filesDeletedWithSkipped: 'Переміщено в корзину: {{count}} · пропущено: {{skipped}}',
       filesMoved: 'Файли переміщено',
       folderLinked: "Папку прив'язано",
       folderUnlinked: "Папку від'єднано",
@@ -3991,6 +4288,7 @@ export default {
     // Footer stats
     printJobs: 'Завдання друку (платформи)',
     partsPrinted: 'Надруковано деталей',
+    defectiveParts: 'Браковані деталі (вже відняті від надрукованих)',
     failedParts: 'Невдалі деталі',
     // Actions
     import: 'Імпорт',
@@ -4059,6 +4357,7 @@ export default {
       inProgress: '{{count}} в процесі',
       failed: '{{count}} невдалих',
       partsPrinted: '{{count}} деталей надруковано',
+      defective: '{{count}} бракованих',
       printTime: 'Час друку',
       filamentUsed: 'Використано філаменту'
     },
@@ -4130,7 +4429,18 @@ export default {
     },
     timeline: {
       title: 'Хронологія активності',
-      empty: 'Активності ще немає.'
+      empty: 'Активності ще немає.',
+      showMore: 'Показати ще {{count}}',
+      showLess: 'Згорнути',
+      events: {
+        print_started: 'Друк почався',
+        print_completed: 'Друк завершено',
+        print_failed: 'Друк провалився',
+        print_cancelled: 'Друк скасовано',
+        queued: 'Додано в чергу',
+        auto_queued: 'Додано в авточергу',
+        project_created: 'Проєкт створено'
+      }
     },
     template: {
       saveAsTemplate: 'Зберегти як шаблон',
@@ -4156,6 +4466,11 @@ export default {
 
   // System info
   system: {
+    zigbeeCoordinator: 'Zigbee-координатор',
+    zigbeeState: 'Стан',
+    zigbeePairedDevices: 'Спаровані пристрої',
+    zigbeeRadio: 'Радіо',
+    zigbeeAddress: 'Адреса',
     title: 'Інформація про систему',
     subtitle: 'Моніторинг системних ресурсів та статистики бази даних',
     failedToLoad: 'Не вдалося завантажити інформацію про систему',
@@ -4515,6 +4830,8 @@ export default {
     autoIncrementLots: 'Авто-нумерація лотів (+1 на копію)',
     measuredWeightError: 'Виміряна вага повинна бути від {{min}}г до {{max}}г.',
     slicerPreset: 'Пресет слайсера',
+    suggested: 'Пропоновані',
+    allOptions: 'Усі',
     searchPresets: 'Пошук пресетів філаменту...',
     selectedPreset: 'Вибрано',
     noPresetsFound: 'Пресети не знайдено',
@@ -4832,6 +5149,9 @@ export default {
     airPrintDetection: 'Виявлення друку в повітрі',
     airPrintTip: 'Виявляє засмічення та стирання нитки, негайно зупиняючи друк для економії часу та матеріалу.',
     amsType: 'Тип AMS',
+    amsTypeSwitching: 'Перемикання типу AMS — це триває близько 30 секунд.',
+    amsTypeUnknown: 'Ще не повідомлено',
+    amsTypeRunning: 'Зараз працює: {{name}}',
     arrangeOrder: 'Порядок AMS',
     arrangeNote:
       "Якщо потрібна певна послідовність ID для AMS, після натискання «Скинути» від'єднайте всі AMS, а потім підключіть їх у бажаному порядку.",
@@ -5196,6 +5516,14 @@ export default {
     flowCalibrationDesc: 'Калібрування потоку екструзії',
     layerInspectionDesc: 'AI-інспекція першого шару',
     timelapseDesc: 'Запис таймлапс-відео',
+    timelapseLowSpace: '{{printer}}: майже не лишилось місця під таймлапс',
+    timelapseFreeSpace: 'Звільнити',
+    timelapseBlocked: {
+      unsupported: 'цей принтер не вміє записувати таймлапс',
+      no_storage: 'немає SD-картки',
+      storage_unavailable: 'SD-картка не читається',
+      storage_readonly: 'SD-картка лише для читання'
+    },
     meshModeFastCheck: 'Швидка перевірка вібрації',
     meshModeFastCheckDesc: 'Запускається один раз перед друком, щоб переконатися, що натяг ременів у нормі. Вимкніть, щоб пропустити для цього друку.',
     gcodeInjection: 'Вставити G-code-сніпети',
@@ -5293,12 +5621,8 @@ export default {
     sendLabel: 'Надіслати',
     toLabel: 'на',
     printJob: 'Завдання друку',
+    fileOfTotal: 'Файл {{current}} з {{total}}',
 
-    // FilamentOverride
-    filamentOverride: 'Заміна філаменту',
-    filamentOverrideHint: 'Замініть оригінальний вибір філаменту на філаменти, доступні на обраних принтерах.',
-    originalFilament: 'Оригінал',
-    resetToOriginal: 'Скинути до оригіналу',
     forceColorMatch: 'Примусова відповідність кольору'
   },
 
@@ -5458,6 +5782,8 @@ export default {
     noProject: 'Без проєкту',
     itemsPrinted: 'Надруковано елементів',
     itemsPrintedHelp: 'Кількість елементів, виготовлених у цьому друці',
+    defectiveParts: 'Браковані деталі',
+    defectivePartsHelp: 'Скільки з них вийшли непридатними. Рахується автоматично, коли під час друку пропускають об\'єкти — зокрема й з екрана самого принтера.',
     notes: 'Нотатки',
     notesPlaceholder: 'Додайте нотатки про цей друк...',
     externalLink: 'Зовнішнє посилання',
@@ -5584,6 +5910,7 @@ export default {
       profilesSaved: 'K-профіль збережено на {{count}} екструдерів',
       noteSaved: 'Нотатку збережено (принтер не чіпали)',
       selectAtLeastOneExtruder: 'Виберіть щонайменше один екструдер',
+      invalidKValue: 'K має бути між {{min}} і {{max}} (не включно)',
       profileDeleted: 'K-профіль видалено',
       profilesDeleted: 'Видалено {{count}} профілів',
       exportedProfiles: 'Експортовано {{count}} профілів',
@@ -5766,6 +6093,10 @@ export default {
       title: 'Збігання кольорів',
       description: 'Закріпити тип+колір по слотах із кожного 3MF, щоб авто-черга відмовляла принтерам із правильним матеріалом, але неправильним кольором.'
     },
+    saveAmsMapping: {
+      title: 'Використовувати слоти зі слайсера',
+      description: 'Залишати саме ті слоти, які обрано в Bambu Studio, замість підбору за типом і кольором — єдиний спосіб відрізнити дві котушки одного кольору. Для таких друків вимикає власний підбір слотів BamDude, зокрема правило «спершу найменший залишок» і маршрутизацію Flow-Through.'
+    },
     gcodeInjection: {
       title: 'Вставка G-code',
       description: 'Застосовувати сніпети G-code для моделі (Налаштування → Принтери → G-code Сніпети) до завдань, які ставить у чергу цей VP. Вимкнено за замовчуванням; не діє, якщо для моделі немає сніпетів.'
@@ -5855,9 +6186,13 @@ export default {
     plateCount_few: '{{count}} плити',
     plateCount_many: '{{count}} плит',
     plateCount_other: '{{count}} плит',
-    objectCount: '{{count}} об\'єкт',
+    objectCount_one: '{{count}} об\'єкт',
+    objectCount_few: '{{count}} об\'єкти',
+    objectCount_many: '{{count}} об\'єктів',
     objectCount_other: '{{count}} об\'єктів',
-    filamentCount: '{{count}} філамент',
+    filamentCount_one: '{{count}} філамент',
+    filamentCount_few: '{{count}} філаменти',
+    filamentCount_many: '{{count}} філаментів',
     filamentCount_other: '{{count}} філаментів',
     eta: 'Час {{minutes}} хв',
     noPreview: 'Попередній перегляд для цього файлу недоступний',
@@ -5893,7 +6228,46 @@ export default {
 
   // Maintenance type descriptions (built-in)
   // Smart Plugs
+  locationConditions: {
+    openChart: 'Графік показників — {{name}}',
+  },
+  sensorHistory: {
+    title: 'Історія показів',
+    empty: 'Нічого не записано.',
+    error: 'Не вдалося завантажити історію',
+    min: 'Мін',
+    avg: 'Середнє',
+    max: 'Пік',
+    bucketMinute: '{{value}} {{unit}} · середнє за 1 хв',
+    bucketMinutes: '{{value}} {{unit}} · середнє за {{minutes}} хв',
+  },
   smartPlugs: {
+    powerHistory: {
+      title: 'Історія потужності',
+      open: 'Історія потужності',
+      empty: 'Поки нічого не записано.',
+      error: 'Не вдалося завантажити історію',
+      min: 'Мін',
+      avg: 'Середнє',
+      max: 'Пік',
+      bucketMinute: '{{value}} Вт · середнє за 1 хв',
+      bucketMinutes: '{{value}} Вт · середнє за {{minutes}} хв',
+    },
+    plugType: 'Тип розетки',
+    zigbeeDevice: 'Zigbee-пристрій',
+    zigbeePickDevice: 'Виберіть спарований пристрій…',
+    zigbeeDeviceHint: 'У списку лише спаровані пристрої, якими можна перемикати.',
+    zigbeeDeviceRequired: "Виберіть, яким саме спарованим Zigbee-пристроєм є ця розетка.",
+    zigbeeNoDevices:
+        "Немає непривʼязаних Zigbee-розеток. Спаруйте одну в Налаштування → Розумні розетки → Zigbee-координатор.",
+    zigbeeCoordinatorDown:
+        "Zigbee-координатор не підключений. Підключіть його в Налаштування → Розумні розетки → Zigbee-координатор.",
+    zigbeeNoMeteringWarning:
+        'Цей пристрій не звітує енергію, тож перемикати ним можна, але показники енергії лишатимуться порожніми.',
+    rebindDropsInflightEnergy:
+        "По цій розетці зараз міряється друк. Зміна принтера скасує показник енергії для друку, що виконується, замість записати різницю між двома різними щетчиками.",
+    alreadyHasMainsPlug:
+        "У цього принтера вже є ввідна розетка ({{name}}). Енергія його друків міряється саме нею.",
     offline: 'Офлайн',
     admin: 'Адмін',
     openPlugAdminPage: 'Відкрити адмін-сторінку розетки',
@@ -6080,6 +6454,7 @@ export default {
       callmebot: 'CallMeBot/WhatsApp',
       ntfy: 'ntfy',
       pushover: 'Pushover',
+      bark: 'Bark',
       telegram: 'Telegram',
       email: 'Email',
       discord: 'Discord',
@@ -6093,6 +6468,7 @@ export default {
       discord: 'Надсилання у Discord канал через вебхук',
       ntfy: 'Безкоштовні push-сповіщення з можливістю самостійного хостингу',
       pushover: 'Прості та надійні push-сповіщення',
+      bark: 'iOS push-сповіщення через Bark (можна хостити самостійно)',
       callmebot: 'Безкоштовні WhatsApp сповіщення через CallMeBot',
       webhook: 'Загальний HTTP POST на будь-який URL',
       homeassistant: 'Постійні сповіщення у панелі Home Assistant'
@@ -6109,6 +6485,15 @@ export default {
     // Event categories
     printEvents: 'Події друку',
     printerStatus: 'Стан принтера',
+    sensorAlerts: 'Тривоги датчиків',
+    sensorThreshold: 'Покази датчика',
+    sensorThresholdDescription: 'Показ виходить за задані межі — і коли повертається',
+    sensorSilent: 'Датчик замовк',
+    sensorSilentDescription: 'Датчик перестає звітувати — і коли починає знову',
+    sensorAboveMax: 'Показ вище межі',
+    sensorBelowMin: 'Показ нижче межі',
+    sensorBackInRange: 'Показ у нормі',
+    sensorSpeakingAgain: 'Датчик знову говорить',
     amsAlarms: 'Сповіщення AMS',
     amsHtAlarms: 'Сповіщення AMS-HT',
     printQueue: 'Черга друку',
@@ -6210,6 +6595,15 @@ export default {
     configuration: 'Конфігурація',
     pushoverRetry: 'Повтор екстреного сигналу (с)',
     pushoverExpire: 'Термін дії екстреного сигналу (с)',
+    barkDeviceKey: 'Ключ пристрою',
+    barkGroup: 'Група',
+    barkSound: 'Звук',
+    barkLevel: 'Рівень переривання',
+    barkLevelDefault: 'Типовий',
+    barkLevelActive: 'Звичайний',
+    barkLevelTimeSensitive: 'Терміновий (пробиває зведення сповіщень)',
+    barkLevelCritical: 'Критичний (обходить беззвучний режим і Фокус)',
+    barkLevelPassive: 'Пасивний (доставляється без звуку)',
     testConfiguration: 'Тест конфігурації',
     printerFilter: 'Фільтр принтера',
     onlyFromPrinter: 'Надсилати сповіщення лише для подій від цього принтера',
@@ -6233,6 +6627,8 @@ export default {
     add: 'Додати',
     nameRequired: "Назва обов'язкова",
     fieldRequired: '{{field}} обов\'язкове',
+    haDataLabel: 'Дані (JSON, необов\'язково)',
+    haDataInvalid: 'Поле «Дані» має бути коректним JSON-об\'єктом, наприклад {"priority": "high", "ttl": 0}',
     // Config field labels
     // NotificationTemplateEditor
     editTemplate: 'Редагувати шаблон: {{name}}',
@@ -6740,6 +7136,8 @@ export default {
     stockoutLegend: 'Закінчення матеріалу',
     // Тулбар сповіщень
     alertCount_one: '{{count}} сповіщення',
+    alertCount_few: '{{count}} сповіщення',
+    alertCount_many: '{{count}} сповіщень',
     alertCount_other: '{{count}} сповіщень',
     order: 'Замовити',
     // Налаштування
@@ -6764,6 +7162,8 @@ export default {
     individualSpools: 'Окремі котушки',
     labelWeight: 'Номінал',
     spoolCount_one: '{{count}} котушка',
+    spoolCount_few: '{{count}} котушки',
+    spoolCount_many: '{{count}} котушок',
     spoolCount_other: '{{count}} котушок',
     // Сповіщення
     stockBreakRisk: 'Ризик закінчення',
@@ -6774,6 +7174,8 @@ export default {
     // Список покупок
     shoppingList: 'Список покупок',
     shoppingListItems_one: '({{count}} позиція)',
+    shoppingListItems_few: '({{count}} позиції)',
+    shoppingListItems_many: '({{count}} позицій)',
     shoppingListItems_other: '({{count}} позицій)',
     shoppingListEmpty: 'Список покупок порожній. Натисни на іконку кошика у рядку, щоб додати позицію.',
     addToCart: 'Додати в список покупок',
@@ -6808,6 +7210,8 @@ export default {
     noteOptional: 'Нотатка (необов\'язково)',
     notePlaceholder: 'наприклад, для проєкту X, терміново…',
     addNSpools_one: 'Додати {{count}} котушку',
+    addNSpools_few: 'Додати {{count}} котушки',
+    addNSpools_many: 'Додати {{count}} котушок',
     addNSpools_other: 'Додати {{count}} котушок',
     // Логістика кошика
     onArrival: 'На момент прибуття',
@@ -6815,6 +7219,8 @@ export default {
     stockRunsOutBefore: 'Матеріал закінчиться до того, як мине {{lt}}д терміну постачання.',
     atRate: 'За темпу {{rate}}г/день тобі потрібно',
     moreSpools_one: 'ще {{count}} котушка',
+    moreSpools_few: 'ще {{count}} котушки',
+    moreSpools_many: 'ще {{count}} котушок',
     moreSpools_other: 'ще {{count}} котушок',
     bridgeGap: 'щоб закрити розрив.',
     // Дозволи

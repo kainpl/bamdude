@@ -370,13 +370,6 @@ class NotificationTemplateResponse(NotificationTemplateBase):
         from_attributes = True
 
 
-class TemplateVariableInfo(BaseModel):
-    """Information about a template variable."""
-
-    name: str
-    description: str
-
-
 class EventVariablesResponse(BaseModel):
     """Response for available variables per event type."""
 

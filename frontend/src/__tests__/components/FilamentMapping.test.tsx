@@ -112,8 +112,8 @@ describe('FilamentMapping — FTS routing', () => {
   });
 
   it('renders the per-slot force-color-match checkbox when a handler is wired (#1717)', async () => {
-    // Component-level parity with FilamentOverride: when the caller passes
-    // onForceColorMatchChange the checkbox mounts and bubbles toggle events up.
+    // When the caller passes onForceColorMatchChange the checkbox mounts and
+    // bubbles toggle events up.
     server.use(
       http.get(
         '/api/v1/printers/:id/status',
@@ -227,8 +227,8 @@ describe('FilamentMapping — FTS routing', () => {
   });
 
   it('renders sub-brand + material-disambiguated colour on the required side (#1718)', async () => {
-    // Same fix as FilamentOverride: required-side label was rendering the
-    // raw 3MF type ("PLA") and the generic getColorName bucket ("Black").
+    // Required-side label was rendering the raw 3MF type ("PLA") and the
+    // generic getColorName bucket ("Black").
     // After the shared useFilamentLabels hook it must now resolve
     // tray_info_idx → "Bambu PLA Matte" and the material-disambiguated
     // colour catalogue → "Charcoal" — the Specific-Printer panel matched
@@ -286,5 +286,51 @@ describe('FilamentMapping — FTS routing', () => {
       const swatch = screen.getByTitle(/Required: Bambu PLA Matte - Charcoal/);
       expect(swatch).toBeInTheDocument();
     });
+  });
+
+  it('pins the gram usage so a long name cannot clip it (#2669)', async () => {
+    // Name and grams used to share one truncating span, so a long resolved name
+    // pushed the "(25g)" off the end — partly on a wide screen, entirely in
+    // mobile portrait. The grams answer "does the spool have enough left?", so
+    // they are the last thing that should be dropped.
+    server.use(
+      http.get('/api/v1/printers/:id/status', () => HttpResponse.json(createStatus({}))),
+      http.get('/api/v1/cloud/builtin-filaments', () =>
+        HttpResponse.json([{ filament_id: 'GFA01', name: 'Polymaker PolyTerra PLA Matte Charcoal Black' }]),
+      ),
+      http.get('/api/v1/cloud/filament-id-map', () => HttpResponse.json({})),
+      http.get('/api/v1/inventory/colors/by-material', () => HttpResponse.json({ color_name: null })),
+    );
+
+    render(
+      <FilamentMapping
+        printerId={1}
+        filamentReqs={{
+          filaments: [
+            { slot_id: 1, type: 'PLA', color: '#000000', used_grams: 25, used_meters: 8.5, nozzle_id: 1, tray_info_idx: 'GFA01' },
+          ],
+        }}
+        manualMappings={{}}
+        onManualMappingChange={() => {}}
+        currencySymbol="$"
+        defaultCostPerKg={0}
+        defaultExpanded
+      />,
+    );
+
+    const grams = await screen.findByText('(25g)');
+    // The grams never truncate and never shrink away.
+    expect(grams.className).toContain('shrink-0');
+    expect(grams.className).not.toContain('truncate');
+
+    // The name is what truncates instead, and carries its own tooltip — the
+    // point of truncating is that you cannot read the rest.
+    const name = await screen.findByText('Polymaker PolyTerra PLA Matte Charcoal Black');
+    expect(name.className).toContain('truncate');
+    expect(name).toHaveAttribute('title', 'Polymaker PolyTerra PLA Matte Charcoal Black');
+
+    // Separate siblings, so the name shrinking cannot take the grams with it.
+    expect(name).not.toBe(grams);
+    expect(grams.parentElement).toBe(name.parentElement);
   });
 });

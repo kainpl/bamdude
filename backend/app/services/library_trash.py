@@ -536,6 +536,55 @@ class LibraryTrashService:
             logger.debug("Trash sweep: cover cleanup skipped for %s: %s", row.id, e)
 
     # ---- User-facing trash ops ----------------------------------------
+    async def trash_or_purge(self, db: AsyncSession, file: LibraryFile, *, detach_folder: bool = False) -> bool:
+        """What deleting one library file MEANS. Returns True if it was trashed.
+
+        The single delete route, the bulk route and both folder routes all
+        answer this question, and for a long time they answered it differently:
+        one soft-deleted while three unlinked the bytes and dropped the row, so
+        a multi-select delete was permanent while the identical single delete
+        was reversible. There is one answer now, and it lives here.
+
+        A managed file is soft-deleted: bytes, thumbnail and queue references
+        stay, and the sweeper takes them after the retention window. An
+        EXTERNAL file is purged instead — its bytes are outside BamDude and
+        there is nothing to restore, which is what the single route has always
+        done.
+
+        ``detach_folder`` is for deleting a folder. ``library_files.folder_id``
+        is ``ON DELETE CASCADE``, so a trashed row inside a folder that is then
+        removed would be deleted anyway — the trip to the trash would be
+        theatre. Detaching first means the file survives, and restore puts it
+        at the library root, which is the only honest destination once its
+        folder is gone. Does not commit; the caller owns the transaction.
+        """
+        from backend.app.models.print_queue import PrintQueueItem
+
+        if file.is_external:
+            abs_thumb = _to_absolute_path(file.thumbnail_path)
+            if abs_thumb is not None:
+                try:
+                    if abs_thumb.exists():
+                        abs_thumb.unlink()
+                except OSError as e:
+                    logger.warning("Failed to delete thumbnail from disk: %s", e)
+            await db.execute(
+                update(PrintArchive).where(PrintArchive.library_file_id == file.id).values(library_file_id=None)
+            )
+            queue_items = (
+                (await db.execute(select(PrintQueueItem).where(PrintQueueItem.library_file_id == file.id)))
+                .scalars()
+                .all()
+            )
+            for item in queue_items:
+                await db.delete(item)
+            await db.delete(file)
+            return False
+
+        file.deleted_at = datetime.now(timezone.utc)
+        if detach_folder:
+            file.folder_id = None
+        return True
 
     async def restore(self, db: AsyncSession, file: LibraryFile) -> LibraryFile:
         """Clear ``deleted_at`` so the file reappears in listings."""

@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.auth import check_permission, check_printer_access, get_api_key
 from backend.app.core.database import get_db
 from backend.app.models.api_key import APIKey
-from backend.app.models.archive import PrintArchive
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.services.printer_manager import printer_manager
@@ -19,23 +18,6 @@ router = APIRouter(prefix="/webhook", tags=["webhook"])
 
 
 # Request schemas
-class QueueAddRequest(BaseModel):
-    archive_id: int
-    printer_id: int
-    project_id: int | None = None
-    scheduled_time: str | None = None  # ISO format datetime
-    auto_off_after: bool = False
-
-
-class QueueAddResponse(BaseModel):
-    id: int
-    archive_id: int
-    printer_id: int
-    position: int
-    status: str
-    message: str
-
-
 class PrinterStatusResponse(BaseModel):
     id: int
     name: str
@@ -55,77 +37,6 @@ class QueueStatusResponse(BaseModel):
 
 
 # Webhook endpoints
-
-
-@router.post("/queue/add", response_model=QueueAddResponse)
-async def webhook_add_to_queue(
-    data: QueueAddRequest,
-    api_key: APIKey = Depends(get_api_key),
-    db: AsyncSession = Depends(get_db),
-):
-    """Add a print to the queue via webhook.
-
-    Requires 'can_queue' permission.
-    """
-    check_permission(api_key, "queue")
-    check_printer_access(api_key, data.printer_id)
-
-    # Verify archive exists
-    result = await db.execute(select(PrintArchive).where(PrintArchive.id == data.archive_id))
-    archive = result.scalar_one_or_none()
-    if not archive:
-        raise HTTPException(status_code=404, detail="Archive not found")
-
-    # Verify printer exists
-    result = await db.execute(select(Printer).where(Printer.id == data.printer_id))
-    printer = result.scalar_one_or_none()
-    if not printer:
-        raise HTTPException(status_code=404, detail="Printer not found")
-
-    # Get next position
-    result = await db.execute(
-        select(PrintQueueItem.position)
-        .where(
-            PrintQueueItem.queue_id == data.printer_id,
-            PrintQueueItem.status == "pending",
-        )
-        .order_by(PrintQueueItem.position.desc())
-        .limit(1)
-    )
-    max_position = result.scalar()
-    next_position = (max_position or 0) + 1
-
-    # Parse scheduled time if provided
-    scheduled_time = None
-    if data.scheduled_time:
-        from datetime import datetime
-
-        try:
-            scheduled_time = datetime.fromisoformat(data.scheduled_time.replace("Z", "+00:00"))
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid scheduled_time format")
-
-    # Create queue item
-    queue_item = PrintQueueItem(
-        queue_id=data.printer_id,  # queue_id == printer_id
-        archive_id=data.archive_id,
-        project_id=data.project_id,
-        position=next_position,
-        scheduled_time=scheduled_time,
-        auto_off_after=data.auto_off_after,
-    )
-    db.add(queue_item)
-    await db.flush()
-    await db.refresh(queue_item)
-
-    return QueueAddResponse(
-        id=queue_item.id,
-        archive_id=queue_item.archive_id,
-        printer_id=queue_item.queue_id,
-        position=queue_item.position,
-        status=queue_item.status,
-        message=f"Added to queue at position {queue_item.position}",
-    )
 
 
 @router.post("/printer/{printer_id}/start")

@@ -80,11 +80,3 @@ export function openInSlicer(downloadUrl: string, slicer: SlicerType = 'bambu_st
   link.click();
   document.body.removeChild(link);
 }
-
-/**
- * Build a full download URL for a file
- * @param path - The API path (e.g., from api.getArchiveForSlicer())
- */
-export function buildDownloadUrl(path: string): string {
-  return `${window.location.origin}${path}`;
-}

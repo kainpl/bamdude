@@ -18,6 +18,9 @@ interface ThemeContextType {
   lightStyle: ThemeStyle;
   lightBackground: LightBackground;
   lightAccent: ThemeAccent;
+  // Show the soonest-finishing print's percentage in the browser tab title
+  // (and a progress-ring favicon). Per-browser, off by default.
+  progressInTitle: boolean;
   // Actions
   toggleMode: () => void;
   setMode: (mode: ThemeMode) => void;
@@ -27,6 +30,7 @@ interface ThemeContextType {
   setLightStyle: (style: ThemeStyle) => void;
   setLightBackground: (background: LightBackground) => void;
   setLightAccent: (accent: ThemeAccent) => void;
+  setProgressInTitle: (enabled: boolean) => void;
 }
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
@@ -77,6 +81,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [lightBackground, setLightBackgroundState] = useState<LightBackground>(() => {
     return (localStorage.getItem('light-background') as LightBackground) || 'neutral';
   });
+  const [progressInTitle, setProgressInTitleState] = useState<boolean>(() => {
+    return localStorage.getItem('progress-in-title') === 'true';
+  });
+
   const [lightAccent, setLightAccentState] = useState<ThemeAccent>(() => {
     return (localStorage.getItem('light-accent') as ThemeAccent) || 'green';
   });
@@ -181,6 +189,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('light-accent', v);
     api.updateSettings({ light_accent: v }).catch(() => {});
   };
+  // Deliberately NOT synced to the server, unlike the theme settings above:
+  // "show progress in my tab" is a property of this browser window, not of the
+  // account. Someone watching the farm on a wall display wants it; the same
+  // person on their laptop may not.
+  const setProgressInTitle = (enabled: boolean) => {
+    setProgressInTitleState(enabled);
+    localStorage.setItem('progress-in-title', String(enabled));
+  };
 
   return (
     <ThemeContext.Provider value={{
@@ -188,9 +204,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       resolvedMode,
       darkStyle, darkBackground, darkAccent,
       lightStyle, lightBackground, lightAccent,
+      progressInTitle,
       toggleMode, setMode,
       setDarkStyle, setDarkBackground, setDarkAccent,
       setLightStyle, setLightBackground, setLightAccent,
+      setProgressInTitle,
     }}>
       {children}
     </ThemeContext.Provider>

@@ -21,7 +21,7 @@ const mockQueues = [
     printer_id: 1,
     printer_name: 'X1 Carbon',
     printer_model: 'X1C',
-    printer_location: 'Lab',
+    printer_location: { id: 1, name: 'Lab', parent_id: null, path: 'Lab' },
     status: 'idle',
     last_activity_at: null,
     current_item_id: null,
@@ -39,7 +39,7 @@ const mockQueues = [
     printer_id: 2,
     printer_name: 'P1S',
     printer_model: 'P1S',
-    printer_location: 'Office',
+    printer_location: { id: 2, name: 'Office', parent_id: null, path: 'Office' },
     status: 'printing',
     last_activity_at: '2026-04-14T10:00:00Z',
     current_item_id: 42,
@@ -87,6 +87,16 @@ describe('QueuePage', () => {
       http.get('/api/v1/queues/', () => HttpResponse.json(mockQueues)),
       http.get('/api/v1/queue/', () => HttpResponse.json(mockPendingItems)),
       http.get('/api/v1/printers/', () => HttpResponse.json([])),
+      // The filter takes its options from the locations themselves now, so a
+      // parent with nothing directly on it is still selectable.
+      http.get('/api/v1/printer-locations', () =>
+        HttpResponse.json({
+          locations: [
+            { id: 1, name: 'Lab', parent_id: null, path: 'Lab', depth: 1, printer_count: 1, sensor_count: 0, queued_count: 0 },
+            { id: 2, name: 'Office', parent_id: null, path: 'Office', depth: 1, printer_count: 1, sensor_count: 0, queued_count: 0 },
+          ],
+        }),
+      ),
     );
   });
 
@@ -128,6 +138,31 @@ describe('QueuePage', () => {
       });
     });
 
+  });
+
+  describe('location filter', () => {
+    it('narrows to the picked place instead of emptying the page', async () => {
+      // The filter compared the whole location row against the picked name, so
+      // it was never equal and every queue disappeared. The stale string
+      // fixture is why no test saw it.
+      const user = userEvent.setup();
+      render(<QueuePage />);
+      await waitFor(() => {
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+      });
+
+      // By id: the option values are location ids now, because a name stopped
+      // being an identity when "Shelf 1" became possible under two workshops.
+      const locationSelect = [...document.querySelectorAll('select')].find((select) =>
+        [...select.options].some((option) => option.value === '1'),
+      )!;
+      await user.selectOptions(locationSelect, '1');
+
+      await waitFor(() => {
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+        expect(screen.queryByText('P1S')).not.toBeInTheDocument();
+      });
+    });
   });
 
   describe('empty state', () => {
@@ -173,4 +208,13 @@ describe('QueuePage', () => {
       });
     });
   });
+
+  // NOT tested here: "picking a parent keeps a queue on its child". A page-level
+  // version of that passed in isolation and failed inside this file, and the
+  // cause was not the page -- the same render succeeded once the file ran alone.
+  // A test that passes alone and fails in company is worse than none, so the
+  // claim is covered where it is stable: subtree membership in
+  // utils/locationTree.test.ts (including the sibling case, verified by
+  // reverting the implementation), and the id-based wiring by the filter test
+  // above, which narrows the list by a location id rather than by its name.
 });

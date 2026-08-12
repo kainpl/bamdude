@@ -12,6 +12,7 @@ hardcoded ``"gcode"`` in slicer-output).
 from __future__ import annotations
 
 import os
+from datetime import datetime
 
 _SLICED_3MF_SUFFIX = ".gcode.3mf"
 
@@ -106,7 +107,11 @@ def compute_file_tags(
     # wins over the file-type-derived ``project`` / ``geometry`` because
     # the source_type signal is more specific (a sliced .3mf is no
     # longer a project).
-    if source_type == "sliced":
+    if source_type in ("sliced", "archive"):
+        # ⚠️ A file saved out of a print archive is sliced by definition — it was
+        # printed. Without this it would fall through to no readiness tag at all,
+        # because ``detect_file_type`` collapses ``.gcode.3mf`` to ``gcode`` and
+        # the ``project`` branch below only catches a bare ``3mf``.
         tags.append("sliced")
     elif file_type == "3mf":
         # ``detect_file_type`` already collapses sliced .gcode.3mf to
@@ -129,6 +134,75 @@ def compute_file_tags(
     return tags
 
 
+async def sync_system_tags(db, file) -> list[str]:
+    """Derive this file's system tags and write BOTH representations.
+
+    The only writer of either. ``file_tags`` is the cache the hot path reads
+    (the badge row, ``isSliced`` on the frontend, preview-tab visibility in
+    ``routes/library.py``); the association rows in ``library_file_tags`` are
+    what the catalog counts and the ``tag_ids`` filter queries. One function
+    writing both at one moment is what makes keeping two representations safe —
+    the moment there is a second writer they can disagree, and a file whose
+    badges say "STL" while every filter says it does not exist is a bug nobody
+    reports because nothing looks broken.
+
+    In practice this is always an insert: nothing re-derives ``file_tags`` for
+    an existing file today, and renaming one does not either. It is written as a
+    reconcile anyway, because the m128 backfill calls it and because a future
+    re-derive path would otherwise become a second definition of what a system
+    tag means.
+
+    Returns the codes, so a caller that needs them does not recompute.
+    """
+    from sqlalchemy import delete, select
+
+    from backend.app.models.library import LibraryFileTag, LibraryTag
+
+    codes = compute_file_tags(
+        filename=file.filename,
+        file_type=file.file_type,
+        file_metadata=file.file_metadata,
+        source_type=file.source_type,
+        swap_compatible=bool(file.swap_compatible),
+    )
+    file.file_tags = codes
+
+    if file.id is None:
+        # Writing the cache and silently skipping the rows is exactly the drift
+        # this function exists to prevent, so fail rather than half-succeed.
+        raise ValueError("sync_system_tags needs a flushed file — associations key off file.id")
+
+    wanted = dict(
+        (await db.execute(select(LibraryTag.code, LibraryTag.id).where(LibraryTag.is_system.is_(True)))).all()
+    )
+    wanted_ids = {wanted[code] for code in codes if code in wanted}
+
+    current_ids = set(
+        (
+            await db.execute(
+                select(LibraryFileTag.tag_id)
+                .join(LibraryTag, LibraryTag.id == LibraryFileTag.tag_id)
+                .where(LibraryFileTag.file_id == file.id, LibraryTag.is_system.is_(True))
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    stale = current_ids - wanted_ids
+    if stale:
+        # Scoped to this file AND to the ids we resolved as system — a broader
+        # delete would strip the labels the user applied by hand.
+        await db.execute(
+            delete(LibraryFileTag).where(LibraryFileTag.file_id == file.id, LibraryFileTag.tag_id.in_(stale))
+        )
+    missing = wanted_ids - current_ids
+    if missing:
+        await db.execute(LibraryFileTag.__table__.insert(), [{"file_id": file.id, "tag_id": tid} for tid in missing])
+
+    return codes
+
+
 def skip_objects_supported_from_metadata(file_metadata: dict | None) -> bool:
     """Whether per-object skipping will work for a file, from stored metadata.
 
@@ -149,3 +223,58 @@ def skip_objects_supported_from_metadata(file_metadata: dict | None) -> bool:
     """
     meta = file_metadata or {}
     return bool(meta.get("gcode_label_objects")) and bool(meta.get("exclude_object"))
+
+
+def folder_activity_at(folder, latest_file_activity: datetime | None = None) -> datetime:
+    """When a folder was last meaningfully touched — the folder-sort key (#1770, #2680).
+
+    Two sources, newest wins: the folder's own timestamp and the newest activity
+    among the files it contains. The folder's own timestamp prefers the real
+    on-disk mtime (``fs_modified_at``, written by the external scan) and falls
+    back to ``updated_at``, which is all we have for internal folders and for
+    external ones not yet re-scanned since m129.
+
+    Lives here rather than inline for the reason the rest of this module does:
+    seven routes in ``routes/library.py`` answered this question with seven
+    copies of the same expression, and adding the on-disk source to six of them
+    would have been the kind of half-fix this cycle has already paid for twice.
+
+    Takes ``latest_file_activity`` rather than querying: the callers differ in
+    how they get it (one grouped aggregate for the whole tree, a scalar
+    aggregate for a single folder, and nothing at all for a folder that was
+    just created), and passing it in is what lets all three share the rule.
+    """
+    own = folder.fs_modified_at or folder.updated_at
+    if latest_file_activity is None:
+        return own
+    return max(own, latest_file_activity)
+
+
+def project_for_library_file(explicit: int | None, library_file) -> int | None:
+    """Which project a print belongs to, when the caller did not name one.
+
+    An operator who names a project always wins. Otherwise the file's own links
+    answer: a file already sitting in a project produces prints that sit in the
+    same project, without the interface having to re-state it from whichever
+    page the print was started on.
+
+    m044 made the link many-to-many while archives, queue items and auto-queue
+    items each carry a single project. The first link is taken — deterministic,
+    since the pivot reads in insertion order — and an operator who needs a
+    different one passes it explicitly.
+
+    Takes an already-loaded file: ``projects`` is a relationship, and touching
+    it inside a request that did not eager-load it raises ``MissingGreenlet``.
+    Callers use ``selectinload(LibraryFile.projects)``.
+
+    This lived twice, written out in the queue and auto-queue routes, and the
+    direct-print route never received a copy — so printing a project-linked
+    file straight to a printer produced an archive with no project at all.
+    That is why it is one function now.
+    """
+    if explicit is not None:
+        return explicit
+    if library_file is None:
+        return None
+    projects = getattr(library_file, "projects", None) or []
+    return projects[0].id if projects else None

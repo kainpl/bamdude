@@ -154,7 +154,7 @@ async def test_post_manual_result_pa(async_client, printer_factory, db_session):
                     "tray_id": 0,
                     "filament_id": "GFG00",
                     "setting_id": "GFG00_60@BBL",
-                    "nozzle_id": "HS20",
+                    "nozzle_id": "HS00-0.4",
                     "nozzle_diameter": "0.4",
                     "nozzle_temp": 220,
                 }
@@ -202,7 +202,7 @@ async def test_post_auto_result(async_client, printer_factory, db_session):
                     "tray_id": 0,
                     "filament_id": "GFG00",
                     "setting_id": "GFG00_60@BBL",
-                    "nozzle_id": "HS20",
+                    "nozzle_id": "HS00-0.4",
                     "nozzle_diameter": "0.4",
                 }
             ]

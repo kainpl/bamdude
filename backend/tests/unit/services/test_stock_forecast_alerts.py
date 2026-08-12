@@ -41,11 +41,21 @@ async def _reorders(db_session, now):
 NOW = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
 
 
-def _record(days_ago: float, grams: float, spool_id: int = 1) -> SpoolUsageHistory:
+def _record(days_ago: float, grams: float, spool_id: int = 1, anchor: datetime = NOW) -> SpoolUsageHistory:
+    """Usage ``days_ago`` before ``anchor``.
+
+    ``anchor`` exists because the two ways of driving this service disagree
+    about what "now" is. Tests that call ``find_stock_alerts(db, NOW)`` pass the
+    reference in, so data and evaluation share one clock. ``StockForecastAlerts.tick()``
+    takes no such argument and reads the real one — so data anchored to the
+    fixed ``NOW`` is measured against a wall clock that drifts further from it
+    every hour the calendar advances. Anything going through ``tick()`` must
+    anchor to the same real clock.
+    """
     return SpoolUsageHistory(
         spool_id=spool_id,
         weight_used=grams,
-        created_at=(NOW - timedelta(days=days_ago)).replace(tzinfo=None),
+        created_at=(anchor - timedelta(days=days_ago)).replace(tzinfo=None),
     )
 
 
@@ -67,8 +77,8 @@ async def _spool(db_session, **kwargs) -> Spool:
     return spool
 
 
-async def _usage(db_session, spool_id: int, days_ago: float, grams: float) -> None:
-    db_session.add(_record(days_ago, grams, spool_id))
+async def _usage(db_session, spool_id: int, days_ago: float, grams: float, anchor: datetime = NOW) -> None:
+    db_session.add(_record(days_ago, grams, spool_id, anchor))
     await db_session.commit()
 
 
@@ -334,10 +344,27 @@ class TestTheTwoAlertsKeepSeparateBooks:
 class TestSayingItOnce:
     @staticmethod
     async def _sku_in_break(db_session) -> None:
+        """A SKU in break, anchored to the clock ``tick()`` actually reads.
+
+        Every test in this class goes through ``StockForecastAlerts.tick()``,
+        which calls the real ``datetime.now()`` — it takes no reference to
+        inject. Anchoring the usage to the fixed ``NOW`` therefore aged the data
+        by however far the calendar had moved past 2026-07-30 12:00, growing
+        every hour.
+
+        350 g rather than 300 is the second half. ``days_left`` is
+        ``math.floor(remaining_g / rate)``, and 300 g at 100 g/day lands on
+        exactly 3.0 — a boundary where a rate a thousandth above 100 silently
+        becomes 2. This suite ran green for a while and then began failing about
+        half the time with ``assert 2 == 3``, on unchanged code. 350 g still
+        yields 3 (``floor(3.5)``) and now needs a rate error above 14% to move,
+        so it tests the behaviour rather than the rounding.
+        """
+        anchor = datetime.now(timezone.utc)
         db_session.add(Settings(key="forecast_global_lead_time_days", value="7"))
-        spool = await _spool(db_session, weight_used=700.0)  # 300 g left
+        spool = await _spool(db_session, weight_used=650.0)  # 350 g left
         for days_ago in (5, 4, 3, 2, 1):
-            await _usage(db_session, spool.id, days_ago, 100)
+            await _usage(db_session, spool.id, days_ago, 100, anchor)
 
     @pytest.mark.asyncio
     async def test_a_standing_break_is_announced_once_not_every_pass(self, db_session, monkeypatch) -> None:
@@ -441,7 +468,7 @@ class TestSayingItOnce:
         kwargs = sent.await_args.kwargs
         assert kwargs["material"] == "PLA"
         assert kwargs["brand"] == "Bambu"
-        assert kwargs["stock_g"] == pytest.approx(300)
+        assert kwargs["stock_g"] == pytest.approx(350)
         assert kwargs["lead_time_days"] == 7
         assert kwargs["days_left"] == 3
         assert kwargs["rate_g_day"] > 0

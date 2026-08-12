@@ -14,7 +14,11 @@ from typing import TypedDict
 
 from backend.app.services.bambu_mqtt import PrinterState
 from backend.app.services.calibration_mode_registry import mode_state_map
-from backend.app.utils.printer_configs import air_print_detection_position, supports_safety_options
+from backend.app.utils.printer_configs import (
+    air_print_detection_position,
+    get_device_support_flags,
+    supports_safety_options,
+)
 from backend.app.utils.printer_models import has_door_sensor, is_dual_nozzle_model
 
 
@@ -65,7 +69,7 @@ _H2_FAMILY = frozenset({"H2D", "H2DPRO", "H2C", "H2S"})
 _AI_CAPABLE = _X1_FAMILY | _H2_FAMILY
 
 
-def compute_printer_supports(state: PrinterState, printer_model: str | None, module_vers: dict) -> PrinterSupports:
+def compute_printer_supports(state: PrinterState, printer_model: str | None) -> PrinterSupports:
     m = _norm(printer_model)
     has_ai = m in _AI_CAPABLE
     is_h2 = m in _H2_FAMILY
@@ -94,7 +98,17 @@ def compute_printer_supports(state: PrinterState, printer_model: str | None, mod
         pileup_detector=_s("pileup_detector", has_ai),
         nozzleclumping_detector=_s("nozzleclumping_detector", has_ai),
         airprinting_detector=_s("airprinting_detector", has_ai),
-        first_layer_inspector=_s("first_layer_inspector", has_ai),
+        # Fallback from the model's own config, not from "has a camera".
+        # ⚠️ Measured across all fifteen: ``has_ai`` claims first-layer
+        # inspection on H2C / H2D / H2D Pro / H2S, whose configs say
+        # ``support_first_layer_inspect: false`` — four models offered a row for
+        # a feature the machine does not have. The live bit still wins when the
+        # printer reports it; this only decides the pre-push window and firmware
+        # that omits the field, which is exactly where a guess was worst.
+        first_layer_inspector=_s(
+            "first_layer_inspector",
+            bool(get_device_support_flags(printer_model).get("support_first_layer_inspect", has_ai)),
+        ),
         ai_monitoring=_s("ai_monitoring", has_ai),
         # Sensors — legacy nozzle-blob is hidden when the smart 3-mode variant is
         # supported (BS mutual exclusion). Non-visual air-print + legacy AI
@@ -109,7 +123,20 @@ def compute_printer_supports(state: PrinterState, printer_model: str | None, mod
         ai_monitoring_legacy=bool(sup.get("ai_monitoring_devcfg", False)) and not bool(sup.get("ai_monitoring", False)),
         # Door / air — open-door detection moves to the Safety tab on
         # safety-capable models (X2D/P2S), mirroring BS's mutual exclusion.
-        open_door_check=has_door_sensor(printer_model) and not supports_safety_options(printer_model),
+        # BS: ``is_support_door_open_check = get_flag_bits(fun, 12)``, then the
+        # row is hidden when the model has the Safety tab, because it lives
+        # there instead (PrintOptionsDialog::UpdateOptionOpenDoorCheck).
+        #
+        # ⚠️ We parsed that bit in TWO places and read it in none, gating on a
+        # hardcoded ``has_door_sensor`` list instead. That list answers "is
+        # there a door sensor", which is a different question from "does this
+        # firmware offer the door-open CHECK" — and it excluded the whole H2
+        # family, so those machines could not turn the protection on at all.
+        #
+        # ``_s`` keeps the list as the fallback for the window before the first
+        # push and for firmware that omits ``fun`` entirely.
+        open_door_check=_s("open_door_check", has_door_sensor(printer_model))
+        and not supports_safety_options(printer_model),
         purify_air=_s("purify_air", is_h2d_pro),
         # Behaviour — universal fallback; live flag wins when reported.
         auto_recovery=_s("auto_recovery", True),
@@ -149,11 +176,19 @@ def _list_extruders(model_norm: str) -> list[dict]:
     return [{"id": 0, "name": "Main"}]
 
 
-def compute_calibration_supports(
-    state: PrinterState,
-    printer_model: str | None,
-    module_vers: dict,
-) -> dict:
+def _as_float(value: object) -> float | None:
+    """Firmware reports the nozzle diameter as a string ("0.4"); the API contract
+    (``client.ts``) and the wizard both want a number. Empty and unparseable
+    both answer ``None`` so the caller can tell "not reported" from a value."""
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def compute_calibration_supports(state: PrinterState, printer_model: str | None) -> dict:
     """Per-model capability matrix for Filament Calibration wizard.
 
     auto_* gates: model must have lidar AND the printer state must report
@@ -190,12 +225,25 @@ def compute_calibration_supports(
         # Layout
         "dual_extruder": m in _DUAL_EXTRUDER_MODELS,
         "extruders": _list_extruders(m),
+        # ⚠️ These read ``nozzle_diameter`` / ``nozzle_type`` / ``nozzle_flow``,
+        # which is what ``NozzleInfo`` actually carries. They used to ask for
+        # ``diameter`` / ``type`` / ``flow_type`` — attributes that do not exist
+        # on it — so all three ``getattr`` defaults fired and **every nozzle came
+        # out as all-None**. The wizard then fell through to its hardcoded
+        # 0.4 mm (``capabilities?.nozzles?.[0]?.diameter ?? 0.4``), so a farm on
+        # 0.6 or 0.8 filed every calibration under the wrong nozzle key.
+        #
+        # The response keys stay ``diameter`` / ``type`` / ``flow_type``: that is
+        # the published contract (``client.ts``), and it is only the *source*
+        # attribute that was wrong.
         "nozzles": [
             {
                 "id": i,
-                "diameter": getattr(n, "diameter", None),
-                "type": getattr(n, "type", None),
-                "flow_type": getattr(n, "flow_type", None),
+                # NozzleInfo keeps the firmware's string ("0.4"); the schema and
+                # the wizard both want a number, and the wizard compares it.
+                "diameter": _as_float(getattr(n, "nozzle_diameter", None)),
+                "type": getattr(n, "nozzle_type", None) or None,
+                "flow_type": getattr(n, "nozzle_flow", None) or None,
             }
             for i, n in enumerate(getattr(state, "nozzles", []) or [])
         ],

@@ -21,10 +21,31 @@ from backend.app.core.database import async_session
 from backend.app.models.git_backup import GitBackupConfig, GitBackupLog
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
+from backend.app.models.user import User
 from backend.app.services.bambu_cloud import BambuCloudService
 from backend.app.services.printer_manager import printer_manager
 
 logger = logging.getLogger(__name__)
+
+# Bambu's listing endpoint is keyed by preset type and calls process presets
+# "print". Same mapping as ``routes/cloud.py`` — kept in step with it, because a
+# divergence silently drops a whole preset type from every backup.
+_BAMBU_PRESET_TYPES = {
+    "filament": "filament",
+    "printer": "printer",
+    "print": "process",
+}
+
+
+def _slugify_account(label: str) -> str:
+    """Filesystem-safe folder name for a cloud account.
+
+    Only used to keep two accounts' presets apart inside the backup repo, so it
+    needs to be stable and path-safe, not reversible.
+    """
+    safe = "".join(c if c.isalnum() or c in "-_." else "-" for c in (label or "account"))
+    return safe.strip("-.") or "account"
+
 
 # Schedule intervals in seconds
 SCHEDULE_INTERVALS = {
@@ -145,118 +166,6 @@ class GitBackupService:
                 "permissions": None,
                 "is_private": None,
             }
-
-    async def _test_connection_legacy_github(self, repo_url: str, token: str) -> dict:  # pragma: no cover
-        # Kept as a private no-op shim for any test that still references the
-        # pre-refactor name; new callers MUST go through ``test_connection``
-        # which dispatches via the factory.
-        return await self.test_connection(repo_url, token, provider="github")
-
-    async def _test_connection_github(self, repo_url: str, token: str) -> dict:
-        """Test GitHub connection and permissions."""
-        owner, repo = self._parse_repo_url(repo_url, provider="github")
-        client = await self._get_client()
-
-        response = await client.get(
-            f"https://api.github.com/repos/{owner}/{repo}",
-            headers={
-                "Authorization": f"token {token}",
-                "Accept": "application/vnd.github.v3+json",
-                "User-Agent": "BamDude-Backup",
-            },
-        )
-
-        if response.status_code == 401:
-            return {"success": False, "message": "Invalid access token", "repo_name": None, "permissions": None}
-
-        if response.status_code == 404:
-            return {
-                "success": False,
-                "message": "Repository not found. Check URL and token permissions.",
-                "repo_name": None,
-                "permissions": None,
-            }
-
-        if response.status_code != 200:
-            return {
-                "success": False,
-                "message": f"GitHub API error: {response.status_code}",
-                "repo_name": None,
-                "permissions": None,
-            }
-
-        data = response.json()
-        permissions = data.get("permissions", {})
-
-        if not permissions.get("push", False):
-            return {
-                "success": False,
-                "message": "Token does not have push permission to this repository",
-                "repo_name": data.get("full_name"),
-                "permissions": permissions,
-            }
-
-        return {
-            "success": True,
-            "message": "Connection successful",
-            "repo_name": data.get("full_name"),
-            "permissions": permissions,
-        }
-
-    async def _test_connection_gitlab(self, repo_url: str, token: str, api_base_url: str | None = None) -> dict:
-        """Test GitLab connection and permissions."""
-        group, project = self._parse_repo_url(repo_url, provider="gitlab")
-        api_base = api_base_url or "https://gitlab.com/api/v4"
-        api_base = api_base.rstrip("/")
-        encoded_path = urllib.parse.quote(f"{group}/{project}", safe="")
-        client = await self._get_client()
-
-        response = await client.get(
-            f"{api_base}/projects/{encoded_path}",
-            headers={"PRIVATE-TOKEN": token},
-        )
-
-        if response.status_code == 401:
-            return {"success": False, "message": "Invalid access token", "repo_name": None, "permissions": None}
-
-        if response.status_code == 404:
-            return {
-                "success": False,
-                "message": "Project not found. Check URL and token permissions.",
-                "repo_name": None,
-                "permissions": None,
-            }
-
-        if response.status_code != 200:
-            return {
-                "success": False,
-                "message": f"GitLab API error: {response.status_code}",
-                "repo_name": None,
-                "permissions": None,
-            }
-
-        data = response.json()
-        access_level = 0
-        if "permissions" in data:
-            project_access = data["permissions"].get("project_access") or {}
-            group_access = data["permissions"].get("group_access") or {}
-            access_level = max(project_access.get("access_level", 0), group_access.get("access_level", 0))
-
-        # Developer+ (access_level >= 30) can push
-        if access_level < 30:
-            return {
-                "success": False,
-                "message": "Token does not have push permission (Developer+ required)",
-                "repo_name": data.get("path_with_namespace"),
-                "permissions": {"access_level": access_level},
-            }
-
-        return {
-            "success": True,
-            "message": "Connection successful",
-            "repo_name": data.get("path_with_namespace"),
-            "permissions": {"access_level": access_level},
-        }
 
     def _parse_repo_url(self, url: str, provider: str = "github") -> tuple[str, str]:
         """Parse owner/group and repo/project from repository URL.
@@ -563,74 +472,86 @@ class GitBackupService:
                 logger.info("Collected K-profiles for %s: %s", serial, printer_profiles)
 
     async def _collect_cloud_profiles(self, db: AsyncSession, files: dict):
-        """Collect Bambu Cloud profiles if authenticated.
+        """Collect Bambu Cloud profiles for every connected account (#2717).
 
-        Backup scheduler runs outside an HTTP request context, so we read the
-        token + region directly from the Settings table and construct a
-        per-run ``BambuCloudService``. The singleton is gone (cross-tenant
-        region leak — see ``bambu_cloud`` module comment).
+        Two independent faults used to make this produce nothing while reporting
+        success — either one sufficient on its own.
+
+        **Where the credentials live.** This read ``bambu_cloud_token`` out of
+        the Settings table, which is the *auth-disabled* store. BamDude's auth is
+        always on by invariant, so tokens live on ``User`` rows and that key is
+        never populated on a normal install — the collector returned at "not
+        authenticated" every single time. The Settings read is kept as the
+        fallback it was meant to be (ownerless API-key installs), after the users.
+
+        **The response shape.** Bambu's listing endpoint is keyed by preset type,
+        each key holding ``private``/``public`` arrays, and the entries carry no
+        ``type`` of their own. This iterated ``data["setting"]`` and read
+        ``entry["type"]`` — so the loop body never executed once, and would have
+        classified nothing if it had. ``routes/cloud.py`` already had this right,
+        including that the API calls process presets "print".
         """
-        # Read token + region from Settings. We match exactly how
-        # routes.cloud.store_token writes them.
-        result = await db.execute(select(Settings).where(Settings.key.in_(["bambu_cloud_token", "bambu_cloud_region"])))
-        stored = {s.key: s.value for s in result.scalars().all()}
-        token = stored.get("bambu_cloud_token")
-        if not token:
+        # Every account that has a token, then the ownerless fallback. Backing up
+        # only the first would silently drop the others on a multi-admin install.
+        result = await db.execute(select(User).where(User.cloud_token.is_not(None)))
+        accounts: list[tuple[str, str, str]] = [
+            (u.cloud_token, u.cloud_email or f"user-{u.id}", u.cloud_region or "global")
+            for u in result.scalars().all()
+            if u.cloud_token
+        ]
+
+        if not accounts:
+            result = await db.execute(
+                select(Settings).where(Settings.key.in_(["bambu_cloud_token", "bambu_cloud_region"]))
+            )
+            stored = {s.key: s.value for s in result.scalars().all()}
+            if stored.get("bambu_cloud_token"):
+                accounts.append((stored["bambu_cloud_token"], "", stored.get("bambu_cloud_region") or "global"))
+
+        if not accounts:
             logger.info("Cloud not authenticated, skipping cloud profiles")
             return
 
-        region = stored.get("bambu_cloud_region") or "global"
+        for token, label, region in accounts:
+            await self._collect_cloud_profiles_for_account(files, token, label, region, single=len(accounts) == 1)
+
+    async def _collect_cloud_profiles_for_account(
+        self, files: dict, token: str, label: str, region: str, *, single: bool
+    ) -> None:
+        """Write one account's cloud presets into *files*.
+
+        A single account keeps the historical flat paths so existing backup
+        repositories do not sprout a parallel tree on upgrade; additional
+        accounts are namespaced by their email, which is the only stable handle
+        we have for "which account is this".
+        """
         cloud = BambuCloudService(region=region)
         cloud.set_token(token)
         if not cloud.is_authenticated:
-            logger.info("Cloud not authenticated, skipping cloud profiles")
             await cloud.close()
             return
 
+        prefix = "cloud_profiles" if single else f"cloud_profiles/{_slugify_account(label)}"
         try:
-            settings = await cloud.get_slicer_settings()
-            if not settings:
+            data = await cloud.get_slicer_settings()
+            if not data:
                 return
 
-            # Separate by type
-            filament_settings = []
-            printer_settings = []
-            process_settings = []
-
-            for setting in settings.get("setting", []) if isinstance(settings.get("setting"), list) else []:
-                setting_type = setting.get("type", "")
-                if setting_type == "filament":
-                    filament_settings.append(setting)
-                elif setting_type == "printer":
-                    printer_settings.append(setting)
-                elif setting_type == "process":
-                    process_settings.append(setting)
-
-            if filament_settings:
-                files["cloud_profiles/filament.json"] = {
-                    "version": "1.0",
-                    "profiles": filament_settings,
-                }
-
-            if printer_settings:
-                files["cloud_profiles/printer.json"] = {
-                    "version": "1.0",
-                    "profiles": printer_settings,
-                }
-
-            if process_settings:
-                files["cloud_profiles/process.json"] = {
-                    "version": "1.0",
-                    "profiles": process_settings,
-                }
+            counts: dict[str, int] = {}
+            for api_key, our_type in _BAMBU_PRESET_TYPES.items():
+                type_data = data.get(api_key) or {}
+                presets = list(type_data.get("private") or []) + list(type_data.get("public") or [])
+                counts[our_type] = len(presets)
+                if presets:
+                    files[f"{prefix}/{our_type}.json"] = {"version": "1.0", "profiles": presets}
 
             logger.info(
-                f"Collected cloud profiles: {len(filament_settings)} filament, "
-                f"{len(printer_settings)} printer, {len(process_settings)} process"
+                "Collected cloud profiles for %s: %s",
+                label or "(ownerless)",
+                ", ".join(f"{n} {t}" for t, n in counts.items()),
             )
-
         except Exception as e:
-            logger.warning("Failed to collect cloud profiles: %s", e)
+            logger.warning("Failed to collect cloud profiles for %s: %s", label or "(ownerless)", e)
         finally:
             await cloud.close()
 

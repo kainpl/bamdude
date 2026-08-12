@@ -288,6 +288,52 @@ class TestArchivesSlimAPI:
         assert "tags" not in item
         assert "photos" not in item
         assert "content_hash" not in item
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_slim_carries_measured_energy(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        """The "Most Expensive" record is computed client-side from this payload.
+
+        ``cost`` is filament ONLY — usage_tracker fills it from grams x the price
+        of each spool, plus the untracked remainder at the default rate. Ranking
+        on it alone answered a narrower question than the label promises, and it
+        could not be widened from the frontend because the electricity simply was
+        not in this response.
+        """
+        printer = await printer_factory()
+        await archive_factory(
+            printer.id,
+            print_name="Metered",
+            status="completed",
+            cost=1.50,
+            energy_kwh=0.9,
+            energy_cost=0.42,
+        )
+
+        item = (await async_client.get("/api/v1/archives/slim")).json()[0]
+        assert item["cost"] == 1.50
+        assert item["energy_kwh"] == 0.9
+        assert item["energy_cost"] == 0.42
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_slim_reports_no_energy_as_null_not_zero(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        """A printer with no smart plug drew *something*; we just did not measure it.
+
+        NULL says that. A zero would claim the print ran on no electricity, and
+        would be indistinguishable from a measured zero — which is exactly the
+        distinction the plug drivers already refuse to blur.
+        """
+        printer = await printer_factory()
+        await archive_factory(printer.id, print_name="Unmetered", status="completed", cost=1.50)
+
+        item = (await async_client.get("/api/v1/archives/slim")).json()[0]
+        assert item["energy_kwh"] is None
+        assert item["energy_cost"] is None
         assert "duplicates" not in item
         assert "duplicate_count" not in item
 
@@ -881,3 +927,85 @@ class TestArchiveDeleteImpact:
         db_session.expire_all()
         refreshed = await db_session.get(PrintQueueItem, item_id)
         assert refreshed.status == "cancelled"
+
+
+class TestArchiveSortByPrinter:
+    """`?sort_by=printer-asc|printer-desc`, added so the list view's Printer
+    column can be clicked like the others.
+
+    Ordering by printer is the only sort that has to leave the archive table to
+    answer, which is where the two failure modes live: dropping the rows that
+    have no printer, and ordering by an id instead of by the name on screen.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_orders_by_printer_name_not_by_id(self, async_client: AsyncClient, archive_factory, printer_factory):
+        # Ids ascend while names descend, so an id-ordered list is the exact
+        # reverse of a correct one — nothing subtle to miss.
+        first = await printer_factory(name="Zulu")
+        second = await printer_factory(name="Alpha")
+        await archive_factory(first.id, print_name="on-zulu")
+        await archive_factory(second.id, print_name="on-alpha")
+
+        response = await async_client.get("/api/v1/archives/?sort_by=printer-asc")
+
+        assert response.status_code == 200
+        assert [a["print_name"] for a in response.json()["data"]] == ["on-alpha", "on-zulu"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_reverses_on_descending(self, async_client: AsyncClient, archive_factory, printer_factory):
+        # Three, created in an order that is neither the ascending nor the
+        # descending answer. Two rows would let this pass on the insertion
+        # order alone: the archives share a created_at to the second, so the
+        # date fallback has no tiebreaker and can return either arrangement.
+        mike = await printer_factory(name="Mike")
+        zulu = await printer_factory(name="Zulu")
+        alpha = await printer_factory(name="Alpha")
+        await archive_factory(mike.id, print_name="on-mike")
+        await archive_factory(zulu.id, print_name="on-zulu")
+        await archive_factory(alpha.id, print_name="on-alpha")
+
+        response = await async_client.get("/api/v1/archives/?sort_by=printer-desc")
+
+        assert [a["print_name"] for a in response.json()["data"]] == ["on-zulu", "on-mike", "on-alpha"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_keeps_archives_that_have_no_printer(
+        self, async_client: AsyncClient, archive_factory, printer_factory
+    ):
+        """An external print, or one whose printer was deleted, still has to be
+        in a list that is merely being re-ordered — a join would silently drop
+        it, and the row count is the only thing that would show it."""
+        printer = await printer_factory(name="Alpha")
+        await archive_factory(printer.id, print_name="on-alpha")
+        await archive_factory(None, print_name="orphan", sliced_for_model="P1S")
+
+        response = await async_client.get("/api/v1/archives/?sort_by=printer-asc")
+
+        names = [a["print_name"] for a in response.json()["data"]]
+        assert sorted(names) == ["on-alpha", "orphan"]
+        assert response.json()["meta"]["total"] == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_printerless_archive_sorts_by_what_it_displays(
+        self, async_client: AsyncClient, archive_factory, printer_factory
+    ):
+        """With no printer the column shows `sliced_for_model`, so that is what
+        it sorts by — otherwise those rows would all collapse to one end
+        regardless of what the operator can see in them."""
+        printer = await printer_factory(name="Mike")
+        await archive_factory(printer.id, print_name="on-mike")
+        await archive_factory(None, print_name="sliced-for-a1", sliced_for_model="A1")
+        await archive_factory(None, print_name="sliced-for-x1", sliced_for_model="X1C")
+
+        response = await async_client.get("/api/v1/archives/?sort_by=printer-asc")
+
+        assert [a["print_name"] for a in response.json()["data"]] == [
+            "sliced-for-a1",
+            "on-mike",
+            "sliced-for-x1",
+        ]

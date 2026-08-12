@@ -1,6 +1,8 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from backend.app.schemas.printer_location import PrinterLocationOut, reject_legacy_key
 
 
 class PrinterBase(BaseModel):
@@ -30,10 +32,16 @@ class PrinterBase(BaseModel):
         pattern=r"^(\d{1,3}(\.\d{1,3}){3}|[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*)$",
     )
     model: str | None = None
-    location: str | None = None  # Group/location name
+    location_id: int | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_legacy_location(cls, values):
+        return reject_legacy_key(values, "location", "location_id")
+
     auto_archive: bool = True
     cleanup_after_print: bool = True
-    mqtt_connection_timeout: int = 300  # seconds; 0 = disabled
+    mqtt_connection_timeout: int = 0  # seconds; 0 = disabled — see models/printer.py for why that is the default
     external_camera_url: str | None = None
     external_camera_type: str | None = None  # "mjpeg", "rtsp", "snapshot", "usb"
     external_camera_enabled: bool = False
@@ -70,8 +78,14 @@ class PrinterUpdate(BaseModel):
     )
     access_code: str | None = None
     model: str | None = None
-    location: str | None = None
+    location_id: int | None = None
     is_active: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_legacy_location(cls, values):
+        return reject_legacy_key(values, "location", "location_id")
+
     auto_archive: bool | None = None
     cleanup_after_print: bool | None = None
     mqtt_connection_timeout: int | None = None
@@ -92,6 +106,10 @@ class PrinterUpdate(BaseModel):
 class PrinterResponse(PrinterBase):
     id: int
     is_active: bool
+    # The place, resolved. ``location_id`` comes from PrinterBase and is what a
+    # form posts back; this is what anything displaying it reads, so neither has
+    # to look the other up.
+    location: PrinterLocationOut | None = None
     archived: bool = False
     archived_at: datetime | None = None
     nozzle_count: int = 1  # 1 or 2, auto-detected from MQTT
@@ -121,7 +139,8 @@ class PrinterResponse(PrinterBase):
             "serial_number": printer.serial_number,
             "ip_address": printer.ip_address,
             "model": printer.model,
-            "location": printer.location,
+            "location_id": printer.location_id,
+            "location": (PrinterLocationOut.from_location(getattr(printer, "location", None))),
             "auto_archive": printer.auto_archive,
             "cleanup_after_print": printer.cleanup_after_print,
             "mqtt_connection_timeout": printer.mqtt_connection_timeout,
@@ -200,6 +219,27 @@ class AMSTray(BaseModel):
     tray_id_name: str | None = None  # Bambu filament ID like "A00-Y2" (can decode to color)
     tray_info_idx: str | None = None  # Filament preset ID like "GFA00"
     remain: int = 0
+    # Grams left, as the firmware itself computes them. ⚠️ -1 means "not
+    # provided", which is what BS's own default is and what most hardware
+    # returns: no AMS weighs anything, and the figure is derived from RFID plus
+    # spool rotation, so it exists only for tagged spools. Present here so a
+    # reading is used when there is one — BS prefers it over the percentage for
+    # the same reason we do (see ``DevAmsTray::get_filament_remain_weight``).
+    remain_g: int = -1
+    # Every colour this spool carries. A single-colour spool gets a one-item
+    # list, so callers never have to ask which shape they got — BS applies the
+    # same fallback (``cols = [tray_color]`` when the field is absent).
+    cols: list[str] = []
+    # BS ``DevFilaColorType``. ⚠️ The numbering is not what the names suggest:
+    # **0 = MULTI, 1 = GRADIANT, 2 = SINGLE** — so a ``ctype`` of 0 means
+    # multi-colour, not "none". Absent → derived from the list length, as BS
+    # does: more than one colour is MULTI, otherwise SINGLE.
+    #
+    # ⚠️ And the rendering rule is the reverse of the names again (AMSItem.cpp):
+    # CTYPE_MULTI draws a smooth GRADIENT between the first and last colour,
+    # while everything else with more than one colour draws equal stripes.
+    # Copied as found; it is the reference behaviour, not a mistake to correct.
+    ctype: int | None = None
     k: float | None = None  # Pressure advance value (from tray or K-profile lookup)
     cali_idx: int | None = None  # Calibration index for K-profile lookup
     tag_uid: str | None = None  # RFID tag UID (any tag)
@@ -252,6 +292,35 @@ class NozzleRackSlot(BaseModel):
     filament_color: str = ""  # RGBA hex ("00000000" = no filament)
     filament_id: str = ""  # Bambu filament ID
     filament_type: str = ""  # Material type (e.g. "PLA", "PETG")
+
+
+class AirductFan(BaseModel):
+    """One fan reported through ``device.airduct.parts`` (#2576).
+
+    Presence in the list means the fan physically exists — the printer reports
+    only fitted parts, so there is no model table to keep in step with the
+    hardware. That matters on the P2S, where both the second auxiliary fan and
+    the exhaust fan are add-on kits.
+    """
+
+    part_id: int  # BS AIR_FUN index. 2 / 10 = the two aux fans, 3 = chamber/exhaust
+    speed: int  # 0-100 %
+    range_start: int = 0
+    range_end: int = 100
+    # What the active airduct mode does with this fan — BS's own three outcomes
+    # (``FanControlNew::update_mode``):
+    #   "ctrl" — the user may set a speed
+    #   "off"  — the mode forces it off; BS writes "Off" where the slider was
+    #   "auto" — the firmware drives it; BS writes "Auto"
+    # ⚠️ "auto" is the one a boolean could not express, and it is not cosmetic:
+    # it used to read as controllable, so we offered a slider, sent the command
+    # and the mode overrode it.
+    control: str = "ctrl"
+    # Kept so an older frontend does not lose the control it already has; it
+    # answers the narrower question the write path asks (``control == "ctrl"``).
+    controllable: bool = True
+    label_key: str | None = None  # i18n key under ``printers.fans.*`` when recognised
+    label: str | None = None  # BambuStudio's own name, verbatim, as the fallback
 
 
 class FilaSwitchResponse(BaseModel):
@@ -317,7 +386,14 @@ class PrinterStatus(BaseModel):
     ams: list[AMSUnit] = []
     ams_exists: bool = False
     vt_tray: list[AMSTray] = []  # Virtual tray / external spool(s)
-    sdcard: bool = False  # SD card inserted
+    # True only when the card is usable (BS ``HAS_SDCARD_NORMAL``). ABNORMAL and
+    # READONLY are cards the printer is complaining about — they used to read as
+    # healthy here because the parser matched a substring of the state name.
+    sdcard: bool = False
+    # The full BS state: 0 none · 1 normal · 2 abnormal · 3 read-only. Exposed so
+    # the UI can say WHICH problem instead of collapsing three answers into
+    # "not inserted".
+    sdcard_state: int = 0
     store_to_sdcard: bool = False  # Store sent files on SD card
     timelapse: bool = False  # Timelapse recording active
     ipcam: bool = False  # Live view enabled
@@ -334,8 +410,27 @@ class PrinterStatus(BaseModel):
     stg_names: list[
         str
     ] = []  # Human-readable name per entry in ``stg`` (parallel list) — drives the calibration progress flow
-    # Air conditioning mode (0=cooling, 1=heating)
+    # Firmware states that stop the printer accepting work. Both come from the
+    # printer's own push, not from any cloud account.
+    #   consistency_request — module versions disagree; BambuStudio's wording is
+    #     "The firmware version is abnormal. Repairing and updating are required
+    #     before printing." Reachable after an SD-card update.
+    #   force_upgrade — an update the printer insists on before it will continue.
+    firmware_consistency_request: bool = False
+    firmware_force_upgrade: bool = False
+    # Air conditioning mode (0=cooling, 1=heating, 2=exhaust, 3=full cooling)
     airduct_mode: int = 0
+    # The mode ids this printer actually offers, from its own ``modeList``.
+    # ⚠️ Never a fixed list of four: BS builds one button per reported mode
+    # (``FanControlPopupNew::CreateDuct``), so a machine that lists two gets two.
+    # Empty means the printer reports no air duct — the old protocol, where the
+    # mode is not a thing that can be chosen.
+    airduct_modes: list[int] = []
+    # ``device.airduct.subMode`` — the "Filter" toggle: 1 on, 0 off, -1 absent.
+    airduct_sub_mode: int = -1
+    # Whether that toggle exists at all (BS ``fun`` bit 46). It belongs to the
+    # cooling mode alone, so the frontend needs both this and the current mode.
+    supports_cooling_filter: bool = False
     # Print speed level (1=silent, 2=standard, 3=sport, 4=ludicrous)
     speed_level: int = 2
     # Chamber light on/off
@@ -385,6 +480,44 @@ class PrinterStatus(BaseModel):
     big_fan1_speed: int | None = None  # Auxiliary fan
     big_fan2_speed: int | None = None  # Chamber/exhaust fan
     heatbreak_fan_speed: int | None = None  # Hotend heatbreak fan
+    # Fans reported only through ``device.airduct`` (#2576). The second
+    # auxiliary fan — an add-on kit on the P2S, factory-fitted on the X2D — has
+    # no flat ``big_fanX_speed`` field at all, which is why nothing could show
+    # it. The list carries only fans that physically exist, so its contents are
+    # the hardware check; there is no per-model table.
+    #
+    # ``label_key`` is an i18n key under ``printers.fans.*`` when we recognise
+    # BambuStudio's own name for it, ``label`` is that name verbatim. Both come
+    # from the mirrored per-model config and depend on the airduct mode — the
+    # same part id is a different fan on the P2S and the X2D.
+    airduct_fans: list[AirductFan] = Field(default_factory=list)
+    # What each heater will accept, as ``{"nozzle": [min, max], "bed": …,
+    # "chamber": …}``. Published so the UI bounds its inputs off the same rule
+    # the backend clamps with — a second copy in the browser is a copy that
+    # disagrees the first time a printer reports a range of its own.
+    temperature_limits: dict[str, list[int]] = Field(default_factory=dict)
+    # Per-extruder "a hotend is fitted", keyed by extruder id. ⚠️ A MISSING key
+    # means the machine cannot detect this at all (the A and P series), which is
+    # not the same as False — only an explicit False may refuse a heat request.
+    ext_has_nozzle: dict[int, bool] = Field(default_factory=dict)
+    # Whether the chamber can be COMMANDED, not merely read. The X1C and P2S
+    # report a chamber temperature they have no way of changing, so without
+    # this the UI would offer a control the backend answers 409 to.
+    supports_chamber_heater: bool = False
+    # Which axes the printer reports as homed, keyed "x"/"y"/"z".
+    # ⚠️ This is the printer's own answer, replacing a per-browser-session
+    # guess that was wrong in both directions: homing from the machine's own
+    # screen still prompted, and losing home after our command did not.
+    axis_at_home: dict[str, bool] = Field(default_factory=dict)
+    # Per-extruder "filament is loaded", keyed by extruder id. Parsed since the
+    # AMS-firmware guard needed it; published so the extruder graphic can show
+    # what is actually in the machine instead of a picture that always agrees.
+    ext_has_filament: dict[int, bool] = Field(default_factory=dict)
+    # Whether a timelapse can be recorded, where it would go, and whether that
+    # place is nearly full. ⚠️ ``can_enable`` is the printer's answer, not the
+    # model's: a missing, unreadable or read-only card each refuse it, and
+    # internal storage or a timelapse kit each excuse the card entirely.
+    timelapse_capability: dict = Field(default_factory=dict)
     # Firmware version (from info.module[name="ota"].sw_ver)
     firmware_version: str | None = None
     # Developer LAN mode: True = enabled, False = disabled (MQTT encryption), None = unknown

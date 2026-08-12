@@ -168,5 +168,30 @@
     "name": "Друк користувача зупинено (лист)",
     "title_template": "Ваш друк зупинено",
     "body_template": "Привіт, {username}!\n\nВаше завдання друку зупинено на {printer}.\n\nФайл: {filename}"
+  },
+  "sensor_above_max": {
+    "name": "Показ вище межі",
+    "title_template": "Тривога датчика",
+    "body_template": "{location} — {quantity} {value} {unit}, вище за {limit}"
+  },
+  "sensor_below_min": {
+    "name": "Показ нижче межі",
+    "title_template": "Тривога датчика",
+    "body_template": "{location} — {quantity} {value} {unit}, нижче за {limit}"
+  },
+  "sensor_back_in_range": {
+    "name": "Показ у нормі",
+    "title_template": "Датчик у нормі",
+    "body_template": "{location} — {quantity} {value} {unit}, у нормі"
+  },
+  "sensor_silent": {
+    "name": "Датчик мовчить",
+    "title_template": "Датчик мовчить",
+    "body_template": "{location} — {sensor} мовчить {minutes} хв"
+  },
+  "sensor_speaking_again": {
+    "name": "Датчик знову говорить",
+    "title_template": "Датчик у нормі",
+    "body_template": "{location} — {sensor} знову говорить"
   }
 }

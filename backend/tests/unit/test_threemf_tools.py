@@ -11,6 +11,7 @@ import zipfile
 from contextlib import contextmanager
 
 from backend.app.utils.threemf_tools import (
+    expand_to_project_slots,
     extract_bed_type_from_3mf,
     extract_embedded_presets_from_3mf,
     extract_filament_usage_from_3mf,
@@ -709,3 +710,89 @@ class TestExtractSupportFilamentSlotsFrom3mf:
         cfg = json.dumps({"enable_support": "1", "support_filament": "not-a-number"})
         with _make_3mf_with({"Metadata/project_settings.config": cfg}) as zf:
             assert extract_support_filament_slots_from_3mf(zf) == set()
+
+
+class TestExpandToProjectSlots:
+    """Widening the used-only list to every project slot (#2712).
+
+    The slice modal's filament list is **positional** — index 0 is slot 1, all
+    the way down to the CLI's ``filament_N.json`` parts. A source that declares
+    four filaments but paints with slot 4 alone used to yield a single row, so
+    the user's pick bound to slot 1 and slot 4 printed with whatever the source
+    had baked in. Wrong material, no warning.
+    """
+
+    PROJECT_4 = json.dumps(
+        {
+            "filament_type": ["PLA", "PLA", "PETG", "PETG"],
+            "filament_colour": ["#FF0000", "#00FF00", "#0000FF", "#FFFFFF"],
+        }
+    )
+
+    def _used(self, *slot_ids: int) -> list[dict]:
+        return [
+            {
+                "slot_id": s,
+                "type": "PETG",
+                "color": "#FFFFFF",
+                "used_grams": 12.5,
+                "used_meters": 4.0,
+                "tray_info_idx": "GFG99",
+                "used_in_plate": True,
+            }
+            for s in slot_ids
+        ]
+
+    def test_the_reported_case_one_used_slot_becomes_four_rows(self):
+        with _make_3mf_with({"Metadata/project_settings.config": self.PROJECT_4}) as zf:
+            out = expand_to_project_slots(zf, self._used(4))
+
+        assert [f["slot_id"] for f in out] == [1, 2, 3, 4]
+        assert [f["used_in_plate"] for f in out] == [False, False, False, True]
+
+    def test_the_used_row_keeps_its_own_figures(self):
+        """Widening must not overwrite what slice_info actually measured — the
+        usage, the resolved colour and the tray_info_idx are the real answer."""
+        with _make_3mf_with({"Metadata/project_settings.config": self.PROJECT_4}) as zf:
+            out = expand_to_project_slots(zf, self._used(4))
+
+        slot4 = out[3]
+        assert slot4["used_grams"] == 12.5
+        assert slot4["tray_info_idx"] == "GFG99"
+
+    def test_filler_rows_carry_the_project_configuration(self):
+        with _make_3mf_with({"Metadata/project_settings.config": self.PROJECT_4}) as zf:
+            out = expand_to_project_slots(zf, self._used(4))
+
+        assert out[0]["type"] == "PLA"
+        assert out[0]["color"] == "#FF0000"
+        assert out[0]["used_grams"] == 0
+
+    def test_a_used_slot_the_project_does_not_declare_is_appended(self):
+        """A superset was asked for. Dropping the one slot that actually prints
+        would be the original bug wearing a different hat."""
+        two_slot = json.dumps({"filament_type": ["PLA", "PLA"], "filament_colour": ["#000", "#111"]})
+        with _make_3mf_with({"Metadata/project_settings.config": two_slot}) as zf:
+            out = expand_to_project_slots(zf, self._used(5))
+
+        assert [f["slot_id"] for f in out] == [1, 2, 5]
+        assert out[2]["used_in_plate"] is True
+
+    def test_every_slot_used_stays_every_slot_used(self):
+        with _make_3mf_with({"Metadata/project_settings.config": self.PROJECT_4}) as zf:
+            out = expand_to_project_slots(zf, self._used(1, 2, 3, 4))
+
+        assert all(f["used_in_plate"] for f in out)
+        assert len(out) == 4
+
+    def test_no_project_settings_returns_the_input_untouched(self):
+        """A narrower-than-ideal list still prints correctly; an invented one
+        might not."""
+        used = self._used(4)
+        with _make_3mf_with({"placeholder.txt": "hi"}) as zf:
+            assert expand_to_project_slots(zf, used) == used
+
+    def test_malformed_project_settings_returns_the_input_untouched(self):
+        used = self._used(2)
+        with _make_3mf_with({"Metadata/project_settings.config": "{not json"}) as zf:
+            assert expand_to_project_slots(zf, used) == used

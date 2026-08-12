@@ -22,8 +22,8 @@ const ADDON_IMG_BASE = '/img/addons';
 
 const ADDON_IMAGE_FILES: Record<string, string> = {
   // AMS + filament handling
-  ams: 'ams.svg',
-  ams_lite: 'ams_lite.svg',
+  ams: 'ams.png',
+  ams_lite: 'ams_lite.png',
   ams_ht: 'ams_ht.png',
   air_pump: 'air_pump.png',
   filament_buffer_p2s: 'filament_buffer_p2s.png',

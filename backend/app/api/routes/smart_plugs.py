@@ -3,7 +3,7 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -82,6 +82,37 @@ async def create_smart_plug(
             if result.scalar_one_or_none():
                 raise HTTPException(400, "This printer already has a Tasmota plug assigned")
 
+    # For Zigbee plugs the address must belong to a device that is actually on
+    # our mesh. Validated here rather than in the schema because only the route
+    # can see the coordinator.
+    #
+    # Rejecting is the point: an address that is not paired, or the radio's own,
+    # would create a plug row that can never switch anything — and the operator
+    # would be left diagnosing a broken plug instead of reading a refusal.
+    if data.plug_type == "zigbee":
+        from backend.app.services.zigbee.coordinator import zigbee_coordinator
+        from backend.app.services.zigbee.devices import DeviceKind, describe_device
+
+        zb_app = zigbee_coordinator.app
+        if zb_app is None:
+            raise HTTPException(400, "The Zigbee coordinator is not running, so no device can be bound yet.")
+
+        wanted = (data.zigbee_ieee or "").strip().lower()
+        device = next((d for k, d in zb_app.devices.items() if str(k).lower() == wanted), None)
+        if device is None:
+            raise HTTPException(400, f"No paired Zigbee device with address {data.zigbee_ieee}. Pair it first.")
+
+        info = describe_device(device)
+        if info.is_coordinator:
+            raise HTTPException(400, "That address is the Zigbee coordinator itself, not a plug.")
+        if info.kind is DeviceKind.SENSOR:
+            # Named for what it is. "cannot be switched" is true of a sensor and
+            # tells the operator nothing: they paired a working device and want
+            # to know why it is not offered here.
+            raise HTTPException(400, "That Zigbee device is a sensor, not a plug. Sensors are not bound to printers.")
+        if not info.is_plug:
+            raise HTTPException(400, info.reject_reason or "That Zigbee device cannot be switched.")
+
     # For MQTT plugs, ensure MQTT broker is configured and service is connected
     if data.plug_type == "mqtt":
         # Try to configure the smart plug service if not already configured
@@ -130,6 +161,17 @@ async def create_smart_plug(
         topics = subscribe_plug_to_mqtt(mqtt_relay.smart_plug_service, plug)
         if topics:
             logger.info("Created MQTT plug '%s' subscribed to %s", plug.name, ", ".join(topics))
+    elif plug.plug_type == "zigbee":
+        # Subscribed immediately, in the same place MQTT plugs are: without it
+        # the plug switches on command but reports nothing, so its status reads
+        # "unreachable" until the next restart. The parallel with the MQTT
+        # branch above is deliberate — both types need their transport wired at
+        # creation, not just at startup.
+        from backend.app.services.zigbee.driver import zigbee_smart_plug_service
+        from backend.app.services.zigbee.reporting import subscribe_all
+
+        await subscribe_all(zigbee_smart_plug_service, [plug])
+        logger.info("Created Zigbee plug '%s' (%s)", plug.name, plug.zigbee_ieee)
     elif plug.plug_type == "homeassistant":
         logger.info("Created Home Assistant plug '%s' (%s)", plug.name, plug.ha_entity_id)
     else:
@@ -404,6 +446,53 @@ async def get_smart_plug(
     return plug
 
 
+async def _void_inflight_energy(db: AsyncSession, printer_id: int, plug_id: int) -> int:
+    """Drop the start reading of any measurement still in flight on this printer.
+
+    Per-print energy is a difference: the plug's lifetime counter is recorded on
+    the archive at print start and subtracted from the counter at the end. Move
+    the plug and the end reading comes from a **different physical meter**, so the
+    subtraction produces a plausible, wrong number instead of a missing one.
+
+    Refusing the move would put an accounting side-effect ahead of an operator's
+    decision on their own farm, so the move is allowed and the figure is dropped.
+    Nothing downstream needs changing: the end-handler already returns early and
+    records nothing when the start value is NULL.
+
+    In flight means ``completed_at IS NULL`` **and** ``energy_start_kwh IS NOT
+    NULL`` — together "a print that started measuring and has not finished",
+    which needs no assumption about the ``status`` vocabulary. All matches are
+    cleared; any of them would otherwise difference two different meters.
+
+    Logged at INFO so a later "why is this archive's energy empty?" has an answer
+    here rather than looking like data loss.
+    """
+    from backend.app.models.archive import PrintArchive
+
+    rows = (
+        (
+            await db.execute(
+                select(PrintArchive).where(
+                    PrintArchive.printer_id == printer_id,
+                    PrintArchive.completed_at.is_(None),
+                    PrintArchive.energy_start_kwh.is_not(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for archive in rows:
+        archive.energy_start_kwh = None
+        logger.info(
+            "Smart plug %s left printer %s mid-measurement; cleared energy start on archive %s",
+            plug_id,
+            printer_id,
+            archive.id,
+        )
+    return len(rows)
+
+
 @router.patch("/{plug_id}", response_model=SmartPlugResponse)
 async def update_smart_plug(
     plug_id: int,
@@ -442,6 +531,17 @@ async def update_smart_plug(
             )
             if result.scalar_one_or_none():
                 raise HTTPException(400, "This printer already has a Tasmota plug assigned")
+
+    # The old printer's in-flight measurement dies with the binding, whether the
+    # plug is moving to another printer or being unlinked entirely. Read the OLD
+    # printer_id here — after the setattr loop below it is gone.
+    if (
+        "printer_id" in update_data
+        and update_data["printer_id"] != plug.printer_id
+        and plug.printer_id
+        and plug.controls_printer_power
+    ):
+        await _void_inflight_energy(db, plug.printer_id, plug_id)
 
     # Track old MQTT settings for comparison
     old_plug_type = plug.plug_type
@@ -514,6 +614,13 @@ async def delete_smart_plug(
     # Unsubscribe MQTT plug before deletion
     if plug_type == "mqtt":
         mqtt_relay.smart_plug_service.unsubscribe(plug_id)
+    elif plug_type == "zigbee":
+        # The counterpart of the line above, and its absence is what let a
+        # deleted plug keep spending the radio: the shared read task ran on, the
+        # listeners stayed bound, and the cache entry outlived the row.
+        from backend.app.services.zigbee.driver import zigbee_smart_plug_service
+
+        await zigbee_smart_plug_service.teardown(plug_id)
 
     await db.delete(plug)
     await db.commit()
@@ -649,6 +756,7 @@ async def trigger_associated_scripts(printer_id: int, plug_state: str, db: Async
 @router.get("/{plug_id}/status", response_model=SmartPlugStatus)
 async def get_plug_status(
     plug_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
 ):
@@ -710,6 +818,8 @@ async def get_plug_status(
     if status["reachable"]:
         energy = await service.get_energy(plug)
         if energy:
+            if energy.get("today") is None:
+                energy = {**energy, "today": await _today_from_snapshots(db, plug.id, energy.get("total"), request)}
             energy_data = SmartPlugEnergy(**energy)
 
             # Check power alerts
@@ -721,6 +831,58 @@ async def get_plug_status(
         device_name=status.get("device_name"),
         energy=energy_data,
     )
+
+
+async def _today_from_snapshots(
+    db: AsyncSession, plug_id: int, total_now: float | None, request: Request
+) -> float | None:
+    """Energy used today, derived for plugs whose protocol has no such figure.
+
+    Tasmota, REST, MQTT and Home Assistant all report ``today`` from the device.
+    Zigbee cannot: the Metering cluster exposes only the cumulative
+    ``current_summ_delivered``, so "since midnight" does not exist to be read.
+    The card showed 0, which is not a small thing — it reads as "the plug used
+    nothing", not as "this plug cannot answer that".
+
+    Derived the same way the range report works: today's consumption is the
+    current counter minus its value at midnight, taken from
+    ``smart_plug_energy_snapshots``. Snapshots are written hourly and at both
+    ends of every print, so the midnight baseline is at most an hour stale and
+    usually much fresher.
+
+    Midnight is the *client's*, from the request header — "today" on someone's
+    screen means the day they are having. Scheduled work keeps using the
+    server's own timezone; see ``core/timezones``.
+
+    Returns None rather than 0 when there is no baseline yet. A fresh install has
+    no snapshot before midnight, and answering 0 there would state that nothing
+    was used rather than that nothing is known — the exact confusion this
+    function exists to remove.
+    """
+    from backend.app.core.timezones import client_timezone, start_of_today
+    from backend.app.models.smart_plug_energy_snapshot import SmartPlugEnergySnapshot
+
+    if total_now is None:
+        return None
+
+    midnight_utc = start_of_today(client_timezone(request))
+    baseline = (
+        await db.execute(
+            select(SmartPlugEnergySnapshot.lifetime_kwh)
+            .where(
+                SmartPlugEnergySnapshot.plug_id == plug_id,
+                SmartPlugEnergySnapshot.recorded_at <= midnight_utc,
+            )
+            .order_by(SmartPlugEnergySnapshot.recorded_at.desc())
+            .limit(1)
+        )
+    ).scalar()
+
+    if baseline is None:
+        return None
+    # Clamped: a plug whose counter was reset today would otherwise report a
+    # negative figure, which is worse than admitting to zero.
+    return round(max(0.0, float(total_now) - float(baseline)), 3)
 
 
 async def check_power_alerts(plug: SmartPlug, current_power: float | None, db: AsyncSession):

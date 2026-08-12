@@ -21,6 +21,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class UnknownPlugTypeError(ValueError):
+    """A plug type no driver claims.
+
+    Raised rather than defaulted. A default here is not a fallback, it is a wrong
+    answer delivered confidently: the old ``return tasmota_service`` sent an
+    HTTP poll to an ``ip_address`` the plug does not have, and fed the result
+    into per-print energy.
+    """
+
+    def __init__(self, plug_type: str | None):
+        super().__init__(f"No smart-plug driver for plug_type {plug_type!r} — add it to get_service_for_plug()")
+        self.plug_type = plug_type
+
+
 class SmartPlugManager:
     """Manages smart plug automation and delayed turn-off."""
 
@@ -29,13 +43,29 @@ class SmartPlugManager:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._scheduler_task: asyncio.Task | None = None
         self._snapshot_task: asyncio.Task | None = None
+        self._history_task: asyncio.Task | None = None
         self._last_schedule_check: dict[int, str] = {}  # plug_id -> "HH:MM" last executed
 
     async def get_service_for_plug(self, plug: "SmartPlug", db: AsyncSession | None = None):
-        """Get the appropriate service for the plug type.
+        """The single place a plug type becomes a driver.
 
         For HA plugs, configures the service with current settings from DB.
+
+        Every type is named explicitly and an unknown one raises. It used to end
+        in a bare ``return tasmota_service``, which meant a type this chain had
+        not been taught about did not fail — it quietly got Tasmota's answer, an
+        HTTP poll against an ``ip_address`` that such a plug does not have. Since
+        this feeds per-print energy, that is a WRONG number rather than a missing
+        one, and nothing anywhere looks broken.
+
+        It was harmless only by luck: every shipping type happened to be listed.
+        The mqtt branch had to be added by m113 for exactly this reason, and the
+        zigbee one would have been the next instance. A total mapping means the
+        next type added is a loud error at the one site that has to know, instead
+        of silent Tasmota everywhere downstream.
         """
+        if plug.plug_type == "tasmota":
+            return tasmota_service
         if plug.plug_type == "homeassistant":
             # Configure HA service with current settings
             await self._configure_ha_service(db)
@@ -44,7 +74,14 @@ class SmartPlugManager:
             return rest_smart_plug_service
         if plug.plug_type == "mqtt":
             return mqtt_smart_plug_service
-        return tasmota_service
+        if plug.plug_type == "zigbee":
+            # Imported here rather than at module scope: the zigbee package
+            # pulls zigpy in, and this module is imported during startup long
+            # before the coordinator exists.
+            from backend.app.services.zigbee.driver import zigbee_smart_plug_service
+
+            return zigbee_smart_plug_service
+        raise UnknownPlugTypeError(plug.plug_type)
 
     async def _configure_ha_service(self, db: AsyncSession | None = None):
         """Configure the HA service with URL and token from settings."""
@@ -77,6 +114,9 @@ class SmartPlugManager:
         if self._snapshot_task is None:
             self._snapshot_task = asyncio.create_task(self._snapshot_loop())
             logger.info("Smart plug energy snapshot loop started")
+        if self._history_task is None:
+            self._history_task = asyncio.create_task(self._history_loop())
+            logger.info("Measurement history loop started")
 
     def stop_scheduler(self):
         """Stop the background scheduler."""
@@ -88,6 +128,47 @@ class SmartPlugManager:
             self._snapshot_task.cancel()
             self._snapshot_task = None
             logger.info("Smart plug energy snapshot loop stopped")
+        if self._history_task:
+            self._history_task.cancel()
+            self._history_task = None
+            logger.info("Measurement history loop stopped")
+
+    async def _history_loop(self):
+        """Flush what was reported, read what does not report, prune daily.
+
+        One loop for three jobs because they share a schedule — and because
+        pruning has nowhere else to live: the reporting paths write from
+        callbacks, and a callback cannot hold "once a day".
+        """
+        from backend.app.core.database import async_session
+        from backend.app.services.measurement_history import (
+            flush_buffered,
+            prune,
+            resolve_sample_seconds,
+            sample_polled_plugs,
+        )
+        from backend.app.services.sensor_alerts import run_sensor_alerts
+
+        await asyncio.sleep(20)  # let the rest of the application finish booting
+        since_prune = 0.0
+        while True:
+            interval = 60
+            try:
+                async with async_session() as db:
+                    interval = await resolve_sample_seconds(db)
+                    await sample_polled_plugs(db)
+                    await flush_buffered(db)
+                    # Same tick, same session: the alerts read what the flush
+                    # just wrote. Wrapped inside run_sensor_alerts — this loop
+                    # also prunes, and an exception here would stop that too.
+                    await run_sensor_alerts(db)
+                    since_prune += interval
+                    if since_prune >= 24 * 60 * 60:
+                        since_prune = 0.0
+                        await prune(db)
+            except Exception as exc:  # noqa: BLE001 — the loop must outlive one bad cycle
+                logger.error("Measurement history cycle failed: %s", exc)
+            await asyncio.sleep(interval)
 
     async def _schedule_loop(self):
         """Background loop that checks scheduled on/off times every minute."""
@@ -140,6 +221,25 @@ class SmartPlugManager:
                     continue
                 if not energy:
                     continue
+
+                # Relay the reading before the lifetime-counter gate below: a
+                # plug that reports watts but keeps no cumulative counter is
+                # skipped for snapshots and still worth publishing. Hourly, so
+                # this is a heartbeat rather than a firehose — the report-driven
+                # history writer is where per-report data lives.
+                try:
+                    from backend.app.services.mqtt_relay import mqtt_relay
+
+                    await mqtt_relay.on_smart_plug_energy(
+                        plug_id=plug.id,
+                        plug_name=plug.name,
+                        power=float(energy.get("power") or 0.0),
+                        energy_today=float(energy.get("today") or 0.0),
+                        energy_total=float(energy.get("total") or 0.0),
+                    )
+                except Exception:
+                    pass  # A relay failure must not cost us the snapshot.
+
                 lifetime = energy.get("total")
                 if lifetime is None:
                     # No lifetime counter configured for this plug — a figure
@@ -158,6 +258,39 @@ class SmartPlugManager:
                 await db.commit()
                 logger.info("Captured %d energy snapshot(s)", captured)
 
+    @staticmethod
+    async def record_energy_snapshot(db, plug_id: int, lifetime_kwh: float | None) -> bool:
+        """Store one lifetime-counter reading, outside the hourly loop.
+
+        Called at print start and print end, where the counter has just been
+        read anyway to compute per-print energy. Free to record, and it makes
+        the range report land on real boundaries instead of on whichever hour
+        the loop last happened to fire: a "today" total asked for right after a
+        print finished used to answer with a counter up to an hour stale.
+
+        Safe to add rows at any density. ``_sum_snapshot_deltas`` takes
+        ``endpoint - baseline`` per plug — the last snapshot at or before each
+        end of the range — rather than summing consecutive pairs, so extra
+        points can only move those two nearer the range edges. Nothing
+        double-counts.
+
+        Does not commit: the callers are already inside a transaction that owns
+        the archive row this reading belongs to, and a snapshot that survived
+        while the energy figure beside it rolled back would be worse than none.
+        """
+        from backend.app.models.smart_plug_energy_snapshot import SmartPlugEnergySnapshot
+
+        if lifetime_kwh is None:
+            return False
+        db.add(
+            SmartPlugEnergySnapshot(
+                plug_id=plug_id,
+                recorded_at=datetime.now(timezone.utc),
+                lifetime_kwh=float(lifetime_kwh),
+            )
+        )
+        return True
+
     async def _check_schedules(self):
         """Check all plugs for scheduled on/off times."""
         from backend.app.core.database import async_session
@@ -175,7 +308,18 @@ class SmartPlugManager:
             plugs = result.scalars().all()
 
             for plug in plugs:
-                service = await self.get_service_for_plug(plug, db)
+                # Per-plug, deliberately: this loop drives scheduled power for
+                # the whole farm, and it had no guard at all. One plug that
+                # cannot be resolved or reached would abort the pass, so every
+                # plug after it silently missed its schedule — a printer left on
+                # overnight because an unrelated plug was misconfigured. The
+                # monitor loop above already isolates per plug; this one now
+                # does too.
+                try:
+                    service = await self.get_service_for_plug(plug, db)
+                except Exception:
+                    logger.exception("Schedule: no driver for plug '%s', skipping it this pass", plug.name)
+                    continue
 
                 # Check if we should turn on
                 if plug.schedule_on_time == current_time:

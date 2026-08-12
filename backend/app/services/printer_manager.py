@@ -11,7 +11,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.printer import Printer
-from backend.app.services.bambu_mqtt import BambuMQTTClient, MQTTLogEntry, PrinterState, get_stage_name
+from backend.app.schemas.printer import AirductFan
+from backend.app.services.bambu_mqtt import (
+    FAN_CTRL,
+    BambuMQTTClient,
+    MQTTLogEntry,
+    PrinterState,
+    airduct_fan_control,
+    airduct_mode_effective,
+    airduct_parts_effective,
+    get_stage_name,
+)
+from backend.app.utils.printer_configs import airduct_fan_label, get_device_support_flags
+from backend.app.utils.temperature_limits import limits_for
+from backend.app.utils.timelapse import capability_for as timelapse_capability_for
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +82,10 @@ CHAMBER_TEMP_SUPPORTED_MODELS = frozenset(
         "H2DPRO",
         "H2S",  # H2 series
         # Internal codes (from MQTT/SSDP)
-        "BL-P001",  # X1/X1C
+        "BL-P001",  # X1C
+        "BL-P002",  # X1 — was missing while its sibling was here, so a printer
+        # identified by the raw code rather than the display name lost its
+        # chamber reading from the card, the status API and the history, silently.
         "C13",  # X1E
         "N6",  # X2D
         "O1D",  # H2D
@@ -112,25 +128,43 @@ STG_CUR_IDLE_BUG_MODELS = A1_MODELS | frozenset(
 )
 
 
+def _norm_model(model: str | None) -> str:
+    """Normalise a model name for set membership.
+
+    ⚠️ **Internal spaces too**, not just the ends. The three chamber
+    sets used ``model.strip().upper()``, which leaves the space in the middle of
+    ``"H2D Pro"`` — and ``"H2D Pro"`` is exactly what ``PRINTER_MODEL_ID_MAP``
+    emits, while the set spells it ``H2DPRO``. So the H2D Pro answered False to
+    every chamber question and preheat never heated its chamber; ``X1 Carbon``
+    failed the same way. Matches ``ams_capabilities._norm`` and
+    ``printer_configs._norm``, which already got this right.
+
+    ⚠️ Spaces only — **hyphens are load-bearing here.** The internal codes in
+    these sets are spelled ``BL-P001`` / ``BL-P002``, and the A1 set lists
+    ``A1-MINI`` explicitly. Stripping hyphens the way ``ams_capabilities._norm``
+    does would silently unmatch every X1-family internal code; those sets
+    tolerate it because they are written without hyphens, and these are not.
+    """
+    if not model:
+        return ""
+    return model.strip().upper().replace(" ", "")
+
+
 def supports_chamber_temp(model: str | None) -> bool:
     """Check if a printer model has a real chamber temperature sensor.
 
     P1P, P1S, A1, and A1Mini do NOT have chamber temp sensors.
     The 'chamber_temper' value they report is meaningless.
     """
-    if not model:
-        return False
-    # Normalize model name (uppercase, strip whitespace)
-    model_upper = model.strip().upper()
-    return model_upper in CHAMBER_TEMP_SUPPORTED_MODELS
+    return _norm_model(model) in CHAMBER_TEMP_SUPPORTED_MODELS
 
 
-# Models with an ACTIVE chamber heater (chamber temp raisable via M141, not just
+# Models with an ACTIVE chamber heater (chamber temp raisable via set_ctt, not just
 # readable). Deliberately a subset of CHAMBER_TEMP_SUPPORTED_MODELS: X1/X1C/P2S report
 # chamber temp but heat the chamber only passively via bed radiation, so they are
 # sensor-capable but NOT heater-capable. X1E has a heater but no airduct flap; P2S has
 # an airduct flap but no heater — the three chamber sets are intentionally distinct.
-# Used by the preheat / heat-soak stage (#1468) to decide whether to send M141.
+# Used by the preheat / heat-soak stage (#1468) to decide whether to send set_ctt.
 CHAMBER_HEATER_MODELS = frozenset(
     [
         # Display names
@@ -154,23 +188,30 @@ CHAMBER_HEATER_MODELS = frozenset(
 
 
 def supports_chamber_heater(model: str | None) -> bool:
-    """Check if a printer model has an ACTIVE chamber heater (M141-controllable),
+    """Check if a printer model has an ACTIVE chamber heater (set_ctt-controllable),
     not merely a chamber temperature sensor.
 
     Distinct from ``supports_chamber_temp``: X1/X1C/P2S read chamber temp but warm the
     chamber only passively via bed radiation, so they are sensor-capable but not
-    heater-capable. The preheat / heat-soak stage (#1468) sends M141 only on models in
+    heater-capable. The preheat / heat-soak stage (#1468) sends set_ctt only on models in
     this set; sensor-only models wait for radiant warm-up, no-sensor models soak on a timer.
+
+    **Answered from the mirrored config.** ``support_chamber_temp_edit`` is
+    exactly this question, and its value across the fifteen shipped files
+    reproduces the hardcoded set exactly — X1E, X2D, H2C, H2D, H2D Pro, H2S —
+    so the set was a transcription with nothing of its own to say. The list is
+    kept only as the fallback for a model we ship no config for.
     """
-    if not model:
-        return False
-    return model.strip().upper() in CHAMBER_HEATER_MODELS
+    cfg = get_device_support_flags(model)
+    if "support_chamber_temp_edit" in cfg:
+        return bool(cfg["support_chamber_temp_edit"])
+    return _norm_model(model) in CHAMBER_HEATER_MODELS
 
 
 # Models with a cooling / heating airduct flap. Same set as the PrintersPage airduct
 # toggle (P2S, X2D, H2D, H2C, H2S, H2D Pro). X1E has a chamber heater but NO airduct flap
 # (fixed front-door inlet); P2S has an airduct flap but no active heater. The preheat
-# stage cares about the heater∩airduct intersection: when M141 fires it must also assert
+# stage cares about the heater∩airduct intersection: when set_ctt fires it must also assert
 # heating mode, otherwise the default cooling flap actively vents and fights the heater.
 CHAMBER_AIRDUCT_MODELS = frozenset(
     [
@@ -199,11 +240,15 @@ def supports_airduct(model: str | None) -> bool:
 
     Distinct from ``supports_chamber_heater`` — P2S has the airduct toggle but no active
     heater, and X1E has the heater but no airduct. The preheat stage flips the flap to
-    heating before energising M141 (cooling mode vents the chamber and fights the heater).
+    heating before energising the chamber (cooling mode vents it and fights the heater).
+
+    ⚠️ Stays a model list on purpose: **the mirrored configs do not answer this
+    one.** Only N6 (X2D) and N7 (P2S) carry a ``fan`` block; the H2 family has
+    none at all, yet those machines do have the duct. See
+    ``inv-per-model-capability-from-mirrored-config`` — a hardcoded set is
+    legitimate where the data is silent, provided it says so.
     """
-    if not model:
-        return False
-    return model.strip().upper() in CHAMBER_AIRDUCT_MODELS
+    return _norm_model(model) in CHAMBER_AIRDUCT_MODELS
 
 
 def has_stg_cur_idle_bug(model: str | None) -> bool:
@@ -219,23 +264,38 @@ def has_stg_cur_idle_bug(model: str | None) -> bool:
     return model_upper in STG_CUR_IDLE_BUG_MODELS
 
 
-def is_bed_slinger(model: str | None) -> bool:
-    """Whether the printer's Z axis controls the *toolhead*, not the bed.
+# BS ``MachineObject::is_in_printing_status`` (DeviceManager.cpp) — the four
+# gcode_state values that mean "this machine has a job on it". Note SLICING and
+# PREPARE: a print being prepared is already heating and positioning, which is
+# exactly when homing or jogging does the most damage. An earlier, narrower
+# version of this rule lived in ``firmware_batch._is_printing`` as
+# ``("RUNNING", "PAUSE")`` and let PREPARE through.
+BUSY_PRINT_STATES = frozenset({"RUNNING", "PAUSE", "SLICING", "PREPARE"})
 
-    Bambu's A1 family (A1, A1 Mini; internal codes ``N1`` / ``N2S``) are
-    open-frame bed-slingers: the bed moves on Y, the toolhead moves on
-    X+Z. On every other current model (X1, P1, H2, H2C, H2D, H2S, P2S,
-    ...) the bed moves on Z and the toolhead is fixed in Z.
 
-    G-code direction is opposite on these two families. ``G1 Z-10``
-    reduces the nozzle-bed gap on both, but on bed-on-Z machines it
-    does so by moving the BED up, while on bed-slingers it does so by
-    moving the TOOLHEAD down — which is what crashed the nozzle in
-    upstream Bambuddy #1334.
+def is_printer_busy(printer_id: int) -> bool:
+    """Whether the printer has a job on it, so physical commands must be refused.
+
+    BS can answer this question in the UI — it is a single-window desktop app,
+    and a greyed-out button is a sufficient guard. Ours is an HTTP surface
+    reachable by API key, by the Telegram bot and by a browser tab left open
+    since before the print started, so the answer has to live on the server.
+
+    A printer we have no client for is **not** reported busy: "unknown" is
+    already handled by the connection check every caller does first, and
+    answering True here would turn a disconnect into a permanent refusal.
     """
-    if not model:
+    client = printer_manager.get_client(printer_id)
+    if not client or not client.state:
         return False
-    return model.strip().upper() in A1_MODELS
+    return client.state.state in BUSY_PRINT_STATES
+
+
+# ``is_bed_slinger`` moved to ``utils.printer_configs``, beside the
+# ``printer_arch`` value it reads — ``bambu_mqtt`` needs the same flip for the
+# axis jog and cannot import this module back. Import it from there; a second
+# copy of a rule that decides which way a nozzle moves is not an option, and
+# neither is a re-export that hides where it lives.
 
 
 # Minimum firmware versions for AMS drying support (confirmed via capture testing)
@@ -404,6 +464,64 @@ def find_ams_unit(raw_data: dict | None, ams_id: int) -> dict | None:
         except (TypeError, ValueError):
             continue
     return None
+
+
+async def _record_skipped_as_defective(printer_id: int, skipped: list) -> None:
+    """Async coroutine wired into ``on_skipped_objects_changed``: raise the
+    running print's defective-part counter to the number of skipped objects.
+
+    A skipped object is a part the operator gave up on, which is what the
+    counter means. The value is set to ``max(current, len(skipped))`` rather
+    than incremented, for two reasons: the callback carries the whole list (so a
+    re-send of the same list must not add anything), and an operator who typed a
+    higher number by hand — parts that printed but came out unusable — must not
+    have it pulled back down by a later skip.
+
+    Targets the printer's running archive the same way the skip-objects endpoint
+    does (newest row at ``status='printing'``). No archive means nothing to
+    record: skips only happen mid-print, so this is a lost race, not a state to
+    repair.
+    """
+    if not skipped:
+        return
+
+    from backend.app.core.database import async_session
+    from backend.app.models.archive import PrintArchive
+
+    try:
+        async with async_session() as db:
+            archive = (
+                (
+                    await db.execute(
+                        select(PrintArchive)
+                        .where(PrintArchive.printer_id == printer_id)
+                        .where(PrintArchive.status == "printing")
+                        .order_by(PrintArchive.id.desc())
+                        .limit(1)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if archive is None:
+                logger.debug("No running archive for printer %s — skipped objects not recorded", printer_id)
+                return
+
+            new_count = max(archive.defective_count or 0, len(skipped))
+            if new_count == archive.defective_count:
+                return
+
+            archive.defective_count = new_count
+            await db.commit()
+            logger.info(
+                "Archive %s: defective parts raised to %d from %d skipped object(s) on printer %s",
+                archive.id,
+                new_count,
+                len(skipped),
+                printer_id,
+            )
+    except Exception as e:  # noqa: BLE001 — a counter must never break the MQTT path
+        logger.warning("Failed to record skipped objects as defective for printer %s: %s", printer_id, e)
 
 
 class PrinterInfo:
@@ -697,6 +815,9 @@ class PrinterManager:
             # list actually changed (connect / set / edit / delete / save).
             self._schedule_async(_sync_kprofiles_for_printer(printer_id))
 
+        def on_skipped_objects_changed(skipped: list):
+            self._schedule_async(_record_skipped_as_defective(printer_id, skipped))
+
         def on_first_status(live_state: str, live_file: str, live_subtask_id: str = "", live_subtask_name: str = ""):
             # First full status after each fresh connect — run the reconcile
             # sweep so a print that finished while BamDude was stopped or
@@ -725,6 +846,7 @@ class PrinterManager:
             on_print_running_observed=on_print_running_observed,
             on_finish_photo_moment=on_finish_photo_moment,
             on_assignment_verified=on_assignment_verified,
+            on_skipped_objects_changed=on_skipped_objects_changed,
         )
 
         # Carry print-tracking state across the client recreation so a
@@ -844,10 +966,6 @@ class PrinterManager:
     def get_client(self, printer_id: int) -> BambuMQTTClient | None:
         """Get the MQTT client for a printer."""
         return self._clients.get(printer_id)
-
-    def get_connected_at(self, printer_id: int) -> float | None:
-        """Get the unix timestamp of when the printer was last connected."""
-        return self._connected_at.get(printer_id)
 
     async def ensure_fresh_connection(self, printer_id: int) -> bool:
         """Reconnect if MQTT connection exceeded the printer's mqtt_connection_timeout.
@@ -1017,9 +1135,42 @@ class PrinterManager:
         self._macro_waiters[printer_id] = (event, result)
 
         offline_since: float | None = None
+        watched = client  # identity, so a swap can be named rather than guessed at
         try:
             while not event.is_set():
-                if client.state.connected:
+                # Re-read every poll instead of watching the captured `client`.
+                # ``connect_printer`` does not mutate a client, it REPLACES the
+                # entry in ``self._clients`` — so a reference captured before the
+                # loop is orphaned by any reconnect and reports disconnected for
+                # ever, whatever the real printer is doing.
+                #
+                # That made this grace period unsatisfiable rather than generous:
+                # measured on a farm's log, five macro waits went offline, five
+                # gave up at the limit, and not one ever recovered. All five began
+                # within half a second of BamDude's own staleness reconnect —
+                # ``ensure_fresh_connection_for_printer``, called from dispatch and
+                # the scheduler, which recycles a link older than
+                # ``mqtt_connection_timeout``. So the dispatcher, placing the next
+                # job, was killing the macro still running on that same printer,
+                # and no length of grace could have helped: the object being
+                # watched was already dead.
+                #
+                # The completion side was always reconnect-safe — the waiter is
+                # keyed by printer_id and ``on_macro_complete`` is re-bound to the
+                # new client — so this poll was the only thing holding a stale
+                # reference.
+                live = self._clients.get(printer_id)
+
+                if live is not None and live is not watched:
+                    logger.info(
+                        "[MACRO-WAIT] Printer %s reconnected while macro '%s' was running — following the new "
+                        "connection",
+                        printer_id,
+                        macro_name,
+                    )
+                    watched = live
+
+                if live is not None and live.state.connected:
                     if offline_since is not None:
                         logger.info(
                             "[MACRO-WAIT] Printer %s came back after %.1fs offline — still waiting for macro '%s'",
@@ -1406,6 +1557,50 @@ def resolve_expected_tray(
     return None
 
 
+# Moved here from the status route: the WebSocket payload needs the same
+# list, and the card renders its fans from nothing else. Leaving it in the
+# route meant a fan speed reached the browser only on the next poll.
+def _airduct_fans(model: str | None, state) -> list[AirductFan]:
+    """The fans this printer reports through ``device.airduct``, named (#2576).
+
+    Presence in ``airduct_parts`` is the hardware check — the printer lists only
+    fitted parts, which matters on the P2S where the second auxiliary fan and
+    the exhaust fan are both add-on kits.
+
+    The label comes from the mirrored per-model config and depends on the
+    airduct mode, because the same part id is a different fan on different
+    models: part 10 is the LEFT aux on a P2S and the RIGHT one on an X2D. See
+    ``printer_configs.airduct_fan_label``.
+
+    Sorted by part id so the badges keep a stable order across pushes rather
+    than following dict insertion, which follows whatever order the printer
+    happened to send.
+    """
+    fans: list[AirductFan] = []
+    mode_id = airduct_mode_effective(state)
+    for part_id, part in sorted(airduct_parts_effective(state, model).items()):
+        # Air doors are in the same list (type 1) and are not fans.
+        if part.get("type") not in (0, None):
+            continue
+        # The effective mode, not the raw one: an old-protocol printer keys
+        # its fan names under "-1", which is what converse_to_duct stamps.
+        label_key, label = airduct_fan_label(model, mode_id, state.airduct_sub_mode, part_id)
+        control = airduct_fan_control(state, part_id)
+        fans.append(
+            AirductFan(
+                part_id=part_id,
+                speed=int(part.get("state", 0)),
+                range_start=int(part.get("range_start", 0)),
+                range_end=int(part.get("range_end", 100)),
+                control=control,
+                controllable=control == FAN_CTRL,
+                label_key=label_key,
+                label=label,
+            )
+        )
+    return fans
+
+
 def printer_state_to_dict(
     state: PrinterState,
     printer_id: int | None = None,
@@ -1702,6 +1897,41 @@ def printer_state_to_dict(
         "heatbreak_fan_speed": state.heatbreak_fan_speed,
         # Chamber light state
         "chamber_light": state.chamber_light,
+        # The air duct, so a mode change lands on the card as soon as the
+        # printer confirms it rather than at the next poll. ⚠️ A field the REST
+        # status serves but this dict omits updates only by refetch — see L14 in
+        # the printer-control registry for the eleven others still in that state.
+        # The rest of what the card renders live. Each of these used to reach the
+        # browser only on the next refetch, because this dict is a hand-kept
+        # projection and they were never added to it — see L14 in the
+        # printer-control registry, and the test that now fails on the next
+        # omission.
+        "firmware_consistency_request": state.firmware_consistency_request,
+        "firmware_force_upgrade": state.firmware_force_upgrade,
+        "speed_level": state.speed_level,
+        "door_open": state.door_open,
+        "sdcard": state.sdcard,
+        "sdcard_state": state.sdcard_state,
+        "store_to_sdcard": state.store_to_sdcard,
+        "timelapse": state.timelapse,
+        "ipcam": state.ipcam,
+        "firmware_version": state.firmware_version,
+        "stg": state.stg,
+        "mc_print_sub_stage": state.mc_print_sub_stage,
+        "last_ams_update": state.last_ams_update,
+        # What the heaters will accept, so the UI can bound its inputs off the
+        # same rule the backend clamps with instead of a second copy of it.
+        "temperature_limits": {k: list(v) for k, v in limits_for(model, state).items()},
+        # Which extruders report a hotend fitted. Absent = the machine cannot
+        # tell, which is NOT the same as "none fitted" — see ``ext_has_nozzle``.
+        "ext_has_nozzle": dict(state.ext_has_nozzle),
+        "supports_chamber_heater": supports_chamber_heater(model),
+        "axis_at_home": dict(state.axis_at_home),
+        "ext_has_filament": dict(state.ext_has_filament),
+        "timelapse_capability": timelapse_capability_for(model, state),
+        "airduct_fans": [f.model_dump() for f in _airduct_fans(model, state)],
+        "airduct_mode": state.airduct_mode,
+        "airduct_sub_mode": state.airduct_sub_mode,
         # Active extruder for dual-nozzle printers (0=right, 1=left)
         "active_extruder": state.active_extruder,
         # H2C nozzle rack (tool-changer dock positions)

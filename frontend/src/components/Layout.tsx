@@ -1,12 +1,15 @@
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Printer, Archive, Calendar, BarChart3, Cloud, Settings, Sun, Moon, Monitor, ChevronLeft, ChevronRight, Keyboard, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, BookOpen, Cpu, type LucideIcon } from 'lucide-react';
+import { Printer, Archive, Calendar, BarChart3, Cloud, Settings, Sun, Moon, Monitor, ChevronLeft, ChevronRight, Keyboard, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, BookOpen, Cpu, Thermometer, type LucideIcon } from 'lucide-react';
 import { GitHubIcon, TelegramIcon, MakerWorldIcon } from './BrandIcons';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { InstallAppButton } from './InstallAppButton';
+import { useInstallPrompt } from '../hooks/useInstallPrompt';
 import { SwitchbarPopover } from './SwitchbarPopover';
+import { SensorsPopover } from './zigbee/SensorsPopover';
+import { iconRows } from '../utils/iconRows';
 import { useQuery, useQueries } from '@tanstack/react-query';
 import { api, supportApi, type Permission } from '../api/client';
 import { getIconByName } from './IconPicker';
@@ -172,6 +175,8 @@ export function Layout() {
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showSwitchbar, setShowSwitchbar] = useState(false);
+  const [showSensors, setShowSensors] = useState(false);
+  const canInstall = useInstallPrompt() !== null;
   const [sidebarOrder, setSidebarOrder] = useState<string[]>(getSidebarOrder);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
@@ -261,6 +266,18 @@ export function Layout() {
   });
 
   const hasSwitchbarPlugs = smartPlugs?.some(p => p.show_in_switchbar) ?? false;
+
+  // Conditions, reachable from any page. The group headers that used to carry
+  // them exist only on the printers page, and only while it is grouped by
+  // location -- which made them unreachable exactly when somebody wanted them.
+  const maySeeSensors = hasPermission('smart_sensors:read');
+  const { data: sensorList } = useQuery({
+    queryKey: ['zigbee-sensors'],
+    queryFn: api.getZigbeeSensors,
+    staleTime: 30 * 1000,
+    enabled: maySeeSensors,
+  });
+  const hasSensors = (sensorList?.sensors.length ?? 0) > 0;
 
   // Check debug logging state
   const { data: debugLoggingState } = useQuery({
@@ -671,6 +688,70 @@ export function Layout() {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [handleKeyDown]);
 
+  // The footer's icons as ONE list, so iconRows can lay them out by count.
+  // Conditionals are folded in here rather than in the markup: an entry that
+  // renders null would still occupy a slot and leave a gap in a line.
+  const iconClass =
+    'p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white';
+  const footerIcons: React.ReactNode[] = [
+    maySeeSensors && hasSensors ? (
+      <div className="relative" key="sensors">
+        <button
+          onMouseEnter={() => setShowSensors(true)}
+          className={`p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors ${
+            showSensors ? 'text-bambu-green' : 'text-bambu-gray-light hover:text-white'
+          }`}
+          title={t('settings.zigbee.sensors.title')}
+        >
+          <Thermometer className="w-5 h-5" />
+        </button>
+        {showSensors && <SensorsPopover onClose={() => setShowSensors(false)} />}
+      </div>
+    ) : null,
+    hasSwitchbarPlugs ? (
+      <div className="relative" key="switchbar">
+        <button
+          onMouseEnter={() => setShowSwitchbar(true)}
+          className={`p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors ${
+            showSwitchbar ? 'text-bambu-green' : 'text-bambu-gray-light hover:text-white'
+          }`}
+          title={t('nav.smartSwitches', { defaultValue: 'Smart Switches' })}
+        >
+          <Plug className="w-5 h-5" />
+        </button>
+        {showSwitchbar && <SwitchbarPopover onClose={() => setShowSwitchbar(false)} />}
+      </div>
+    ) : null,
+    <button key="shortcuts" onClick={() => setShowShortcuts(true)} className={iconClass} title={t('nav.keyboardShortcuts')}>
+      <Keyboard className="w-5 h-5" />
+    </button>,
+    <button key="theme" onClick={toggleMode} className={iconClass} title={themeSwitchTitle}>
+      <ThemeIcon className="w-5 h-5" />
+    </button>,
+    authEnabled && user ? (
+      <button key="password" onClick={() => setShowChangePasswordModal(true)} className={iconClass} title={t('changePassword.title')}>
+        <Key className="w-5 h-5" />
+      </button>
+    ) : null,
+    authEnabled && user ? (
+      <button key="logout" onClick={logout} className={iconClass} title={t('nav.logout', { defaultValue: 'Logout' })}>
+        <LogOut className="w-5 h-5" />
+      </button>
+    ) : null,
+    // Asked about rather than rendered blindly: it draws nothing when the
+    // browser has no pending install, which is most sessions.
+    canInstall ? <InstallAppButton key="install" /> : null,
+    <a key="github" href="https://github.com/kainpl/bamdude" target="_blank" rel="noopener noreferrer" className={iconClass} title={t('nav.viewOnGitHubIcon')}>
+      <GitHubIcon className="w-5 h-5" />
+    </a>,
+    <a key="docs" href={DOCS_URL} target="_blank" rel="noopener noreferrer" className={iconClass} title={t('nav.docs')}>
+      <BookOpen className="w-5 h-5" />
+    </a>,
+    <a key="telegram" href={TELEGRAM_SUPPORT_URL} target="_blank" rel="noopener noreferrer" className={iconClass} title={`${t('nav.telegramSupport')} - ${TELEGRAM_SUPPORT_NAME}`}>
+      <TelegramIcon className="w-5 h-5" />
+    </a>,
+  ].filter(Boolean);
+
   return (
     <div className="flex min-h-screen">
       {/* Compact Header */}
@@ -992,89 +1073,18 @@ export function Layout() {
         <div className="p-2 border-t border-bambu-dark-tertiary">
           {isSidebarCompact || sidebarExpanded ? (
             <div className="flex flex-col gap-2 px-2">
-              {/* Row 1: action icons (smart-switches, system, shortcuts,
-                  theme, password, logout). */}
-              <div className="flex items-center justify-center gap-1">
-                {hasSwitchbarPlugs && (
-                  <div className="relative">
-                    <button
-                      onMouseEnter={() => setShowSwitchbar(true)}
-                      className={`p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors ${
-                        showSwitchbar ? 'text-bambu-green' : 'text-bambu-gray-light hover:text-white'
-                      }`}
-                      title={t('nav.smartSwitches', { defaultValue: 'Smart Switches' })}
-                    >
-                      <Plug className="w-5 h-5" />
-                    </button>
-                    {showSwitchbar && (
-                      <SwitchbarPopover onClose={() => setShowSwitchbar(false)} />
-                    )}
-                  </div>
-                )}
-                <button
-                  onClick={() => setShowShortcuts(true)}
-                  className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                  title={t('nav.keyboardShortcuts')}
-                >
-                  <Keyboard className="w-5 h-5" />
-                </button>
-                <button
-                  onClick={toggleMode}
-                  className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                  title={themeSwitchTitle}
-                >
-                  <ThemeIcon className="w-5 h-5" />
-                </button>
-                {authEnabled && user && (
-                  <>
-                    <button
-                      onClick={() => setShowChangePasswordModal(true)}
-                      className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                      title={t('changePassword.title')}
-                    >
-                      <Key className="w-5 h-5" />
-                    </button>
-                    <button
-                      onClick={logout}
-                      className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                      title={t('nav.logout', { defaultValue: 'Logout' })}
-                    >
-                      <LogOut className="w-5 h-5" />
-                    </button>
-                  </>
-                )}
-              </div>
-              {/* Row 2: external links (GitHub, docs, Telegram support). */}
-              <div className="flex items-center justify-center gap-1">
-                <InstallAppButton />
-                <a
-                  href="https://github.com/kainpl/bamdude"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                  title={t('nav.viewOnGitHubIcon')}
-                >
-                  <GitHubIcon className="w-5 h-5" />
-                </a>
-                <a
-                  href={DOCS_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                  title={t('nav.docs')}
-                >
-                  <BookOpen className="w-5 h-5" />
-                </a>
-                <a
-                  href={TELEGRAM_SUPPORT_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                  title={`${t('nav.telegramSupport')} - ${TELEGRAM_SUPPORT_NAME}`}
-                >
-                  <TelegramIcon className="w-5 h-5" />
-                </a>
-              </div>
+              {/* One flow of footer icons, split into lines by iconRows:
+                  at most five to a line, and never one or two stranded
+                  underneath — see that helper for why CSS cannot do the
+                  second part. The install button is asked about rather than
+                  rendered blindly, because it draws nothing in most sessions
+                  and would leave a hole in the count. */}
+              {iconRows(footerIcons).map((row, index) => (
+                <div key={index} className="flex items-center justify-center gap-1">
+                  {row}
+                </div>
+              ))}
+
               {/* Bottom row: version */}
               <div className="flex items-center justify-center gap-2">
                 <span className="text-sm text-bambu-gray">v{versionInfo?.version || '...'}</span>
@@ -1100,6 +1110,20 @@ export function Layout() {
                 >
                   <ArrowUpCircle className="w-5 h-5" />
                 </button>
+              )}
+              {maySeeSensors && hasSensors && (
+                <div className="relative">
+                  <button
+                    onMouseEnter={() => setShowSensors(true)}
+                    className={`p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors ${
+                      showSensors ? 'text-bambu-green' : 'text-bambu-gray-light hover:text-white'
+                    }`}
+                    title={t('settings.zigbee.sensors.title')}
+                  >
+                    <Thermometer className="w-5 h-5" />
+                  </button>
+                  {showSensors && <SensorsPopover onClose={() => setShowSensors(false)} />}
+                </div>
               )}
               {hasSwitchbarPlugs && (
                 <div className="relative">

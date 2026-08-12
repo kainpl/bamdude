@@ -153,8 +153,11 @@ function InlineMappingEditor({
           <span title={t('printModal.requiredFilament', { type: req.type, color: getColorName(req.color) })}>
             <Circle className="w-3 h-3" fill={req.color} stroke={req.color} />
           </span>
-          <span className="text-white truncate">
-            {req.type} <span className="text-bambu-gray">({req.used_grams}g)</span>
+          {/* Only the name truncates; the grams are pinned so they cannot clip
+              on narrow widths (#2669) — same rule as FilamentMapping. */}
+          <span className="text-white flex items-center gap-1 min-w-0">
+            <span className="truncate min-w-0" title={req.type}>{req.type}</span>
+            <span className="text-bambu-gray shrink-0 whitespace-nowrap">({req.used_grams}g)</span>
           </span>
           <span className="text-bambu-gray">→</span>
           <select

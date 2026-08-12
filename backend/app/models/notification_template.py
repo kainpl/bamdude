@@ -235,4 +235,34 @@ DEFAULT_TEMPLATES = [
         "title_template": "Your Print Has Been Stopped",
         "body_template": "Hello {username},\n\nYour print job was stopped on {printer}.\n\nFile: {filename}",
     },
+    {
+        "event_type": "sensor_above_max",
+        "name": "Sensor Above Limit",
+        "title_template": "Sensor Alert",
+        "body_template": "{location} — {quantity} {value} {unit}, above {limit}",
+    },
+    {
+        "event_type": "sensor_below_min",
+        "name": "Sensor Below Limit",
+        "title_template": "Sensor Alert",
+        "body_template": "{location} — {quantity} {value} {unit}, below {limit}",
+    },
+    {
+        "event_type": "sensor_back_in_range",
+        "name": "Sensor Back In Range",
+        "title_template": "Sensor Recovered",
+        "body_template": "{location} — {quantity} {value} {unit}, back in range",
+    },
+    {
+        "event_type": "sensor_silent",
+        "name": "Sensor Silent",
+        "title_template": "Sensor Silent",
+        "body_template": "{location} — {sensor} has not reported for {minutes} min",
+    },
+    {
+        "event_type": "sensor_speaking_again",
+        "name": "Sensor Reporting Again",
+        "title_template": "Sensor Recovered",
+        "body_template": "{location} — {sensor} is reporting again",
+    },
 ]

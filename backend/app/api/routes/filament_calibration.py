@@ -55,6 +55,8 @@ from backend.app.services.slicer_api import (
     SlicerApiService,
     SlicerApiUnavailableError,
     SlicerInputError,
+    SlicerTimeoutError,
+    get_stall_timeout_seconds,
 )
 from backend.app.services.slicer_routing import any_sidecar_online, resolve_sidecar_url
 
@@ -160,9 +162,7 @@ async def get_capabilities(
     client = printer_manager.get_client(printer_id)
     if not client or not client.state.connected:
         raise HTTPException(404, "Printer not online")
-    return CalibCapabilities(
-        **compute_calibration_supports(client.state, printer.model, getattr(client, "module_vers", {}))
-    )
+    return CalibCapabilities(**compute_calibration_supports(client.state, printer.model))
 
 
 @router.post(
@@ -613,7 +613,7 @@ async def slice_calibration_for_verification(
         (body.spec or {}).get("nozzle_diameter", 0.4) if isinstance(body.spec, dict) else 0.4
     )
     try:
-        async with SlicerApiService(base_url=api_url) as svc:
+        async with SlicerApiService(base_url=api_url, timeout_seconds=await get_stall_timeout_seconds(db)) as svc:
             # Manual path — resolve each PresetRef to the JSON the
             # sidecar's --load-settings expects. PA Line already
             # resolved the printer JSON above (to read printable_area
@@ -722,6 +722,10 @@ async def slice_calibration_for_verification(
             exc,
         )
         raise HTTPException(400, f"Slicer rejected input: {exc}") from exc
+    except SlicerTimeoutError as exc:
+        # 504, not 503: the sidecar was reachable and working — we gave up first.
+        logger.error("slice_only: slicing timed out at %s: %s", api_url, exc)
+        raise HTTPException(504, str(exc)) from exc
     except SlicerApiUnavailableError as exc:
         logger.error("slice_only: sidecar unreachable at %s: %s", api_url, exc)
         raise HTTPException(503, str(exc)) from exc

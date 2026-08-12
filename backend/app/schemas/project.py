@@ -74,6 +74,10 @@ class ProjectStats(BaseModel):
     in_progress_prints: int = 0
     total_print_time_hours: float = 0.0
     total_filament_grams: float = 0.0
+    # Scrap among the completed prints, already subtracted from
+    # ``completed_prints``. Surfaced so the page can say why the parts
+    # tally is lower than what came off the plates.
+    defective_parts: int = 0
     progress_percent: float | None = None  # Based on target_count (plates)
     parts_progress_percent: float | None = None  # Based on target_parts_count
     # Cost tracking (Phase 6)
@@ -164,6 +168,10 @@ class ProjectListResponse(BaseModel):
     archive_count: int = 0  # Number of print jobs
     total_items: int = 0  # Sum of quantities (total items printed, including failed)
     completed_count: int = 0  # Sum of quantities for completed prints only
+    # Scrap off completed plates. Already subtracted from ``completed_count``,
+    # which is why the card needs it separately: without it the parts figure
+    # silently reads lower than the plates produced, with nothing saying why.
+    defective_count: int = 0  # Sum of defective_count over completed prints
     failed_count: int = 0  # Sum of quantities for failed prints
     queue_count: int = 0
     progress_percent: float | None = None

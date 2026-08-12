@@ -184,30 +184,6 @@ async def check_printer_firmware(
     )
 
 
-@router.get("/latest", response_model=list[LatestFirmwareInfo])
-async def get_all_latest_firmware(
-    _: User | None = RequirePermission(Permission.FIRMWARE_READ),
-):
-    """
-    Get the latest firmware versions for all Bambu Lab printer models.
-
-    This endpoint fetches the latest available firmware versions from
-    Bambu Lab's official firmware download page.
-    """
-    firmware_service = get_firmware_service()
-    versions = await firmware_service.get_all_latest_versions()
-
-    return [
-        LatestFirmwareInfo(
-            model_key=key,
-            version=info.version,
-            download_url=info.download_url,
-            release_notes=info.release_notes,
-        )
-        for key, info in versions.items()
-    ]
-
-
 # ============================================================================
 # Firmware Upload Endpoints (for LAN-only firmware updates)
 # ============================================================================

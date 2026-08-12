@@ -6,12 +6,13 @@ import {
   ChevronDown, ChevronRight, ArrowRightLeft, Trash2, X, Copy, Stethoscope,
 } from 'lucide-react';
 import { api, multiVirtualPrinterApi } from '../api/client';
-import type { LibraryFolderTree, VirtualPrinterConfig } from '../api/client';
+import type { VirtualPrinterConfig } from '../api/client';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
 import { VirtualPrinterDiagnosticModal } from './VirtualPrinterDiagnosticModal';
 import { useToast } from '../contexts/ToastContext';
+import { FolderTreeSelect } from './FolderTreeSelect';
 
 type LocalMode = 'print_queue' | 'auto_queue' | 'file_manager' | 'proxy';
 type DisplayMode = 'print_queue' | 'file_manager' | 'proxy';
@@ -30,14 +31,6 @@ const DISPLAY_MODES: readonly DisplayMode[] = ['print_queue', 'file_manager', 'p
 // Each row carries depth for indented labels — same pattern used by
 // MakerworldPage's "Import to" picker. Inlined here to avoid widening the
 // shared API module for one consumer.
-type FlatFolder = { folder: LibraryFolderTree; depth: number };
-function flattenFolderTree(tree: LibraryFolderTree, depth = 0, out: FlatFolder[] = []): FlatFolder[] {
-  out.push({ folder: tree, depth });
-  for (const child of tree.children ?? []) {
-    flattenFolderTree(child, depth + 1, out);
-  }
-  return out;
-}
 
 interface VirtualPrinterCardProps {
   printer: VirtualPrinterConfig;
@@ -64,6 +57,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   const [localAutoDispatch, setLocalAutoDispatch] = useState(printer.auto_dispatch ?? true);
   const [localQueueForceColorMatch, setLocalQueueForceColorMatch] = useState(printer.queue_force_color_match ?? false);
   const [localGcodeInjection, setLocalGcodeInjection] = useState(printer.gcode_injection ?? false);
+  const [localSaveAmsMapping, setLocalSaveAmsMapping] = useState(printer.save_ams_mapping ?? false);
   const [localTailscaleDisabled, setLocalTailscaleDisabled] = useState(printer.tailscale_disabled ?? true);
   const [showAccessCode, setShowAccessCode] = useState(false);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
@@ -84,6 +78,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
       setLocalAutoDispatch(printer.auto_dispatch ?? true);
       setLocalQueueForceColorMatch(printer.queue_force_color_match ?? false);
       setLocalGcodeInjection(printer.gcode_injection ?? false);
+      setLocalSaveAmsMapping(printer.save_ams_mapping ?? false);
       setLocalTailscaleDisabled(printer.tailscale_disabled ?? true);
     }
   }, [printer, pendingAction]);
@@ -267,16 +262,14 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
     updateMutation.mutate({ target_printer_id: printerId }, rebindOpts);
   };
 
-  const handleTargetFolderChange = (raw: string) => {
+  const handleTargetFolderChange = (id: number | null) => {
     setPendingAction('targetFolder');
-    if (raw === '') {
+    if (id === null) {
       // Library root — explicit clear (Pydantic can't tell "absent" from "null").
       setLocalTargetFolderId(null);
       updateMutation.mutate({ clear_target_folder: true });
       return;
     }
-    const id = parseInt(raw, 10);
-    if (Number.isNaN(id)) return;
     setLocalTargetFolderId(id);
     updateMutation.mutate({ target_folder_id: id });
   };
@@ -501,6 +494,45 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
               </div>
             )}
 
+            {/* Save the slicer's AMS pick — queue modes only (#2700). Two spools
+                of the same red PLA are indistinguishable in the file, so a
+                mapping derived from static type+colour cannot honour the slot
+                the user chose in Bambu Studio. When on, that resolved pick is
+                stored on the queue item and used as-is.
+
+                ⚠️ It is a trade, and the description says so: a stored mapping
+                makes the dispatcher skip its own slot computation, which is
+                where prefer-lowest-filament, the AMS-Backup gate, the
+                inventory-remain overrides and FTS routing live. */}
+            {(localMode === 'print_queue' || localMode === 'auto_queue') && (
+              <div className="pt-2 border-t border-bambu-dark-tertiary">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-white text-sm font-medium">{t('virtualPrinter.saveAmsMapping.title')}</div>
+                    <div className="text-[10px] text-bambu-gray">{t('virtualPrinter.saveAmsMapping.description')}</div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const newVal = !localSaveAmsMapping;
+                      setLocalSaveAmsMapping(newVal);
+                      setPendingAction('saveAmsMapping');
+                      updateMutation.mutate({ save_ams_mapping: newVal });
+                    }}
+                    disabled={pendingAction === 'saveAmsMapping'}
+                    className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${
+                      localSaveAmsMapping ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
+                    } ${pendingAction === 'saveAmsMapping' ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
+                        localSaveAmsMapping ? 'translate-x-5' : ''
+                      }`}
+                    />
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Auto-print G-code injection — both queue modes (#1516). When on,
                 files this VP queues carry gcode_injection=True so the dispatcher
                 splices the per-model start/end snippets. No-op unless snippets
@@ -691,25 +723,15 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                 <p className="text-xs text-bambu-gray mb-2">
                   {t('virtualPrinter.targetFolder.description')}
                 </p>
-                <div className="relative">
-                  <select
-                    value={localTargetFolderId ?? ''}
-                    onChange={(e) => handleTargetFolderChange(e.target.value)}
-                    disabled={pendingAction === 'targetFolder'}
-                    className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm appearance-none cursor-pointer disabled:opacity-50 pr-10"
-                  >
-                    <option value="">{t('virtualPrinter.targetFolder.root')}</option>
-                    {(libraryFolders ?? [])
-                      .filter((f) => !(f.is_external && f.external_readonly))
-                      .flatMap((f) => flattenFolderTree(f))
-                      .map(({ folder, depth }) => (
-                        <option key={folder.id} value={folder.id}>
-                          {`${'— '.repeat(depth)}${folder.name}`}
-                        </option>
-                      ))}
-                  </select>
-                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                </div>
+                <FolderTreeSelect
+                  folders={libraryFolders}
+                  value={localTargetFolderId}
+                  onChange={handleTargetFolderChange}
+                  rootLabel={t('virtualPrinter.targetFolder.root')}
+                  disabled={pendingAction === 'targetFolder'}
+                  className="w-full"
+                  buttonClassName="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm cursor-pointer"
+                />
               </div>
             )}
 

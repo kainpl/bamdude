@@ -1,0 +1,18 @@
+# What the code graph must not index.
+#
+# gitignore syntax. Read AFTER .gitignore and with priority over it, which is
+# what matters here: the graph was built once with --no-gitignore, so `temp/`
+# being in .gitignore did not keep it out. These rules hold either way.
+
+# Vendored reference source — BambuStudio and friends. Protocol authority for
+# humans, 84k nodes of noise for the graph: it dwarfed our own code 3:1 and
+# answered questions about BamDude with BambuStudio symbols.
+temp/references/
+
+# The built frontend bundle. Tracked and shipped, but as graph nodes it is a
+# minified duplicate of frontend/src, which is already indexed as source.
+static/
+
+# Upstream Bambuddy checkouts live OUTSIDE this repo (../bambuddy/{init,applied,next}).
+# Nothing to ignore here — they are simply not scanned. Listed so the next
+# person wondering where they went does not go looking for a rule.

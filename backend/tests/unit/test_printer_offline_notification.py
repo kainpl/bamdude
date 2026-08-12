@@ -26,7 +26,13 @@ from backend.app import main as main_module
 
 def _state(connected: bool, state: str = "IDLE") -> SimpleNamespace:
     """Minimal PrinterState stub carrying just the fields
-    ``on_printer_status_change`` reads before the offline edge block."""
+    ``on_printer_status_change`` reads before the offline edge block.
+
+    ⚠️ This list is a dependency, not decoration: the function builds its
+    broadcast key from these, so a field added there has to be added here or
+    every test in this file fails on an AttributeError that says nothing about
+    printers going offline.
+    """
     return SimpleNamespace(
         connected=connected,
         state=state,
@@ -38,6 +44,36 @@ def _state(connected: bool, state: str = "IDLE") -> SimpleNamespace:
         cooling_fan_speed=0,
         big_fan1_speed=0,
         big_fan2_speed=0,
+        heatbreak_fan_speed=0,
+        # The air duct joined the key so a fan speed or a mode change can
+        # trigger a broadcast at all — on machines with one, the fans are
+        # reported nowhere else.
+        airduct_parts={},
+        airduct_mode=0,
+        airduct_sub_mode=-1,
+        speed_level=2,
+        sdcard=False,
+        sdcard_state="",
+        store_to_sdcard=False,
+        timelapse=False,
+        ipcam=False,
+        firmware_version="",
+        mc_print_sub_stage=0,
+        firmware_consistency_request=False,
+        firmware_force_upgrade=False,
+        # The temperature bounds the dedup key reads. They belong here rather
+        # than behind a getattr in ``main``: the key is meant to fail loudly when
+        # a field it needs is missing, and a default would hide a real state
+        # object that stopped carrying one.
+        nozzle_temp_range=None,
+        bed_temp_range=None,
+        bed_temperature_limit=None,
+        is_220v=False,
+        ext_has_nozzle={},
+        axis_at_home={"x": True, "y": True, "z": True},
+        ext_has_filament={},
+        has_timelapse_kit=False,
+        timelapse_storage={},
         chamber_light="",
         active_extruder=0,
         tray_now=0,

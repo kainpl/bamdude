@@ -44,6 +44,7 @@ from backend.app.core.auth import (
     verify_and_consume_refresh_token,
 )
 from backend.app.core.database import get_db
+from backend.app.core.oidc_env import env_bool
 from backend.app.core.permissions import ALL_PERMISSIONS, DEFAULT_GROUPS
 from backend.app.models.group import Group
 from backend.app.models.settings import Settings
@@ -198,8 +199,15 @@ _TRUSTED_PROXY_IPS: frozenset[str] = frozenset(
 def _local_login_env_bypass() -> bool:
     """True when BAMDUDE_LOCAL_LOGIN is set truthy. Bypasses the local_login_enabled
     DB gate on /auth/login AND /auth/forgot-password so a server admin can recover an
-    install whose SSO provider is unreachable. Truthy: true / 1 / yes (case-insensitive)."""
-    return os.environ.get("BAMDUDE_LOCAL_LOGIN", "").strip().lower() in {"true", "1", "yes"}
+    install whose SSO provider is unreachable.
+
+    ``strict=False`` deliberately. This is the recovery path for an install
+    nobody can log into — a typo in the value must fall back to "off" rather
+    than raise, which on a request path would be a 500 on the login endpoint
+    itself. The env-config reader is strict for the opposite reason: there a
+    rejected value skips a startup config and is loudly logged.
+    """
+    return env_bool("BAMDUDE_LOCAL_LOGIN", False, strict=False)
 
 
 def _get_client_ip(request: Request) -> str:
@@ -252,13 +260,6 @@ async def set_advanced_auth_enabled(db: AsyncSession, enabled: bool) -> None:
         index_elements=["key"], set_={"value": "true" if enabled else "false", "updated_at": func.now()}
     )
     await db.execute(stmt)
-
-
-async def is_setup_completed(db: AsyncSession) -> bool:
-    """Check if setup has been completed."""
-    result = await db.execute(select(Settings).where(Settings.key == "setup_completed"))
-    setting = result.scalar_one_or_none()
-    return setting and setting.value.lower() == "true"
 
 
 async def set_setup_completed(db: AsyncSession, completed: bool) -> None:
@@ -656,6 +657,25 @@ async def refresh_access_token(
         was_remember_me = lifespan_secs > session_secs + 3600
 
     username, family_id, result_status = await verify_and_consume_refresh_token(db, raw_refresh)
+
+    if result_status == "race":
+        # One client racing itself — another tab consumed this token moments
+        # ago. Refuse, but touch NOTHING: the family is intact and the winner
+        # has already set a fresh cookie on its own response.
+        #
+        # Clearing the cookie here would be actively destructive, and that is
+        # not hypothetical: the loser's Set-Cookie would delete the rotated
+        # cookie the winner just installed, so the session would die even with
+        # reuse detection disarmed. The old code cleared unconditionally.
+        import logging
+
+        logging.getLogger(__name__).info(
+            "Refresh raced by a sibling request for %s — declining without touching the family", username
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh already rotated by a concurrent request",
+        )
 
     if result_status == "reuse":
         # Belt-and-braces: even though verify_and_consume_refresh_token

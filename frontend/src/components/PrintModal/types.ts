@@ -29,6 +29,11 @@ export interface PrintModalProps {
   queueItem?: PrintQueueItem;
   /** Pre-select specific printers when opening the modal */
   initialSelectedPrinterIds?: number[];
+  /** Position of this dialog in a run over several files ("2 / 5"), rendered as
+   *  a badge beside the title. Display only — the modal does not know a run
+   *  exists and cannot advance one; QueueSequencer owns that. Omitted for a
+   *  single-file open, which must not look like step 1 of anything. */
+  sequence?: { current: number; total: number };
   /** Handler for closing the modal */
   onClose: () => void;
   /** Handler for successful operation */
@@ -150,13 +155,13 @@ export const DEFAULT_SCHEDULE_OPTIONS: ScheduleOptions = {
  */
 export interface AutoModeOptionsState {
   target_model: string | null;
-  target_location: string | null;
+  target_location_id: number | null;
   force_color_match: boolean;
 }
 
 export const DEFAULT_AUTO_MODE_OPTIONS: AutoModeOptionsState = {
   target_model: null,
-  target_location: null,
+  target_location_id: null,
   force_color_match: false,
 };
 
@@ -186,14 +191,6 @@ export interface PlateInfo {
   print_time_seconds: number | null;
   filament_used_grams: number | null;
   bed_type?: string | null; // Per-plate build plate type (#1281)
-}
-
-/**
- * Response from the archive plates API.
- */
-export interface PlatesResponse {
-  is_multi_plate: boolean;
-  plates: PlateInfo[];
 }
 
 /**
@@ -242,8 +239,7 @@ export interface FilamentReqsData {
     nozzle_id?: number;
     /** Bambu SKU code from the 3MF (e.g. `GFA01` = Bambu PLA Matte, `P4d64437`
      *  = user custom). Used to resolve the "original" filament label in
-     *  FilamentOverride / FilamentMapping against the builtin + cloud
-     *  user-preset maps. #1718. */
+     *  FilamentMapping against the builtin + cloud user-preset maps. #1718. */
     tray_info_idx?: string;
   }>;
 }
@@ -275,7 +271,23 @@ export interface FilamentMappingProps {
 /**
  * Props for the PrintOptions component.
  */
+/** A selected printer that cannot record a timelapse, and why. */
+export interface TimelapseBlocker {
+  name: string;
+  /** Key under `printModal.timelapseBlocked.*` — the backend sends a reason
+   *  code rather than a sentence, since it does not know the user's language. */
+  reason: string;
+}
+
 export interface PrintOptionsProps {
+  timelapseBlockers?: TimelapseBlocker[];
+  selectedPrinterCount?: number;
+  /** Selected printers whose timelapse storage is nearly full. Kept apart from
+   *  the blockers because this one is FIXABLE from here — the printer can drop
+   *  its oldest recording — whereas a missing card cannot. */
+  timelapseLowSpace?: { printerId: number; name: string }[];
+  onFreeTimelapseSpace?: (printerId: number) => void;
+  freeingTimelapseSpace?: boolean;
   options: PrintOptions;
   onChange: (options: PrintOptions) => void;
   defaultExpanded?: boolean;

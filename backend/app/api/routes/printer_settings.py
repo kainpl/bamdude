@@ -39,7 +39,7 @@ from backend.app.schemas.printer_settings import (
     XCamControlAction,
 )
 from backend.app.services.printer_capabilities import compute_printer_supports
-from backend.app.services.printer_manager import printer_manager
+from backend.app.services.printer_manager import is_printer_busy, printer_manager
 from backend.app.utils.printer_models import is_dual_nozzle_model
 
 router = APIRouter(prefix="/printers", tags=["printer-settings"])
@@ -85,6 +85,39 @@ _XCAM_MODULE_SUPPORTS = {
     "fod_check": "fod_check",
     "displacement_detection": "displacement_detection",
 }
+
+
+# BS ``AIR_FUN::FAN_CHAMBER_0_IDX``. A part with this id in ``device.airduct.parts``
+# is the chamber exhaust fan, and its presence is the whole of BS's
+# ``AirDuctData::IsExaustFanExit()``.
+_AIRDUCT_PART_CHAMBER_EXHAUST = 3
+
+
+def _guard_purify_air(is_busy: bool, state, value: int) -> None:
+    """The two refusals BS puts on end-of-print air purification.
+
+    ``support_purify_air`` says the machine has the feature; neither of these
+    says that, and skipping them is how a request that BS would never have let
+    a user make reaches the printer anyway.
+
+    **Not while a job is on it** — BS disables the whole control under
+    ``is_in_printing()`` and answers a click with "Unavailable during the task"
+    (``PrintOptionsDialog.cpp``, ``m_print_option_disable``). A greyed-out
+    checkbox is enough of a guard for a desktop app with one window; ours is an
+    HTTP surface an API key can reach mid-print. ``is_busy`` is passed in rather
+    than looked up here so this stays a pure function of its inputs.
+
+    **Mode 2 needs a fan to do it with** — purification runs one of two ways,
+    and the second exists only where the air duct actually has a chamber
+    exhaust part. Without one BS hides the mode switch entirely and the option
+    is a plain on/off, so value 2 on such a machine is a mode nothing can
+    perform. 0 and 1 stay allowed everywhere.
+    """
+    if is_busy:
+        raise HTTPException(409, "purify_air cannot be changed while a print is running")
+
+    if value == 2 and _AIRDUCT_PART_CHAMBER_EXHAUST not in (getattr(state, "airduct_parts", None) or {}):
+        raise HTTPException(409, "purify_air mode 2 requires a chamber exhaust fan")
 
 
 def _action_tab(action: str) -> str:
@@ -259,9 +292,7 @@ async def get_printer_settings(
             )
         )
 
-    supports = PrinterSettingsSupports(
-        **compute_printer_supports(client.state, printer.model, getattr(client, "module_vers", {}))
-    )
+    supports = PrinterSettingsSupports(**compute_printer_supports(client.state, printer.model))
 
     safety = SafetyState(
         open_door=getattr(po, "open_door_check", None),
@@ -286,7 +317,7 @@ async def post_printer_settings(
     if not client or not client.state.connected:
         raise HTTPException(404, "Printer not online")
 
-    supports = compute_printer_supports(client.state, printer.model, getattr(client, "module_vers", {}))
+    supports = compute_printer_supports(client.state, printer.model)
 
     sequence_id: str | None = None
     error: str | None = None
@@ -303,6 +334,8 @@ async def post_printer_settings(
         elif isinstance(body, PrintOptionIntAction):
             if not supports.get(_INT_KEY_SUPPORTS[body.key]):
                 raise HTTPException(409, f"{body.key} not supported on this printer")
+            if body.key == "purify_air":
+                _guard_purify_air(is_printer_busy(printer.id), client.state, body.value)
             method = getattr(client, _INT_KEY_METHODS[body.key])
             ok, sequence_id = method(body.value)
 

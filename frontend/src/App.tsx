@@ -29,6 +29,7 @@ import { LoginPage } from './pages/LoginPage';
 import { SetupPage } from './pages/SetupPage';
 import { NotificationsPage } from './pages/NotificationsPage';
 import { useWebSocket } from './hooks/useWebSocket';
+import { usePrintProgressTitle } from './hooks/usePrintProgressTitle';
 import { useStreamTokenSync } from './hooks/useCameraStreamToken';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { ToastProvider } from './contexts/ToastContext';
@@ -49,6 +50,9 @@ const queryClient = new QueryClient({
 function WebSocketProvider({ children }: { children: React.ReactNode }) {
   useWebSocket();
   useConnectionToast();
+  // Mounted here rather than on the Printers page: the tab title should follow
+  // the farm from wherever you are in the app. Inert until the preference is on.
+  usePrintProgressTitle();
   return <>{children}</>;
 }
 

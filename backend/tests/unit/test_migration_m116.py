@@ -55,14 +55,16 @@ def test_m116_version_and_name():
     assert m116_require_previous_success.name == "require_previous_success"
 
 
-def test_115_is_left_to_the_zigbee_branch():
-    """The gap is deliberate: m115_zigbee_plug holds that version on
-    feature/mqtt-plug-control, and two different m115s would collide when the
-    branches meet."""
+def test_115_belongs_to_the_zigbee_branch():
+    """m116 skipped 115 so the zigbee branch could keep it, and the branches have
+    now met: the guard flips from "no m115 here" to "exactly one m115, and it is
+    the zigbee one". Two files claiming version 115 would make the applied-set
+    ambiguous, which is what the gap was reserved to prevent."""
     from pathlib import Path
 
     migrations = Path("backend/app/migrations")
-    assert not list(migrations.glob("m115_*.py")), "m115 belongs to the zigbee branch — do not reuse it here"
+    found = sorted(p.name for p in migrations.glob("m115_*.py"))
+    assert found == ["m115_zigbee_plug.py"], f"m115 is the zigbee migration's slot, found: {found}"
 
 
 def test_model_declares_the_columns_for_fresh_installs():

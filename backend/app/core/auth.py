@@ -134,7 +134,19 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60
 # With remember-me, 30 days matches OWASP recommended refresh TTL and both
 # the cookie Max-Age and DB exp stretch to that.
 REFRESH_TOKEN_EXPIRE_DAYS_REMEMBER = 30
-REFRESH_TOKEN_EXPIRE_HOURS_SESSION = 12
+# A day rather than half of one. Without "remember me" the session is meant to
+# end when the user stops using BamDude — but 12 h lands mid-shift for anyone
+# who signs in at the start of a working day, which reads as a random logout
+# rather than as the choice they made at the login form.
+REFRESH_TOKEN_EXPIRE_HOURS_SESSION = 24
+
+# How long after a refresh token is consumed a second presentation is still
+# treated as one client racing itself rather than as a replay. Short on purpose:
+# the collision it forgives happens within milliseconds (tabs sharing a token
+# reach the same proactive-refresh deadline together), so seconds are already
+# generous, and every second widens the window in which a stolen cookie escapes
+# family revocation.
+REFRESH_REUSE_GRACE_SECONDS = 10
 REFRESH_TOKEN_COOKIE_NAME = "bamdude_refresh"
 # The refresh cookie is only ever sent on these paths — narrows the CSRF
 # surface and keeps unrelated routes from seeing the cookie in their logs.
@@ -488,6 +500,20 @@ async def create_refresh_token(
     return raw_token, family_id, expires_at
 
 
+def _within_reuse_grace(used_at: datetime, now: datetime) -> bool:
+    """True when ``used_at`` is recent enough to be a self-race, not a replay.
+
+    Naive timestamps are read as UTC: the column is written from
+    ``datetime.now(timezone.utc)`` but SQLite hands it back without a tzinfo,
+    and comparing naive to aware raises. Getting this wrong would not fail
+    loudly — it would throw inside the refresh path and log everyone out, which
+    is the very symptom being fixed.
+    """
+    if used_at.tzinfo is None:
+        used_at = used_at.replace(tzinfo=timezone.utc)
+    return (now - used_at).total_seconds() <= REFRESH_REUSE_GRACE_SECONDS
+
+
 async def verify_and_consume_refresh_token(
     db,
     raw_token: str,
@@ -498,17 +524,36 @@ async def verify_and_consume_refresh_token(
 
     - ``"ok"`` — token valid + rotated. ``username`` + ``family_id`` populated;
       caller issues a new access + a new refresh inside the same family.
-    - ``"reuse"`` — token already consumed before. Whole family revoked as a
-      side effect; ``username`` + ``family_id`` populated so the caller can
-      log + return a descriptive 401.
+    - ``"race"`` — consumed moments ago, inside ``REFRESH_REUSE_GRACE_SECONDS``.
+      Almost certainly one client racing itself. **No side effect**: the family
+      survives and the caller returns a plain 401 so the loser can pick up the
+      token the winner just stored.
+    - ``"reuse"`` — consumed longer ago than the grace window. Treated as a
+      replay: whole family revoked; ``username`` + ``family_id`` populated so
+      the caller can log + return a descriptive 401.
     - ``"invalid"`` — token not found or expired. ``username`` / ``family_id``
       are None. Returned as 401 by the caller without a side effect.
 
-    The ``ok`` case flips ``used_at`` via an UPDATE … WHERE used_at IS NULL
-    so two concurrent /auth/refresh hits on the same token can't both get
-    ``ok`` — exactly one wins; the loser reads back ``used_at`` non-null and
-    gets ``reuse`` (which is correct — that second request IS a replay, even
-    if it's the same legit client racing itself).
+    The ``ok`` case flips ``used_at`` via an UPDATE … WHERE used_at IS NULL so
+    two concurrent /auth/refresh hits on the same token can't both get ``ok``.
+
+    **Why the grace window exists.** This function used to call every loser a
+    replay, and said so in as many words: "that second request IS a replay,
+    even if it's the same legit client racing itself". Technically true, and it
+    logged real users out constantly, because the frontend races itself *on a
+    schedule*: the proactive refresh timer is computed from the token's own
+    ``exp``, so every open tab holding the same token reaches the same absolute
+    deadline within milliseconds. Two tabs meant a revoked session roughly once
+    an hour, and the user experienced it as "the token randomly expires".
+
+    The window is the honest way to split the two cases. Inside it we cannot
+    distinguish a self-race from a thief replaying seconds after the victim —
+    so we choose the error to make. Outside it, nothing changes: a leaked token
+    surfacing later still collapses the family, which is the case worth
+    protecting against, and the one an attacker actually gets.
+
+    Note the loser is still refused. The grace does not hand out a session; it
+    only declines to punish the whole family for a collision the client caused.
     """
     from sqlalchemy import select, update
 
@@ -534,10 +579,11 @@ async def verify_and_consume_refresh_token(
     if expires_at < now:
         return None, None, "invalid"
 
-    # Reuse detection: if used_at already set, this is a replay. Collapse
-    # the whole family so a stolen cookie can't survive past the first
-    # legitimate refresh.
+    # Reuse detection: if used_at already set, this is either a client racing
+    # itself (moments ago) or a replay (any later). See the docstring.
     if row.used_at is not None:
+        if _within_reuse_grace(row.used_at, now):
+            return row.username, row.family_id, "race"
         if row.family_id:
             await revoke_refresh_family(db, row.family_id)
         return row.username, row.family_id, "reuse"
@@ -551,10 +597,11 @@ async def verify_and_consume_refresh_token(
         .values(used_at=now)
     )
     if result.rowcount == 0:
-        # Lost the race — another request just consumed it. Same as reuse.
-        if row.family_id:
-            await revoke_refresh_family(db, row.family_id)
-        return row.username, row.family_id, "reuse"
+        # Lost the race by microseconds — the other request consumed it between
+        # our SELECT and our UPDATE. By definition inside the grace window, so
+        # never a replay: this branch is only reachable when the winner is still
+        # in flight.
+        return row.username, row.family_id, "race"
 
     return row.username, row.family_id, "ok"
 
@@ -896,20 +943,6 @@ async def get_current_active_user(current_user: Annotated[User, Depends(get_curr
     return current_user
 
 
-def require_role(required_role: str):
-    """Dependency factory for role-based access control."""
-
-    async def role_checker(current_user: Annotated[User, Depends(get_current_user)]) -> User:
-        if current_user.role != required_role:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Requires {required_role} role",
-            )
-        return current_user
-
-    return role_checker
-
-
 def generate_api_key() -> tuple[str, str, str]:
     """Generate a new API key.
 
@@ -1028,6 +1061,9 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     Permission.INVENTORY_VIEW_ASSIGNMENTS: "can_read_status",
     Permission.INVENTORY_FORECAST_READ: "can_read_status",
     Permission.SMART_PLUGS_READ: "can_read_status",
+    # A sensor reading is status, exactly as a plug reading is — so it rides
+    # the scope a key already has rather than growing a column of its own.
+    Permission.SMART_SENSORS_READ: "can_read_status",
     Permission.CAMERA_VIEW: "can_read_status",
     Permission.MAINTENANCE_READ: "can_read_status",
     Permission.PIPELINES_READ: "can_read_status",
@@ -1197,6 +1233,9 @@ _APIKEY_DENIED_PERMISSIONS: frozenset[Permission] = frozenset(
         Permission.SMART_PLUGS_CREATE,
         Permission.SMART_PLUGS_UPDATE,
         Permission.SMART_PLUGS_DELETE,
+        Permission.SMART_SENSORS_CREATE,
+        Permission.SMART_SENSORS_UPDATE,
+        Permission.SMART_SENSORS_DELETE,
         # Network scanning — operator only (no API-key scope for this).
         Permission.DISCOVERY_SCAN,
     }

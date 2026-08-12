@@ -1,6 +1,10 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { ZigbeeStatusBadge } from '../components/zigbee/ZigbeeStatusBadge';
 import { useTranslation } from 'react-i18next';
+import { PrinterLocationSelect } from '../components/PrinterLocationSelect';
+import { compareLocationNames } from '../utils/locationOrder';
+import { buildLocationIndex } from '../utils/locationTree';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
 import {
@@ -23,6 +27,7 @@ import {
   PowerOff,
   Zap,
   Wrench,
+  Sparkles,
   Droplet,
   ChevronDown,
   Filter,
@@ -63,6 +68,8 @@ import {
   Flame,
   Gauge,
   LineChart,
+  Move,
+  Thermometer,
   ArrowLeftRight,
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -77,7 +84,7 @@ import { api, discoveryApi, firmwareApi, macrosApi, withStreamToken } from '../a
 import { BulkPrinterToolbar } from '../components/BulkPrinterToolbar';
 import { PauseChip } from '../components/PauseChip';
 import { formatDateOnly, formatETA, formatDuration } from '../utils/date';
-import type { Printer, PrinterCreate, PrinterStatus, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro, InventorySpool, SmartPlug, PrinterDiagnosticResult, HeaterSensorKind } from '../api/client';
+import type { Printer, PrinterCreate, PrinterStatus, AirductFan, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro, InventorySpool, SmartPlug, PrinterDiagnosticResult, HeaterSensorKind } from '../api/client';
 
 // Source of truth for Spoolman ↔ AMS slot binding (upstream PR #1241).
 // Mirrors backend `spoolman_slot_assignments` rows; PrintersPage subscribes to
@@ -100,6 +107,7 @@ import { HMSErrorModal, filterKnownHMSErrors } from '../components/HMSErrorModal
 import { PrinterQueueWidget } from '../components/PrinterQueueWidget';
 import { AMSHistoryModal } from '../components/AMSHistoryModal';
 import { HeaterHistoryModal } from '../components/HeaterHistoryModal';
+import { PlugPowerHistoryModal } from '../components/PlugPowerHistoryModal';
 import { HeaterThermometer } from '../components/HeaterThermometer';
 import { FilamentHoverCard, EmptySlotHoverCard } from '../components/FilamentHoverCard';
 import { LinkSpoolModal } from '../components/LinkSpoolModal';
@@ -139,16 +147,19 @@ const DRY_START_CONFIRM_MS = 30_000;
 // 5=Error, which is the failure the watch exists to report, not a success.
 const DRY_STATUS_STARTED = new Set([1, 2]);
 const DRY_STATUS_ERROR = 5;
-// Bambu models with a chamber exhaust fan (big_fan2). Open-frame models
-// (P1P, A1, A1 Mini, A2L) have no chamber fan, so its badge is hidden for
-// them. Keyed by mapModelCode() display name — our printer.model is a raw
-// SSDP code that mapModelCode() normalises.
-const MODELS_WITH_CHAMBER_FAN: ReadonlySet<string> = new Set([
-  'X1C', 'X1', 'X1E', 'X2D', 'P1S', 'P2S', 'H2D', 'H2D Pro', 'H2C', 'H2S',
-]);
+// A MODELS_WITH_CHAMBER_FAN set used to live here, deciding whether to draw the
+// chamber-fan badge. It is gone: the printer reporting a chamber fan is what
+// says it has one, and the backend now builds the whole fan list from that.
+// A hand-kept model table can only ever be wrong about a machine it has not
+// met — see the per-model-capability invariant in the vault.
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
-import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors';
+import { getColorName, parseFilamentColor, isLightColor, resolveMultiColorName } from '../utils/colors';
 import { formatSpoolDisplayName, DEFAULT_SPOOL_DISPLAY_TEMPLATE } from '../utils/spoolName';
+import { groupByLocation } from '../utils/locationGroups';
+import { LocationConditions } from '../components/zigbee/LocationConditions';
+import { AirductModal } from '../components/AirductModal';
+import { TemperatureModal } from '../components/TemperatureModal';
+import { MotionModal } from '../components/MotionModal';
 
 // Color names resolve via getColorName() which reads the backend color_catalog
 // (loaded once at app startup by ColorCatalogProvider). Hardcoded hex/code tables
@@ -1357,6 +1368,174 @@ const DRYING_PRESETS: Record<string, { n3f: number; n3s: number; n3f_hours: numb
   'PVA':   { n3f: 65, n3s: 85, n3f_hours: 12, n3s_hours: 18 },
 };
 
+/** The AI failure-detection state for one printer, as a badge (#1546).
+ *
+ * The live classification was only visible under Settings → Failure Detection,
+ * so following how detection was tracking an ongoing print meant flipping
+ * between two screens. Renders only for printers detection is actually watching
+ * — a printer outside the monitored subset shows nothing at all, rather than a
+ * badge that would imply it is covered.
+ *
+ * Grey Idle while no print is being watched; green / amber / red once one is.
+ */
+function AiDetectionBadge({ printerId }: { printerId: number }) {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  // Shared query key: TanStack dedupes, so a farm of cards is one request.
+  const { data } = useQuery({
+    queryKey: ['obicoPrinterStatus'],
+    queryFn: api.getObicoPrinterStatus,
+    staleTime: 10_000,
+    refetchInterval: 30_000,
+    retry: false,
+  });
+
+  if (!data?.enabled) return null;
+  // null = every printer is monitored.
+  if (data.monitored_printers && !data.monitored_printers.includes(printerId)) return null;
+
+  const live = data.per_printer?.[String(printerId)];
+  const klass = live?.class ?? null;
+  const look =
+    klass === 'failure'
+      ? 'bg-status-error/20 text-status-error'
+      : klass === 'warning'
+        ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400'
+        : klass === 'safe'
+          ? 'bg-status-ok/20 text-status-ok'
+          : 'bg-bambu-dark-tertiary text-bambu-gray';
+  const label =
+    klass === 'failure'
+      ? t('printers.ai.failure')
+      : klass === 'warning'
+        ? t('printers.ai.warning')
+        : klass === 'safe'
+          ? t('printers.ai.safe')
+          : t('printers.ai.idle');
+
+  return (
+    <button
+      type="button"
+      onClick={() => navigate('/settings?tab=printing#failure-detection')}
+      className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs transition-opacity hover:opacity-80 ${look}`}
+      title={live ? t('printers.ai.scoreTitle', { score: live.score }) : t('printers.ai.idleTitle')}
+    >
+      <Sparkles className="w-3 h-3" />
+      {label}
+    </button>
+  );
+}
+
+/** One badge per fan the printer reports, and every fan goes through here.
+ *
+ * There used to be three hardcoded tiles (part cooling / auxiliary / chamber)
+ * fed by flat status fields, plus this badge for "the rest" behind a
+ * `![1,2,3]` filter. That was two sources of truth for one question, and it
+ * cost real control: on an X2D the airduct reports parts 2 and 10, so the
+ * filter handed a menu to part 10 and left part 2 — fully controllable in
+ * Strong Cooling — as a plain readout.
+ *
+ * The icon and colour still follow the part id, so the row looks as it always
+ * did; what changed is that the list comes from one place.
+ *
+ * It is a button rather than a plain tile only when the fan can actually be
+ * driven. BambuStudio replaces the slider with the word "Off" or "Auto"; the
+ * badge is 40 px wide, so that reason lives in the tooltip instead.
+ */
+const FAN_LOOKS: Record<number, { Icon: typeof Wind; tint: string; bg: string }> = {
+  1: { Icon: Fan, tint: 'text-cyan-400', bg: 'bg-cyan-500/10' },
+  3: { Icon: AirVent, tint: 'text-green-400', bg: 'bg-green-500/10' },
+};
+const FAN_LOOK_DEFAULT = { Icon: Wind, tint: 'text-blue-400', bg: 'bg-blue-500/10' };
+
+function FanBadge({
+  fan,
+  label,
+  open,
+  onToggle,
+  onPick,
+  canControl,
+}: {
+  fan: AirductFan;
+  label: string;
+  open: boolean;
+  onToggle: () => void;
+  onPick: (percent: number) => void;
+  canControl: boolean;
+}) {
+  const { t } = useTranslation();
+  const on = fan.speed > 0;
+  const control = fan.control ?? (fan.controllable ? 'ctrl' : 'off');
+  const interactive = canControl && control === 'ctrl';
+  const { Icon, tint, bg } = FAN_LOOKS[fan.part_id] ?? FAN_LOOK_DEFAULT;
+  const reason =
+    control === 'off' ? t('printers.fans.forcedOff') : control === 'auto' ? t('printers.fans.autoDriven') : null;
+  const title = reason ? `${label} — ${reason}` : label;
+  const body = (
+    <>
+      <Icon className={`w-3.5 h-3.5 ${on ? tint : 'text-bambu-gray/50'}`} />
+      <span className={`text-[10px] ${on ? tint : 'text-bambu-gray/50'}`}>{fan.speed}%</span>
+    </>
+  );
+  const className = `flex items-center gap-1 px-1.5 py-1 rounded ${on ? bg : 'bg-bambu-dark'}`;
+
+  if (!interactive) {
+    return (
+      <div className={className} title={title}>
+        {body}
+      </div>
+    );
+  }
+
+  // BambuStudio's own steps. Its control counts GEARS, 1..10, and turns each
+  // into a wire value — gear x 10 on the new protocol, floor(gear x 25.5) on
+  // the old one. So the printer understands 0, 10, 20 ... 100 and nothing
+  // between: the previous 0/25/50/75/100 offered three values it cannot
+  // express. Gear 0 is reached by stepping below 1, which is why "off" is a
+  // separate action below rather than another entry here.
+  const steps = Array.from({ length: 10 }, (_, i) => (i + 1) * 10).filter(
+    (p) => p >= fan.range_start && p <= fan.range_end,
+  );
+  return (
+    <div className="relative">
+      <button onClick={onToggle} className={`${className} hover:brightness-125 transition-all`} title={title}>
+        {body}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={onToggle} />
+          <div className="absolute bottom-full left-0 mb-1 z-50 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg py-1 min-w-[110px] max-h-[280px] overflow-y-auto">
+            <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-bambu-gray">{label}</div>
+            {/* Turning it off is its own action, not the first row of eleven —
+                it is the one people reach for in a hurry, and in BambuStudio it
+                is likewise not a speed but the result of stepping past the
+                lowest gear. Shown only when there is something to turn off. */}
+            {on && (
+              <button
+                onClick={() => onPick(0)}
+                className="w-full text-left px-3 py-1.5 text-xs text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white transition-colors border-b border-bambu-dark-tertiary/60"
+              >
+                {t('printers.fans.turnOff')}
+              </button>
+            )}
+            {steps.map((pct) => (
+              <button
+                key={pct}
+                onClick={() => onPick(pct)}
+                className={`w-full text-left px-3 py-1.5 text-xs transition-colors ${
+                  fan.speed === pct ? 'text-bambu-green bg-bambu-green/10' : 'text-white hover:bg-bambu-dark-tertiary'
+                }`}
+              >
+                {pct}%
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function PrinterCard({
   printer,
   hideIfDisconnected,
@@ -1456,10 +1635,18 @@ function PrinterCard({
   const [showStopConfirm, setShowStopConfirm] = useState(false);
   const [showPauseConfirm, setShowPauseConfirm] = useState(false);
   const [showSpeedMenu, setShowSpeedMenu] = useState<number | null>(null);
+  // Keyed "<printerId>-<partId>": a printer can report more than one airduct
+  // fan, so a bare printer id could not tell two menus apart.
+  const [showFanMenu, setShowFanMenu] = useState<string | null>(null);
   const [showResumeConfirm, setShowResumeConfirm] = useState(false);
   const [showBedJogMenu, setShowBedJogMenu] = useState<number | null>(null);
   const [bedJogStep, setBedJogStep] = useState<number>(10);
   const [showNotHomedModal, setShowNotHomedModal] = useState<null | { distance: number }>(null);
+  // Pending fan change awaiting the mid-print acknowledgement.
+  const [showFanPrintingModal, setShowFanPrintingModal] = useState<null | { partId: number; percent: number }>(null);
+  const [showAirductModal, setShowAirductModal] = useState(false);
+  const [showTemperatureModal, setShowTemperatureModal] = useState(false);
+  const [showMotionModal, setShowMotionModal] = useState(false);
   const [showSkipObjectsModal, setShowSkipObjectsModal] = useState(false);
   const [showUploadForPrint, setShowUploadForPrint] = useState(false);
   const [showPrinterInfo, setShowPrinterInfo] = useState(false);
@@ -1497,6 +1684,7 @@ function PrinterCard({
   const [amsSettingsOpen, setAmsSettingsOpen] = useState(false);
   const [amsBackupModalOpen, setAmsBackupModalOpen] = useState(false);
   const [heaterHistoryOpen, setHeaterHistoryOpen] = useState(false);
+  const [plugPowerHistoryOpen, setPlugPowerHistoryOpen] = useState(false);
   const [printerSettingsOpen, setPrinterSettingsOpen] = useState(false);
   const [filamentCaliOpen, setFilamentCaliOpen] = useState(false);
   const [calibrationHistoryOpen, setCalibrationHistoryOpen] = useState(false);
@@ -2135,6 +2323,18 @@ function PrinterCard({
     },
   });
 
+  // Airduct fan speed. No optimistic update: the printer's own reported speed
+  // is the only honest source, the mode can refuse the change outright, and a
+  // badge that snapped to the requested value and then drifted back would read
+  // as the control being flaky rather than as the mode owning the fan.
+  const fanSpeedMutation = useMutation({
+    mutationFn: ({ partId, percent, confirm }: { partId: number; percent: number; confirm?: boolean }) =>
+      api.setFanSpeed(printer.id, partId, percent, confirm ?? false),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['printerStatus', printer.id] }),
+    onError: (error: Error) =>
+      showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
+  });
+
   // Backup toggle from the AMS Backup modal. Deliberately the SAME wire call
   // the AMS settings dialog makes (`action: 'auto_switch_filament'`) rather
   // than upstream's separate /ams-backup route, which we never ported — one
@@ -2160,8 +2360,13 @@ function PrinterCard({
       // session — Auto Home just put the printer in a homed state, so the
       // next jog click shouldn't re-open the warning modal. Since #2579 this
       // is the ONLY way past the modal: the old "Move anyway" escape hatch is
-      // gone, matching Bambu Studio, which refuses the jog outright while the
-      // axis is not homed (StatusPanel::check_axis_z_at_home).
+      // gone, because it drove the move with the soft endstops disabled.
+      //
+      // ⚠️ This is stricter than Bambu Studio, not the same as it. Studio
+      // SENDS the Z jog and only then calls check_axis_z_at_home, which pops a
+      // recenter dialog — the move has already gone out. We refuse instead,
+      // deliberately: a desktop app is one window in front of the machine,
+      // while this is an HTTP surface reachable from a phone in another room.
       try {
         sessionStorage.setItem(`bamdude.bedJog.warned.${printer.id}`, '1');
       } catch {
@@ -2995,6 +3200,10 @@ function PrinterCard({
                   {status?.connected ? t('printers.connection.connected') : t('printers.connection.offline')}
                 </span>
               )}
+              {/* Renders itself only when detection is on AND watching this
+                  printer — a printer outside the monitored subset shows nothing
+                  rather than a badge implying it is covered (#1546). */}
+              <AiDetectionBadge printerId={printer.id} />
               {/* Run connection diagnostic — offered when the printer is offline, NOT in maintenance */}
               {printer.is_active !== false && !status?.connected && (
                 <button
@@ -3056,6 +3265,26 @@ function PrinterCard({
                   </button>
                 );
               })()}
+              {/* Firmware states in which the printer will not take work. Both
+                  come from its own push, so this is visible on a LAN-only farm
+                  with no cloud account — ``consistency_request`` in particular
+                  is what an SD-card update can leave behind when one module
+                  takes the new firmware and another does not. Without this the
+                  printer simply stops accepting jobs and the card looked
+                  perfectly ordinary. */}
+              {status?.connected && (status.firmware_consistency_request || status.firmware_force_upgrade) && (
+                <span
+                  className="flex items-center gap-1 px-2 py-1 rounded-full text-xs bg-status-error/20 text-status-error"
+                  title={
+                    status.firmware_consistency_request
+                      ? t('printers.firmwareBlocked.consistency')
+                      : t('printers.firmwareBlocked.forced')
+                  }
+                >
+                  <AlertTriangle className="w-3 h-3" />
+                  {t('printers.firmwareBlocked.badge')}
+                </span>
+              )}
               {/* SD card missing indicator — shown only when the printer is online
                   AND reports no SD card. Heartbeat flap from upstream's #899/#0D7C0D40
                   series can't happen here because our permissive sdcard parser
@@ -3307,6 +3536,37 @@ function PrinterCard({
                     )}
                   </div>
                 )}
+                {/* Size S exists to watch a whole fleet on one screen, and it
+                    could not answer the question that view is for — "which
+                    printer finishes first". One line of the metrics the expanded
+                    card already shows, through the same formatters so the two
+                    sizes read alike. Each value is dropped individually when the
+                    printer does not report it, and the row keeps its height when
+                    nothing is printing so cards do not shift as prints start and
+                    finish (upstream #2674). */}
+                <div className="mt-1 flex min-h-[14px] items-center gap-2 overflow-hidden text-[11px] leading-none text-bambu-gray">
+                  {(status.state === 'RUNNING' || status.state === 'PAUSE') && (
+                    <>
+                      {status.remaining_time != null && status.remaining_time > 0 && (
+                        <>
+                          <span className="flex shrink-0 items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            {formatDuration(status.remaining_time * 60)}
+                          </span>
+                          <span className="shrink-0 font-medium text-bambu-green" title={t('printers.estimatedCompletion')}>
+                            ETA {formatETA(status.remaining_time, timeFormat, t)}
+                          </span>
+                        </>
+                      )}
+                      {status.layer_num != null && status.total_layers != null && status.total_layers > 0 && (
+                        <span className="flex min-w-0 items-center gap-1 truncate">
+                          <Layers className="w-3 h-3 shrink-0" />
+                          {status.layer_num}/{status.total_layers}
+                        </span>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             ) : (
               /* Expanded: Full status section */
@@ -3493,6 +3753,33 @@ function PrinterCard({
                       </p>
                     </div>
                   )}
+                  {/* Setpoints — the readout above is the display, this is the
+                      control surface, the same division BambuStudio makes. */}
+                  {hasPermission('printers:control') && (
+                    <button
+                      type="button"
+                      onClick={() => setShowTemperatureModal(true)}
+                      className="px-2 py-1.5 bg-bambu-dark rounded-lg flex flex-col justify-center items-center text-bambu-gray hover:text-white transition-colors"
+                      title={t('printers.temperatureControl.title')}
+                      aria-label={t('printers.temperatureControl.title')}
+                    >
+                      <Thermometer className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  {/* Motion — head, bed gap and extruder. Separate from the
+                      temperature dialog because they answer different questions
+                      about the same machine, the same split Studio makes. */}
+                  {hasPermission('printers:control') && (
+                    <button
+                      type="button"
+                      onClick={() => setShowMotionModal(true)}
+                      className="px-2 py-1.5 bg-bambu-dark rounded-lg flex flex-col justify-center items-center text-bambu-gray hover:text-white transition-colors"
+                      title={t('printers.motion.title')}
+                      aria-label={t('printers.motion.title')}
+                    >
+                      <Move className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                   {/* Heater history — opens the nozzle/bed/chamber temperature chart */}
                   <button
                     type="button"
@@ -3559,11 +3846,31 @@ function PrinterCard({
               const isPrinting = isRunning || isPaused;
               const isControlBusy = stopPrintMutation.isPending || pausePrintMutation.isPending || resumePrintMutation.isPending;
 
-              // Fan data
-              const partFan = status.cooling_fan_speed;
-              const auxFan = status.big_fan1_speed;
-              const chamberFan = status.big_fan2_speed;
-              const hasChamberFan = MODELS_WITH_CHAMBER_FAN.has(mapModelCode(printer.model));
+              // Every fan the printer reports, from one list. The backend
+              // supplies it for both protocols — a machine with no airduct has
+              // parts 1/2/3 synthesised from the flat status fields, the way
+              // BambuStudio's converse_to_duct does — so there is no longer a
+              // second set of hardcoded tiles beside this, and no model table
+              // deciding whether a chamber fan exists. The printer reporting one
+              // is what says it exists.
+              const airductFans = status.airduct_fans ?? [];
+              const fanName = (f: AirductFan) =>
+                f.label_key
+                  ? t(`printers.fans.${f.label_key}`, f.label ?? '')
+                  : (f.label ??
+                    (f.part_id === 1
+                      ? t('printers.fans.partCooling')
+                      : f.part_id === 3
+                        ? t('printers.fans.chamber')
+                        : t('printers.fans.auxiliary')));
+              // Part cooling first, then left before right — the badges read in
+              // the order the fans sit in the machine rather than in part-id
+              // order, which is mirrored between the P2S and the X2D.
+              const orderedFans = [...airductFans].sort((a, b) => {
+                if ((a.part_id === 1) !== (b.part_id === 1)) return a.part_id === 1 ? -1 : 1;
+                const side = (f: AirductFan) => (/left/i.test(f.label ?? '') ? 0 : /right/i.test(f.label ?? '') ? 1 : 2);
+                return side(a) - side(b) || a.part_id - b.part_id;
+              });
 
               return (
                 <div className="mt-3">
@@ -3578,39 +3885,53 @@ function PrinterCard({
                   <div className="flex flex-wrap items-start justify-between gap-x-2 gap-y-2">
                     {/* Left: Fan Status - always visible, dynamic coloring */}
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 min-w-0">
-                      {/* Part Cooling Fan */}
-                      <div
-                        className={`flex items-center gap-1 px-1.5 py-1 rounded ${partFan && partFan > 0 ? 'bg-cyan-500/10' : 'bg-bambu-dark'}`}
-                        title={t('printers.fans.partCooling')}
-                      >
-                        <Fan className={`w-3.5 h-3.5 ${partFan && partFan > 0 ? 'text-cyan-400' : 'text-bambu-gray/50'}`} />
-                        <span className={`text-[10px] ${partFan && partFan > 0 ? 'text-cyan-400' : 'text-bambu-gray/50'}`}>
-                          {partFan ?? 0}%
-                        </span>
-                      </div>
+                      {orderedFans.map((f) => (
+                        <FanBadge
+                          key={f.part_id}
+                          fan={f}
+                          label={fanName(f)}
+                          open={showFanMenu === `${printer.id}-${f.part_id}`}
+                          onToggle={() =>
+                            setShowFanMenu(
+                              showFanMenu === `${printer.id}-${f.part_id}` ? null : `${printer.id}-${f.part_id}`,
+                            )
+                          }
+                          onPick={(pct) => {
+                            setShowFanMenu(null);
+                            // BambuStudio warns before a mid-print fan change and
+                            // offers "Change Anyway". Asked once per printer per
+                            // browser session, like the not-homed prompt; the
+                            // server refuses without the acknowledgement either
+                            // way, so skipping the dialog cannot skip the guard.
+                            const warned = (() => {
+                              try {
+                                return sessionStorage.getItem(`bamdude.fanSpeed.warned.${printer.id}`) === '1';
+                              } catch {
+                                return false;
+                              }
+                            })();
+                            if (isPrinting && !warned) {
+                              setShowFanPrintingModal({ partId: f.part_id, percent: pct });
+                              return;
+                            }
+                            fanSpeedMutation.mutate({ partId: f.part_id, percent: pct, confirm: isPrinting });
+                          }}
+                          canControl={hasPermission('printers:control')}
+                        />
+                      ))}
 
-                      {/* Auxiliary Fan */}
-                      <div
-                        className={`flex items-center gap-1 px-1.5 py-1 rounded ${auxFan && auxFan > 0 ? 'bg-blue-500/10' : 'bg-bambu-dark'}`}
-                        title={t('printers.fans.auxiliary')}
-                      >
-                        <Wind className={`w-3.5 h-3.5 ${auxFan && auxFan > 0 ? 'text-blue-400' : 'text-bambu-gray/50'}`} />
-                        <span className={`text-[10px] ${auxFan && auxFan > 0 ? 'text-blue-400' : 'text-bambu-gray/50'}`}>
-                          {auxFan ?? 0}%
-                        </span>
-                      </div>
-
-                      {/* Chamber Fan — only on models that physically have one */}
-                      {hasChamberFan && (
-                        <div
-                          className={`flex items-center gap-1 px-1.5 py-1 rounded ${chamberFan && chamberFan > 0 ? 'bg-green-500/10' : 'bg-bambu-dark'}`}
-                          title={t('printers.fans.chamber')}
+                      {/* The air duct as a whole: mode, filtration, every fan.
+                          Shown only where the printer reports modes — on the
+                          old protocol there is no mode to choose, and the
+                          badges above are already the whole story. */}
+                      {(status.airduct_modes?.length ?? 0) > 0 && (
+                        <button
+                          onClick={() => setShowAirductModal(true)}
+                          className="flex items-center gap-1 px-1.5 py-1 rounded bg-bambu-dark hover:bg-bambu-dark-tertiary transition-colors"
+                          title={t('printers.airduct.title')}
                         >
-                          <AirVent className={`w-3.5 h-3.5 ${chamberFan && chamberFan > 0 ? 'text-green-400' : 'text-bambu-gray/50'}`} />
-                          <span className={`text-[10px] ${chamberFan && chamberFan > 0 ? 'text-green-400' : 'text-bambu-gray/50'}`}>
-                            {chamberFan ?? 0}%
-                          </span>
-                        </div>
+                          <SlidersHorizontal className="w-3.5 h-3.5 text-bambu-gray" />
+                        </button>
                       )}
 
                       {/* Separator */}
@@ -3677,11 +3998,13 @@ function PrinterCard({
                       <div className="w-px h-5 bg-bambu-gray/30" />
 
                       {/* Bed Jog (Z-axis) — compact badge, popover holds the actual controls.
-                          When the printer isn't yet homed since finish, show a Studio-style
-                          warning modal offering Home Z or Cancel. Since #2579 there is no
-                          "Move anyway" escape hatch — Studio refuses the jog outright while
-                          the axis is unhomed. A successful Home Z is what clears the prompt
-                          for the rest of the browser session (see homeAxesMutation). */}
+                          When the printer isn't yet homed since finish, show a warning modal
+                          offering Home Z or Cancel. Since #2579 there is no "Move anyway"
+                          escape hatch — it drove the move with the soft endstops disabled.
+                          A successful Home Z is what clears the prompt for the rest of the
+                          browser session (see homeAxesMutation).
+                          ⚠️ Stricter than Studio, which sends the jog first and pops a
+                          recenter dialog afterwards — see homeAxesMutation for why. */}
                       {(() => {
                         const canControl = hasPermission('printers:control');
                         const disabled = isPrinting || !canControl;
@@ -4091,7 +4414,7 @@ function PrinterCard({
                                     || cloudInfo?.name
                                     || tray.tray_sub_brands
                                     || tray.tray_type,
-                                  colorName: getColorName(tray.tray_color || ''),
+                                  colorName: resolveMultiColorName(tray.cols) ?? getColorName(tray.tray_color || ''),
                                   colorHex: tray.tray_color || null,
                                   kFactor: formatKValue(tray.k),
                                   fillLevel: effectiveFill,
@@ -4142,6 +4465,8 @@ function PrinterCard({
                                     {/* Filament color circle with 1-based slot number centered inside */}
                                     <FilamentSlotCircle
                                       trayColor={tray?.tray_color}
+                                      trayColors={tray?.cols}
+                                      ctype={tray?.ctype}
                                       trayType={tray?.tray_type}
                                       isEmpty={isEmpty}
                                       slotNumber={slotIdx + 1}
@@ -4451,7 +4776,7 @@ function PrinterCard({
                             || cloudInfo?.name
                             || tray.tray_sub_brands
                             || tray.tray_type,
-                          colorName: getColorName(tray.tray_color || ''),
+                          colorName: resolveMultiColorName(tray.cols) ?? getColorName(tray.tray_color || ''),
                           colorHex: tray.tray_color || null,
                           kFactor: formatKValue(tray.k),
                           fillLevel: htEffectiveFill,
@@ -4502,6 +4827,8 @@ function PrinterCard({
                             {/* Filament color circle with 1-based slot number centered inside */}
                             <FilamentSlotCircle
                               trayColor={tray?.tray_color}
+                              trayColors={tray?.cols}
+                              ctype={tray?.ctype}
                               trayType={tray?.tray_type}
                               isEmpty={isEmpty}
                               slotNumber={1}
@@ -4877,7 +5204,7 @@ function PrinterCard({
                                   || extTray.tray_sub_brands
                                   || extTray.tray_type
                                   || 'Unknown',
-                                colorName: getColorName(extTray.tray_color || ''),
+                                colorName: resolveMultiColorName(extTray.cols) ?? getColorName(extTray.tray_color || ''),
                                 colorHex: extTray.tray_color || null,
                                 kFactor: formatKValue(extTray.k),
                                 fillLevel: extEffectiveFill,
@@ -4892,6 +5219,8 @@ function PrinterCard({
                                   {/* Filament color circle with 1-based slot number centered inside */}
                                   <FilamentSlotCircle
                                     trayColor={extTray.tray_color}
+                                    trayColors={extTray.cols}
+                                    ctype={extTray.ctype}
                                     trayType={extTray.tray_type}
                                     isEmpty={isEmpty}
                                     slotNumber={isDualNozzle ? (extTrayId === 254 ? 'L' : 'R') : slotTrayId + 1}
@@ -5111,6 +5440,9 @@ function PrinterCard({
               <div className="flex items-center gap-2 min-w-0">
                 <Zap className="w-4 h-4 text-bambu-gray flex-shrink-0" />
                 <span className="text-sm text-white truncate">{smartPlug.name}</span>
+                {/* This is where power gets switched, so this is where a dead
+                    radio explains a button that does nothing. */}
+                {smartPlug.plug_type === 'zigbee' && <ZigbeeStatusBadge variant="dot" />}
                 {plugStatus && (
                   <span
                     className={`text-xs px-1.5 py-0.5 rounded flex-shrink-0 ${
@@ -5134,6 +5466,16 @@ function PrinterCard({
 
               {/* Power buttons */}
               <div className="flex items-center gap-1">
+                {/* The history belongs where the plug already is: this row
+                    already says what it is drawing right now. */}
+                <button
+                  onClick={() => setPlugPowerHistoryOpen(true)}
+                  title={t('smartPlugs.powerHistory.open')}
+                  aria-label={t('smartPlugs.powerHistory.open')}
+                  className="p-1.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
+                >
+                  <LineChart className="w-4 h-4" />
+                </button>
                 <button
                   onClick={() => setShowPowerOnConfirm(true)}
                   disabled={powerControlMutation.isPending || plugStatus?.state === 'ON' || !hasPermission('smart_plugs:control')}
@@ -5831,13 +6173,14 @@ function PrinterCard({
         />
       )}
 
-      {/* Bed Jog — not-homed gate (Studio-style). Shown the first time a user
-          tries to move the bed in a browser session. Since #2579 the only way
-          past it is Auto Home, which flips bamdude.bedJog.warned.<printer_id>
-          in sessionStorage on success — Bambu Studio refuses the jog outright
-          while the axis is not homed (StatusPanel::check_axis_z_at_home), and
-          the old "Move anyway" escape hatch drove the move with the soft
-          endstops disabled. */}
+      {/* Bed Jog — not-homed gate. Shown the first time a user tries to move
+          the bed in a browser session. Since #2579 the only way past it is Auto
+          Home, which flips bamdude.bedJog.warned.<printer_id> in sessionStorage
+          on success; the old "Move anyway" escape hatch drove the move with the
+          soft endstops disabled.
+          ⚠️ Do not describe this as Studio parity — it is stricter on purpose.
+          StatusPanel::check_axis_z_at_home runs AFTER Ctrl_Axis has published,
+          so Studio's unhomed Z jog happens and then advises recentering. */}
       {showNotHomedModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
           <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl w-full max-w-sm p-5">
@@ -5872,6 +6215,90 @@ function PrinterCard({
           </div>
         </div>
       )}
+
+      {/* Fan speed during a print — BambuStudio's own warning
+          (FanOperate::check_printing_state), which offers "Change Anyway"
+          rather than refusing. Acknowledging it remembers the choice for this
+          printer for the rest of the browser session, as Studio's
+          "do not show again" does. The server still requires the
+          acknowledgement on every call, so this dialog is the explanation, not
+          the guard. */}
+      {showFanPrintingModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl w-full max-w-sm p-5">
+            <div className="flex items-start gap-3 mb-4">
+              <AlertTriangle className="w-5 h-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
+              <div>
+                <h3 className="text-sm font-semibold text-white mb-1">
+                  {t('printers.fans.printingWarningTitle')}
+                </h3>
+                <p className="text-xs text-bambu-gray leading-relaxed">
+                  {t('printers.fans.printingWarningMessage')}
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => {
+                  const pending = showFanPrintingModal;
+                  setShowFanPrintingModal(null);
+                  try {
+                    sessionStorage.setItem(`bamdude.fanSpeed.warned.${printer.id}`, '1');
+                  } catch {
+                    // Private mode: the dialog simply asks again next time.
+                  }
+                  fanSpeedMutation.mutate({ partId: pending.partId, percent: pending.percent, confirm: true });
+                }}
+                className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30 transition-colors"
+              >
+                {t('printers.fans.changeAnyway')}
+              </button>
+              <button
+                onClick={() => setShowFanPrintingModal(null)}
+                className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-bambu-dark text-bambu-gray hover:bg-bambu-dark-tertiary transition-colors"
+              >
+                {t('common.cancel')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {status && (
+        <MotionModal
+          printerId={printer.id}
+          isOpen={showMotionModal}
+          onClose={() => setShowMotionModal(false)}
+          status={status}
+          isDualNozzle={printer.nozzle_count === 2 || status.temperatures?.nozzle_2 !== undefined}
+          canControl={hasPermission('printers:control')}
+        />
+      )}
+
+      {status && (
+        <TemperatureModal
+          printerId={printer.id}
+          isOpen={showTemperatureModal}
+          onClose={() => setShowTemperatureModal(false)}
+          status={status}
+          isDualNozzle={printer.nozzle_count === 2 || status.temperatures?.nozzle_2 !== undefined}
+          supportsChamberHeater={status.supports_chamber_heater ?? false}
+          canControl={hasPermission('printers:control')}
+        />
+      )}
+
+      <AirductModal
+        printerId={printer.id}
+        isOpen={showAirductModal}
+        onClose={() => setShowAirductModal(false)}
+        fans={status?.airduct_fans ?? []}
+        modes={status?.airduct_modes ?? []}
+        currentMode={status?.airduct_mode ?? -1}
+        subMode={status?.airduct_sub_mode ?? -1}
+        supportsCoolingFilter={status?.supports_cooling_filter ?? false}
+        isPrinting={status?.state === 'RUNNING' || status?.state === 'PAUSE'}
+        canControl={hasPermission('printers:control')}
+      />
 
       {/* Skip Objects Modal */}
       <SkipObjectsModal
@@ -5909,6 +6336,15 @@ function PrinterCard({
           />
         );
       })()}
+
+      {plugPowerHistoryOpen && smartPlug && (
+        <PlugPowerHistoryModal
+          isOpen
+          onClose={() => setPlugPowerHistoryOpen(false)}
+          plugId={smartPlug.id}
+          plugName={smartPlug.name}
+        />
+      )}
 
       {/* AMS History Modal */}
       {amsHistoryModal && (
@@ -6301,10 +6737,12 @@ export function AddPrinterModal({
     ip_address: '',
     access_code: '',
     model: '',
-    location: '',
+    location_id: null as number | null,
     auto_archive: true,
     cleanup_after_print: false,
-    mqtt_connection_timeout: 900,
+    // 0 = disabled, matching the backend default. Recycling a live MQTT link
+    // on a timer is what broke swap-macro waits and blanked skip-objects state.
+    mqtt_connection_timeout: 0,
     stagger_interval_minutes: 0,
     swap_mode_enabled: false,
     swap_profile: null,
@@ -6737,12 +7175,10 @@ export function AddPrinterModal({
                 </div>
                 <div>
                   <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.locationGroup')}</label>
-                  <input
-                    type="text"
-                    className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                    value={form.location || ''}
-                    onChange={(e) => setForm({ ...form, location: e.target.value })}
-                    placeholder={t('printers.modal.locationPlaceholder')}
+                  <PrinterLocationSelect
+                    value={form.location_id ?? null}
+                    onChange={(id) => setForm({ ...form, location_id: id })}
+                    allowCreate
                   />
                   <p className="text-xs text-bambu-gray mt-1">{t('printers.locationHelp')}</p>
                 </div>
@@ -7219,11 +7655,11 @@ function EditPrinterModal({
     ip_address: printer.ip_address,
     access_code: '',
     model: printer.model || '',
-    location: printer.location || '',
+    location_id: printer.location?.id ?? null,
     auto_archive: printer.auto_archive,
     is_active: printer.is_active,
     cleanup_after_print: printer.cleanup_after_print ?? false,
-    mqtt_connection_timeout: printer.mqtt_connection_timeout ?? 900,
+    mqtt_connection_timeout: printer.mqtt_connection_timeout ?? 0,
     stagger_interval_minutes: printer.stagger_interval_minutes ?? 0,
     swap_mode_enabled: printer.swap_mode_enabled ?? false,
     swap_profile: (printer.swap_profile ?? null) as string | null,
@@ -7268,7 +7704,7 @@ function EditPrinterModal({
       name: form.name,
       ip_address: form.ip_address,
       model: form.model || undefined,
-      location: form.location || undefined,
+      location_id: form.location_id,
       auto_archive: form.auto_archive,
       is_active: form.is_active,
       cleanup_after_print: form.cleanup_after_print,
@@ -7410,12 +7846,10 @@ function EditPrinterModal({
                 </div>
                 <div>
                   <label className="block text-sm text-bambu-gray mb-1">Location / Group</label>
-                  <input
-                    type="text"
-                    className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                    value={form.location}
-                    onChange={(e) => setForm({ ...form, location: e.target.value })}
-                    placeholder={t('printers.modal.locationPlaceholder')}
+                  <PrinterLocationSelect
+                    value={form.location_id}
+                    onChange={(id) => setForm({ ...form, location_id: id })}
+                    allowCreate
                   />
                   <p className="text-xs text-bambu-gray mt-1">{t('printers.locationHelp')}</p>
                 </div>
@@ -8051,9 +8485,9 @@ export function PrintersPage() {
     setSelectedPrinterIds(new Set(printers.map(p => p.id)));
   }, [printers]);
 
-  const selectByLocation = useCallback((location: string) => {
+  const selectByLocation = useCallback((locationId: number) => {
     if (!printers) return;
-    setSelectedPrinterIds(new Set(printers.filter(p => p.location === location).map(p => p.id)));
+    setSelectedPrinterIds(new Set(printers.filter(p => p.location?.id === locationId).map(p => p.id)));
   }, [printers]);
 
   const selectByState = useCallback((state: string) => {
@@ -8119,6 +8553,18 @@ export function PrintersPage() {
     return unsubscribe;
   }, [queryClient]);
 
+  // From the locations themselves rather than from the printers on screen: a
+  // parent with no printers directly on it must still be selectable.
+  const { data: locationRows } = useQuery({ queryKey: ['printer-locations'], queryFn: api.getPrinterLocations });
+  const locationIndex = useMemo(() => buildLocationIndex(locationRows?.locations ?? []), [locationRows]);
+  const availableLocations = useMemo(
+    () =>
+      [...(locationRows?.locations ?? [])]
+        .sort((a, b) => compareLocationNames(a.path, b.path))
+        .map((row) => ({ id: row.id, label: row.name, depth: row.depth, path: row.path })),
+    [locationRows],
+  );
+
   // Filter printers by search term, status, and location (#852).
   const filteredPrinters = useMemo(() => {
     if (!printers) return [];
@@ -8129,13 +8575,17 @@ export function PrintersPage() {
       result = result.filter(p =>
         p.name.toLowerCase().includes(q) ||
         (p.model || '').toLowerCase().includes(q) ||
-        (p.location || '').toLowerCase().includes(q) ||
+        (p.location?.name || '').toLowerCase().includes(q) ||
         (p.serial_number || '').toLowerCase().includes(q)
       );
     }
 
     if (locationFilter !== 'all') {
-      result = result.filter(p => (p.location || '') === locationFilter);
+      // By id and by subtree: picking a workshop keeps the printers on its
+      // shelves, and a name is no longer an identity now that "Shelf 1" can
+      // exist under two workshops.
+      const wanted = locationIndex.descendantsOf(Number(locationFilter));
+      result = result.filter(p => p.location != null && wanted.has(p.location.id));
     }
 
     if (statusFilter !== 'all') {
@@ -8159,7 +8609,7 @@ export function PrintersPage() {
 
     return result;
   // eslint-disable-next-line react-hooks/exhaustive-deps -- statusCacheVersion is intentional: it forces recompute when WebSocket updates printer status cache
-  }, [printers, search, statusFilter, locationFilter, queryClient, statusCacheVersion]);
+  }, [printers, search, statusFilter, locationFilter, locationIndex, queryClient, statusCacheVersion]);
 
   // Modifier-aware single-printer selection. Behaves like a file-manager:
   //
@@ -8174,11 +8624,6 @@ export function PrintersPage() {
   //   Plain checkbox click   — toggle this printer (fast path for one-off
   //                            picks; equivalent to Ctrl-click).
   //
-  // Derive unique locations for the location filter dropdown
-  const availableLocations = useMemo(() => {
-    if (!printers) return [];
-    return [...new Set(printers.map(p => p.location || '').filter(Boolean))].sort();
-  }, [printers]);
 
   const sortedPrinters = useMemo(() => {
     const sorted = [...filteredPrinters];
@@ -8193,11 +8638,11 @@ export function PrintersPage() {
       case 'location':
         // Sort by location, with ungrouped printers last
         sorted.sort((a, b) => {
-          const locA = a.location || '';
-          const locB = b.location || '';
+          const locA = a.location?.path || '';
+          const locB = b.location?.path || '';
           if (!locA && locB) return 1;
           if (locA && !locB) return -1;
-          return locA.localeCompare(locB) || a.name.localeCompare(b.name);
+          return compareLocationNames(locA, locB) || a.name.localeCompare(b.name);
         });
         break;
       case 'status':
@@ -8296,17 +8741,14 @@ export function PrintersPage() {
     [lastSelectedId, sortedPrinters],
   );
 
-  // Group printers by location when sorted by location
+  // Group printers by location when sorted by location. Keyed on the location
+  // ID, which is what the header's sensors are matched against — an object
+  // keyed by that id would be reordered by the engine into ascending numeric
+  // order and would throw away the name sort applied above, hence an array.
   const groupedPrinters = useMemo(() => {
     if (sortBy !== 'location') return null;
-
-    const groups: Record<string, typeof sortedPrinters> = {};
-    sortedPrinters.forEach(printer => {
-      const location = printer.location || 'Ungrouped';
-      if (!groups[location]) groups[location] = [];
-      groups[location].push(printer);
-    });
-    return groups;
+    return groupByLocation(sortedPrinters, printer => printer.location, t('printers.ungrouped'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- t is stable; listing it re-groups on every i18n tick
   }, [sortBy, sortedPrinters]);
 
   // ResizeObserver for the responsive toolbar: re-measure on layout changes
@@ -8377,7 +8819,10 @@ export function PrintersPage() {
           fullWidth={inMenu}
           options={[
             { value: 'all', label: t('printers.filter.allLocations') },
-            ...availableLocations.map((loc) => ({ value: loc, label: loc })),
+            ...availableLocations.map((loc) => ({
+              value: String(loc.id),
+              label: ' '.repeat((loc.depth - 1) * 3) + loc.label,
+            })),
           ]}
         />
       )}
@@ -8729,15 +9174,16 @@ export function PrintersPage() {
       ) : groupedPrinters ? (
         /* Grouped by location view */
         <div className="space-y-6">
-          {Object.entries(groupedPrinters).map(([location, locationPrinters]) => (
-            <div key={location}>
-              <h2 className="text-lg font-semibold text-white mb-3 flex items-center gap-2">
+          {groupedPrinters.map((group) => (
+            <div key={group.locationId ?? 'ungrouped'}>
+              <h2 className="text-lg font-semibold text-white mb-3 flex items-center gap-2 flex-wrap">
                 <span className="w-2 h-2 rounded-full bg-bambu-green" />
-                {location}
-                <span className="text-sm font-normal text-bambu-gray">({locationPrinters.length})</span>
+                {group.label}
+                <span className="text-sm font-normal text-bambu-gray">({group.items.length})</span>
+                <LocationConditions locationId={group.locationId} />
               </h2>
               <div className={`grid gap-4 items-start ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
-                {locationPrinters.map((printer) => (
+                {group.items.map((printer) => (
                   <PrinterCard
                     key={printer.id}
                     printer={printer}

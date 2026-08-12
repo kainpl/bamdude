@@ -122,6 +122,16 @@ class PrintArchive(Base):
     failure_reason: Mapped[str | None] = mapped_column(String(100))  # For failed prints
     quantity: Mapped[int] = mapped_column(Integer, default=1)  # Number of items printed
 
+    # How many of those items came out unusable (m122). Operator-owned: editable
+    # on the archive, and raised automatically when objects are skipped — the
+    # printer reports the authoritative list in the ``s_obj`` telemetry field, so
+    # a skip made from the printer's own screen counts the same as one made here.
+    # The automatic path only ever RAISES it (``max(current, len(s_obj))``) so it
+    # cannot undo a number someone typed in. Deliberately does NOT feed
+    # ``quantity`` or any of the "printed" totals — those still count what came
+    # off the plate, and the split between the two is the point.
+    defective_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+
     # Energy tracking
     energy_kwh: Mapped[float | None] = mapped_column(Float)  # Energy consumed in kWh
     energy_cost: Mapped[float | None] = mapped_column(Float)  # Cost of energy consumed

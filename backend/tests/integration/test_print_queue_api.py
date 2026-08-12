@@ -935,8 +935,10 @@ class TestQueueLibraryFileSupport:
             counter = _counter[0]
 
             defaults = {
-                "filename": f"library_test_{counter}.3mf",
-                "file_path": f"/test/library/library_test_{counter}.3mf",
+                # .gcode.3mf, not a bare .3mf: only a sliced file can be queued,
+                # and every dispatch path has always refused the plain container.
+                "filename": f"library_test_{counter}.gcode.3mf",
+                "file_path": f"/test/library/library_test_{counter}.gcode.3mf",
                 "file_size": 2048,
                 "file_type": "3mf",
                 "file_metadata": {"print_name": f"Library Print {counter}", "print_time_seconds": 3600},

@@ -19,8 +19,3 @@ PRINTER_MODEL_DISPLAY_NAMES: dict[str, str] = {
     "H2C": "H2C",
     "H2S": "H2S",
 }
-
-
-def get_model_display_name(code: str) -> str:
-    """Get display name for a printer model code."""
-    return PRINTER_MODEL_DISPLAY_NAMES.get(code, code)

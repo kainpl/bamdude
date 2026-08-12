@@ -1467,6 +1467,21 @@ async def create_oidc_provider(
     return OIDCProviderResponse.model_validate(provider)
 
 
+def _refuse_if_env_managed(provider) -> None:
+    """Startup rewrites this provider from ``BAMDUDE_OIDC_*`` on every boot, so an
+    edit accepted here would be silently reverted at the next restart. Being told
+    no is better than being told yes and then having it undone.
+
+    ``BAMDUDE_LOCAL_LOGIN`` (#1589) remains the recovery path if the provider
+    becomes unusable, so refusing outright cannot lock anyone out.
+    """
+    if provider.is_env_managed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This OIDC provider is managed by environment variables and cannot be modified.",
+        )
+
+
 @router.put("/oidc/providers/{provider_id}", response_model=OIDCProviderResponse)
 async def update_oidc_provider(
     provider_id: int,
@@ -1493,6 +1508,7 @@ async def update_oidc_provider(
     provider = result2.scalar_one_or_none()
     if not provider:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
+    _refuse_if_env_managed(provider)
 
     # Same DB-state cross-check as create — when the operator supplies a
     # default_group_id, refuse the update if the referenced group doesn't
@@ -1627,6 +1643,7 @@ async def delete_oidc_provider_icon(
     provider = result.scalar_one_or_none()
     if provider is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
+    _refuse_if_env_managed(provider)
 
     # Setting deferred columns is safe — no read happens, just a write.
     provider.icon_url = None
@@ -1635,43 +1652,6 @@ async def delete_oidc_provider_icon(
     provider.icon_etag = None
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-@router.post("/oidc/providers/{provider_id}/icon/refresh", response_model=OIDCProviderResponse)
-async def refresh_oidc_provider_icon(
-    provider_id: int,
-    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
-    db: AsyncSession = Depends(get_db),
-) -> OIDCProviderResponse:
-    """Refetch the icon from the stored ``icon_url`` (admin only).
-
-    Used when:
-
-    - The IdP changed its icon and the admin wants BamDude to pick up
-      the new bytes.
-    - An upgrade left the provider with an ``icon_url`` but no cached
-      bytes (covered automatically by ``update_oidc_provider`` too, but
-      this gives the UI an explicit "Refresh" button).
-
-    Failure to refetch returns 400 *before* commit, so the previously
-    cached bytes survive intact.
-    """
-    result = await db.execute(select(OIDCProvider).where(OIDCProvider.id == provider_id))
-    provider = result.scalar_one_or_none()
-    if provider is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
-    if not provider.icon_url:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Provider has no icon_url to refresh",
-        )
-    icon_data, icon_content_type, icon_etag = await _fetch_icon_or_400(provider.icon_url)
-    provider.icon_data = icon_data
-    provider.icon_content_type = icon_content_type
-    provider.icon_etag = icon_etag
-    await db.commit()
-    await db.refresh(provider)
-    return OIDCProviderResponse.model_validate(provider)
 
 
 @router.delete("/oidc/providers/{provider_id}")
@@ -1685,6 +1665,7 @@ async def delete_oidc_provider(
     provider = result2.scalar_one_or_none()
     if not provider:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
+    _refuse_if_env_managed(provider)
 
     await db.delete(provider)
     await db.commit()

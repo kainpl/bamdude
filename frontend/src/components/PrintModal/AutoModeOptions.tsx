@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import { PrinterLocationSelect } from '../PrinterLocationSelect';
 import { Sparkles } from 'lucide-react';
 import type { Printer } from '../../api/client';
 import type { AutoModeOptionsState } from './types';
@@ -29,13 +30,6 @@ export function AutoModeOptions({ options, onChange, printers, slicedForModel }:
     return [...models].sort();
   }, [printers]);
 
-  const availableLocations = useMemo(() => {
-    const locs = new Set<string>();
-    (printers ?? []).forEach((p) => {
-      if (p.location) locs.add(p.location);
-    });
-    return [...locs].sort();
-  }, [printers]);
 
   return (
     <div className="mb-4 bg-bambu-dark rounded-lg p-3 space-y-3 border border-bambu-green/30">
@@ -71,18 +65,14 @@ export function AutoModeOptions({ options, onChange, printers, slicedForModel }:
         <label className="text-xs text-bambu-gray block mb-1">
           {t('printModal.autoMode.targetLocation')}
         </label>
-        <select
-          value={options.target_location ?? ''}
-          onChange={(e) => onChange({ ...options, target_location: e.target.value || null })}
-          className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white px-2 py-1.5 text-sm"
-        >
-          <option value="">{t('printModal.autoMode.anyLocation')}</option>
-          {availableLocations.map((loc) => (
-            <option key={loc} value={loc}>
-              {loc}
-            </option>
-          ))}
-        </select>
+        {/* The same component the printer form uses. These were two independent
+            free-text fields, so a place had to be typed twice and matched
+            exactly — a slip meant the work waited for a location no printer
+            was in, with nothing to say so. */}
+        <PrinterLocationSelect
+          value={options.target_location_id ?? null}
+          onChange={(id) => onChange({ ...options, target_location_id: id })}
+        />
       </div>
 
       <label className="flex items-center justify-between gap-3 cursor-pointer">

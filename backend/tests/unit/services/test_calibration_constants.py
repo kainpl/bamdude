@@ -29,19 +29,21 @@ def test_flow_rate_modifiers():
 
 
 def test_nozzle_id_standard_0_4():
-    assert generate_nozzle_id(NozzleVolumeType.STANDARD, 0.4) == "HS20"
+    assert generate_nozzle_id(NozzleVolumeType.STANDARD, 0.4) == "HS00-0.4"
 
 
 def test_nozzle_id_high_flow_0_4():
-    assert generate_nozzle_id(NozzleVolumeType.HIGH_FLOW, 0.4) == "HH20"
+    assert generate_nozzle_id(NozzleVolumeType.HIGH_FLOW, 0.4) == "HH00-0.4"
 
 
 def test_nozzle_id_tpu_high_flow_0_2():
-    assert generate_nozzle_id(NozzleVolumeType.TPU_HIGH_FLOW, 0.2) == "HU00"
+    assert generate_nozzle_id(NozzleVolumeType.TPU_HIGH_FLOW, 0.2) == "HU00-0.2"
 
 
 def test_nozzle_id_hybrid_0_8():
-    assert generate_nozzle_id(NozzleVolumeType.HYBRID, 0.8) == "HY60"
+    """BS has no letter for ``nvtHybrid`` — the switch's ``default:`` gives it
+    the High Flow "H"."""
+    assert generate_nozzle_id(NozzleVolumeType.HYBRID, 0.8) == "HH00-0.8"
 
 
 def test_compute_pa_k():

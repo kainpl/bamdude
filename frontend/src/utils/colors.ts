@@ -125,6 +125,36 @@ export function getColorName(hexColor: string): string {
  * Detects Bambu internal codes (e.g. "A06-D0") and ignores them in favor of hex lookup
  * because the same code is not globally unique across material families (#857).
  */
+/**
+ * The name of a spool that carries more than one colour.
+ *
+ * ⚠️ Without this, a two-colour spool is named after ONE of its colours —
+ * whichever firmware happened to list first — and that is not a rough label, it
+ * is a wrong one. A black-and-white spool called "Black" is a spool somebody
+ * will pick for a black print.
+ *
+ * No library is involved, and none is needed: `getColorName` already resolves a
+ * hex against the `color_catalog` (Bambu Lab's own names win on an exact match)
+ * and falls back to an HSL description for anything unknown. This only stops us
+ * pretending the list has one element.
+ *
+ * Returns null for an empty list so callers keep their existing "-" placeholder.
+ */
+export function resolveMultiColorName(cols: string[] | null | undefined): string | null {
+  const list = (cols ?? []).filter(Boolean);
+  if (!list.length) return null;
+  const names: string[] = [];
+  for (const c of list) {
+    const name = getColorName(c);
+    // Two bands of the same family read as one name; say it once.
+    if (name && !names.includes(name)) names.push(name);
+  }
+  if (!names.length) return null;
+  // Three is where a slot tooltip stops being readable; the rest become "+N".
+  if (names.length > 3) return `${names.slice(0, 3).join(' + ')} +${names.length - 3}`;
+  return names.join(' + ');
+}
+
 export function resolveSpoolColorName(colorName: string | null, rgba: string | null): string | null {
   // If color_name looks like a readable name (no pattern like "X00-Y0"), use it directly
   if (colorName && !/^[A-Z]\d+-[A-Z]\d+$/.test(colorName)) {
@@ -142,23 +172,6 @@ export function resolveSpoolColorName(colorName: string | null, rgba: string | n
   }
   // Return null (displayed as "-") - better than showing a code
   return null;
-}
-
-/**
- * Build a hex string suitable for SVG `fill=` / props that take a single colour
- * value. Preserves the alpha byte when alpha < FF so a transparent spool renders
- * translucent rather than collapsing to solid black (#1545). Null / malformed
- * input falls back to `#808080`. Prefer `getSwatchStyle` for div backgrounds —
- * it paints a visible checkerboard under transparent fills.
- */
-export function spoolColorString(rgba: string | null | undefined): string {
-  if (!rgba) return '#808080';
-  const clean = rgba.replace(/^#/, '');
-  if (clean.length < 6) return '#808080';
-  if (clean.length >= 8 && clean.substring(6, 8).toLowerCase() !== 'ff') {
-    return `#${clean.substring(0, 8)}`;
-  }
-  return `#${clean.substring(0, 6)}`;
 }
 
 /**

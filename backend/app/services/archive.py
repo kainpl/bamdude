@@ -305,6 +305,13 @@ class ThreeMFParser:
                                     "used_g": round(used_g, 2),
                                     "type": f.get("type", ""),
                                     "color": f.get("color", ""),
+                                    # The slicer's spool identity for this slot
+                                    # ("GFA00" generic PLA, "GFA01" PLA Matte,
+                                    # "P4d64437" a custom preset, "" third-party).
+                                    # Bambu reports every PLA variant as tray_type
+                                    # "PLA", so this is the only field that tells
+                                    # Basic from Matte from Silk (#2650).
+                                    "tray_info_idx": f.get("tray_info_idx", ""),
                                 }
                             )
                     if filament_slots:
@@ -352,10 +359,9 @@ class ThreeMFParser:
             with zf.open(gcode_path) as f:
                 header = f.read(4096).decode("utf-8", errors="ignore")
 
-            # Look for "; total layer number: XX" pattern
-            match = re.search(r";\s*total\s+layer\s+number[:\s]+(\d+)", header, re.IGNORECASE)
-            if match:
-                self.metadata["total_layers"] = int(match.group(1))
+            layers = read_total_layers(zf, gcode_path)
+            if layers is not None:
+                self.metadata["total_layers"] = layers
 
             # Look for printer_model in gcode header (fallback if not found in slice_info)
             # Format: "; printer_model = Bambu Lab X1 Carbon" or "; printer_model = X1C"
@@ -442,15 +448,20 @@ class ThreeMFParser:
                 elif isinstance(val, (int, float, str)):
                     self.metadata["nozzle_diameter"] = float(val)
 
-            # Bed temperature - first layer or regular
-            for key in ["bed_temperature_initial_layer", "bed_temperature"]:
-                if key in data:
-                    val = data[key]
-                    if isinstance(val, list) and val:
-                        self.metadata["bed_temperature"] = int(float(val[0]))
-                    elif isinstance(val, (int, float, str)):
-                        self.metadata["bed_temperature"] = int(float(val))
-                    break
+            # Bed temperature — the plate's key, not a generic one.
+            #
+            # ``bed_temperature`` exists in BambuStudio's config *definitions*
+            # but is never written into an exported 3MF: the bed temperature is
+            # stored per plate type, and which one applies is decided by
+            # ``curr_bed_type``. Checked against real archived 3MFs — they carry
+            # cool_plate_temp / eng_plate_temp / hot_plate_temp /
+            # textured_plate_temp / supertack_plate_temp and no
+            # ``bed_temperature`` at all, which is why this field was NULL on
+            # every archive ever recorded while nozzle temperature (a key that
+            # does exist) filled in fine.
+            bed_temp = self._bed_temperature_from(data)
+            if bed_temp is not None:
+                self.metadata["bed_temperature"] = bed_temp
 
             # Nozzle temperature
             for key in ["nozzle_temperature_initial_layer", "nozzle_temperature"]:
@@ -478,29 +489,67 @@ class ThreeMFParser:
         except Exception:
             pass  # Print settings are optional; missing values are left unset
 
-    def _extract_settings_from_content(self, content: str):
-        """Extract print settings from config content."""
-        settings_map = {
-            "layer_height": ("layer_height", float),
-            "nozzle_diameter": ("nozzle_diameter", float),
-            "bed_temperature": ("bed_temperature", int),
-            "nozzle_temperature": ("nozzle_temperature", int),
-        }
+    # Bed type → the config key holding that plate's temperature. Mirrors
+    # BambuStudio's ``get_bed_temp_key`` (``PrintConfig.hpp``) and the
+    # ``curr_bed_type`` enum values (``PrintConfig.cpp``) one for one — copied
+    # from the source rather than inferred from the names, because the label
+    # and the enum value differ ("Smooth PEI Plate / High Temp Plate" is shown
+    # for the value "High Temp Plate").
+    _BED_TEMP_KEY_BY_TYPE = {
+        "cool plate": "cool_plate_temp",
+        "engineering plate": "eng_plate_temp",
+        "high temp plate": "hot_plate_temp",
+        "textured pei plate": "textured_plate_temp",
+        "supertack plate": "supertack_plate_temp",
+        # Present in exported files but not in our BambuStudio snapshot's enum —
+        # newer plate, same shape. Mapped so a file that uses it is not silently
+        # left without a temperature.
+        "textured cool plate": "textured_cool_plate_temp",
+    }
 
-        for key, (search_key, converter) in settings_map.items():
-            if key not in self.metadata:
-                try:
-                    # Try JSON format
-                    if f'"{search_key}"' in content:
-                        start = content.find(f'"{search_key}"')
-                        value_start = content.find(":", start) + 1
-                        value_end = content.find(",", value_start)
-                        if value_end == -1:
-                            value_end = content.find("}", value_start)
-                        value = content[value_start:value_end].strip().strip('"')
-                        self.metadata[key] = converter(value)
-                except (ValueError, TypeError):
-                    pass  # Skip settings with unconvertible values
+    @staticmethod
+    def _as_int(val) -> int | None:
+        """First element of a slicer value, as an int. Bambu writes these as
+        one-element string arrays (``['75']``), one per extruder."""
+        if isinstance(val, list):
+            val = val[0] if val else None
+        if val is None or isinstance(val, bool):
+            return None
+        try:
+            return int(float(val))
+        except (TypeError, ValueError):
+            return None
+
+    def _bed_temperature_from(self, data: dict) -> int | None:
+        """The bed temperature for the plate this file was sliced for.
+
+        Prefers the first-layer value: it is what the operator sees the printer
+        do, it is the higher of the two on every stock profile, and it is what
+        the archive comparison is useful for.
+
+        Falls back to the highest plate temperature present when the bed type is
+        missing or unknown. That is deliberately a guess and only reached when
+        the alternative is NULL — a number from the wrong plate is still in the
+        right ballpark, whereas nothing at all is what this whole change exists
+        to fix. An unknown *and* empty file still yields None.
+        """
+        bed_type = (data.get("curr_bed_type") or "").strip().lower()
+        key = self._BED_TEMP_KEY_BY_TYPE.get(bed_type)
+
+        if key:
+            for candidate in (f"{key}_initial_layer", key):
+                value = self._as_int(data.get(candidate))
+                if value:  # 0 means "this plate is not heated" — keep looking
+                    return value
+
+        # Unknown or missing bed type: take the warmest plate the file defines.
+        temps = [
+            t
+            for k in self._BED_TEMP_KEY_BY_TYPE.values()
+            for t in (self._as_int(data.get(f"{k}_initial_layer")), self._as_int(data.get(k)))
+            if t
+        ]
+        return max(temps) if temps else None
 
     def _parse_3dmodel(self, zf: zipfile.ZipFile):
         """Parse 3D/3dmodel.model for MakerWorld metadata."""
@@ -1074,6 +1123,26 @@ def build_plate_objects_payload(data: bytes, plate_idx: int) -> dict:
     }
 
 
+def read_total_layers(zf: zipfile.ZipFile, gcode_path: str) -> int | None:
+    """Layer count from one plate's g-code header, or ``None``.
+
+    BambuStudio writes it as ``; total layer number: N`` (``GCodeProcessor.cpp``),
+    in the first few lines, so only the head of the entry is read — these files
+    are tens of megabytes and the answer is in the first kilobyte.
+
+    ⚠️ **This is per PLATE, not per file.** Plate 1 of a container can be 200
+    layers and plate 5 eighty; a single number for the whole 3MF would be a
+    guess dressed as a fact. Both callers pass the plate they mean.
+    """
+    try:
+        with zf.open(gcode_path) as f:
+            header = f.read(4096).decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+    match = re.search(r";\s*total\s+layer\s+number[:\s]+(\d+)", header, re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
 def parse_plates_from_3mf(zf: zipfile.ZipFile) -> list[dict]:
     """Build the full per-plate metadata list for one 3MF.
 
@@ -1087,7 +1156,7 @@ def parse_plates_from_3mf(zf: zipfile.ZipFile) -> list[dict]:
     Per-plate fields:
         ``index``, ``name``, ``objects`` (list of names),
         ``object_count``, ``has_thumbnail``,
-        ``print_time_seconds``, ``filament_used_grams``,
+        ``print_time_seconds``, ``filament_used_grams``, ``total_layers``,
         ``filaments`` (list of {slot_id, type, color, used_grams, used_meters}),
         ``bed_type`` (per-plate ``curr_bed_type``, or None),
         ``printable_objects`` (dict[identify_id, name]),
@@ -1317,6 +1386,10 @@ def parse_plates_from_3mf(zf: zipfile.ZipFile) -> list[dict]:
                 "has_thumbnail": has_thumbnail,
                 "print_time_seconds": meta.get("prediction"),
                 "filament_used_grams": meta.get("weight"),
+                # ⚠️ Read from this plate's own g-code, not shared across the
+                # file: plates of one container routinely differ by hundreds of
+                # layers. ``None`` for a source-only 3MF that was never sliced.
+                "total_layers": read_total_layers(zf, f"Metadata/plate_{idx}.gcode"),
                 "filaments": meta.get("filaments", []),
                 "bed_type": meta.get("bed_type"),
                 "printable_objects": printable_objects,
@@ -1883,6 +1956,17 @@ class ArchiveService:
 
         return duplicates
 
+    async def _default_rate_cost(self, filament_grams: float | None) -> float | None:
+        """What this much filament costs at the farm's rate, or None.
+
+        None when the operator has never set a rate: the alternative is 0.00,
+        which reads as "this print was free" rather than "nobody said what
+        filament costs here". See ``services/filament_cost``.
+        """
+        from backend.app.services.filament_cost import cost_of, default_rate_per_kg
+
+        return cost_of(filament_grams, await default_rate_per_kg(self.db))
+
     async def archive_print(
         self,
         printer_id: int | None,
@@ -2180,17 +2264,12 @@ class ArchiveService:
         started_at = datetime.now(timezone.utc) if status == "printing" else None
         completed_at = datetime.now(timezone.utc) if status in ("completed", "failed") else None
 
-        # Calculate initial cost estimate from default setting.
+        # Calculate initial cost estimate from the farm-wide rate.
         # This is a placeholder - usage_tracker.on_print_complete() will overwrite
-        # archive.cost with the actual cost from spool.cost_per_kg later.
-        cost = None
-        filament_grams = metadata.get("filament_used_grams")
-        if filament_grams:
-            from backend.app.api.routes.settings import get_setting
-
-            default_cost_setting = await get_setting(self.db, "default_filament_cost")
-            default_cost_per_kg = float(default_cost_setting) if default_cost_setting else 25.0
-            cost = round((filament_grams / 1000) * default_cost_per_kg, 2)
+        # archive.cost with the actual cost from spool.cost_per_kg later. With no
+        # rate set it stays None rather than becoming 0.00, which would claim the
+        # print was free.
+        cost = await self._default_rate_cost(metadata.get("filament_used_grams"))
 
         # Calculate quantity from printable objects count
         # printable_objects is a dict of {identify_id: name} for non-skipped objects
@@ -2467,11 +2546,9 @@ class ArchiveService:
             # after the 3MF lands.  Mirrors the logic in archive_print().
             filament_grams = metadata.get("filament_used_grams")
             if filament_grams:
-                from backend.app.api.routes.settings import get_setting
-
-                default_cost_setting = await get_setting(self.db, "default_filament_cost")
-                default_cost_per_kg = float(default_cost_setting) if default_cost_setting else 25.0
-                archive.cost = round((filament_grams / 1000) * default_cost_per_kg, 2)
+                recovered = await self._default_rate_cost(filament_grams)
+                if recovered is not None:
+                    archive.cost = recovered
 
             printable_objects = metadata.get("printable_objects")
             if printable_objects and isinstance(printable_objects, dict):
@@ -2747,6 +2824,17 @@ class ArchiveService:
             order_clause = PrintArchive.file_size.desc()
         elif sort_by == "size-asc":
             order_clause = PrintArchive.file_size.asc()
+        elif sort_by in ("printer-asc", "printer-desc"):
+            # A correlated subquery rather than a join: an archive can have no
+            # printer at all (an external print, or one whose printer was
+            # deleted), and an inner join would drop those rows from a list that
+            # is only being re-ordered. COALESCE rather than a NULLS clause,
+            # whose support differs between our two backends — and it falls back
+            # to the same value the row DISPLAYS (`sliced_for_model`), so the
+            # order matches the column on screen instead of an id nobody sees.
+            printer_name = select(Printer.name).where(Printer.id == PrintArchive.printer_id).scalar_subquery()
+            printer_sort = func.coalesce(printer_name, PrintArchive.sliced_for_model, "")
+            order_clause = printer_sort.asc() if sort_by == "printer-asc" else printer_sort.desc()
 
         # Total count (same filters, no limit/offset)
         count_query = select(func.count()).select_from(PrintArchive).where(*filters)

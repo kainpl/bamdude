@@ -2,6 +2,18 @@ import json
 
 from pydantic import BaseModel, Field, field_validator
 
+# Outbound service URLs validated when they are saved, so a bad value is rejected
+# at configuration time with a message naming the field rather than failing
+# opaquely at request time. All of these are commonly self-hosted on the same
+# host or LAN as BamDude, so the LAN-service policy applies — see
+# ``api/routes/_url_safety.assert_safe_lan_service_url``.
+#
+# Module-level rather than a class attribute so the drift-guard test can import
+# the real tuple and cannot fall out of step with it. **Any new outbound-URL
+# setting belongs here** — or, if it must be reachable on the public internet, on
+# the stricter OIDC guard instead.
+LAN_SERVICE_URL_SETTINGS = ("ha_url", "obico_ml_url", "orcaslicer_api_url", "bambu_studio_api_url")
+
 
 class AppSettings(BaseModel):
     """Application settings schema."""
@@ -25,7 +37,9 @@ class AppSettings(BaseModel):
         ge=1,
         description="Days since the design's most recent print before its 3MF copies are eligible for cleanup. Minimum 1.",
     )
-    default_filament_cost: float = Field(default=25.0, description="Default filament cost per kg")
+    # 0 = unset. There is no sensible default price of plastic, and a
+    # plausible figure reads as an answer while a blank reads as a blank.
+    default_filament_cost: float = Field(default=0.0, description="Default filament cost per kg (0 = unset)")
     currency: str = Field(default="USD", description="Currency for cost tracking")
     energy_cost_per_kwh: float = Field(default=0.15, description="Electricity cost per kWh for energy tracking")
     energy_tracking_mode: str = Field(
@@ -35,6 +49,18 @@ class AppSettings(BaseModel):
 
     # Spoolman integration
     spoolman_enabled: bool = Field(default=False, description="Enable Spoolman integration for filament tracking")
+
+    # Zigbee coordinator (phase 1). Declared here rather than left as loose
+    # key-value rows because ``update_settings`` persists exactly the fields
+    # this schema declares — an undeclared key is silently dropped by Pydantic,
+    # so without these there is no way to configure Zigbee short of writing to
+    # the database by hand. The phase-4 UI binds to the same three.
+    zigbee_enabled: bool = Field(default=False, description="Run the built-in Zigbee coordinator")
+    zigbee_transport: str = Field(default="ethernet", description="Zigbee dongle transport: ethernet or usb")
+    zigbee_path: str = Field(
+        default="",
+        description="Zigbee dongle address: host:port for ethernet, serial device path for usb",
+    )
     spoolman_url: str = Field(default="", description="Spoolman server URL (e.g., http://localhost:7912)")
     spoolman_sync_mode: str = Field(
         default="auto", description="Sync mode: 'auto' syncs immediately, 'manual' requires button press"
@@ -99,6 +125,15 @@ class AppSettings(BaseModel):
         default=35.0, description="Temperature threshold for fair (orange): <= this value, > is red"
     )
     ams_history_retention_days: int = Field(default=30, description="Number of days to keep AMS sensor history data")
+    plug_power_history_retention_days: int = Field(
+        default=30, description="Number of days to keep smart-plug power history"
+    )
+    sensor_history_retention_days: int = Field(
+        default=30, description="Number of days to keep sensor measurement history"
+    )
+    plug_power_sample_seconds: int = Field(
+        default=60, description="How often plugs that do not report on their own are read for history"
+    )
     printer_sensor_history_retention_days: int = Field(
         default=30, description="Number of days to keep printer heater (nozzle/bed/chamber) history data"
     )
@@ -123,7 +158,7 @@ class AppSettings(BaseModel):
     )
     # Preheat / heat-soak before queued prints (#1468). The scheduler stage runs on the
     # idle printer between FTP upload and start_print. Three hardware tiers: chamber heater
-    # (H2C/H2D/H2D Pro/H2S/X2D/X1E) M141 → wait for chamber sensor → soak; chamber sensor
+    # (H2C/H2D/H2D Pro/H2S/X2D/X1E) set_ctt → wait for chamber sensor → soak; chamber sensor
     # only (X1C/P2S) M140 → wait for radiant warm-up OR timeout → soak; no chamber sensor
     # (P1S/P1P/A1/A1 Mini) M140 → fixed soak timer. Chamber target derives per-print from
     # the loaded AMS filament types (max across slots); 0 skips the chamber phase but keeps
@@ -180,6 +215,27 @@ class AppSettings(BaseModel):
             "JSON blob of per-filament-type humidity trigger thresholds for auto-drying and alarms. "
             'Shape: {"default": int, "PLA": int, "ASA": int, ...}. '
             "Empty = fall back to ams_humidity_fair for all types."
+        ),
+    )
+    zigbee_sensor_reporting: str = Field(
+        default="",
+        description=(
+            "JSON blob of Zigbee sensor reporting parameters per measurement. "
+            'Shape: {"temperature": {"min_interval": int, "max_interval": int, "reportable_change": float}, ...}. '
+            "reportable_change is in the measurement's display unit (°C, %, ppm, µg/m³). "
+            "Empty, or any missing field, falls back to the registry defaults."
+        ),
+    )
+    zigbee_sensor_stale_multiplier: str = Field(
+        default="2",
+        description="A Zigbee sensor reading older than this multiple of its reporting max_interval is stale.",
+    )
+    zigbee_sensor_poll_seconds: str = Field(
+        default="30",
+        description=(
+            "Poll cadence for MAINS-powered Zigbee sensors, jittered like the plug poller. "
+            "Battery sensors are never polled on a timer: they are asleep, and each attempt would "
+            "hold the shared radio until it timed out."
         ),
     )
 
@@ -335,6 +391,21 @@ class AppSettings(BaseModel):
             "Empty string falls back to the BAMBU_STUDIO_API_URL env default."
         ),
     )
+    # How long to keep waiting on a slice that is not finishing. Measured
+    # against the sidecar's progress channel, not total elapsed time — a heavy
+    # model can legitimately slice for half an hour, and a wall-clock ceiling
+    # cannot tell that apart from a stalled one (#2730). A sidecar too old to
+    # report progress falls back to using this as a total-elapsed ceiling, which
+    # is the old behaviour with a number the user can change.
+    slicer_stall_timeout_minutes: int = Field(
+        default=15,
+        ge=1,
+        le=240,
+        description=(
+            "Give up on a slice after this many minutes with no progress from the sidecar. "
+            "On a sidecar that does not report progress, applies to total slicing time instead."
+        ),
+    )
 
     # Prometheus metrics endpoint
     prometheus_enabled: bool = Field(default=False, description="Enable Prometheus metrics endpoint at /metrics")
@@ -466,6 +537,9 @@ class AppSettingsUpdate(BaseModel):
     energy_cost_per_kwh: float | None = None
     energy_tracking_mode: str | None = None
     spoolman_enabled: bool | None = None
+    zigbee_enabled: bool | None = None
+    zigbee_transport: str | None = None
+    zigbee_path: str | None = None
     spoolman_url: str | None = None
     spoolman_sync_mode: str | None = None
     spoolman_disable_weight_sync: bool | None = None
@@ -485,6 +559,9 @@ class AppSettingsUpdate(BaseModel):
     ams_temp_good: float | None = None
     ams_temp_fair: float | None = None
     ams_history_retention_days: int | None = None
+    plug_power_history_retention_days: int | None = Field(default=None, ge=1, le=365)
+    sensor_history_retention_days: int | None = Field(default=None, ge=1, le=365)
+    plug_power_sample_seconds: int | None = Field(default=None, ge=10, le=3600)
     printer_sensor_history_retention_days: int | None = None
     prefer_lowest_filament: bool | None = None
     queue_shortest_first: bool | None = None
@@ -498,6 +575,9 @@ class AppSettingsUpdate(BaseModel):
     print_drying_enabled: bool | None = None
     drying_presets: str | None = None
     ams_humidity_thresholds: str | None = None
+    zigbee_sensor_reporting: str | None = None
+    zigbee_sensor_stale_multiplier: str | None = None
+    zigbee_sensor_poll_seconds: str | None = None
     stagger_enabled: bool | None = None
     stagger_concurrent: int | None = None
     stagger_interval_minutes: int | None = None
@@ -541,6 +621,7 @@ class AppSettingsUpdate(BaseModel):
     use_slicer_api: bool | None = None
     orcaslicer_api_url: str | None = None
     bambu_studio_api_url: str | None = None
+    slicer_stall_timeout_minutes: int | None = Field(default=None, ge=1, le=240)
     prometheus_enabled: bool | None = None
     prometheus_token: str | None = None
     low_stock_threshold: float | None = Field(default=None, ge=0.1, le=99.9)
@@ -570,6 +651,25 @@ class AppSettingsUpdate(BaseModel):
     obico_enabled_printers: str | None = None
     default_sidebar_order: str | None = None
     gcode_snippets: str | None = None
+
+    @field_validator(*LAN_SERVICE_URL_SETTINGS)
+    @classmethod
+    def validate_lan_service_url(cls, v: str | None, info) -> str | None:
+        """Validate outbound service URLs on save, not at request time.
+
+        A bad value is then rejected with a message naming the field, instead of
+        failing opaquely when the integration next runs. Every one of these
+        services is commonly self-hosted on the same host or LAN as BamDude, so
+        the LAN-service policy applies: loopback and RFC-1918 stay permitted,
+        while cloud-metadata endpoints, numeric-encoded IPs, IPv4-mapped IPv6 and
+        non-HTTP schemes are rejected.
+        """
+        if not v:
+            return v  # empty means "not configured" — nothing to validate
+        from backend.app.api.routes._url_safety import assert_safe_lan_service_url
+
+        assert_safe_lan_service_url(v, label=info.field_name)
+        return v
 
     @field_validator("gcode_snippets")
     @classmethod

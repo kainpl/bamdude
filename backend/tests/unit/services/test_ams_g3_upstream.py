@@ -382,3 +382,47 @@ class TestNozzleMismatchGuard:
 
     def test_float_noise_tolerated(self):
         assert _nozzle_mismatch_message(0.40001, [0.4]) is None
+
+
+# ── #2670 ────────────────────────────────────────────────────────────────────
+
+
+class TestHtRemovalIsNoticed:
+    """Pulling an AMS-HT spool must clear the slot AND fire the change callback.
+
+    The HT signals removal only through ``tray_exist_bits``: it keeps echoing the
+    old ``tray_type`` / ``tag_uid`` / ``remain``, and its ``state`` is
+    firmware-variant. Both halves of upstream #2670 live here — the bit position,
+    and the change hash that has to be taken over the merged state for the
+    cleared slot to be visible to it.
+    """
+
+    def test_pulled_ht_spool_clears_and_notifies(self, client):
+        client.state.raw_data["ams"] = [{"id": 128, "tray": [_loaded_tray(0, state=9)]}]
+        seen: list = []
+        client.on_ams_change = seen.append
+
+        # Bit 16 clear = HT-A empty. The payload still carries the old spool,
+        # which is exactly what the firmware does.
+        client._handle_ams_data(
+            {
+                "ams": [{"id": 128, "tray": [_loaded_tray(0, state=9)]}],
+                "tray_exist_bits": "0",
+            }
+        )
+
+        tray = client.state.raw_data["ams"][0]["tray"][0]
+        assert tray["tray_type"] == ""
+        assert seen, "on_ams_change must fire — otherwise the spool stays bound to an empty slot"
+
+    def test_loaded_ht_is_not_cleared(self, client):
+        client.state.raw_data["ams"] = [{"id": 128, "tray": [_loaded_tray(0, state=9)]}]
+
+        client._handle_ams_data(
+            {
+                "ams": [{"id": 128, "tray": [_loaded_tray(0, state=9)]}],
+                "tray_exist_bits": hex(1 << 16),
+            }
+        )
+
+        assert client.state.raw_data["ams"][0]["tray"][0]["tray_type"] == "PLA"

@@ -43,12 +43,40 @@ file using each JSON's own `display_name` / `model_id`, so it is independent of
 
 ## Re-sync protocol (when BS ships new firmware/features)
 
-1. Update the local BS checkout to the new tag (`temp/references/BambuStudio/`).
+**Which tag to mirror:** whichever is newest at the moment you check — public
+release or beta. BS tags both on the same line (`v02.07.01.62` was the public
+release; `v02.08.00.50` and `v02.08.01.55` are betas after it), and the printer
+configs have so far been identical across them. If a beta ever *does* change a
+config, that is worth a line in the audit note before mirroring it: a flag a beta
+turns on can still be reverted before release.
+
+1. `git -C temp/references/BambuStudio fetch --tags`, then check the newest tag
+   **and** whether `origin/master` is ahead of it (BS ships config changes on
+   master before tagging).
 2. Re-copy: `cp temp/references/BambuStudio/resources/printers/*.json backend/app/data/printers/`.
-3. `git diff` — **byte-identical unless BS actually changed a model.** Review any
-   diff (new `support_*` flags, new models) and wire it up in `printer_configs.py`
-   + the calibration UI as needed.
+3. **Compare parsed JSON, not bytes.** Review any real diff (new `support_*`
+   flags, new models) and wire it up in `printer_configs.py` + the calibration UI.
 4. Bump the tag/commit noted above.
+
+> ⚠️ **`git diff` alone will show all fifteen files as changed, always.** Our
+> pre-commit `end-of-file-fixer` appends a trailing newline that BS's copies do
+> not have — one byte per file, no content difference. "Byte-for-byte" above is
+> true of the content and not of the last byte. Verified 2026-08-10: all fifteen
+> parse to identical JSON against `v02.08.01.55`. Use:
+>
+> ```bash
+> python - <<'EOF'
+> import json, io, os
+> ours, bs = 'backend/app/data/printers', 'temp/references/BambuStudio/resources/printers'
+> for f in sorted(os.listdir(ours)):
+>     if not f.endswith('.json') or f == 'filaments_blacklist.json':
+>         continue
+>     a = json.load(io.open(f'{ours}/{f}', encoding='utf-8'))
+>     b = json.load(io.open(f'{bs}/{f}', encoding='utf-8'))
+>     if a != b:
+>         print('CONTENT DIFF:', f)
+> EOF
+> ```
 
 ## License
 

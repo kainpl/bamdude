@@ -12,6 +12,7 @@ import {
   Archive,
   ListTodo,
   Package,
+  PackageX,
   Layers,
   Clock,
   CheckCircle2,
@@ -162,8 +163,8 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
       name: name.trim(),
       description: description.trim() || undefined,
       color,
-      target_count: targetCount ? parseInt(targetCount, 10) : undefined,
-      target_parts_count: targetPartsCount ? parseInt(targetPartsCount, 10) : undefined,
+      target_count: targetCount !== '' ? parseInt(targetCount, 10) : (project ? null : undefined),
+      target_parts_count: targetPartsCount !== '' ? parseInt(targetPartsCount, 10) : (project ? null : undefined),
       // Explicit null clears on edit (the backend keys off model_fields_set);
       // undefined on create so the column keeps its default. Sending undefined
       // on edit made an emptied field silently revert (#2536).
@@ -324,7 +325,7 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
                 onChange={(e) => setTargetCount(e.target.value)}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
                 placeholder={hasPlanData && planPlates > 0 ? planPlates.toString() : t('projects.targetPlatesPlaceholder')}
-                min="1"
+                min="0"
               />
               <p className="text-xs text-bambu-gray mt-1 flex items-center gap-2 flex-wrap">
                 <span>{t('projects.targetPlatesHelp')}</span>
@@ -350,7 +351,7 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
                 onChange={(e) => setTargetPartsCount(e.target.value)}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
                 placeholder={hasPlanData && planParts > 0 ? planParts.toString() : t('projects.targetPartsPlaceholder')}
-                min="1"
+                min="0"
               />
               <p className="text-xs text-bambu-gray mt-1 flex items-center gap-2 flex-wrap">
                 <span>{t('projects.targetPartsHelp')}</span>
@@ -756,10 +757,10 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
 
         {/* Progress section - show for all projects */}
         <div className="mb-4">
-          {(project.target_count || project.target_parts_count) ? (
+          {((project.target_count ?? 0) > 0 || (project.target_parts_count ?? 0) > 0) ? (
             <div className="space-y-3">
               {/* Plates progress */}
-              {project.target_count && (
+              {(project.target_count ?? 0) > 0 && (
                 <div>
                   <div className="flex items-center justify-between text-xs mb-1">
                     <span className="text-bambu-gray">{t('projects.plates')}</span>
@@ -782,7 +783,7 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
                 </div>
               )}
               {/* Parts progress */}
-              {project.target_parts_count && (
+              {(project.target_parts_count ?? 0) > 0 && (
                 <div>
                   <div className="flex items-center justify-between text-xs mb-1">
                     <span className="text-bambu-gray">{t('projects.parts')}</span>
@@ -887,6 +888,18 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
               <Package className="w-3.5 h-3.5 text-bambu-green" />
               <span>{project.completed_count} {t('projects.parts')}</span>
             </div>
+            {/* Scrap off completed plates. Sits next to the parts count
+                because it explains it: the parts figure is already net of
+                this, so without it the card shows fewer parts than plates
+                produced and says nothing about where they went. Amber, not
+                red — matching the project detail page; a defective part is
+                not a failed print. */}
+            {project.defective_count > 0 && (
+              <div className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400" title={t('projects.defectiveParts')}>
+                <PackageX className="w-3.5 h-3.5" />
+                <span>{project.defective_count}</span>
+              </div>
+            )}
             {project.failed_count > 0 && (
               <div className="flex items-center gap-1.5 text-red-600 dark:text-red-400" title={t('projects.failedParts')}>
                 <AlertTriangle className="w-3.5 h-3.5" />

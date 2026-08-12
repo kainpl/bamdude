@@ -16,6 +16,7 @@ class ArchiveBase(BaseModel):
     # editable twin of the short ``failure_reason`` cause code.
     error_message: str | None = None
     quantity: int | None = None  # Number of items printed
+    defective_count: int | None = None  # How many of them were scrap
     # User-defined link (Printables, Thingiverse, etc.)
     external_url: str | None = None
 
@@ -113,6 +114,9 @@ class ArchiveResponse(BaseModel):
     photos: list | None
     failure_reason: str | None
     quantity: int = 1  # Number of items printed
+    # Scrap out of that plate. Shown beside ``object_count`` in the archive card
+    # and list; never subtracted from any total (see models/archive.py).
+    defective_count: int = 0
 
     # Energy tracking
     energy_kwh: float | None = None
@@ -179,7 +183,16 @@ class ArchiveSlim(BaseModel):
     status: str
     started_at: datetime | None
     completed_at: datetime | None
+    # Filament ONLY — computed by usage_tracker from grams x price per spool
+    # (plus the untracked remainder at the default rate) and recomputed by
+    # POST /archives/recalculate-costs. Electricity is NOT in here.
     cost: float | None
+    # Measured electricity for this print, when a smart plug covered it.
+    # Populated in per-print energy tracking mode; NULL otherwise, and NULL for
+    # every print on a printer with no plug — those then compete on filament
+    # alone, which is the honest comparison rather than a fabricated zero-cost.
+    energy_kwh: float | None = None
+    energy_cost: float | None = None
     quantity: int = 1
     created_at: datetime | None
     thumbnail_path: str | None = None
@@ -275,18 +288,6 @@ class ProjectPageResponse(BaseModel):
     model_pictures: list[ProjectPageImage] = []
     profile_pictures: list[ProjectPageImage] = []
     thumbnails: list[ProjectPageImage] = []
-
-
-class ProjectPageUpdate(BaseModel):
-    """Update project page data in 3MF file."""
-
-    title: str | None = None
-    description: str | None = None
-    designer: str | None = None
-    license: str | None = None
-    copyright: str | None = None
-    profile_title: str | None = None
-    profile_description: str | None = None
 
 
 class ReprintRequest(BaseModel):

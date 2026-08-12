@@ -101,6 +101,18 @@ class SmartPlug(Base):
         Float, default=1.0, server_default="1.0"
     )  # Unit conversion for the lifetime counter (e.g. 0.001 for Wh→kWh)
 
+    # Zigbee plug fields (required when plug_type="zigbee", m115)
+    #
+    # The IEEE address, not the short NWK one: NWK is reassigned whenever a
+    # device rejoins the network, so a persisted NWK would quietly come to point
+    # at a different device — or none — after a power cut. IEEE is burned into
+    # the radio and never changes.
+    #
+    # No scaling columns here, unlike MQTT and REST: a Zigbee plug reports its
+    # own multiplier/divisor on the Metering cluster, so the device tells us what
+    # its counter means instead of the operator having to.
+    zigbee_ieee: Mapped[str | None] = mapped_column(String(23), nullable=True)
+
     # Link to printer (multiple plugs/scripts can be linked to one printer)
     printer_id: Mapped[int | None] = mapped_column(ForeignKey("printers.id", ondelete="SET NULL"), nullable=True)
     # Whether this plug is the printer's MAINS feed (m110 / upstream #2629).

@@ -24,7 +24,7 @@ from backend.app.models.printer import Printer
 from backend.app.services import firmware_store
 from backend.app.services.bambu_ftp import get_ftp_retry_settings, upload_file_async, with_ftp_retry
 from backend.app.services.firmware_profiles import get_firmware_profile
-from backend.app.services.printer_manager import printer_manager
+from backend.app.services.printer_manager import is_printer_busy
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +40,14 @@ class BatchTarget:
 
 
 def _is_printing(printer_id: int) -> bool:
-    """True if the printer is mid-job (RUNNING/PAUSE) — never FTP to its SD then."""
-    client = printer_manager.get_client(printer_id)
-    if not client or not client.state:
-        return False
-    return client.state.state in ("RUNNING", "PAUSE")
+    """True if the printer is mid-job — never FTP to its SD then.
+
+    Kept as a name because the batch code reads better with it, but the rule
+    itself now lives in one place. It also got **wider** doing so: this used to
+    ask for ``("RUNNING", "PAUSE")`` and let ``PREPARE`` through, which is a
+    printer already heating and positioning for a job.
+    """
+    return is_printer_busy(printer_id)
 
 
 async def _ftp_upload(item, sf) -> None:
@@ -111,14 +114,19 @@ async def _process_one(run_id: int, item, sf, sem: asyncio.Semaphore) -> str:
             await _ftp_upload(item, sf)
             profile = get_firmware_profile(item.model)
             if profile.remote_apply:
-                from backend.app.services.firmware_apply import apply_remote
-
-                await _set_item(item.id, status="applying", action="remote_apply")
-                await _broadcast(run_id, item.printer_id, "applying", percent=80)
-                await apply_remote(item.printer_id, item.model, item.to_version, profile)
-                await _set_item(item.id, status="applied", finished_at=_now())
-                await _broadcast(run_id, item.printer_id, "applied", percent=100)
-                return "applied"
+                # Phase 2 is not built. This branch used to import
+                # ``backend.app.services.firmware_apply``, a module that has
+                # never existed — so it read as "implemented over there" while
+                # being an ImportError waiting for the first profile to set the
+                # flag. No profile does today, which is why nothing ever hit it.
+                #
+                # Kept as an explicit refusal rather than deleted: the flag is
+                # deliberate scaffolding (see ``FirmwareProfile.remote_apply``),
+                # and silently falling through to the manual path would tell an
+                # operator their firmware was applied remotely when it was not.
+                raise NotImplementedError(
+                    f"remote firmware apply is not implemented; {item.model} must be applied from the printer"
+                )
             await _set_item(
                 item.id,
                 status="uploaded",

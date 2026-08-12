@@ -21,11 +21,78 @@ on:
 permissions:
   contents: read
   packages: write
+  actions: read  # the gate below reads CI run conclusions for this commit
 
 jobs:
+  # ============================================================================
+  # Gate — refuse to publish a commit whose CI is not green
+  # ============================================================================
+  # Publishing used to be unconditional: this workflow fires on the tag push and
+  # had no idea whether CI had ever run, let alone passed. That is how 0.5.1.3
+  # came to exist — 0.5.1.2's CI was RED (a migration made every fresh install
+  # fail to boot), the tag went up anyway, and the registry served a :latest that
+  # no new user could start.
+  #
+  # The rule is "no run for this SHA failed", NOT "some run for this SHA
+  # succeeded". That distinction is the whole point. ci.yml opens with
+  # skip-duplicate-actions, so a fast-forward dev -> main produces a SECOND run
+  # on the same SHA that skips every job and concludes `success` in ~10s. A gate
+  # asking "did CI succeed here?" would find that empty run and wave the release
+  # through — reproducing the exact bug it exists to prevent. 0.5.1.2 had both:
+  # dev = failure, main = success-by-skipping.
+  #
+  # Runs still in flight also block: a tag pushed before CI finishes is a tag
+  # nobody has tested yet.
+  gate:
+    name: Require green CI
+    runs-on: ubuntu-latest
+    if: github.repository == 'kainpl/bamdude'
+    steps:
+      - name: CI must be green for ${{ github.sha }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          runs=$(gh api --paginate \
+            "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}&per_page=100" \
+            --jq '.workflow_runs[] | "\(.status)\t\(.conclusion // "-")\t\(.head_branch)\t\(.html_url)"')
+
+          if [ -z "$runs" ]; then
+            echo "::error::No CI run found for ${SHA}. Push the commit and let CI finish before tagging."
+            exit 1
+          fi
+
+          echo "CI runs for ${SHA}:"
+          printf '%s\n' "$runs" | sed 's/^/  /'
+
+          # Anything unfinished means the tag outran its own tests.
+          if printf '%s\n' "$runs" | grep -qvP '^completed\t'; then
+            echo "::error::A CI run for ${SHA} has not finished. Wait for it, then re-run this workflow."
+            exit 1
+          fi
+
+          # A single failure anywhere for this commit is disqualifying, however
+          # many duplicate-skipped runs concluded success alongside it.
+          if failed=$(printf '%s\n' "$runs" | grep -P '^completed\t(failure|timed_out|startup_failure)\t'); then
+            echo "::error::CI failed for ${SHA} — refusing to publish."
+            printf '%s\n' "$failed" | sed 's/^/  FAILED: /'
+            exit 1
+          fi
+
+          if ! printf '%s\n' "$runs" | grep -qP '^completed\tsuccess\t'; then
+            echo "::error::No successful CI run for ${SHA} (cancelled or skipped only)."
+            exit 1
+          fi
+
+          echo "CI is green for ${SHA}."
+
   publish:
     name: Build & push tagged image
     runs-on: ubuntu-latest
+    needs: gate
     if: github.repository == 'kainpl/bamdude'
     steps:
       - uses: actions/checkout@v7

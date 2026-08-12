@@ -58,6 +58,7 @@ from backend.app.services.spool_csv import (
 )
 from backend.app.services.spoolman import SpoolmanClient, get_spoolman_client, init_spoolman_client
 from backend.app.utils.filament_ids import filament_id_to_setting_id, normalize_slicer_filament
+from backend.app.utils.filament_remaining import grams_used
 from backend.app.utils.tag_normalization import normalize_tag_uid, normalize_tray_uuid
 
 logger = logging.getLogger(__name__)
@@ -2540,8 +2541,12 @@ async def sync_weights_from_ams(
             skipped += 1
             continue
 
-        lw = spool.label_weight or 1000
-        new_used = round(lw * (100 - remain_val) / 100.0, 1)
+        # Firmware's own grams when it offers them, the percentage otherwise —
+        # BS's precedence, in one place so the three call sites cannot drift.
+        new_used = grams_used(tray.get("remain_g"), remain_val, spool.label_weight)
+        if new_used is None:
+            skipped += 1
+            continue
         old_used = spool.weight_used or 0
 
         if round(old_used, 1) != new_used:

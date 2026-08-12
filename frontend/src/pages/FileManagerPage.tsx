@@ -37,6 +37,7 @@ import {
   Image,
   User,
   Box,
+  History,
   RefreshCw,
   Lock,
   FolderSymlink,
@@ -66,6 +67,7 @@ import { SliceModal } from '../components/SliceModal';
 import { ModelViewerModal } from '../components/ModelViewerModal';
 import { FileUploadModal } from '../components/FileUploadModal';
 import { FolderReadmePanel } from '../components/FolderReadmePanel';
+import { FolderTreePicker } from '../components/FolderTreePicker';
 import { LibraryFileNotesButton } from '../components/LibraryFileNotesButton';
 import { PurgeOldFilesModal } from '../components/PurgeOldFilesModal';
 import { TrashSplitButton } from '../components/TrashSplitButton';
@@ -74,14 +76,17 @@ import { useToast } from '../contexts/ToastContext';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDateTime, formatDuration, parseUTCDate, type TimeFormat, type DateFormat } from '../utils/date';
-import { formatFileSize } from '../utils/file';
+import { fileActivityAt, formatFileSize } from '../utils/file';
 import { FileTagBadges } from '../components/FileTagBadges';
 import { PlateObjectsPreviewModal } from '../components/PlateObjectsPreviewModal';
 import { SkipObjectsIcon } from '../components/SkipObjectsModal';
-import { KNOWN_FILE_TAGS, getTagStyle, isSliced, isSliceable, isMultiPlate } from '../lib/fileTags';
+import { getTagStyle, isSliced, isSliceable, isMultiPlate } from '../lib/fileTags';
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
 import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
+import { FileTagsPopover, type TagsPopoverAnchor } from '../components/FileTagsPopover';
+import { QueueSequencer } from '../components/QueueSequencer';
 import { libraryTagsQueryKey } from '../utils/libraryTagsQuery';
+import { selectableProjects } from '../utils/projects';
 
 type SortField = 'name' | 'date' | 'size' | 'type';
 type SortDirection = 'asc' | 'desc';
@@ -331,19 +336,6 @@ interface MoveFilesModalProps {
 function MoveFilesModal({ folders, selectedFiles, currentFolderId, onClose, onMove, isLoading, t }: MoveFilesModalProps) {
   const [targetFolder, setTargetFolder] = useState<number | null>(null);
 
-  const flattenFolders = (items: LibraryFolderTree[], depth = 0): { id: number | null; name: string; depth: number }[] => {
-    const result: { id: number | null; name: string; depth: number }[] = [];
-    for (const item of items) {
-      result.push({ id: item.id, name: item.name, depth });
-      if (item.children.length > 0) {
-        result.push(...flattenFolders(item.children, depth + 1));
-      }
-    }
-    return result;
-  };
-
-  const flatFolders = [{ id: null, name: t('fileManager.rootNoFolder'), depth: 0 }, ...flattenFolders(folders)];
-
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
       <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-sm border border-bambu-dark-tertiary">
@@ -351,27 +343,14 @@ function MoveFilesModal({ folders, selectedFiles, currentFolderId, onClose, onMo
           <h2 className="text-lg font-semibold text-white">{t('fileManager.moveFiles', { count: selectedFiles.length })}</h2>
         </div>
         <div className="p-4 space-y-4">
-          <div className="max-h-64 overflow-y-auto space-y-1">
-            {flatFolders.map((folder) => (
-              <button
-                key={folder.id ?? 'root'}
-                onClick={() => setTargetFolder(folder.id)}
-                disabled={folder.id === currentFolderId}
-                className={`w-full text-left px-3 py-2 rounded transition-colors flex items-center gap-2 ${
-                  targetFolder === folder.id
-                    ? 'bg-bambu-green/20 text-bambu-green'
-                    : folder.id === currentFolderId
-                    ? 'opacity-50 cursor-not-allowed text-bambu-gray'
-                    : 'hover:bg-bambu-dark text-white'
-                }`}
-                style={{ paddingLeft: `${12 + folder.depth * 16}px` }}
-              >
-                <FolderOpen className="w-4 h-4" />
-                {folder.name}
-                {folder.id === currentFolderId && <span className="text-xs text-bambu-gray ml-auto">({t('fileManager.current')})</span>}
-              </button>
-            ))}
-          </div>
+          <FolderTreePicker
+            folders={folders}
+            value={targetFolder}
+            onChange={setTargetFolder}
+            rootLabel={t('fileManager.rootNoFolder')}
+            disabledId={currentFolderId}
+            disabledLabel={t('fileManager.current')}
+          />
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="secondary" onClick={onClose}>
               {t('common.cancel')}
@@ -407,10 +386,16 @@ function LinkFolderModal({ folder, onClose, onLink, isLoading, t }: LinkFolderMo
   );
   const [selectedArchiveId, setSelectedArchiveId] = useState<number | null>(folder.archive_id);
 
-  const { data: projects } = useQuery({
+  const { data: allProjects } = useQuery({
     queryKey: ['projects'],
     queryFn: () => api.getProjects(),
   });
+
+  // Whatever this folder is already in stays offered, archived or not.
+  const projects = useMemo(
+    () => selectableProjects(allProjects, selectedProjectIds),
+    [allProjects, selectedProjectIds],
+  );
 
   const { data: archives } = useQuery({
     queryKey: ['archives-for-link'],
@@ -542,6 +527,11 @@ function LinkFolderModal({ folder, onClose, onLink, isLoading, t }: LinkFolderMo
               {/* Currently linked archive — surfaced above the picker so the
                   per-link unlink affordance (× clears the selection) is
                   obvious without scrolling through the whole archive list. */}
+              {/* ⚠️ The whole point of this field is invisible from here: the link
+                  puts an "open source folder" shortcut on the ARCHIVE, not anything on
+                  the folder. Unsaid, it reads as a setting with no effect — which is
+                  exactly how it was read. */}
+              <p className="text-xs text-bambu-gray leading-snug">{t('fileManager.archiveLinkHint')}</p>
               {selectedArchiveId != null && (
                 <div className="flex items-center justify-between gap-2 bg-bambu-dark rounded-lg px-3 py-2">
                   <div className="flex items-center gap-2 text-sm text-white truncate">
@@ -614,10 +604,16 @@ function LinkFileModal({ file, onClose, onLink, isLoading, t }: LinkFileModalPro
     () => new Set(file.project_ids ?? []),
   );
 
-  const { data: projects } = useQuery({
+  const { data: allProjects } = useQuery({
     queryKey: ['projects'],
     queryFn: () => api.getProjects(),
   });
+
+  // Whatever this folder is already in stays offered, archived or not.
+  const projects = useMemo(
+    () => selectableProjects(allProjects, selectedProjectIds),
+    [allProjects, selectedProjectIds],
+  );
 
   const toggleProject = (projectId: number) => {
     setSelectedProjectIds((prev) => {
@@ -726,15 +722,25 @@ interface FolderTreeItemProps {
   defaultExpanded?: boolean;
   hasPermission: (permission: Permission) => boolean;
   t: TFunction;
+  timeFormat: TimeFormat;
+  dateFormat: DateFormat;
 }
 
-function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, onRename, depth = 0, wrapNames = false, defaultExpanded = true, hasPermission, t }: FolderTreeItemProps) {
+function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, onRename, depth = 0, wrapNames = false, defaultExpanded = true, hasPermission, t, timeFormat, dateFormat }: FolderTreeItemProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [showActions, setShowActions] = useState(false);
   const hasChildren = folder.children.length > 0;
   // m044: M2M projects + optional single archive.
   const isLinked = folder.projects.length > 0 || folder.archive_id != null;
   const isExternal = folder.is_external;
+  // The row has no room for a date column — the order icon → name → lock →
+  // link → count → menu is deliberate and keeps every row's right edge aligned.
+  // So the sort key lives in the name's tooltip, where it explains why a folder
+  // sits where it does under "sort by activity" (#2680). Omitted entirely when
+  // the server sent nothing rather than shown as an empty line.
+  const nameTitle = folder.latest_activity_at
+    ? `${folder.name}\n${t('fileManager.lastActivity')}: ${formatDateTime(folder.latest_activity_at, timeFormat, dateFormat)}`
+    : folder.name;
 
   return (
     <div>
@@ -765,7 +771,7 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
         ) : (
           <FolderOpen className="w-4 h-4 text-bambu-green flex-shrink-0" />
         )}
-        <span className={`text-sm flex-1 min-w-0 ${wrapNames ? 'break-all' : 'truncate'}`} title={folder.name}>{folder.name}</span>
+        <span className={`text-sm flex-1 min-w-0 ${wrapNames ? 'break-all' : 'truncate'}`} title={nameTitle}>{folder.name}</span>
         {/* Read-only indicator for external folders — non-interactive
             metadata, kept adjacent to the name. */}
         {isExternal && folder.external_readonly && (
@@ -847,17 +853,35 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
                   <Link2 className="w-3.5 h-3.5" />
                   {isLinked ? t('fileManager.changeLink') : t('fileManager.linkTo')}
                 </button>
+                {/* A folder holds nobody's ownership, so clearing one that has
+                    contents needs delete_all. delete_own is enough for an empty
+                    one (#1781) — but only the BACKEND can say "empty", because a
+                    folder holding somebody's trashed file looks empty here and
+                    still refuses. This gate is the hint, not the rule. */}
+                {(() => {
+                  const looksEmpty = folder.file_count === 0 && folder.children.length === 0;
+                  const canDelete =
+                    hasPermission('library:delete_all') ||
+                    (hasPermission('library:delete_own') && looksEmpty && !folder.is_external);
+                  const why = !canDelete
+                    ? hasPermission('library:delete_own') && !looksEmpty
+                      ? t('fileManager.onlyEmptyFolders')
+                      : t('fileManager.noPermissionDeleteFolder')
+                    : undefined;
+                  return (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                    hasPermission('library:delete_all') ? 'text-red-700 dark:text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                    canDelete ? 'text-red-700 dark:text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
                   }`}
-                  onClick={() => { if (hasPermission('library:delete_all')) { onDelete(folder.id); setShowActions(false); } }}
-                  disabled={!hasPermission('library:delete_all')}
-                  title={!hasPermission('library:delete_all') ? t('fileManager.noPermissionDeleteFolder') : undefined}
+                  onClick={() => { if (canDelete) { onDelete(folder.id); setShowActions(false); } }}
+                  disabled={!canDelete}
+                  title={why}
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                   {t('common.delete')}
                 </button>
+                  );
+                })()}
               </div>
               </>
             )}
@@ -880,6 +904,8 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
               defaultExpanded={defaultExpanded}
               hasPermission={hasPermission}
               t={t}
+              timeFormat={timeFormat}
+              dateFormat={dateFormat}
             />
           ))}
         </div>
@@ -913,6 +939,10 @@ interface FileCardProps {
   onLink?: (file: LibraryFileListItem) => void;
   onGenerateThumbnail?: (file: LibraryFileListItem) => void;
   onPlateGallery?: (file: LibraryFileListItem) => void;
+  /** Move this one file — the toolbar's Move, without the checkbox dance. */
+  onMove?: (file: LibraryFileListItem) => void;
+  /** Per-file tag popover; the anchor is where the entry was clicked. */
+  onTags?: (file: LibraryFileListItem, anchor: TagsPopoverAnchor) => void;
   /** #1268 — click a user-tag chip to toggle it in the filter rail. */
   onTagClick?: (tagId: number) => void;
   thumbnailVersion?: number;
@@ -929,7 +959,31 @@ interface FileCardProps {
   t: TFunction;
 }
 
-function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onSlice, useSlicerApi, onPreview3d, onDownload, onRename, onGenerateThumbnail, onDelete }: {
+/**
+ * The box of the card or row that owns `trigger`, for anchoring the tag
+ * popover.
+ *
+ * Measured from the ⋮ TRIGGER rather than from the clicked menu entry: the menu
+ * is portal-rendered at the document root, so a menu item has no DOM ancestry
+ * back to its file. Falls back to the trigger's own box if the marker is
+ * missing, which puts the panel beside the button instead of nowhere.
+ */
+function anchorFrom(
+  trigger: HTMLElement | null,
+  selector: string,
+  placement: 'card' | 'row',
+): TagsPopoverAnchor {
+  const el = trigger?.closest(selector) ?? trigger;
+  const r = el?.getBoundingClientRect();
+  return {
+    rect: r
+      ? { top: r.top, right: r.right, bottom: r.bottom, height: r.height }
+      : { top: 0, right: 0, bottom: 0, height: 0 },
+    placement,
+  };
+}
+
+function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onSlice, useSlicerApi, onPreview3d, onDownload, onRename, onGenerateThumbnail, onMove, onTags, onDelete }: {
   file: LibraryFileListItem;
   t: TFunction;
   hasPermission: (permission: Permission) => boolean;
@@ -942,6 +996,8 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   onDownload: (id: number) => void;
   onRename: (f: LibraryFileListItem) => void;
   onGenerateThumbnail: (f: LibraryFileListItem) => void;
+  onMove?: (f: LibraryFileListItem) => void;
+  onTags?: (f: LibraryFileListItem, anchor: TagsPopoverAnchor) => void;
   onDelete: (id: number) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -1064,6 +1120,37 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
               <Pencil className="w-3.5 h-3.5" />
               {t('common.rename')}
             </button>
+            {/* Move and Tags — the two actions that used to exist only in the
+                multi-select toolbar, so moving one file meant ticking its
+                checkbox first. Same permission gate as Rename above, so a
+                *_own user sees them on their own files only. */}
+            {onMove && (
+              <button
+                className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${canModify('library', 'update', file.created_by_id) ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
+                onClick={() => { if (canModify('library', 'update', file.created_by_id)) { onMove(file); setOpen(false); } }}
+                disabled={!canModify('library', 'update', file.created_by_id)}
+              >
+                <MoveRight className="w-3.5 h-3.5" />
+                {t('common.move')}
+              </button>
+            )}
+            {onTags && (
+              <button
+                className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${canModify('library', 'update', file.created_by_id) ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
+                onClick={() => {
+                  if (!canModify('library', 'update', file.created_by_id)) return;
+                  // Anchored to the ROW, not the pointer: this menu is
+                  // portal-rendered away from the row it belongs to, so the
+                  // cursor is nowhere near the file being tagged.
+                  onTags(file, anchorFrom(triggerRef.current, '[data-file-row]', 'row'));
+                  setOpen(false);
+                }}
+                disabled={!canModify('library', 'update', file.created_by_id)}
+              >
+                <TagIcon className="w-3.5 h-3.5" />
+                {t('fileManager.tags.tagAction')}
+              </button>
+            )}
             {(file.file_type === 'stl' || file.file_type === 'obj') && (
               <button
                 className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${canModify('library', 'update', file.created_by_id) ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
@@ -1090,7 +1177,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, useSlicerApi, onPreview3d, onRename, onLink, onGenerateThumbnail, onPlateGallery, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, useSlicerApi, onPreview3d, onRename, onLink, onGenerateThumbnail, onPlateGallery, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   const [showActions, setShowActions] = useState(false);
   // Portal-rendered dropdown — the card root has `overflow-hidden` for the
   // thumbnail crop, which clips an absolute-positioned menu against the card
@@ -1130,6 +1217,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
 
   return (
     <div
+      data-file-card
       className={`group relative bg-bambu-dark-secondary rounded-lg border transition-all overflow-hidden ${
         isSelected
           ? 'border-bambu-green ring-1 ring-bambu-green'
@@ -1264,6 +1352,24 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
               )}
             </span>
           )}
+          {/* How many times this file actually finished a print. The count
+              itself is the button, exactly like the object count beside it,
+              and it opens the same archive view the filename above already
+              opens — this is the label that affordance never had. Nothing is
+              drawn at zero: most of a library is unprinted, and a badge on
+              nearly every card would be noise. */}
+          {file.print_count > 0 && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onOpenArchives(file); }}
+              aria-label={t('fileManager.printedTimes', { count: file.print_count })}
+              title={t('fileManager.printedTimes', { count: file.print_count })}
+              className="flex items-center gap-1 hover:text-bambu-green transition-colors"
+            >
+              <History className="w-3 h-3" />
+              {file.print_count}
+            </button>
+          )}
         </div>
         {file.sliced_for_model && (
           <div className="mt-1 text-xs text-bambu-gray flex items-center gap-1">
@@ -1272,7 +1378,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
           </div>
         )}
         <div className="mt-1 text-xs text-bambu-gray truncate">
-          {formatDateTime(file.created_at, timeFormat, dateFormat)}
+          {formatDateTime(fileActivityAt(file), timeFormat, dateFormat)}
         </div>
         {authEnabled && file.created_by_username && (
           <div className="mt-0.5 text-xs text-bambu-gray flex items-center gap-1">
@@ -1412,6 +1518,35 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
                   {t('common.rename')}
                 </button>
               )}
+              {/* Move and Tags — same pair as the list menu, same gate. */}
+              {onMove && (
+                <button
+                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
+                    canModify('library', 'update', file.created_by_id) ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                  }`}
+                  onClick={() => { if (canModify('library', 'update', file.created_by_id)) { onMove(file); setShowActions(false); } }}
+                  disabled={!canModify('library', 'update', file.created_by_id)}
+                >
+                  <MoveRight className="w-3.5 h-3.5" />
+                  {t('common.move')}
+                </button>
+              )}
+              {onTags && (
+                <button
+                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
+                    canModify('library', 'update', file.created_by_id) ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                  }`}
+                  onClick={() => {
+                    if (!canModify('library', 'update', file.created_by_id)) return;
+                    onTags(file, anchorFrom(triggerRef.current, '[data-file-card]', 'card'));
+                    setShowActions(false);
+                  }}
+                  disabled={!canModify('library', 'update', file.created_by_id)}
+                >
+                  <TagIcon className="w-3.5 h-3.5" />
+                  {t('fileManager.tags.tagAction')}
+                </button>
+              )}
               {onGenerateThumbnail && (file.file_type === 'stl' || file.file_type === 'obj') && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
@@ -1447,6 +1582,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
           desktop. stopPropagation keeps the click off the card body. */}
       <button
         type="button"
+        data-select-file
         onClick={(e) => { e.stopPropagation(); onSelect(file.id); }}
         aria-pressed={isSelected}
         aria-label={t('fileManager.selectFile', { defaultValue: 'Select file' })}
@@ -1497,6 +1633,10 @@ export function FileManagerPage() {
   const [showNewFolderModal, setShowNewFolderModal] = useState(false);
   const [showExternalFolderModal, setShowExternalFolderModal] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
+  // Single-file Move and Tags, reachable from the ⋮ menu without first ticking
+  // a checkbox. `moveFile` reuses MoveFilesModal with a one-id list.
+  const [moveFile, setMoveFile] = useState<LibraryFileListItem | null>(null);
+  const [tagsPopover, setTagsPopover] = useState<{ file: LibraryFileListItem; anchor: TagsPopoverAnchor } | null>(null);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [droppedFiles, setDroppedFiles] = useState<File[]>([]);
   const [isPageDragging, setIsPageDragging] = useState(false);
@@ -1507,7 +1647,14 @@ export function FileManagerPage() {
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'file' | 'folder' | 'bulk'; id: number; count?: number } | null>(null);
   const [printFile, setPrintFile] = useState<LibraryFileListItem | null>(null);
   const [printMultiFile, setPrintMultiFile] = useState<LibraryFileListItem | null>(null);
-  const [scheduleFile, setScheduleFile] = useState<LibraryFileListItem | null>(null);
+  // The files still to be scheduled, in the order they were selected. One entry
+  // is an ordinary Schedule-print open; several is a run through the same
+  // dialog, one file at a time (QueueSequencer). `fromSelection` says whether
+  // the run may write back to the selection when it ends — a run started from
+  // one file's ⋮ menu must not touch what happens to be ticked.
+  const [queueSequence, setQueueSequence] = useState<
+    { files: LibraryFileListItem[]; fromSelection: boolean } | null
+  >(null);
   const [sliceFile, setSliceFile] = useState<LibraryFileListItem | null>(null);
   const [renameItem, setRenameItem] = useState<{ type: 'file' | 'folder'; id: number; name: string } | null>(null);
   const [thumbnailVersions, setThumbnailVersions] = useState<Record<number, number>>({});
@@ -1591,26 +1738,17 @@ export function FileManagerPage() {
   // Filter and sort state (persist sort preferences to localStorage)
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<string>('all');
-  // Tag chip-row — additive on top of `filterType`. AND across selected
-  // tags so the user can express "sliced multi-plate 3MFs" by activating
-  // both `sliced` and `multiplate`. Persisted to localStorage so a
-  // power-user's filter survives page reloads.
-  const [filterTags, setFilterTags] = useState<string[]>(() => {
-    try {
-      const raw = localStorage.getItem('library-filter-tags');
-      const parsed = raw ? JSON.parse(raw) : [];
-      return Array.isArray(parsed) ? parsed.filter((t) => typeof t === 'string') : [];
-    } catch {
-      return [];
-    }
-  });
-  useEffect(() => {
-    try {
-      localStorage.setItem('library-filter-tags', JSON.stringify(filterTags));
-    } catch {
-      /* private mode / quota — silently skip */
-    }
-  }, [filterTags]);
+  // Deliberately NOT persisted, unlike the grid/list view mode: this is a
+  // question, not a preference. Restored silently it would show a partial
+  // library on the next visit with nothing on screen explaining why.
+  const [unprintedOnly, setUnprintedOnly] = useState(false);
+  // `filterTags` used to live here: a client-side AND-predicate over the
+  // computed badges, persisted to localStorage. Both kinds of tag are rows in
+  // one catalog since m128, so `selectedTagIds` below now carries them all and
+  // the server does the filtering. The stale `library-filter-tags` key is left
+  // alone rather than deleted on startup — it is inert once nothing reads it,
+  // and reaching into a user's browser storage to tidy up is a bigger action
+  // than the tidiness is worth.
   const [filterUsername, setFilterUsername] = useState('');
   const [sortField, setSortField] = useState<SortField>(() => {
     const saved = localStorage.getItem('library-sort-field');
@@ -1701,6 +1839,20 @@ export function FileManagerPage() {
     queryKey: libraryTagsQueryKey,
     queryFn: api.getLibraryTags,
   });
+  // The catalog carries BOTH kinds since m128, and the filter row shows both.
+  //
+  // A system tag nobody's library uses is noise, so it is offered only when
+  // something carries it. The count is GLOBAL, from the catalog — the row this
+  // replaced derived it from the loaded page, so pills vanished as you
+  // narrowed, which made switching from one to another impossible: the second
+  // was already off the screen.
+  const systemTagPills = useMemo(
+    () => tagCatalog.filter((tag) => tag.is_system && tag.file_count > 0),
+    [tagCatalog],
+  );
+  // User tags are offered always. Asymmetric on purpose: somebody created that
+  // one deliberately, and an empty tag is precisely the one worth seeing.
+  const userTagPills = useMemo(() => tagCatalog.filter((tag) => !tag.is_system), [tagCatalog]);
   const tagsById = useMemo(() => {
     const m = new Map<number, string>();
     for (const tag of tagCatalog) m.set(tag.id, tag.name);
@@ -1719,6 +1871,32 @@ export function FileManagerPage() {
     setSelectedTagIds((prev) =>
       prev.includes(tagId) ? prev.filter((id) => id !== tagId) : [...prev, tagId],
     );
+  }, []);
+
+  // Is anything narrowing the library right now? Five independent filters, two
+  // of which are easy to forget: the computed-tag chip row survives reloads in
+  // localStorage, and the user-tag filter is applied SERVER-side, so it empties
+  // the listing itself rather than the client-side view of it.
+  const anyFilterActive =
+    searchQuery.trim() !== '' ||
+    filterType !== 'all' ||
+    unprintedOnly ||
+    filterUsername.trim() !== '' ||
+    selectedTagIds.length > 0;
+
+  /**
+   * One definition of what "clear filters" means, because the button used to
+   * carry its own partial one inline — search and type only — and quietly left
+   * three filters running. Four filters now rather than five: the computed-tag
+   * predicate folded into `selectedTagIds` when both kinds of tag became rows
+   * in one catalog.
+   */
+  const clearAllFilters = useCallback(() => {
+    setSearchQuery('');
+    setFilterType('all');
+    setUnprintedOnly(false);
+    setFilterUsername('');
+    setSelectedTagIds([]);
   }, []);
 
   const allFilesRecursive = settings?.library_all_files_recursive ?? false;
@@ -1790,16 +1968,15 @@ export function FileManagerPage() {
     if (filterType !== 'all') {
       result = result.filter((f) => f.file_type === filterType);
     }
-    // Tag chip-row filter — every selected tag must be present (AND).
-    // ``file_tags`` defaults to ``[]`` on the server side so older rows
-    // before m036 (impossible in practice — backfill runs on upgrade)
-    // would simply not match and silently drop. That's intentional: a
-    // user with a tag chip active expects to see only tagged rows.
-    if (filterTags.length > 0) {
-      result = result.filter((f) =>
-        filterTags.every((tag) => (f.file_tags ?? []).includes(tag)),
-      );
+    // Successful completions only — a file attempted and failed still counts
+    // as unprinted here, which is the agreed meaning of the number.
+    if (unprintedOnly) {
+      result = result.filter((f) => !f.print_count);
     }
+    // No tag predicate here any more: BOTH kinds of tag are filtered by the
+    // server through ``tag_ids``, so by the time this list arrives it has
+    // already been narrowed. Re-applying it client-side would be a second,
+    // weaker copy of the same rule.
 
     // Apply username filter
     if (filterUsername.trim()) {
@@ -1817,7 +1994,9 @@ export function FileManagerPage() {
           comparison = (a.print_name || a.filename).localeCompare(b.print_name || b.filename);
           break;
         case 'date':
-          comparison = (parseUTCDate(a.created_at)?.getTime() ?? 0) - (parseUTCDate(b.created_at)?.getTime() ?? 0);
+          // Same source as the rendered date — see fileActivityAt (#2680).
+          comparison =
+            (parseUTCDate(fileActivityAt(a))?.getTime() ?? 0) - (parseUTCDate(fileActivityAt(b))?.getTime() ?? 0);
           break;
         case 'size':
           comparison = a.file_size - b.file_size;
@@ -1830,7 +2009,7 @@ export function FileManagerPage() {
     });
 
     return result;
-  }, [files, searchQuery, filterType, filterTags, filterUsername, sortField, sortDirection]);
+  }, [files, searchQuery, filterType, unprintedOnly, filterUsername, sortField, sortDirection]);
 
   // Check if disk space is low
   const isDiskSpaceLow = useMemo(() => {
@@ -1922,13 +2101,24 @@ export function FileManagerPage() {
 
   const bulkDeleteMutation = useMutation({
     mutationFn: (fileIds: number[]) => api.bulkDeleteLibrary(fileIds, []),
-    onSuccess: (_, fileIds) => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
       queryClient.invalidateQueries({ queryKey: ['library-stats'] });
       queryClient.invalidateQueries({ queryKey: ['library-trash'] });
       queryClient.invalidateQueries({ queryKey: ['library-trash-count'] });
-      showToast(t('fileManager.toast.filesDeleted', { count: fileIds.length }), 'success');
+      // What happened, not what was asked for. A file whose queue item is
+      // mid-print is skipped by the backend, and counting the request reported
+      // it as deleted.
+      showToast(
+        result.skipped_files
+          ? t('fileManager.toast.filesDeletedWithSkipped', {
+              count: result.deleted_files,
+              skipped: result.skipped_files,
+            })
+          : t('fileManager.toast.filesDeleted', { count: result.deleted_files }),
+        'success',
+      );
       setSelectedFiles([]);
       setDeleteConfirm(null);
     },
@@ -2094,6 +2284,14 @@ export function FileManagerPage() {
     return files.filter((f) => selectedFiles.includes(f.id) && isSliced(f));
   }, [files, selectedFiles]);
 
+  // Schedule one file from its own ⋮ menu — a run of length 1, which renders
+  // exactly as the dialog always did (the counter only appears for several
+  // files) and leaves the selection alone, like Move and Tags do from there.
+  const scheduleOne = useCallback(
+    (file: LibraryFileListItem) => setQueueSequence({ files: [file], fromSelection: false }),
+    [],
+  );
+
   // Handlers
   const handleFileSelect = useCallback((id: number) => {
     // Always toggle selection (multi-select by default)
@@ -2228,7 +2426,7 @@ export function FileManagerPage() {
   }, [selectedFolderId, folders]);
 
   return (
-    <div className="p-4 md:p-6 min-h-[calc(100vh-64px)] lg:h-[calc(100vh-64px)] flex flex-col">
+    <div className="p-4 md:p-6 min-h-[calc(100vh)] lg:h-[calc(100vh)] flex flex-col">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
         <div className="flex items-center gap-3">
@@ -2567,6 +2765,8 @@ export function FileManagerPage() {
                 defaultExpanded={!collapseFoldersByDefault}
                 hasPermission={hasPermission}
                 t={t}
+                timeFormat={timeFormat}
+                dateFormat={dateFormat}
               />
             ))}
           </div>
@@ -2653,6 +2853,21 @@ export function FileManagerPage() {
                 ))}
               </select>
 
+              {/* A toggle, not a fourth select: the question is binary, and a
+                  two-option dropdown is heavier than its answer. */}
+              <button
+                type="button"
+                onClick={() => setUnprintedOnly((on) => !on)}
+                aria-pressed={unprintedOnly}
+                className={`h-9 px-3 text-sm rounded-lg border transition-colors ${
+                  unprintedOnly
+                    ? 'bg-bambu-green/20 border-bambu-green text-bambu-green'
+                    : 'bg-bambu-dark border-bambu-dark-tertiary text-bambu-gray hover:text-white'
+                }`}
+              >
+                {t('fileManager.unprintedOnly')}
+              </button>
+
               {/* Username filter with autocomplete - only when auth is enabled */}
               {authEnabled && (
                 <div className="relative h-9">
@@ -2682,7 +2897,7 @@ export function FileManagerPage() {
               )}
 
               {/* Results count */}
-              {(searchQuery || filterType !== 'all' || filterUsername) && (
+              {anyFilterActive && (
                 <span className="h-9 flex items-center text-sm text-bambu-gray hidden sm:inline-flex">
                   {t('fileManager.resultsCount', { showing: filteredAndSortedFiles.length, total: files.length })}
                 </span>
@@ -2731,60 +2946,80 @@ export function FileManagerPage() {
               </span>
             )}
 
-            {/* Tag chip-row — additive multi-select on top of the type
-                dropdown. Each chip toggles AND-membership so users can
-                express "sliced multi-plate 3MFs" by activating both
-                ``sliced`` and ``multiplate``. Only renders the chips
-                whose tag actually appears on at least one of the loaded
-                files — keeps the row tight on installs that don't use
-                e.g. MakerWorld. */}
-            {(() => {
-              const presentTags = new Set<string>();
-              for (const f of files ?? []) {
-                for (const tag of f.file_tags ?? []) presentTags.add(tag);
-              }
-              const visibleChips = KNOWN_FILE_TAGS.filter((t) => presentTags.has(t));
-              if (visibleChips.length === 0) return null;
-              return (
-                <div className="flex items-center gap-1 flex-wrap pt-2 border-t border-bambu-dark-tertiary">
-                  <span className="text-xs text-bambu-gray mr-1">{t('library.tagFilter')}:</span>
-                  {visibleChips.map((tag) => {
-                    const active = filterTags.includes(tag);
-                    const style = getTagStyle(tag);
-                    const label = style ? t(`library.tags.${tag}`, style.label) : tag.toUpperCase();
-                    return (
-                      <button
-                        key={tag}
-                        type="button"
-                        onClick={() =>
-                          setFilterTags((current) =>
-                            current.includes(tag)
-                              ? current.filter((c) => c !== tag)
-                              : [...current, tag],
-                          )
-                        }
-                        className={`text-xs px-2 py-0.5 rounded font-medium transition-colors ${
-                          active
-                            ? `${style?.bg ?? 'bg-bambu-gray/70'} ${style?.text ?? 'text-white'}`
-                            : 'bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray'
-                        }`}
-                      >
-                        {label}
-                      </button>
-                    );
-                  })}
-                  {filterTags.length > 0 && (
+            {/* THE tag filter row — both kinds, one mechanism. System pills
+                first in their own colours, then a divider, then the user's own
+                in green. Every one of them toggles the same `selectedTagIds`,
+                which the server AND-filters through `tag_ids`; there is no
+                client-side tag predicate any more. Active = filled with an X. */}
+            {(systemTagPills.length > 0 || userTagPills.length > 0) && (
+              // A row OF the filter panel, like the chip row it replaces —
+              // same top border as the selection row below it. A tag filter
+              // floating under the panel is a filter outside the filters.
+              <div className="flex items-center gap-1.5 flex-wrap pt-2 border-t border-bambu-dark-tertiary">
+                <span className="text-xs text-bambu-gray mr-1 inline-flex items-center gap-1">
+                  <TagIcon className="w-3.5 h-3.5" />
+                  {t('fileManager.tags.filterLabel')}
+                </span>
+                {systemTagPills.map((tag) => {
+                  const active = selectedTagIds.includes(tag.id);
+                  const style = tag.code ? getTagStyle(tag.code) : null;
+                  // Second argument matters: a code this frontend has no
+                  // translation for falls back to the backend's English name
+                  // instead of rendering the key at the user.
+                  const label = tag.code ? t(`library.tags.${tag.code}`, tag.name) : tag.name;
+                  return (
                     <button
+                      key={tag.id}
                       type="button"
-                      onClick={() => setFilterTags([])}
-                      className="text-xs px-2 py-0.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
+                      onClick={() => toggleTagFilter(tag.id)}
+                      className={`text-xs px-2 py-0.5 rounded font-medium transition-colors inline-flex items-center gap-1 ${
+                        active
+                          ? `${style?.bg ?? 'bg-bambu-gray/70'} ${style?.text ?? 'text-white'}`
+                          : 'bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray'
+                      }`}
                     >
-                      {t('library.tagFilterClear')}
+                      {label}
+                      {active && <X className="w-3 h-3" />}
                     </button>
-                  )}
-                </div>
-              );
-            })()}
+                  );
+                })}
+                {systemTagPills.length > 0 && userTagPills.length > 0 && (
+                  // The two groups answer differently shaped questions — what a
+                  // file IS versus what somebody called it — and without a break
+                  // they read as one undifferentiated wall.
+                  <span aria-hidden className="text-bambu-gray/30 px-1 select-none">
+                    |
+                  </span>
+                )}
+                {userTagPills.map((tag) => {
+                  const active = selectedTagIds.includes(tag.id);
+                  return (
+                    <button
+                      key={tag.id}
+                      type="button"
+                      onClick={() => toggleTagFilter(tag.id)}
+                      className={`text-xs px-2 py-0.5 rounded-full font-medium transition-colors inline-flex items-center gap-1 ${
+                        active
+                          ? 'bg-bambu-green text-white'
+                          : 'bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-green/60'
+                      }`}
+                    >
+                      {tag.name}
+                      {active && <X className="w-3 h-3" />}
+                    </button>
+                  );
+                })}
+                {selectedTagIds.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTagIds([])}
+                    className="text-xs px-2 py-0.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
+                  >
+                    {t('fileManager.tags.clearAll')}
+                  </button>
+                )}
+              </div>
+            )}
 
             {/* Selection row - rendered inside the same panel as a second row. */}
             {filteredAndSortedFiles.length > 0 && (
@@ -2829,14 +3064,17 @@ export function FileManagerPage() {
                         <span className="hidden sm:inline">{t('common.print')}</span>
                       </Button>
                     )}
-                    {selectedSlicedFiles.length === 1 && (
+                    {/* Gated on > 0, unlike Print above: the Schedule dialog
+                        takes one file, so several files are the same dialog
+                        several times over (QueueSequencer). Hidden rather than
+                        disabled when nothing selected is sliced — a button that
+                        opens a window saying "nothing here can be queued"
+                        spends two clicks on what its absence says for free. */}
+                    {selectedSlicedFiles.length > 0 && (
                       <Button
                         variant="secondary"
                         size="sm"
-                        // Note: Schedule dialog (PrintModal) is designed for single file at a time
-                        // but supports scheduling to multiple printers. This provides more control
-                        // over scheduling options compared to the previous bulk queue mutation.
-                        onClick={() => setScheduleFile(selectedSlicedFiles[0])}
+                        onClick={() => setQueueSequence({ files: selectedSlicedFiles, fromSelection: true })}
                         disabled={!hasPermission('queue:create')}
                         title={!hasPermission('queue:create') ? t('fileManager.noPermissionAddToQueue') : undefined}
                       >
@@ -2896,47 +3134,6 @@ export function FileManagerPage() {
             </div>
           )}
 
-          {/* #1268 user-tag filter rail — SYSTEM C. Intentionally its own
-              block below the toolbar panel and VISUALLY SEPARATE from the
-              computed-tag chip-row (SYSTEM B) above. Green chips = catalog
-              tags; active = filled with an X. Hidden entirely when the
-              catalog is empty. Server-side AND filter. */}
-          {tagCatalog.length > 0 && (
-            <div className="flex items-center gap-1.5 flex-wrap mb-3">
-              <span className="text-xs text-bambu-gray mr-1 inline-flex items-center gap-1">
-                <TagIcon className="w-3.5 h-3.5" />
-                {t('fileManager.tags.filterLabel')}
-              </span>
-              {tagCatalog.map((tag) => {
-                const active = selectedTagIds.includes(tag.id);
-                return (
-                  <button
-                    key={tag.id}
-                    type="button"
-                    onClick={() => toggleTagFilter(tag.id)}
-                    className={`text-xs px-2 py-0.5 rounded-full font-medium transition-colors inline-flex items-center gap-1 ${
-                      active
-                        ? 'bg-bambu-green text-white'
-                        : 'bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-green/60'
-                    }`}
-                  >
-                    {tag.name}
-                    {active && <X className="w-3 h-3" />}
-                  </button>
-                );
-              })}
-              {selectedTagIds.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setSelectedTagIds([])}
-                  className="text-xs px-2 py-0.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
-                >
-                  {t('fileManager.tags.clearAll')}
-                </button>
-              )}
-            </div>
-          )}
-
           {/* File grid/list */}
           {isLoading ? (
             <div className="flex-1 flex items-center justify-center">
@@ -2945,7 +3142,13 @@ export function FileManagerPage() {
                 <p className="text-sm text-bambu-gray">{t('fileManager.loadingFiles')}</p>
               </div>
             </div>
-          ) : files?.length === 0 ? (
+          ) : /* An EMPTY LISTING is not the same as an empty library. The
+                 user-tag filter is applied server-side, so a filter that
+                 matches nothing comes back as zero rows — and this branch used
+                 to answer that with "No files yet" and an Upload button, which
+                 is both wrong and a dead end: the reset lives in the branch
+                 below, so the only way out was to know about the tag pill. */
+          files?.length === 0 && !anyFilterActive ? (
             <div className="flex-1 flex flex-col items-center justify-center">
               <div className="p-4 bg-bambu-dark rounded-2xl mb-4">
                 <FileBox className="w-12 h-12 text-bambu-gray/50" />
@@ -2982,7 +3185,7 @@ export function FileManagerPage() {
               <p className="text-bambu-gray text-center max-w-md mb-6">
                 {t('fileManager.noMatchingFilesDescription')}
               </p>
-              <Button variant="secondary" onClick={() => { setSearchQuery(''); setFilterType('all'); }}>
+              <Button variant="secondary" onClick={clearAllFilters}>
                 {t('fileManager.clearFilters')}
               </Button>
             </div>
@@ -3002,7 +3205,7 @@ export function FileManagerPage() {
                     onDownload={handleDownload}
                     onAddToQueue={(id) => {
                       const file = files?.find(f => f.id === id);
-                      if (file) setScheduleFile(file);
+                      if (file) scheduleOne(file);
                     }}
                     onPrint={setPrintFile}
                     onSlice={setSliceFile}
@@ -3012,6 +3215,8 @@ export function FileManagerPage() {
                     onLink={setLinkFile}
                     onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
                     onPlateGallery={setGalleryFile}
+                    onMove={setMoveFile}
+                    onTags={(f, anchor) => setTagsPopover({ file: f, anchor })}
                     onTagClick={toggleTagFilter}
                     thumbnailVersion={thumbnailVersions[file.id]}
                     isRegeneratingThumbnail={regeneratingFileId === file.id}
@@ -3053,6 +3258,7 @@ export function FileManagerPage() {
                 {filteredAndSortedFiles.map((file) => (
                   <div
                     key={file.id}
+                    data-file-row
                     className={`grid grid-cols-subgrid col-span-full gap-4 px-4 py-3 items-center border-b border-bambu-dark-tertiary last:border-b-0 hover:bg-bambu-dark/50 transition-colors ${
                       selectedFiles.includes(file.id) ? 'bg-bambu-green/10' : ''
                     }`}
@@ -3061,6 +3267,7 @@ export function FileManagerPage() {
                         click no longer toggles selection). */}
                     <button
                       type="button"
+                      data-select-file
                       onClick={(e) => { e.stopPropagation(); handleFileSelect(file.id); }}
                       aria-pressed={selectedFiles.includes(file.id)}
                       aria-label={t('fileManager.selectFile', { defaultValue: 'Select file' })}
@@ -3120,6 +3327,41 @@ export function FileManagerPage() {
                         >
                           {file.print_name || file.filename}
                         </button>
+                        {/* Per-file facts sit UNDER the name, the way the
+                            archive list carries its small print — they describe
+                            this one file, whereas the badge row to the right is
+                            the shared tag vocabulary. Keeping them there put
+                            two different kinds of thing in one row. */}
+                        {((file.object_count != null && file.object_count > 0) || file.print_count > 0) && (
+                          <div className="flex items-center gap-2 mt-0.5">
+                            {file.object_count != null && file.object_count > 0 && (
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); setPreviewFileId(file.id); }}
+                                className="flex items-center gap-1 text-[11px] text-bambu-gray hover:text-bambu-green transition-colors"
+                                title={t('library.plateObjects.open')}
+                              >
+                                <Box className="w-3 h-3" />
+                                {file.object_count}
+                                {file.skip_objects_supported && (
+                                  <SkipObjectsIcon className="w-3 h-3 text-bambu-green/70" />
+                                )}
+                              </button>
+                            )}
+                            {file.print_count > 0 && (
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); handleOpenArchives(file); }}
+                                aria-label={t('fileManager.printedTimes', { count: file.print_count })}
+                                title={t('fileManager.printedTimes', { count: file.print_count })}
+                                className="flex items-center gap-1 text-[11px] text-bambu-gray hover:text-bambu-green transition-colors"
+                              >
+                                <History className="w-3 h-3" />
+                                {file.print_count}
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
                     {/* Uploaded By - only show when auth is enabled */}
@@ -3140,28 +3382,17 @@ export function FileManagerPage() {
                         left-to-right (the row already scans LTR with
                         the rest of the table columns, so the format
                         chip leads from the left here, opposite of the
-                        grid card's right-anchored layout). */}
+                        grid card's right-anchored layout).
+
+                        Tags ONLY. The object and print counts used to sit here
+                        too, on the argument that this was "where per-file facts
+                        live" — but that conflated two things: a tag says what
+                        KIND of file this is (shared vocabulary, and the chip row
+                        above filters on it), while a count describes this one
+                        file and nothing else. They now read under the name, the
+                        way the archive list carries its small print. */}
                     <div className="flex items-center gap-1 flex-wrap">
                       <FileTagBadges tags={file.file_tags} compact direction="ltr" />
-                      {/* Object count + preview, mirroring the grid card. The
-                          list has no object column of its own, and adding one
-                          would mean re-cutting the grid template for every
-                          row — the badge row is already where per-file facts
-                          live. */}
-                      {file.object_count != null && file.object_count > 0 && (
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); setPreviewFileId(file.id); }}
-                          className="flex items-center gap-1 text-[11px] text-bambu-gray hover:text-bambu-green transition-colors"
-                          title={t('library.plateObjects.open')}
-                        >
-                          <Box className="w-3 h-3" />
-                          {file.object_count}
-                          {file.skip_objects_supported && (
-                            <SkipObjectsIcon className="w-3 h-3 text-bambu-green/70" />
-                          )}
-                        </button>
-                      )}
                       {/* #1268 — user-authored tag chips, inline in the same
                           cell (NOT a new subgrid column). Green pills, click
                           toggles the cross-cutting filter. */}
@@ -3181,7 +3412,7 @@ export function FileManagerPage() {
                         Archives list. */}
                     <div className="text-sm text-bambu-gray text-right">{formatFileSize(file.file_size)}</div>
                     {/* Date */}
-                    <div className="text-sm text-bambu-gray truncate">{formatDateTime(file.created_at, timeFormat, dateFormat)}</div>
+                    <div className="text-sm text-bambu-gray truncate">{formatDateTime(fileActivityAt(file), timeFormat, dateFormat)}</div>
                     {/* Actions — right-aligned within the column. When more
                         buttons appear (e.g. swap-mode adds Layers + Box for
                         a sliced .gcode.3mf), the row grows to the LEFT
@@ -3247,7 +3478,7 @@ export function FileManagerPage() {
                             <Printer className="w-4 h-4" />
                           </button>
                           <button
-                            onClick={() => hasPermission('queue:create') && setScheduleFile(file)}
+                            onClick={() => hasPermission('queue:create') && scheduleOne(file)}
                             className={`p-1.5 rounded transition-colors ${
                               hasPermission('queue:create')
                                 ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
@@ -3280,13 +3511,15 @@ export function FileManagerPage() {
                         hasPermission={hasPermission}
                         canModify={canModify}
                         onPrint={setPrintFile}
-                        onSchedule={setScheduleFile}
+                        onSchedule={scheduleOne}
                         onSlice={setSliceFile}
                         useSlicerApi={settings?.use_slicer_api ?? false}
                         onPreview3d={setViewerFile}
                             onDownload={handleDownload}
                         onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
                         onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
+                        onMove={setMoveFile}
+                        onTags={(f, anchor) => setTagsPopover({ file: f, anchor })}
                         onDelete={(id) => setDeleteConfirm({ type: 'file', id })}
                       />
                     </div>
@@ -3356,6 +3589,31 @@ export function FileManagerPage() {
         />
       )}
 
+      {/* Same dialog, one file. Reusing it rather than building a single-file
+          twin keeps one definition of "where can this go". */}
+      {moveFile && folders && (
+        <MoveFilesModal
+          folders={folders}
+          selectedFiles={[moveFile.id]}
+          currentFolderId={selectedFolderId}
+          onClose={() => setMoveFile(null)}
+          onMove={(folderId) => {
+            moveFilesMutation.mutate({ fileIds: [moveFile.id], folderId });
+            setMoveFile(null);
+          }}
+          isLoading={moveFilesMutation.isPending}
+          t={t}
+        />
+      )}
+
+      {tagsPopover && (
+        <FileTagsPopover
+          file={tagsPopover.file}
+          anchor={tagsPopover.anchor}
+          onClose={() => setTagsPopover(null)}
+        />
+      )}
+
       {showUploadModal && (
         <FileUploadModal
           folderId={selectedFolderId}
@@ -3376,7 +3634,6 @@ export function FileManagerPage() {
       <LibraryTagsModal
         open={showTagsModal}
         onClose={() => setShowTagsModal(false)}
-        onPickTag={(tagId) => { if (!selectedTagIds.includes(tagId)) toggleTagFilter(tagId); }}
       />
       <BulkTagsPickerModal
         open={showBulkTagsModal}
@@ -3465,15 +3722,15 @@ export function FileManagerPage() {
         />
       )}
 
-      {scheduleFile && (
-        <PrintModal
-          mode="add-to-queue"
-          libraryFileId={scheduleFile.id}
-          archiveName={scheduleFile.print_name || scheduleFile.filename}
-          onClose={() => setScheduleFile(null)}
-          onSuccess={() => {
-            setScheduleFile(null);
-            setSelectedFiles([]);
+      {queueSequence && (
+        <QueueSequencer
+          files={queueSequence.files}
+          onDone={(remaining) => {
+            const { fromSelection } = queueSequence;
+            setQueueSequence(null);
+            // What is left over stays ticked: the selection is the record of
+            // what still has to be distributed. Everything queued → empty.
+            if (fromSelection) setSelectedFiles(remaining.map((f) => f.id));
             queryClient.invalidateQueries({ queryKey: ['library-files'] });
             queryClient.invalidateQueries({ queryKey: ['queue'] });
             queryClient.invalidateQueries({ queryKey: ['archives'] });

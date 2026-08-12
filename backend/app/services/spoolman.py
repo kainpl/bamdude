@@ -860,15 +860,6 @@ class SpoolmanClient:
                         return spool
         return None
 
-    def _find_spool_by_location(self, location: str, cached_spools: list[dict] | None) -> dict | None:
-        """Return the spool at the exact location string, or None; fallback when RFID is unavailable."""
-        if not cached_spools:
-            return None
-        for spool in cached_spools:
-            if spool.get("location") == location:
-                return spool
-        return None
-
     async def find_spools_by_location_prefix(
         self, location_prefix: str, cached_spools: list[dict] | None = None
     ) -> list[dict]:

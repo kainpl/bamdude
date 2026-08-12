@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, Select, String, Text, func, select
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, Select, String, Text, func, select
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -25,11 +25,27 @@ class LibraryFolder(Base):
 
     # Link to archive (optional). Project links live in the
     # ``library_folder_projects`` pivot — see ``projects`` below.
+    #
+    # ⚠️ **One archive belongs to at most one folder** — the unique index in
+    # ``__table_args__`` (and m133 for existing installs). It was a plain FK, so
+    # several folders could claim one archive while the archive page only ever
+    # drew the first it found: the second binding existed in the database and
+    # nowhere on screen. NULLs are exempt from a unique index on both back ends,
+    # which is what makes "unlinked" the ordinary case it should be.
     archive_id: Mapped[int | None] = mapped_column(ForeignKey("print_archives.id", ondelete="SET NULL"), nullable=True)
+
+    __table_args__ = (Index("ix_library_folders_archive_id_unique", "archive_id", unique=True),)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    # Real on-disk mtime for external (mapped/NAS) folders, refreshed on every
+    # scan. Nullable on purpose: internal folders have no disk directory of
+    # their own, and external rows scanned before this column existed backfill
+    # on the next scan. Readers must COALESCE onto ``updated_at`` so both cases
+    # still contribute a sort key (#2680).
+    fs_modified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Relationships
     parent: Mapped["LibraryFolder | None"] = relationship(
@@ -130,6 +146,14 @@ class LibraryFile(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
+    # Real on-disk mtime, recorded by the external scan and refreshed on every
+    # re-scan. This is the whole point of #2680: a bulk external scan stamps the
+    # *same* ``updated_at`` on every row it touches, so sorting by it ties across
+    # the whole batch and orders arbitrarily — nothing captured when the file was
+    # actually written. Nullable so internal uploads and pre-column rows keep
+    # working; readers COALESCE onto ``updated_at``.
+    fs_modified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     # Soft-delete / trash bin (#1008). When non-null, the file is in the
     # trash and should not appear in normal listings. A background sweeper
     # hard-deletes rows whose deleted_at is older than the retention window.
@@ -194,10 +218,32 @@ class LibraryTag(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(64), nullable=False)
-    name_key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    # Uniqueness is COMPOSITE with ``is_system`` — see __table_args__. A plain
+    # unique name_key would let a pre-existing user tag named after a system one
+    # block the m128 seed, leaving only bad options: rename somebody's data, or
+    # prefix every system row forever.
+    name_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    # System tags are handed out by the system: computed from the file, never
+    # editable, never detachable. ``code`` is the stable identifier
+    # (``3mf``, ``sliced``, …) that ``compute_file_tags`` emits; NULL on user
+    # tags. The DISPLAY name stays in i18n — storing the rendered string here
+    # would make system tags untranslatable — so ``name`` holds the English
+    # label as a fallback for non-UI consumers (API clients, the Telegram bot).
+    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    code: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
     files: Mapped[list["LibraryFile"]] = relationship(secondary="library_file_tags", back_populates="tags")
+
+    __table_args__ = (
+        # Indexes rather than UniqueConstraints: an index can be added to an
+        # existing SQLite table with plain DDL, a table constraint cannot.
+        Index("ix_library_tags_name_key_is_system", "name_key", "is_system", unique=True),
+        # Nullable is fine — SQLite and PostgreSQL both treat NULLs as distinct
+        # in a unique index, so every user tag carries NULL while no two system
+        # rows can share a code.
+        Index("ix_library_tags_code", "code", unique=True),
+    )
 
 
 class LibraryFileTag(Base):

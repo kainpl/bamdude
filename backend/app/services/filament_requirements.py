@@ -17,8 +17,8 @@ path can do exact type+colour matching against printer AMS state.
 Returned shape mirrors the override JSON the eligibility helper validates
 against:
 
-    [{"slot_id": int, "type": str, "color": str, "used_grams": float,
-      "nozzle_id": int | None}, ...]
+    [{"slot_id": int, "type": str, "color": str, "tray_info_idx": str,
+      "used_grams": float, "nozzle_id": int | None}, ...]
 
 — minus the ``force_color_match`` flag, which the caller adds based on
 its own setting (the per-VP ``queue_force_color_match`` toggle, in our
@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 
 def extract_filament_requirements(file_path: Path | str, plate_id: int | None = None) -> list[dict]:
-    """Return ``[{slot_id, type, color, used_grams, [nozzle_id]}]`` from a 3MF.
+    """Return ``[{slot_id, type, color, tray_info_idx, used_grams, [nozzle_id]}]`` from a 3MF.
 
     Args:
         file_path: Path to the 3MF on disk.
@@ -85,6 +85,9 @@ def extract_filament_requirements(file_path: Path | str, plate_id: int | None = 
             "slot_id": int(slot_id),
             "type": ftype,
             "color": slot.get("color") or "",
+            # Empty for third-party spools and for 3MFs sliced before the field
+            # existed; callers must treat "" as "no variant constraint" (#2650).
+            "tray_info_idx": slot.get("tray_info_idx") or "",
             "used_grams": used_grams,
         }
         # ThreeMFParser's per-plate metadata already merges in the

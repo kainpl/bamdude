@@ -102,6 +102,15 @@ class Permission(StrEnum):
     SMART_PLUGS_DELETE = "smart_plugs:delete"
     SMART_PLUGS_CONTROL = "smart_plugs:control"  # Turn on/off
 
+    # Smart Sensors — the environment a farm's printers stand in. A separate
+    # resource from smart_plugs on purpose: a sensor has no on/off, no energy
+    # and no printer binding, so "smart_plugs:delete" to remove one would be
+    # borrowing a name that means something else.
+    SMART_SENSORS_READ = "smart_sensors:read"
+    SMART_SENSORS_CREATE = "smart_sensors:create"
+    SMART_SENSORS_UPDATE = "smart_sensors:update"
+    SMART_SENSORS_DELETE = "smart_sensors:delete"
+
     # Camera
     CAMERA_VIEW = "camera:view"
 
@@ -267,6 +276,12 @@ PERMISSION_CATEGORIES = {
         Permission.SMART_PLUGS_DELETE,
         Permission.SMART_PLUGS_CONTROL,
     ],
+    "Smart Sensors": [
+        Permission.SMART_SENSORS_READ,
+        Permission.SMART_SENSORS_CREATE,
+        Permission.SMART_SENSORS_UPDATE,
+        Permission.SMART_SENSORS_DELETE,
+    ],
     "Camera": [
         Permission.CAMERA_VIEW,
     ],
@@ -424,6 +439,10 @@ DEFAULT_GROUPS = {
             Permission.SMART_PLUGS_UPDATE.value,
             Permission.SMART_PLUGS_DELETE.value,
             Permission.SMART_PLUGS_CONTROL.value,
+            Permission.SMART_SENSORS_READ.value,
+            Permission.SMART_SENSORS_CREATE.value,
+            Permission.SMART_SENSORS_UPDATE.value,
+            Permission.SMART_SENSORS_DELETE.value,
             # Camera - view
             Permission.CAMERA_VIEW.value,
             # Maintenance - full access
@@ -488,6 +507,7 @@ DEFAULT_GROUPS = {
             Permission.INVENTORY_VIEW_ASSIGNMENTS.value,
             Permission.INVENTORY_FORECAST_READ.value,
             Permission.SMART_PLUGS_READ.value,
+            Permission.SMART_SENSORS_READ.value,
             Permission.CAMERA_VIEW.value,
             Permission.MAINTENANCE_READ.value,
             Permission.PIPELINES_READ.value,

@@ -54,57 +54,6 @@ async def _next_order_index(db: AsyncSession, project_id: int) -> int:
     return (result.scalar() or -1) + 1
 
 
-async def ensure_plan_row(db: AsyncSession, *, library_file_id: int, project_id: int, file_type: str) -> None:
-    """Create a plan row for (project, file) if it doesn't exist yet.
-
-    No-op when the file isn't plan-eligible or the row already exists.
-    Caller is responsible for committing.
-    """
-    if not _is_plan_eligible(file_type):
-        return
-
-    existing = await db.execute(
-        select(ProjectPrintPlanItem.id).where(
-            ProjectPrintPlanItem.library_file_id == library_file_id,
-            ProjectPrintPlanItem.project_id == project_id,
-        )
-    )
-    if existing.scalar_one_or_none() is not None:
-        return
-
-    order_index = await _next_order_index(db, project_id)
-    db.add(
-        ProjectPrintPlanItem(
-            project_id=project_id,
-            library_file_id=library_file_id,
-            copies=1,
-            order_index=order_index,
-        )
-    )
-
-
-async def remove_plan_row(db: AsyncSession, *, library_file_id: int, project_id: int) -> None:
-    """Delete the plan row for one specific (project, file) pair."""
-    await db.execute(
-        delete(ProjectPrintPlanItem).where(
-            ProjectPrintPlanItem.library_file_id == library_file_id,
-            ProjectPrintPlanItem.project_id == project_id,
-        )
-    )
-
-
-async def remove_all_plan_rows_for_file(db: AsyncSession, *, library_file_id: int) -> None:
-    """Drop every plan row referencing this file (every project).
-
-    Used when the file itself is being hard-deleted at the ORM level.
-    The DB-level ``ON DELETE CASCADE`` on ``library_file_id`` handles
-    the same cleanup for raw-SQL deletes; this helper exists for the
-    in-session ``db.delete(file)`` path so SQLAlchemy doesn't trip on
-    a stale reference.
-    """
-    await db.execute(delete(ProjectPrintPlanItem).where(ProjectPrintPlanItem.library_file_id == library_file_id))
-
-
 async def sync_plan_for_file(
     db: AsyncSession,
     *,

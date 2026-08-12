@@ -43,35 +43,65 @@ class NozzleVolumeType(str, Enum):
     HIGH_FLOW = "high_flow"
     TPU_HIGH_FLOW = "tpu_high_flow"
     HYBRID = "hybrid"
+    # BS ``nvtE3DHighFlow``. ⚠️ Its enum value is 5, not 4 — the numbering skips
+    # one — so nothing here may assume the set is contiguous.
+    E3D_HIGH_FLOW = "e3d_high_flow"
 
 
-# Maps for nozzle_id encoder
+# The four flow letters BambuStudio's ``_generate_nozzle_id`` switch spells out.
+#
+# ⚠️ "B", not "E": BS spells E3D High Flow with a B and uses E for plain High
+# Flow (``_str2_nozzle_flow_type``).
+#
+# ⚠️ HYBRID is deliberately absent. BS has no letter for ``nvtHybrid`` — it
+# falls through to the switch's ``default:``, which emits "H". The "Y" that used
+# to sit here exists in no Bambu dialect: neither BS's ``convert_to_nozzle_type``
+# nor our own ``_NOZZLE_FLOW_LETTER_MAP`` can read it back, so a hybrid nozzle
+# round-tripped as a flow class nobody recognised.
 _VOL_TYPE_CHARS = {
     NozzleVolumeType.STANDARD: "S",
     NozzleVolumeType.HIGH_FLOW: "H",
     NozzleVolumeType.TPU_HIGH_FLOW: "U",
-    NozzleVolumeType.HYBRID: "Y",
+    NozzleVolumeType.E3D_HIGH_FLOW: "B",
 }
 
-# Diameter to two-digit code (BS-format): 0.2→"00", 0.4→"20", 0.6→"40", 0.8→"60"
-_DIAMETER_CODES = {
-    0.2: "00",
-    0.4: "20",
-    0.6: "40",
-    0.8: "60",
-}
+# Characters 2-3 are the nozzle MATERIAL, and BS hardcodes stainless into every
+# id it generates. The field is there to be read back off the printer, not to be
+# filled in by the sender.
+_NOZZLE_MATERIAL_STAINLESS = "00"
+
+# The only diameters BS is willing to name — ``to_string_nozzle_diameter``.
+_NOZZLE_DIAMETERS = (0.2, 0.4, 0.6, 0.8)
+
+
+def to_string_nozzle_diameter(diameter: float) -> str:
+    """BS's own stringifier, tolerance and fallback included.
+
+    ⚠️ Answers "0" for a diameter BS cannot name, rather than raising. The id is
+    not the only place the diameter travels — every payload that carries
+    ``nozzle_id`` carries a ``nozzle_diameter`` field beside it — so an exotic
+    nozzle degrades the label and still sends the right command.
+    """
+    for known in _NOZZLE_DIAMETERS:
+        if abs(diameter - known) < 1e-3:
+            return f"{known}"
+    return "0"
 
 
 def generate_nozzle_id(vol_type: NozzleVolumeType, diameter: float) -> str:
-    """Encode nozzle id per BS DeviceManager.cpp:338-350.
+    """Encode a nozzle id the way BS's ``_generate_nozzle_id`` does: ``H`` + flow
+    letter + material + ``-`` + diameter, e.g. ``HS00-0.4``.
 
-    Format: H + [S|H|U|Y] + diameter_code
-    Examples: standard 0.4 → "HS20", high_flow 0.8 → "HH60".
+    ⚠️ **The two characters after the flow letter are the material, not the
+    diameter.** We used to pack a diameter code into them and stop there, which
+    produced a four-character ``HS20``. BS's reverse parser opens with
+    ``if (str.size() < 8) return nvtStandard;`` — so a short id does not merely
+    look wrong, it reads back as Standard, quietly degrading a High Flow profile
+    the printer had right. Everything the printer sends us is already in the long
+    form; only this encoder disagreed.
     """
-    code = _DIAMETER_CODES.get(round(diameter, 2))
-    if code is None:
-        raise ValueError(f"Unsupported nozzle diameter: {diameter}")
-    return f"H{_VOL_TYPE_CHARS[vol_type]}{code}"
+    letter = _VOL_TYPE_CHARS.get(vol_type, "H")
+    return f"H{letter}{_NOZZLE_MATERIAL_STAINLESS}-{to_string_nozzle_diameter(diameter)}"
 
 
 def compute_pa_k(line_index: int) -> float:

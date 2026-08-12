@@ -87,6 +87,23 @@ describe('SmartPlugCard', () => {
       expect(screen.getByText('192.168.1.200')).toBeInTheDocument();
     });
 
+    it('offers the reporting settings only for a Zigbee plug', async () => {
+      // A Tasmota plug has no radio settings to change: the whole vocabulary
+      // belongs to the Zigbee driver.
+      //
+      // Async because the button is permission-gated and the signed-in user
+      // arrives a tick after the first paint -- a synchronous assertion here
+      // would fail for a reason that has nothing to do with the plug type.
+      const zigbee = createMockPlug({ plug_type: 'zigbee', zigbee_ieee: 'aa:bb' });
+      const { unmount } = render(<SmartPlugCard plug={zigbee} onEdit={mockOnEdit} />);
+      expect(await screen.findByLabelText(/Reporting settings/i)).toBeInTheDocument();
+      unmount();
+
+      render(<SmartPlugCard plug={createMockPlug({ plug_type: 'tasmota' })} onEdit={mockOnEdit} />);
+      await waitFor(() => expect(screen.getByText('Test Plug')).toBeInTheDocument());
+      expect(screen.queryByLabelText(/Reporting settings/i)).not.toBeInTheDocument();
+    });
+
     it('shows power ON/OFF buttons', () => {
       const plug = createMockPlug();
       render(<SmartPlugCard plug={plug} onEdit={mockOnEdit} />);
@@ -404,5 +421,54 @@ describe('SmartPlugCard', () => {
       expect(screen.getByText('Settings')).toBeInTheDocument();
       expect(screen.queryByText('Automation Settings')).not.toBeInTheDocument();
     });
+  });
+});
+
+describe('SmartPlugCard identity affordances', () => {
+  /**
+   * Editing used to be reachable only from the bottom of the "automation
+   * settings" accordion, past seven toggles. So changing which printer a plug
+   * feeds meant guessing that a plug's identity lived under "automation", which
+   * is why rebinding read as an unimplemented feature. These pin it to the
+   * header, where the identity already is.
+   */
+  const onEdit = vi.fn();
+
+  beforeEach(() => onEdit.mockClear());
+
+  it('offers edit without expanding the automation accordion', async () => {
+    render(<SmartPlugCard plug={createMockPlug()} onEdit={onEdit} />);
+
+    await userEvent.click(screen.getByRole('button', { name: /^edit$/i }));
+
+    expect(onEdit).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers delete without expanding the automation accordion', async () => {
+    render(<SmartPlugCard plug={createMockPlug()} onEdit={onEdit} />);
+
+    await userEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+
+    expect(await screen.findByText(/delete smart plug/i)).toBeInTheDocument();
+  });
+
+  it('does not offer the same two actions twice', async () => {
+    render(<SmartPlugCard plug={createMockPlug()} onEdit={onEdit} />);
+    await userEvent.click(screen.getByText(/automation settings/i));
+
+    // One place for each action, not two: the old pair at the bottom of the
+    // accordion is gone rather than duplicated.
+    expect(screen.getAllByRole('button', { name: /^edit$/i })).toHaveLength(1);
+  });
+
+  it('shows the IEEE for a zigbee plug', () => {
+    render(
+      <SmartPlugCard
+        plug={createMockPlug({ plug_type: 'zigbee', ip_address: null, zigbee_ieee: 'a4:c1:38:0b:5a:9c:ff:ff' })}
+        onEdit={onEdit}
+      />,
+    );
+
+    expect(screen.getByText('a4:c1:38:0b:5a:9c:ff:ff')).toBeInTheDocument();
   });
 });

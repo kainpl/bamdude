@@ -242,12 +242,6 @@ class BackupCodesResponse(BaseModel):
     message: str
 
 
-class EmailOTPEnableRequest(BaseModel):
-    """No body required — email is taken from the authenticated user's profile."""
-
-    pass
-
-
 class TwoFAVerifyRequest(BaseModel):
     pre_auth_token: str = Field(..., max_length=128)
     # TOTP/email codes are 6 digits; backup codes are 8 uppercase alphanumeric chars.
@@ -345,28 +339,36 @@ def _validate_icon_url(v: str | None) -> str | None:
 
 
 def _validate_issuer_url(v: str | None) -> str | None:
-    """Nit4: Reject non-HTTPS issuer URLs and private/loopback/link-local hosts.
+    """Reject non-HTTPS issuer URLs and SSRF-unsafe hosts.
 
-    HTTP is no longer accepted — OIDC providers must be reachable over TLS.
-    Private-network and loopback addresses are rejected to prevent SSRF attacks
-    where an admin-supplied URL could reach internal services.
+    An OIDC provider has to be reachable over TLS on the public internet, so
+    this applies the public-internet policy: private, loopback and link-local
+    are all rejected.
+
+    Delegates to the runtime guard for the same reason ``_validate_icon_url``
+    does — no policy drift between the schema layer and the fetcher. The
+    hand-rolled version this replaces checked only
+    ``is_private | is_loopback | is_link_local``, which left **numeric-encoded
+    IPs** (``https://2130706433/``), **IPv4-mapped IPv6**
+    (``https://[::ffff:127.0.0.1]/``), multicast and unspecified addresses able
+    to express a target the policy meant to forbid. The guard already handled
+    all four; the schema simply did not ask it.
+
+    Lazy-imported: ``_oidc_helpers`` lives under ``api/routes/`` and schemas
+    avoid top-level imports from that layer.
     """
-    import ipaddress
-    from urllib.parse import urlparse
+    from backend.app.api.routes._oidc_helpers import assert_safe_public_https_url
 
     if v is None:
         return v
     if not v.startswith("https://"):
         raise ValueError("issuer_url must start with https://")
-    host = urlparse(v).hostname or ""
     try:
-        addr = ipaddress.ip_address(host)
-        if addr.is_private or addr.is_loopback or addr.is_link_local:
-            raise ValueError("issuer_url must not point to a private, loopback, or link-local address")
+        assert_safe_public_https_url(v)
     except ValueError as exc:
-        if "issuer_url" in str(exc):
-            raise
-        # hostname is a domain name, not a bare IP — that's fine
+        # The guard's messages name the icon URL — rewrite for this field so the
+        # user sees the setting they actually submitted.
+        raise ValueError(str(exc).replace("icon URL", "issuer_url")) from exc
     return v
 
 
@@ -514,6 +516,10 @@ class OIDCProviderResponse(BaseModel):
     has_icon: bool = False
     default_group_id: int | None = None
     is_autologin: bool = False  # #1589
+    # #2593: declared by BAMDUDE_OIDC_* and rewritten on every boot, so the UI
+    # renders it read-only and the API refuses writes. Exposed rather than
+    # inferred client-side: the environment is not visible to the browser.
+    is_env_managed: bool = False
 
     class Config:
         from_attributes = True

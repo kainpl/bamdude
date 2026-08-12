@@ -11,7 +11,7 @@ from threading import Lock
 
 import defusedxml.ElementTree as ET
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -23,9 +23,8 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
-from backend.app.models.project import Project
 from backend.app.models.user import User
-from backend.app.schemas.calibration_mode import derive_mode, mode_to_bool, normalize_mode
+from backend.app.schemas.calibration_mode import derive_mode, normalize_mode
 from backend.app.schemas.print_queue import (
     PrintQueueBatchCreate,
     PrintQueueBulkUpdate,
@@ -36,74 +35,13 @@ from backend.app.schemas.print_queue import (
     PrintQueueReorder,
 )
 from backend.app.services.notification_service import notification_service
-from backend.app.utils.filename import InvalidFilenameError, validate_print_filename
+from backend.app.services.queue_add import add_items_to_printer_queue
 from backend.app.utils.printer_models import is_gcode_compatible
 from backend.app.utils.threemf_tools import extract_bed_type_from_3mf, extract_filament_usage_from_3mf
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/queue", tags=["queue"])
-
-
-def _extract_filament_types_from_3mf(file_path: Path, plate_id: int | None = None) -> list[str]:
-    """Extract unique filament types from a 3MF file.
-
-    Args:
-        file_path: Path to the 3MF file
-        plate_id: Optional plate index to filter for (for multi-plate files)
-
-    Returns:
-        List of unique filament types (e.g., ["PLA", "PETG"])
-    """
-    types: set[str] = set()
-
-    try:
-        with zipfile.ZipFile(file_path, "r") as zf:
-            if "Metadata/slice_info.config" not in zf.namelist():
-                return []
-
-            content = zf.read("Metadata/slice_info.config").decode()
-            root = ET.fromstring(content)
-
-            if plate_id is not None:
-                # Find the plate element with matching index
-                for plate_elem in root.findall(".//plate"):
-                    plate_index = None
-                    for meta in plate_elem.findall("metadata"):
-                        if meta.get("key") == "index":
-                            try:
-                                plate_index = int(meta.get("value", "0"))
-                            except ValueError:
-                                pass  # Skip plate with unparseable index
-                            break
-
-                    if plate_index == plate_id:
-                        for filament_elem in plate_elem.findall("filament"):
-                            filament_type = filament_elem.get("type", "")
-                            used_g = filament_elem.get("used_g", "0")
-                            try:
-                                used_grams = float(used_g)
-                            except (ValueError, TypeError):
-                                used_grams = 0
-                            if used_grams > 0 and filament_type:
-                                types.add(filament_type)
-                        break
-            else:
-                # No plate_id specified - extract all filaments with used_g > 0
-                for filament_elem in root.findall(".//filament"):
-                    filament_type = filament_elem.get("type", "")
-                    used_g = filament_elem.get("used_g", "0")
-                    try:
-                        used_grams = float(used_g)
-                    except (ValueError, TypeError):
-                        used_grams = 0
-                    if used_grams > 0 and filament_type:
-                        types.add(filament_type)
-
-    except Exception as e:
-        logger.warning("Failed to extract filament types from %s: %s", file_path, e)
-
-    return sorted(types)
 
 
 def _extract_print_time_from_3mf(file_path: Path, plate_id: int | None = None) -> int | None:
@@ -169,12 +107,6 @@ def _extract_print_time_from_3mf(file_path: Path, plate_id: int | None = None) -
 _PLATE_META_CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
 _PLATE_META_LOCK = Lock()
 _PLATE_META_MAX = 512
-
-
-def clear_plate_metadata_cache() -> None:
-    """Drop all cached per-plate metadata (used by tests)."""
-    with _PLATE_META_LOCK:
-        _PLATE_META_CACHE.clear()
 
 
 def _plate_metadata_cached(file_path: Path, plate_id: int | None) -> tuple[int | None, float, str | None]:
@@ -424,194 +356,11 @@ async def add_to_queue(
     current_user: User | None = RequirePermission(Permission.QUEUE_CREATE),
 ):
     """Add an item to the print queue."""
-    # Validate that either archive_id or library_file_id is provided
-    if not data.archive_id and not data.library_file_id:
-        raise HTTPException(400, "Either archive_id or library_file_id must be provided")
-
-    # Validate queue exists
-    result = await db.execute(
-        select(PrinterQueue).options(selectinload(PrinterQueue.printer)).where(PrinterQueue.id == data.queue_id)
-    )
-    queue = result.scalar_one_or_none()
-    if not queue:
-        raise HTTPException(400, "Queue not found")
-
-    # A paused queue refuses new items — pause means "queue closed".
-    if queue.is_paused:
-        raise HTTPException(409, "Queue is paused — resume it before adding items")
-
-    # Validate archive exists (if provided) and get it for filament extraction
-    archive = None
-    if data.archive_id:
-        result = await db.execute(select(PrintArchive).where(PrintArchive.id == data.archive_id))
-        archive = result.scalar_one_or_none()
-        if not archive:
-            raise HTTPException(400, "Archive not found")
-        # IDOR fix (security #2): a caller with QUEUE_CREATE could otherwise
-        # queue any user's archive without read access to it. Gate on
-        # ARCHIVES_READ_ALL or ownership; 404 (not 403) so we don't leak
-        # "this id exists but you can't queue it".
-        if (
-            current_user is not None
-            and not current_user.has_permission(Permission.ARCHIVES_READ_ALL.value)
-            and archive.created_by_id != current_user.id
-        ):
-            raise HTTPException(404, "Archive not found")
-
-    # Validate library file exists (if provided) and get it for filament extraction.
-    # m044: eager-load M2M projects so the fallback below doesn't lazy-fetch.
-    library_file = None
-    if data.library_file_id:
-        result = await db.execute(
-            select(LibraryFile)
-            .options(selectinload(LibraryFile.projects))
-            .where(LibraryFile.id == data.library_file_id)
-        )
-        library_file = result.scalar_one_or_none()
-        if not library_file:
-            raise HTTPException(400, "Library file not found")
-        # Same IDOR gate for cross-user library-file queueing (security #2).
-        if (
-            current_user is not None
-            and not current_user.has_permission(Permission.LIBRARY_READ_ALL.value)
-            and library_file.created_by_id != current_user.id
-        ):
-            raise HTTPException(404, "Library file not found")
-
-        # Pre-flight: refuse a FAT32-illegal filename at queue time rather than
-        # letting the item sit pending only to fail at FTP dispatch (upstream #1540).
-        try:
-            validate_print_filename(library_file.filename)
-        except InvalidFilenameError as e:
-            raise HTTPException(400, str(e))
-
-    # Cross-model safety gate (#2578): a G-code 3MF sliced for one model must not
-    # be queued to a printer it can't run on. This is the per-printer tier — the
-    # item binds to this queue's printer and the dispatcher hands it straight over
-    # with no human in the loop — so an API-created (or UI) mismatch is rejected
-    # here. Missing slice metadata never blocks (see is_gcode_compatible).
-    sliced_for = None
-    if archive:
-        sliced_for = archive.sliced_for_model
-    elif library_file and library_file.file_metadata:
-        sliced_for = library_file.file_metadata.get("sliced_for_model")
-    if sliced_for and queue.printer_id is not None:
-        from backend.app.models.printer import Printer
-
-        printer_model = (
-            await db.execute(select(Printer.model).where(Printer.id == queue.printer_id))
-        ).scalar_one_or_none()
-        if not is_gcode_compatible(sliced_for, printer_model):
-            raise HTTPException(
-                400,
-                f"File was sliced for {sliced_for} and cannot be dispatched to a {printer_model} printer",
-            )
-
-    # Serialize concurrent inserts into the same queue so two appends can't both
-    # read the same MAX(position) and land on a duplicate position in an empty
-    # scope (upstream #1625-followup TOCTOU fix). A transaction-scoped Postgres
-    # advisory lock keyed on the queue closes the window and releases at
-    # commit/rollback; different queues don't contend. SQLite serialises writes
-    # implicitly so this is a no-op there. The dialect is read from the live
-    # session binding (not settings/is_sqlite()) because a test fixture can bind
-    # SQLite while settings.database_url still points at Postgres.
-    bind = db.get_bind()
-    if bind.dialect.name == "postgresql":
-        scope_key = data.queue_id if data.queue_id is not None else 0
-        # classid 1625 namespaces the lock so it can't collide with other
-        # advisory locks elsewhere in the codebase.
-        await db.execute(text("SELECT pg_advisory_xact_lock(1625, :k)"), {"k": scope_key})
-
-    # Get next position for this queue
-    result = await db.execute(
-        select(func.max(PrintQueueItem.position))
-        .where(PrintQueueItem.queue_id == data.queue_id)
-        .where(PrintQueueItem.status == "pending")
-    )
-    max_pos = result.scalar() or 0
-
-    # Validate project exists before insert so a bogus ID yields 404, not an FK-constraint 500
-    if data.project_id is not None:
-        project_result = await db.execute(select(Project).where(Project.id == data.project_id))
-        if not project_result.scalar_one_or_none():
-            raise HTTPException(status_code=404, detail="Project not found")
-
-    # Fallback: if the caller didn't pass a project_id but the source is a
-    # library file that's already linked to one or more projects, inherit
-    # the first one. Queue items stay single-project by design — for a
-    # multi-project file the operator should pass ``project_id`` explicitly
-    # to disambiguate. m044: was previously a single FK, now a list, so we
-    # pick ``[0]`` for the fallback (deterministic — pivot rows are read in
-    # insertion order via the relationship).
-    effective_project_id = data.project_id
-    if effective_project_id is None and library_file and library_file.projects:
-        effective_project_id = library_file.projects[0].id
-
-    # For quantity > 1, group copies under a shared batch_id
-    batch_id = str(uuid.uuid4()) if data.quantity > 1 else None
-    ams_mapping_json = json.dumps(data.ams_mapping) if data.ams_mapping else None
-
-    # Swap-macro execution is only meaningful when (a) the target printer has
-    # swap mode on AND (b) the source file does not already carry swap macros
-    # baked in by third-party tooling (``swap_compatible``). Otherwise force
-    # the feature off so stored state never lies about what fires at dispatch
-    # and we don't double-execute macros.
-    printer_swap_on = bool(queue.printer and queue.printer.swap_mode_enabled)
-    source_has_baked_macros = bool(
-        (archive and getattr(archive, "swap_compatible", False))
-        or (library_file and getattr(library_file, "swap_compatible", False))
-    )
-    execute_swap_macros = bool(data.execute_swap_macros) and printer_swap_on and not source_has_baked_macros
-    swap_macro_events_json = (
-        json.dumps(data.swap_macro_events) if execute_swap_macros and data.swap_macro_events else None
-    )
-
-    items: list[PrintQueueItem] = []
-    for i in range(data.quantity):
-        items.append(
-            PrintQueueItem(
-                queue_id=data.queue_id,
-                archive_id=data.archive_id,
-                library_file_id=data.library_file_id,
-                scheduled_time=data.scheduled_time,
-                auto_off_after=data.auto_off_after,
-                manual_start=data.manual_start,
-                require_previous_success=data.require_previous_success,
-                ams_mapping=ams_mapping_json,
-                plate_id=data.plate_id,
-                bed_levelling=mode_to_bool(data.bed_levelling),
-                bed_levelling_mode=data.bed_levelling,
-                flow_cali=mode_to_bool(data.flow_cali),
-                flow_cali_mode=data.flow_cali,
-                layer_inspect=data.layer_inspect,
-                timelapse=data.timelapse,
-                use_ams=data.use_ams,
-                nozzle_offset_cali=mode_to_bool(data.nozzle_offset_cali),
-                nozzle_offset_cali_mode=data.nozzle_offset_cali,
-                mesh_mode_fast_check=data.mesh_mode_fast_check,
-                execute_swap_macros=execute_swap_macros,
-                swap_macro_events=swap_macro_events_json,
-                gcode_injection=data.gcode_injection,
-                preheat_override=data.preheat_override,
-                preheat_chamber_target_override=data.preheat_chamber_target_override,
-                project_id=effective_project_id,
-                position=max_pos + 1 + i,
-                status="pending",
-                batch_id=batch_id,
-                created_by_id=current_user.id if current_user else None,
-            )
-        )
-    db.add_all(items)
-    await db.commit()
-    for it in items:
-        await db.refresh(it)
+    # Every gate, the advisory lock, the position and the build live in
+    # ``services/queue_add`` so the file manager's bulk add cannot become a
+    # second definition of what a queue item is.
+    items, queue = await add_items_to_printer_queue(db, data, current_user)
     item = items[0]
-
-    # Update queue counters (full recount for accuracy)
-    from backend.app.services.queue_counters import update_queue_counters
-
-    await update_queue_counters(db, data.queue_id)
-    await db.commit()
 
     # Re-query with full eager loading (queue→printer chain)
     result = await db.execute(

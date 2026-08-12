@@ -52,9 +52,14 @@ export function BulkTagsPickerModal({ open, fileIds, onClose }: BulkTagsPickerMo
   });
 
   const filteredTags = useMemo<LibraryTag[]>(() => {
+    // USER tags only. System tags (m128) are derived from the file, and the
+    // backend drops their ids from add/remove — so offering one would be a
+    // checkbox that reports success and changes nothing. A UI that lies is
+    // worse than one that refuses.
+    const assignable = tags.filter((t) => !t.is_system);
     const q = filter.trim().toLowerCase();
-    if (!q) return tags;
-    return tags.filter((t) => t.name.toLowerCase().includes(q));
+    if (!q) return assignable;
+    return assignable.filter((t) => t.name.toLowerCase().includes(q));
   }, [tags, filter]);
 
   const toggleTag = (id: number) => {

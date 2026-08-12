@@ -236,14 +236,22 @@ async def test_digest_with_no_opted_in_chats_clears_queue(async_client, db_sessi
 async def test_chat_quiet_hours_blocks_event_even_when_provider_active(async_client, db_session, monkeypatch):
     """Per-chat quiet hours win over provider-side enable."""
     await _telegram_provider(db_session)
-    # Quiet from 00:00 to 23:59 — covers any wall-clock time.
+    # Quiet for the whole day, so the assertion does not depend on when the
+    # suite runs.
+    #
+    # ⚠️ The end is EXCLUSIVE — ``TelegramChat.is_quiet_hours`` compares
+    # ``start <= now < end``. This used to say 00:00-23:59 with a comment
+    # claiming it "covers any wall-clock time"; it covered 1439 minutes out of
+    # 1440, and the test failed in the one minute it missed. Measured: a run
+    # that reached this test at 23:59 went red, and the same test passed on its
+    # own a minute later.
     await _chat(
         db_session,
         chat_id=77,
         notify_events=["print_complete"],
         quiet_hours_enabled=True,
         quiet_hours_start="00:00",
-        quiet_hours_end="23:59",
+        quiet_hours_end="24:00",
     )
 
     sent: list[str] = []

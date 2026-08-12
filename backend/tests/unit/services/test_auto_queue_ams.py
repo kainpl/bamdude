@@ -110,15 +110,39 @@ class TestBuildLoadedFilaments:
 
 
 class TestMatchFilamentsToSlots:
-    def test_unique_tray_info_idx_wins(self) -> None:
-        """Even with wrong color, unique tray_info_idx is the match."""
+    def test_colour_outranks_a_unique_tray_info_idx(self) -> None:
+        """Colour decides; the variant only breaks ties (#2687).
+
+        ⚠️ This test used to assert the exact opposite — *"Even with wrong color,
+        unique tray_info_idx is the match"* — with the blue GFA00 tray expected to
+        win over the red GFA01 one. That was the bug written down as a guarantee.
+
+        ``tray_info_idx`` names the filament **variant**, not an individual spool:
+        GFA00 is PLA Basic, GFA01 PLA Matte, in every colour Bambu sells. Treating
+        a unique idx as proof of colour is what made the print dialog show
+        "(Ready)" with a green tick for red-required against green-loaded.
+
+        The neighbouring ``test_exact_color_when_idx_not_unique`` always compared
+        colour, and passes unchanged — that asymmetry is what gave the bug away.
+        """
         loaded = [
             {"global_tray_id": 0, "type": "PLA", "color": "#0000FF", "tray_info_idx": "GFA00", "remain": 80},
             {"global_tray_id": 1, "type": "PLA", "color": "#FF0000", "tray_info_idx": "GFA01", "remain": 80},
         ]
         required = [{"slot_id": 1, "type": "PLA", "color": "#FF0000", "tray_info_idx": "GFA00"}]
         mapping = match_filaments_to_slots(required, loaded)
-        assert mapping == [0]  # tray_info_idx wins despite wrong color
+        assert mapping == [1]  # the red tray, not the same-variant blue one
+
+    def test_the_variant_still_breaks_a_tie_between_equal_colours(self) -> None:
+        """The other half of the same rule, so the fix cannot be "simplified"
+        into ignoring ``tray_info_idx`` altogether (#2650 depends on it)."""
+        loaded = [
+            {"global_tray_id": 0, "type": "PLA", "color": "#FF0000", "tray_info_idx": "GFA01", "remain": 80},
+            {"global_tray_id": 1, "type": "PLA", "color": "#FF0000", "tray_info_idx": "GFA00", "remain": 80},
+        ]
+        required = [{"slot_id": 1, "type": "PLA", "color": "#FF0000", "tray_info_idx": "GFA01"}]
+        mapping = match_filaments_to_slots(required, loaded)
+        assert mapping == [0]  # both red — the matching variant wins
 
     def test_exact_color_when_idx_not_unique(self) -> None:
         loaded = [

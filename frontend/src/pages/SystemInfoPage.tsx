@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import {
   Server,
   Database,
+  Radio,
   HardDrive,
   Cpu,
   MemoryStick,
@@ -102,6 +103,12 @@ function Section({
 
 export function SystemInfoPage() {
   const { t } = useTranslation();
+
+  // Diagnostics, not configuration: when readings look wrong the first two
+  // questions are which dongle is answering and on which network, and both were
+  // unreachable outside the settings tab.
+  const { data: zigbeeStatus } = useQuery({ queryKey: ['zigbee-status'], queryFn: api.getZigbeeStatus });
+  const { data: zigbeeDevices } = useQuery({ queryKey: ['zigbee-devices'], queryFn: api.getZigbeeDevices });
   const queryClient = useQueryClient();
   const [bundleError, setBundleError] = useState<string | null>(null);
   const [bundleDownloading, setBundleDownloading] = useState(false);
@@ -487,6 +494,52 @@ export function SystemInfoPage() {
       </Section>
 
       {/* Database Stats */}
+      {/* Rendered only when Zigbee is actually in use. A diagnostics page should
+          not carry a permanent entry about a feature the install has switched
+          off — that is noise, and noise is what gets skimmed past. */}
+      {zigbeeStatus && zigbeeStatus.state !== 'disabled' && (
+        <Section title={t('system.zigbeeCoordinator', 'Zigbee Coordinator')} icon={Radio}>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <StatCard
+              icon={Radio}
+              label={t('system.zigbeeState', 'State')}
+              value={t(`settings.zigbee.state.${zigbeeStatus.state}`)}
+              /* Verbatim: the reason is the only part that says what to do. */
+              subValue={zigbeeStatus.reason || undefined}
+            />
+            <StatCard
+              icon={Plug}
+              label={t('system.zigbeePairedDevices', 'Paired Devices')}
+              value={(zigbeeDevices?.devices ?? []).length}
+            />
+            {zigbeeStatus.coordinator && (
+              <>
+                <StatCard
+                  icon={Radio}
+                  label={t('system.zigbeeRadio', 'Radio')}
+                  value={
+                    [zigbeeStatus.coordinator.manufacturer, zigbeeStatus.coordinator.model]
+                      .filter(Boolean)
+                      .join(' ') || '—'
+                  }
+                  subValue={zigbeeStatus.coordinator.version ? `v${zigbeeStatus.coordinator.version}` : undefined}
+                />
+                <StatCard
+                  icon={Radio}
+                  label={t('system.zigbeeAddress', 'Address')}
+                  value={zigbeeStatus.coordinator.ieee}
+                  subValue={
+                    zigbeeStatus.network
+                      ? `${t('settings.zigbee.channel')} ${zigbeeStatus.network.channel} · PAN ${zigbeeStatus.network.pan_id}`
+                      : undefined
+                  }
+                />
+              </>
+            )}
+          </div>
+        </Section>
+      )}
+
       <Section title={t('system.database', 'Database')} icon={Database}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <StatCard

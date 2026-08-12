@@ -33,6 +33,16 @@ PORT_CHAMBER_IMAGE = 6000  # Chamber image protocol — A1/P1 camera stream; opt
 _PORT_PROBE_TIMEOUT = 3.0
 
 
+async def check_port(ip: str, port: int, timeout: float = _PORT_PROBE_TIMEOUT) -> bool:
+    """Public alias of :func:`_check_port`.
+
+    The connection watchdog needs this probe and should not be reaching for a
+    private name across modules; the diagnostic routes keep using the underscored
+    one they were written against.
+    """
+    return await _check_port(ip, port, timeout)
+
+
 async def _check_port(ip: str, port: int, timeout: float = _PORT_PROBE_TIMEOUT) -> bool:
     """Test TCP connectivity to ip:port. Returns True if reachable."""
     try:

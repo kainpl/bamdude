@@ -14,6 +14,7 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.user import User
+from backend.app.schemas.printer_location import PrinterLocationOut
 from backend.app.schemas.printer_queue import PrinterQueueResponse, PrinterQueueUpdate
 from backend.app.services.queue_counters import get_queue_terminal_counts
 
@@ -28,7 +29,7 @@ def _to_response(queue: PrinterQueue, terminal_counts: dict[str, int]) -> Printe
         printer_id=queue.printer_id,
         printer_name=queue.printer.name if queue.printer else None,
         printer_model=queue.printer.model if queue.printer else None,
-        printer_location=queue.printer.location if queue.printer else None,
+        printer_location=(PrinterLocationOut.from_location(queue.printer.location) if queue.printer else None),
         status=queue.status,
         is_paused=queue.is_paused,
         last_activity_at=queue.last_activity_at,

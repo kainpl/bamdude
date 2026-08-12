@@ -1,0 +1,176 @@
+"""The boundary that keeps this project about plugs.
+
+Without a gate in code, "sensors are out of scope" erodes one sympathetic
+request at a time: a temperature sensor pairs, someone asks to show its reading,
+and the scope has quietly become Zigbee2MQTT.
+"""
+
+from types import SimpleNamespace
+
+from backend.app.services.zigbee.devices import (
+    ELECTRICAL_MEASUREMENT,
+    METERING,
+    ON_OFF,
+    DeviceKind,
+    describe_device,
+)
+
+
+def _device(*endpoint_clusters, ieee="34:8d:13:ff:fe:11:e4:6f", model="S60ZBTPF"):
+    # Endpoint 0 is the ZDO and never carries application clusters.
+    endpoints = {0: SimpleNamespace(in_clusters={})}
+    for idx, clusters in enumerate(endpoint_clusters, start=1):
+        endpoints[idx] = SimpleNamespace(in_clusters={c: object() for c in clusters})
+    return SimpleNamespace(ieee=ieee, nwk=0x1234, manufacturer="SONOFF", model=model, endpoints=endpoints)
+
+
+def test_plug_with_metering_is_accepted_with_both_capabilities():
+    info = describe_device(_device([ON_OFF, METERING, ELECTRICAL_MEASUREMENT]))
+
+    assert info.is_plug is True
+    assert info.has_metering is True
+    assert info.has_electrical_measurement is True
+    assert info.reject_reason is None
+
+
+def test_plug_without_metering_is_still_accepted():
+    """It can be switched. Energy simply stays unavailable — and phase 3 has to
+    know that up front rather than discovering a silent zero."""
+    info = describe_device(_device([ON_OFF]))
+
+    assert info.is_plug is True
+    assert info.has_metering is False
+    assert info.has_electrical_measurement is False
+    assert info.reject_reason is None
+
+
+def test_device_without_on_off_is_rejected_with_a_reason():
+    info = describe_device(_device([METERING], model="TH01"))
+
+    assert info.is_plug is False
+    assert "On/Off" in info.reject_reason
+
+
+def test_on_off_on_a_later_endpoint_still_counts():
+    """The cluster does not have to live on endpoint 1, and plugs do move it."""
+    info = describe_device(_device([METERING], [ON_OFF]))
+
+    assert info.is_plug is True
+
+
+def test_device_with_no_endpoints_at_all_is_rejected():
+    """A partial interview must not read as a plug."""
+    info = describe_device(
+        SimpleNamespace(ieee="00:00:00:00:00:00:00:01", nwk=0x1, manufacturer=None, model=None, endpoints={})
+    )
+
+    assert info.is_plug is False
+    assert info.reject_reason
+
+
+def test_endpoints_none_is_survivable():
+    """zigpy can hand us a device before endpoints are populated."""
+    info = describe_device(
+        SimpleNamespace(ieee="00:00:00:00:00:00:00:02", nwk=0x2, manufacturer=None, model=None, endpoints=None)
+    )
+
+    assert info.is_plug is False
+
+
+def test_identity_fields_survive_missing_manufacturer_and_model():
+    """zigpy leaves these None on a partial interview; the API must not 500."""
+    info = describe_device(_device([ON_OFF], model=None))
+
+    assert info.model is None
+    assert info.manufacturer == "SONOFF"
+    assert info.ieee == "34:8d:13:ff:fe:11:e4:6f"
+
+
+def test_the_coordinator_itself_is_never_a_plug():
+    """Found on real hardware: the radio was listed as a pairable plug.
+
+    zigpy keeps the coordinator in its own device table, and the Dongle-M
+    reports an On/Off cluster on endpoint 1 — so a gate that only looks at
+    clusters classifies the radio as a switchable device. Left in, phase 3 would
+    let someone bind the dongle to a printer, and DELETE would call remove() on
+    our own radio.
+
+    NWK 0x0000 is the coordinator address by Zigbee spec, which is why it is a
+    safe discriminator without needing the application object.
+    """
+    radio = SimpleNamespace(
+        ieee="34:8d:13:ff:fe:11:e4:6f",
+        nwk=0x0000,
+        manufacturer="Silicon Labs",
+        model="EZSP",
+        endpoints={1: SimpleNamespace(in_clusters={ON_OFF: object(), METERING: object()})},
+    )
+
+    info = describe_device(radio)
+
+    assert info.is_coordinator is True
+    assert info.is_plug is False
+    assert "coordinator" in info.reject_reason.lower()
+
+
+def test_a_real_plug_is_not_mistaken_for_the_coordinator():
+    info = describe_device(_device([ON_OFF]))
+
+    assert info.is_coordinator is False
+    assert info.is_plug is True
+
+
+# --- classification (cycle S) ------------------------------------------------
+#
+# The gate stops meaning "plugs only" and starts meaning "which class". The set
+# stays closed: plug, sensor, and everything else is still removed.
+
+TEMPERATURE = 0x0402
+HUMIDITY = 0x0405
+
+
+def test_a_temperature_sensor_is_a_sensor_not_a_reject():
+    info = describe_device(_device([TEMPERATURE, HUMIDITY], model="SNZB-02D"))
+
+    assert info.kind is DeviceKind.SENSOR
+    assert info.is_plug is False
+    assert info.reject_reason is None
+    assert set(info.measurements) == {"temperature", "humidity"}
+
+
+def test_a_device_with_on_off_and_a_sensor_cluster_is_a_plug():
+    """A metering plug that also reports temperature is a plug. This cycle does
+    not turn plugs into ambient sensors, and the tie has to break somewhere."""
+    info = describe_device(_device([ON_OFF, TEMPERATURE]))
+
+    assert info.kind is DeviceKind.PLUG
+    assert info.is_plug is True
+
+
+def test_the_coordinator_is_still_checked_first():
+    """The Dongle-M advertises On/Off; cluster presence alone would make our own
+    radio a plug and let it be removed."""
+    device = _device([ON_OFF])
+    device.nwk = 0x0000
+
+    info = describe_device(device)
+
+    assert info.kind is DeviceKind.COORDINATOR
+    assert info.is_coordinator is True
+    assert info.is_plug is False
+
+
+def test_a_device_we_can_neither_switch_nor_read_is_unsupported():
+    info = describe_device(_device([0x0500]))  # IAS Zone — a door sensor
+
+    assert info.kind is DeviceKind.UNSUPPORTED
+    assert info.measurements == ()
+    assert "cannot be switched" in info.reject_reason
+
+
+def test_a_plug_carries_no_measurements():
+    """Measurements are the sensor surface. A plug's energy is not one of them —
+    it has its own scaling and its own path."""
+    info = describe_device(_device([ON_OFF, METERING]))
+
+    assert info.measurements == ()

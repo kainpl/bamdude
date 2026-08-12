@@ -38,6 +38,11 @@ from backend.app.schemas.ams_settings import (
 from backend.app.services.ams_capabilities import compute_ams_supports
 from backend.app.services.printer_manager import printer_manager
 
+# BS ``is_in_upgrading()`` — DevUpgrade.cpp maps exactly these five
+# ``upgrade_state.status`` values to UpgradingInProgress. Anything else (IDLE,
+# UPGRADE_SUCCESS, UPGRADE_FAIL, …) is not a flash in progress.
+_UPGRADING_STATUSES = frozenset({"DOWNLOADING", "FLASHING", "UPGRADE_REQUEST", "PRE_FLASH_START", "PRE_FLASH_SUCCESS"})
+
 router = APIRouter(prefix="/printers", tags=["ams-settings"])
 
 
@@ -145,6 +150,7 @@ async def get_ams_settings(
         air_print_detect=s.ams_air_print_detect,
         firmware_idx_run=s.ams_firmware_idx_run,
         firmware_idx_sel=s.ams_firmware_idx_sel,
+        firmware_switching=(s.ams_firmware_status == "SWITCHING"),
     )
     supports_dict = compute_ams_supports(s, printer.model)
     supports = AmsSystemSettingSupports(**supports_dict)
@@ -170,13 +176,16 @@ async def get_ams_settings(
             continue
         ams_units.append(AmsUnitInfo(ams_id=ams_id, label=_ams_label(ams_id)))
 
-    firmware_options: list[AmsFirmwareOption] = []
-    if supports.firmware_switch:
-        # BS DevAmsSystemFirmwareSwitch::IDX_AMS = 0 (FULL), IDX_LITE = 1.
-        firmware_options = [
-            AmsFirmwareOption(idx=0, label="FULL"),
-            AmsFirmwareOption(idx=1, label="LITE"),
-        ]
+    # Options come from the device, exactly as BS builds its combo box from
+    # ``GetSuppotedFirmwares()`` (AMSSetting.cpp). The names are the printer's
+    # own — we never invent them, because a label paired with the wrong id
+    # reflashes the AMS into the other personality. (It did: this list used to
+    # be hardcoded FULL=0 / LITE=1, and BS's enum is IDX_LITE = 0,
+    # IDX_AMS_AMS2_AMSHT = 1 — inverted.)
+    firmware_options = [
+        AmsFirmwareOption(idx=fw["id"], label=fw["name"] or f"#{fw['id']}", version=fw["version"] or None)
+        for fw in s.ams_firmwares
+    ]
 
     return AmsSettingsGetResponse(
         state=state,
@@ -238,8 +247,36 @@ async def post_ams_settings(
             ok = client.ams_calibrate(body.ams_id)
 
         elif isinstance(body, AmsFirmwareSwitchAction):
+            # BS refuses this in three states before it will publish anything
+            # (AMSSetting.cpp::OnAmsTypeChanged). BS could rely on a disabled
+            # widget; we cannot — this route is reachable by API key and bot,
+            # so the refusals live on the server.
             if not supports["firmware_switch"]:
                 http_exc = HTTPException(409, "firmware switch not supported on this printer")
+                raise http_exc
+            known_idx = {fw["id"] for fw in client.state.ams_firmwares}
+            if body.firmware_idx not in known_idx:
+                # Never publish an id the device did not offer: ids ARE the
+                # personality (IDX_LITE = 0, IDX_AMS_AMS2_AMSHT = 1), so a
+                # guessed one reflashes the AMS into something else.
+                http_exc = HTTPException(409, f"printer does not offer AMS firmware id {body.firmware_idx}")
+                raise http_exc
+            if client.state.ams_firmware_status == "SWITCHING":
+                http_exc = HTTPException(409, "an AMS firmware switch is already in progress")
+                raise http_exc
+            if (
+                client.state.state in ("RUNNING", "PAUSE")
+                or client.state.firmware_upgrade_status in _UPGRADING_STATUSES
+            ):
+                http_exc = HTTPException(409, "the printer is busy and cannot switch AMS type")
+                raise http_exc
+            if any(client.state.ext_has_filament.values()):
+                http_exc = HTTPException(409, "unload all filament before switching AMS type")
+                raise http_exc
+            if body.firmware_idx == client.state.ams_firmware_idx_sel:
+                # BS returns early on an unchanged selection rather than
+                # reflashing to what is already selected.
+                http_exc = HTTPException(409, "that AMS firmware is already selected")
                 raise http_exc
             ok, sequence_id = client.ams_firmware_switch(body.firmware_idx)
 

@@ -44,6 +44,7 @@ from backend.app.api.routes import (
     macros,
     maintenance,
     makerworld,
+    measurement_history,
     metrics,
     mfa,
     notification_templates,
@@ -52,6 +53,7 @@ from backend.app.api.routes import (
     orca_cloud,
     print_options_preferences,
     print_queue,
+    printer_locations,
     printer_queues,
     printer_sensor_history,
     printer_settings as printer_settings_routes,
@@ -73,6 +75,7 @@ from backend.app.api.routes import (
     virtual_printers,
     webhook,
     websocket,
+    zigbee,
 )
 from backend.app.api.routes.maintenance import _get_printer_maintenance_internal, ensure_default_types
 from backend.app.api.routes.support import init_debug_logging
@@ -84,9 +87,8 @@ from backend.app.models.smart_plug import SmartPlug
 from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.auto_queue_scheduler import auto_queue_scheduler
 from backend.app.services.background_dispatch import background_dispatch
-from backend.app.services.bambu_mqtt import PrinterState
+from backend.app.services.bambu_mqtt import HMS_SEVERITY_NOTIFY_THRESHOLD, PrinterState
 from backend.app.services.git_backup import git_backup_service
-from backend.app.services.homeassistant import homeassistant_service
 from backend.app.services.local_backup import local_backup_service
 from backend.app.services.mqtt_relay import mqtt_relay
 from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
@@ -109,7 +111,7 @@ from backend.app.services.spoolman_tracking import (
     store_print_data as _store_spoolman_print_data,
 )
 from backend.app.services.stock_forecast_alerts import stock_forecast_alerts
-from backend.app.services.tasmota import tasmota_service
+from backend.app.utils.filament_remaining import grams_used
 
 
 # =============================================================================
@@ -318,11 +320,20 @@ if app_settings.log_to_file:
     # across separate streams. Filtered to write methods only
     # (POST/PUT/PATCH/DELETE) so the high-volume status-poll GETs from the
     # frontend don't churn the rotation window faster than it's useful.
+    #
+    # The filter goes on the FILE HANDLER, not on the access logger. A
+    # logger-level filter runs before any handler, so on the logger it also
+    # stripped GETs from the console — which does not rotate, and where
+    # someone watching the server wants to see them. It cost real diagnostic
+    # time once: an empty stretch of access lines read as "the server served
+    # nothing", when the GET polling behind it was simply invisible by
+    # design. On the handler the file stays trimmed and the console stays
+    # complete.
     from backend.app.core.logging_filters import WriteRequestsOnlyFilter  # noqa: E402
 
     uvicorn_access_logger = logging.getLogger("uvicorn.access")
     uvicorn_access_logger.addHandler(file_handler)
-    uvicorn_access_logger.addFilter(WriteRequestsOnlyFilter())
+    file_handler.addFilter(WriteRequestsOnlyFilter())
     # Uvicorn's access logger has propagate=False (its own default), so
     # the root-attached TraceIDFilter never sees these records. Attach a
     # second filter instance directly to the access logger so HTTP access
@@ -357,6 +368,12 @@ _active_prints: dict[tuple[int, str], int] = {}
 # captures the better-framed pre-bed-drop moment without us having to force
 # timelapse on at dispatch (the #1397 mechanism that caused #1721's per-layer
 # nozzle parking on slicer profiles with Timelapse Type = Smooth).
+#
+# The bytes in here are ALWAYS already rotated by the printer's
+# ``camera_rotation``. ``on_finish_photo_moment`` owns that, because one of its
+# sources (the #1867 in-print bank) is rotated before it ever reaches the bank
+# and the others are not — so a consumer cannot tell them apart and must not
+# rotate again (#2708).
 _stage22_finish_frames: dict[int, bytes] = {}
 
 # #1790: per-printer producer-done event. Set by `on_finish_photo_moment` in its
@@ -618,35 +635,116 @@ def _clear_unknown_tag_dedup(printer_id: int, ams_id: int, tray_id: int) -> None
     per_printer.pop((ams_id, tray_id), None)
 
 
-async def _get_plug_energy(plug, db) -> dict | None:
-    """Get energy from plug regardless of type (Tasmota, Home Assistant, MQTT, or REST).
+async def _get_plug_energy(plug, db, *, force_read: bool = False) -> dict | None:
+    """Energy for one plug, through whichever driver the manager resolves.
 
-    For HA plugs, configures the service with current settings from DB.
-    For MQTT plugs, returns data from the subscription service.
-    For REST plugs, polls the status URL with JSON path extraction.
+    This was a hand-rolled ``if/elif`` chain ending in ``else:
+    tasmota_service``. That default is what made it dangerous rather than merely
+    incomplete: a plug type the chain predated did not fail, it silently got
+    Tasmota's answer — an HTTP poll against an IP that a Zigbee plug does not
+    have. Since this feeds per-print energy, the result would have been a wrong
+    number rather than a missing one.
+
+    ``SmartPlugManager.get_service_for_plug`` is the single resolver, so a new
+    plug type is one line there and every caller follows. It also configures the
+    Home Assistant service from settings, which is why dropping the HA branch
+    here loses nothing.
+
+    The driver each type returns is unchanged — only the route to it.
+
+    ``force_read`` is for the two ends of a per-print measurement, where a
+    reading that is merely recent is not good enough. Only a driver that answers
+    from a cache has anything to force: Tasmota, REST and Home Assistant make a
+    live HTTP call per question, and the MQTT driver holds state the plug pushes
+    at it, so for those it is already as fresh as the device is willing to be.
+    The flag is honoured through ``reads_from_a_cache`` rather than by asking
+    which plug type this is — that if/elif chain is the one this function exists
+    to have removed.
     """
-    if plug.plug_type == "homeassistant":
-        from backend.app.api.routes.settings import get_homeassistant_settings
+    service = await smart_plug_manager.get_service_for_plug(plug, db)
+    if force_read and getattr(service, "reads_from_a_cache", False):
+        # No timeout of our own: this runs in a background task, and the driver
+        # already bounds the wait and shares one read between callers.
+        await service.refresh(plug)
+    return await service.get_energy(plug)
 
-        ha_settings = await get_homeassistant_settings(db)
-        homeassistant_service.configure(ha_settings["ha_url"], ha_settings["ha_token"])
-        return await homeassistant_service.get_energy(plug)
-    elif plug.plug_type == "mqtt":
-        # Straight through the driver: it is the only place that knows which of
-        # the plug's two energy readings is the lifetime one
-        # (``mqtt_energy_total_*``) and which resets. Reproducing the mapping
-        # here is how this branch came to file the DAILY counter as ``total``,
-        # which per-print energy then differenced — so every print that spanned
-        # midnight recorded a negative delta.
-        from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
 
-        return await mqtt_smart_plug_service.get_energy(plug)
-    elif plug.plug_type == "rest":
-        from backend.app.services.rest_smart_plug import rest_smart_plug_service
+async def _record_print_energy(archive_id: int, printer_id: int) -> None:
+    """Calculate and save energy usage in background.
 
-        return await rest_smart_plug_service.get_energy(plug)
-    else:
-        return await tasmota_service.get_energy(plug)
+    Reads the starting kWh from the archive row (#941: persisted so a mid-print
+    backend restart no longer loses per-print energy data).
+
+    Lifted out of ``on_print_complete`` so it can be tested: what it does that
+    is easy to get silently wrong — asking the plug for a fresh reading rather
+    than accepting the cache — fails by producing a slightly small number, which
+    is the one kind of wrong nobody notices.
+    """
+    logger = logging.getLogger(__name__)
+    try:
+        logger.info("[ENERGY-BG] Starting energy calculation for archive %s", archive_id)
+        async with async_session() as db:
+            from backend.app.models.archive import PrintArchive
+
+            archive = await db.get(PrintArchive, archive_id)
+            if archive is None:
+                logger.warning("[ENERGY-BG] Archive %s no longer exists", archive_id)
+                return
+            starting_kwh = archive.energy_start_kwh
+            if starting_kwh is None:
+                logger.info("[ENERGY-BG] No start kWh recorded for archive %s", archive_id)
+                return
+
+            plug = await _energy_plug_for_printer(printer_id, db)
+            if plug is None:
+                logger.info("[ENERGY-BG] No smart plug for printer %s", printer_id)
+                return
+
+            # Ask the plug itself rather than accept what is cached. The
+            # counter only moves when the plug reports it, and it is asked
+            # to report at most every 30 s — so a print that has just
+            # stopped drawing 200 W leaves up to half a minute of it
+            # unrecorded, every time, in the same direction. The start
+            # reading has the same lag over an idle printer, where it is
+            # worth a fraction of a watt-hour and cannot pay for a radio
+            # read on the dispatch path.
+            energy = await _get_plug_energy(plug, db, force_read=True)
+            logger.info("[ENERGY-BG] Energy response: %s", energy)
+            if not energy or energy.get("total") is None:
+                logger.warning("[ENERGY-BG] No 'total' in energy response")
+                return
+
+            # Recorded before the sanity check below, not after: a counter
+            # that went backwards is precisely when the range report most
+            # needs a fresh baseline, and the reading itself is true even
+            # though the per-print delta derived from it is not.
+            await smart_plug_manager.record_energy_snapshot(db, plug.id, energy["total"])
+
+            energy_used = round(energy["total"] - starting_kwh, 4)
+            logger.info("[ENERGY-BG] Per-print energy: %s kWh", energy_used)
+            if energy_used < 0:
+                logger.warning(
+                    "[ENERGY-BG] Negative energy delta for archive %s (start=%s, end=%s) - counter reset?",
+                    archive_id,
+                    starting_kwh,
+                    energy["total"],
+                )
+                # Commit the snapshot even though no per-print figure is
+                # written — otherwise the session unwinds and the one
+                # reading that could re-baseline the report is thrown away.
+                await db.commit()
+                return
+
+            from backend.app.api.routes.settings import get_setting
+
+            energy_cost_per_kwh = await get_setting(db, "energy_cost_per_kwh")
+            cost_per_kwh = float(energy_cost_per_kwh) if energy_cost_per_kwh else 0.15
+            archive.energy_kwh = energy_used
+            archive.energy_cost = round(energy_used * cost_per_kwh, 3)
+            await db.commit()
+            logger.info("[ENERGY-BG] Saved: %s kWh, cost=%s", energy_used, archive.energy_cost)
+    except Exception as e:
+        logger.warning("[ENERGY-BG] Failed: %s", e)
 
 
 async def _default_queue_id_for_printer(db, printer_id: int) -> int | None:
@@ -661,6 +759,28 @@ async def _default_queue_id_for_printer(db, printer_id: int) -> int | None:
     return (await db.execute(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))).scalar_one_or_none()
 
 
+async def _energy_plug_for_printer(printer_id: int, db) -> SmartPlug | None:
+    """The one plug a printer's energy is measured with.
+
+    Both ends of a per-print measurement go through here so they cannot pick
+    different rows. They used to run their own ``scalar_one_or_none()``, which
+    raises on two plugs and — worse — guarantees nothing about picking the same
+    one twice: a start read from one meter and an end read from another produce a
+    plausible, wrong delta instead of a missing one.
+
+    A printer legitimately has several plugs. ``controls_printer_power`` (#2629)
+    marks the mains feed as opposed to an accessory on the same machine, so it
+    wins; ``id`` breaks any remaining tie so the answer is stable.
+    """
+    result = await db.execute(
+        select(SmartPlug)
+        .where(SmartPlug.printer_id == printer_id)
+        .order_by(SmartPlug.controls_printer_power.desc(), SmartPlug.id.asc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 async def _record_energy_start(archive, printer_id: int, db, *, context: str = "") -> bool:
     """Capture the smart plug lifetime counter on the archive at print start.
 
@@ -671,8 +791,7 @@ async def _record_energy_start(archive, printer_id: int, db, *, context: str = "
     """
     _logger = logging.getLogger(__name__)
     try:
-        plug_result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
-        plug = plug_result.scalar_one_or_none()
+        plug = await _energy_plug_for_printer(printer_id, db)
         if not plug:
             _logger.info("[ENERGY] No smart plug for printer %s (archive %s)", printer_id, archive.id)
             return False
@@ -681,6 +800,10 @@ async def _record_energy_start(archive, printer_id: int, db, *, context: str = "
             _logger.warning("[ENERGY] No 'total' in energy response for archive %s", archive.id)
             return False
         archive.energy_start_kwh = float(energy["total"])
+        # Same reading, also kept as a snapshot: it marks the true start of this
+        # print in the range report instead of leaving the nearest boundary on
+        # whichever hour the snapshot loop last fired.
+        await smart_plug_manager.record_energy_snapshot(db, plug.id, energy["total"])
         await db.commit()
         _logger.info(
             "[ENERGY] Recorded starting energy%s for archive %s: %s kWh",
@@ -730,6 +853,53 @@ def register_expected_print(
     logging.getLogger(__name__).info(
         f"Registered expected print: printer={printer_id}, file={filename}, archive={archive_id}, ams_mapping={ams_mapping}"
     )
+
+
+def withdraw_expected_print(printer_id: int, filename: str) -> None:
+    """Undo a registration whose print command never went out (upstream #2702 follow-up).
+
+    ``register_expected_print`` runs *before* the print command — it has to, so
+    the entry exists by the time the printer's first report arrives. Everything
+    between the two can still fail: a cancel, the strict-stagger refusal, a swap
+    macro, the calibration write, a dropped MQTT session, or ``start_print``
+    simply returning False.
+
+    Without this, that stale entry survives for the full
+    ``_EXPECTED_PRINT_TTL_SECONDS`` (two hours). And ``_expected_prints`` is a
+    **name-match adoption table**: ``on_print_start`` pops ``(printer_id,
+    filename)`` and attaches the print to that archive. So a leftover does not
+    merely leak — for two hours it adopts *the next print of the same file on
+    that printer* into the wrong archive, whichever way that print was started.
+    On a farm that repeats one file, that is a normal Tuesday.
+
+    The TTL sweeper stays as the backstop it was meant to be, rather than the
+    only mechanism. Removes every filename variant ``register_expected_print``
+    wrote, so a partial withdrawal cannot leave one of them behind to match on.
+    """
+    keys = [(printer_id, filename)]
+    if filename.endswith(".3mf"):
+        base = filename[:-4]
+        keys.append((printer_id, base))
+        keys.append((printer_id, f"{base}.gcode"))
+
+    archive_ids = {aid for key in keys if (aid := _expected_prints.pop(key, None)) is not None}
+    for key in keys:
+        _expected_print_creators.pop(key, None)
+        _expected_print_registered_at.pop(key, None)
+
+    # The AMS mapping is keyed by archive, not by filename, so it is only safe to
+    # drop once no variant still points at that archive.
+    for archive_id in archive_ids:
+        if archive_id not in _expected_prints.values():
+            _print_ams_mappings.pop(archive_id, None)
+
+    if archive_ids:
+        logging.getLogger(__name__).info(
+            "Withdrew expected print: printer=%s, file=%s, archive=%s (command never sent)",
+            printer_id,
+            filename,
+            ", ".join(str(a) for a in sorted(archive_ids)),
+        )
 
 
 def register_swap_config(printer_id: int, options: dict):
@@ -1043,7 +1213,16 @@ async def _handle_pause_edge(printer_id: int, state: PrinterState):
         printer_info = printer_manager.get_printer(printer_id)
         printer_name = printer_info.name if printer_info else f"Printer {printer_id}"
 
-        hms_codes = [e.get("code") for e in (state.hms_errors or []) if isinstance(e, dict) and e.get("code")]
+        # ``state.hms_errors`` holds ``HMSError`` dataclasses, not dicts. This
+        # asked ``isinstance(e, dict)``, which is False for every one of them —
+        # so the list was ALWAYS empty and every pause fell through to
+        # "unknown". Filament runout and an open door paged the operator with
+        # the identical message.
+        #
+        # ``short_code`` is what ``PAUSE_REASON_CODES`` is keyed by
+        # (``0300_8004``); ``HMSError.code`` alone is ``0x8004`` and matches
+        # nothing, which is the second half of the same bug.
+        hms_codes = [e.short_code for e in (state.hms_errors or []) if getattr(e, "code", None)]
         expected = _expected_pause_reasons.pop(printer_id, None)
         reason_code, reason_label, hms_code = classify_pause_reason(hms_codes, expected)
 
@@ -1218,13 +1397,50 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         if state.raw_data
         else ()
     )
+    # ⚠️ The card draws its fans from ``airduct_fans`` alone, and on a machine
+    # with an air duct those speeds live nowhere else — the flat fields above
+    # cover only three of them, and not the second auxiliary fan at all. Without
+    # this the whole tile updated only when something unrelated moved.
+    airduct_key = tuple((pid, (part or {}).get("state")) for pid, part in sorted((state.airduct_parts or {}).items()))
     status_key = (
         f"{state.connected}:{state.state}:{state.progress}:{state.layer_num}:"
         f"{nozzle_temp}:{bed_temp}:{nozzle_2_temp}:{chamber_temp}:"
         f"{state.stg_cur}:{bed_target}:{nozzle_target}:"
         f"{state.cooling_fan_speed}:{state.big_fan1_speed}:{state.big_fan2_speed}:"
         f"{state.chamber_light}:{state.active_extruder}:{state.tray_now}:{vt_tray_key}:"
-        f"{ams_dry_key}:{ams_tray_key}:{state.ams_auto_switch_filament}"
+        # Without these two, changing the air-duct mode changes nothing in
+        # this key, so no broadcast is sent and the card keeps the old
+        # selection until something else happens to move.
+        f"{state.airduct_mode}:{state.airduct_sub_mode}:{airduct_key}:{state.heatbreak_fan_speed}:"
+        # Everything else the card draws. All discrete and low-churn, so
+        # they cost nothing here — a door opens once, a speed level is
+        # chosen once. The noisy fields (progress, temperatures) were
+        # already in this key, which is why adding these changes the
+        # broadcast rate hardly at all.
+        #
+        # ⚠️ ``last_ams_update`` is deliberately NOT here. It is
+        # ``time.time()`` stamped on every AMS push, so including it
+        # would make the key differ every time and defeat the whole
+        # early-return. It rides in the WebSocket payload, where a value
+        # that changes constantly is harmless, and triggers nothing.
+        f"{state.speed_level}:{state.door_open}:{state.sdcard}:{state.sdcard_state}:"
+        f"{state.store_to_sdcard}:{state.timelapse}:{state.ipcam}:"
+        f"{state.firmware_version}:{state.mc_print_sub_stage}:"
+        f"{state.firmware_consistency_request}:{state.firmware_force_upgrade}:"
+        f"{ams_dry_key}:{ams_tray_key}:{state.ams_auto_switch_filament}:"
+        # The bounds the temperature inputs are drawn with. They arrive late and
+        # rarely — a reported range, or the mains-voltage bit that lowers the bed
+        # ceiling — and land in no other field here, so without them the browser
+        # would keep whatever bounds happened to be true at the first broadcast.
+        f"{state.nozzle_temp_range}:{state.bed_temp_range}:{state.bed_temperature_limit}:"
+        f"{state.is_220v}:{sorted(state.ext_has_nozzle.items())}:"
+        # Homed-ness drives whether the jog controls are offered at all,
+        # and it changes exactly when somebody homes the machine — which is
+        # otherwise a moment nothing else in this key notices.
+        f"{sorted(state.axis_at_home.items())}:{sorted(state.ext_has_filament.items())}:"
+        # Whether a timelapse is possible changes when a card is pulled or
+        # fills up — moments nothing else in this key notices.
+        f"{state.sdcard_state}:{state.has_timelapse_kit}:{sorted(state.timelapse_storage.items())}"
     )
 
     # MQTT relay - publish status (before dedup check - always publish to MQTT)
@@ -1257,6 +1473,21 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     # create_task wrapper, #1648); the lifespan shutdown cancels any pending task.
     prev_connected = _printer_last_connected.get(printer_id)
     _printer_last_connected[printer_id] = state.connected
+
+    # The MQTT relay gets BOTH edges, unlike the notification above. An
+    # integrator subscribed to `.../online` is asking "is it reachable now",
+    # which only makes sense as a pair — and the reason there is no online
+    # notification (a print-failure report already covers the human case)
+    # says nothing about a machine consumer.
+    if prev_connected is not None and prev_connected != state.connected:
+        try:
+            relay_info = printer_manager.get_printer(printer_id)
+            if relay_info:
+                emit = mqtt_relay.on_printer_online if state.connected else mqtt_relay.on_printer_offline
+                await emit(printer_id, relay_info.name, relay_info.serial_number)
+        except Exception:
+            pass  # A relay failure must never break the status callback.
+
     if prev_connected is True and not state.connected:
         existing = _printer_offline_notify_tasks.get(printer_id)
         if existing is None or existing.done():
@@ -1351,8 +1582,16 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
 
         if new_error_codes:
             # Get the actual new errors for the notification
-            # Filter to severity >= 2 (skip informational/status messages like H2D sends)
-            new_errors = [e for e in current_hms_errors if f"{e.attr:08x}" in new_error_codes and e.severity >= 2]
+            # Notify on FATAL (1) and SERIOUS (2) only. **Lower is worse** in
+            # BS's HMSMessageLevel, so the old ``>= 2`` had this exactly
+            # backwards: it dropped every FATAL and kept every INFO. The
+            # frontend has always used ``<= 2`` for its red pip, so the two
+            # halves of the product disagreed about which faults mattered.
+            new_errors = [
+                e
+                for e in current_hms_errors
+                if f"{e.attr:08x}" in new_error_codes and e.severity <= HMS_SEVERITY_NOTIFY_THRESHOLD
+            ]
 
             try:
                 from backend.app.models.printer import Printer
@@ -1773,9 +2012,11 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                     remain_val = int(remain_raw)
                                 except (TypeError, ValueError):
                                     remain_val = -1
-                                if 1 <= remain_val <= 100:
-                                    lw = existing_assignment.spool.label_weight or 1000
-                                    new_used = round(lw * (100 - remain_val) / 100.0, 1)
+                                _new_used = grams_used(
+                                    tray.get("remain_g"), remain_val, existing_assignment.spool.label_weight
+                                )
+                                if _new_used is not None:
+                                    new_used = _new_used
                                     current_used = existing_assignment.spool.weight_used or 0
                                     if new_used > current_used + 1:
                                         logger.info(
@@ -2286,27 +2527,16 @@ async def _maybe_bank_inprint_frame(printer_id: int, layer_num: int) -> None:
 
 
 def _apply_camera_rotation(image_data: bytes, printer, logger) -> bytes:
-    """Apply camera rotation to snapshot image if configured."""
-    rotation = getattr(printer, "camera_rotation", 0)
-    if not rotation or rotation == 0:
-        return image_data
+    """Apply the printer's configured camera rotation to a captured still.
 
-    try:
-        from io import BytesIO
+    Thin wrapper over ``camera.apply_camera_rotation`` — the implementation is
+    shared with the layer-timelapse and finish-photo paths, which used to leave
+    their images unrotated while the snapshot of the very same print came out
+    the right way up (#2708).
+    """
+    from backend.app.services.camera import apply_camera_rotation
 
-        from PIL import Image
-
-        img = Image.open(BytesIO(image_data))
-        # PIL rotate is counter-clockwise, so negate for clockwise rotation
-        img = img.rotate(-rotation, expand=True)
-        buf = BytesIO()
-        img.save(buf, format="JPEG", quality=90)
-        rotated = buf.getvalue()
-        logger.info("[SNAPSHOT] Applied %d° rotation: %s → %s bytes", rotation, len(image_data), len(rotated))
-        return rotated
-    except Exception as e:
-        logger.warning("[SNAPSHOT] Failed to apply rotation: %s", e)
-        return image_data
+    return apply_camera_rotation(image_data, getattr(printer, "camera_rotation", 0), logger)
 
 
 async def _send_print_start_notification(
@@ -2863,10 +3093,12 @@ async def on_print_start(printer_id: int, data: dict):
         #
         # **Side effect we DO need to repeat**: re-load printable_objects +
         # skip_objects_supported into the freshly-created MQTT client state.
-        # ``ensure_fresh_connection`` (default mqtt_connection_timeout=300s
-        # for legacy printers) periodically swaps the BambuMQTTClient for a
-        # new one with empty state, so without this re-load the skip-objects
-        # button goes dark roughly every 5 minutes mid-print. Server-restart
+        # Any reconnect swaps the BambuMQTTClient for a new one with empty
+        # state, so without this re-load the skip-objects button goes dark
+        # mid-print. That used to happen on a timer — ``ensure_fresh_connection``
+        # recycled a live link older than ``mqtt_connection_timeout``, which
+        # defaulted to minutes — and m120 turned that off, but a link that
+        # genuinely drops still reconnects and still lands here. Server-restart
         # papers over the symptom (it wipes _active_prints, so the next
         # on_print_start takes the full path and loads objects), but the
         # underlying state was being silently lost.
@@ -3001,6 +3233,7 @@ async def on_print_start(printer_id: int, data: dict):
                         printer.external_camera_url,
                         printer.external_camera_type or "mjpeg",
                         snapshot_url=printer.external_camera_snapshot_url,
+                        rotation=getattr(printer, "camera_rotation", 0) or 0,
                     )
                     logger.info(
                         "Started layer timelapse for printer %s, expected archive %s",
@@ -3534,6 +3767,7 @@ async def on_print_start(printer_id: int, data: dict):
                         printer.external_camera_url,
                         printer.external_camera_type or "mjpeg",
                         snapshot_url=printer.external_camera_snapshot_url,
+                        rotation=getattr(printer, "camera_rotation", 0) or 0,
                     )
                     logger.info("Started layer timelapse for printer %s, archive %s", printer_id, fallback_archive.id)
 
@@ -3656,6 +3890,7 @@ async def on_print_start(printer_id: int, data: dict):
                         printer.external_camera_url,
                         printer.external_camera_type or "mjpeg",
                         snapshot_url=printer.external_camera_snapshot_url,
+                        rotation=getattr(printer, "camera_rotation", 0) or 0,
                     )
                     logger.info("Started layer timelapse for printer %s, archive %s", printer_id, archive.id)
 
@@ -4017,6 +4252,7 @@ _FINISH_PHOTO_TIMELAPSE_POLL_TIMEOUT_SECONDS: float = 60.0
 async def _capture_finish_photo_from_timelapse(
     archive_id: int,
     archive_dir: Path,
+    rotation: int = 0,
 ) -> str | None:
     """Wait for the per-print timelapse to land on the archive and extract its
     last frame as the finish photo (#1397).
@@ -4036,7 +4272,7 @@ async def _capture_finish_photo_from_timelapse(
     import uuid
 
     from backend.app.models.archive import PrintArchive
-    from backend.app.services.camera import extract_video_last_frame
+    from backend.app.services.camera import apply_camera_rotation_to_file, extract_video_last_frame
 
     logger = logging.getLogger(__name__)
 
@@ -4058,6 +4294,11 @@ async def _capture_finish_photo_from_timelapse(
                 filename = f"finish_{timestamp}_{uuid.uuid4().hex[:8]}.jpg"
                 output_path = photos_dir / filename
                 if await extract_video_last_frame(video_path, output_path):
+                    # ffmpeg writes the still straight to disk, so there are no
+                    # bytes to rotate on the way past — do it in place. The
+                    # VIDEO is left alone deliberately: it is the printer's own
+                    # file, and rotating it would mean re-encoding it (#2708).
+                    await apply_camera_rotation_to_file(output_path, rotation, logger)
                     logger.info(
                         "[PHOTO-BG] Extracted finish photo from timelapse %s for archive %s",
                         video_path.name,
@@ -4193,15 +4434,43 @@ async def on_finish_photo_moment(printer_id: int, data: dict):
         # print from the last object layer, before the swap. Only for
         # ``finish_state``: the ``stage_22`` and ``last_layer`` triggers fire
         # before the swap and give cleaner (parked-toolhead) framing live.
+        # The banked frame arrives ALREADY rotated — it comes from
+        # ``_capture_snapshot_for_notification``, which rotates before it
+        # returns. Every other source below is a raw grab. Tracking which is
+        # what lets ``_stage22_finish_frames`` hold exactly one rotation either
+        # way, so consumers never have to guess (#2708).
+        frame_already_rotated = False
         if trigger == "finish_state":
             banked = _inprint_frame_bank.get(printer_id)
             if banked:
                 frame_bytes = banked
+                frame_already_rotated = True
                 logger.info(
                     "[FINISH-PHOTO-MOMENT] using banked in-print frame (%d bytes) — "
                     "avoids post-swap live grab on stage-22-less firmware",
                     len(banked),
                 )
+
+        # Reuse the live view before touching either camera (#2707). The
+        # external branch never consulted the buffer at all, and the built-in
+        # one below checked the buffer without asking whether a viewer was
+        # attached — so an empty buffer during a live view fell through to a
+        # competing handle on a single-reader device.
+        if frame_bytes is None:
+            from backend.app.api.routes.camera import live_frame_for_capture
+
+            defer, buffered_live = live_frame_for_capture(printer_id)
+            if defer:
+                if buffered_live:
+                    frame_bytes = buffered_live
+                    logger.info("[FINISH-PHOTO-MOMENT] reused the live view's frame (%d bytes)", len(buffered_live))
+                else:
+                    logger.info(
+                        "[FINISH-PHOTO-MOMENT] viewer attached for printer %s with an empty buffer — "
+                        "not opening a competing handle; the post-completion fallback will retry",
+                        printer_id,
+                    )
+                    frame_bytes = None
 
         if frame_bytes is None and printer.external_camera_enabled and printer.external_camera_url:
             from backend.app.services.external_camera import capture_frame
@@ -4233,6 +4502,8 @@ async def on_finish_photo_moment(printer_id: int, data: dict):
                     logger.info("[FINISH-PHOTO-MOMENT] captured RTSP frame (%d bytes)", len(frame_bytes))
 
         if frame_bytes:
+            if not frame_already_rotated:
+                frame_bytes = _apply_camera_rotation(frame_bytes, printer, logger)
             _stage22_finish_frames[printer_id] = frame_bytes
         else:
             logger.warning(
@@ -5472,58 +5743,7 @@ async def on_print_complete(printer_id: int, data: dict):
     # These operations can take 5-10+ seconds and would freeze the UI if awaited
 
     async def _background_energy_calculation():
-        """Calculate and save energy usage in background.
-
-        Reads the starting kWh from the archive row (#941: persisted so a mid-print
-        backend restart no longer loses per-print energy data).
-        """
-        try:
-            logger.info("[ENERGY-BG] Starting energy calculation for archive %s", archive_id)
-            async with async_session() as db:
-                from backend.app.models.archive import PrintArchive
-
-                archive = await db.get(PrintArchive, archive_id)
-                if archive is None:
-                    logger.warning("[ENERGY-BG] Archive %s no longer exists", archive_id)
-                    return
-                starting_kwh = archive.energy_start_kwh
-                if starting_kwh is None:
-                    logger.info("[ENERGY-BG] No start kWh recorded for archive %s", archive_id)
-                    return
-
-                plug_result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
-                plug = plug_result.scalar_one_or_none()
-                if plug is None:
-                    logger.info("[ENERGY-BG] No smart plug for printer %s", printer_id)
-                    return
-
-                energy = await _get_plug_energy(plug, db)
-                logger.info("[ENERGY-BG] Energy response: %s", energy)
-                if not energy or energy.get("total") is None:
-                    logger.warning("[ENERGY-BG] No 'total' in energy response")
-                    return
-
-                energy_used = round(energy["total"] - starting_kwh, 4)
-                logger.info("[ENERGY-BG] Per-print energy: %s kWh", energy_used)
-                if energy_used < 0:
-                    logger.warning(
-                        "[ENERGY-BG] Negative energy delta for archive %s (start=%s, end=%s) - counter reset?",
-                        archive_id,
-                        starting_kwh,
-                        energy["total"],
-                    )
-                    return
-
-                from backend.app.api.routes.settings import get_setting
-
-                energy_cost_per_kwh = await get_setting(db, "energy_cost_per_kwh")
-                cost_per_kwh = float(energy_cost_per_kwh) if energy_cost_per_kwh else 0.15
-                archive.energy_kwh = energy_used
-                archive.energy_cost = round(energy_used * cost_per_kwh, 3)
-                await db.commit()
-                logger.info("[ENERGY-BG] Saved: %s kWh, cost=%s", energy_used, archive.energy_cost)
-        except Exception as e:
-            logger.warning("[ENERGY-BG] Failed: %s", e)
+        await _record_print_energy(archive_id, printer_id)
 
     async def _background_finish_photo() -> str | None:
         """Capture finish photo in background. Returns photo filename if captured."""
@@ -5582,6 +5802,7 @@ async def on_print_complete(printer_id: int, data: dict):
                 photo_filename = await _capture_finish_photo_from_timelapse(
                     archive_id=archive_id,
                     archive_dir=archive_dir,
+                    rotation=getattr(printer, "camera_rotation", 0) or 0,
                 )
 
             # #1721: replacement framing path — on_finish_photo_moment pre-captured a
@@ -5624,6 +5845,32 @@ async def on_print_complete(printer_id: int, data: dict):
             # capture. Only runs if neither the timelapse source nor the pre-captured
             # frame above produced a photo.
             if not photo_filename:
+                # One rule, asked once, before either camera kind (#2707). The
+                # built-in branch below hand-rolls this same check by scanning
+                # the stream registries; the external branch had none at all, so
+                # a watched print with a USB camera opened a competing handle
+                # and got nothing. Kept above both so neither can drift again.
+                from backend.app.api.routes.camera import live_frame_for_capture
+
+                defer_live, buffered_live = live_frame_for_capture(printer_id)
+                if defer_live and buffered_live:
+                    photos_dir = archive_dir / "photos"
+                    photos_dir.mkdir(parents=True, exist_ok=True)
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    photo_filename = f"finish_{timestamp}_{uuid.uuid4().hex[:8]}.jpg"
+                    photo_path = photos_dir / photo_filename
+                    await asyncio.to_thread(
+                        photo_path.write_bytes, _apply_camera_rotation(buffered_live, printer, logger)
+                    )
+                    logger.info("[PHOTO-BG] Reused the live view's frame: %s", photo_filename)
+                elif defer_live:
+                    logger.info(
+                        "[PHOTO-BG] Viewer attached for printer %s with an empty buffer — leaving the "
+                        "finish photo unset rather than opening a competing camera handle",
+                        printer_id,
+                    )
+
+            if not photo_filename and not defer_live:
                 # Check for external camera first
                 if printer.external_camera_enabled and printer.external_camera_url:
                     logger.info("[PHOTO-BG] Using external camera")
@@ -5640,6 +5887,9 @@ async def on_print_complete(printer_id: int, data: dict):
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                         photo_filename = f"finish_{timestamp}_{uuid.uuid4().hex[:8]}.jpg"
                         photo_path = photos_dir / photo_filename
+                        # Raw grab — the cached stage-22 frame above is already
+                        # rotated, this one is not (#2708).
+                        frame_data = _apply_camera_rotation(frame_data, printer, logger)
                         await asyncio.to_thread(photo_path.write_bytes, frame_data)
                         logger.info("[PHOTO-BG] Saved external camera frame: %s", photo_filename)
                 else:
@@ -5657,6 +5907,7 @@ async def on_print_complete(printer_id: int, data: dict):
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                         photo_filename = f"finish_{timestamp}_{uuid.uuid4().hex[:8]}.jpg"
                         photo_path = photos_dir / photo_filename
+                        buffered_frame = _apply_camera_rotation(buffered_frame, printer, logger)
                         await asyncio.to_thread(photo_path.write_bytes, buffered_frame)
                         logger.info("[PHOTO-BG] Saved buffered frame: %s", photo_filename)
                     else:
@@ -5669,6 +5920,7 @@ async def on_print_complete(printer_id: int, data: dict):
                             access_code=printer.access_code,
                             model=printer.model,
                             archive_dir=archive_dir,
+                            rotation=getattr(printer, "camera_rotation", 0) or 0,
                         )
 
             # Write phase: attach the photo in a fresh short-lived session (the read
@@ -6649,6 +6901,99 @@ async def lifespan(app: FastAPI):
 
     await init_db()
 
+    # OIDC provider declared by BAMDUDE_OIDC_* (#2593). Re-applied on every boot,
+    # which is what makes the environment the authority and the UI read-only —
+    # and what lets removing the variables release the row rather than strand it.
+    # Runs after init_db because it needs the is_env_managed column m130 adds.
+    # Never raises by contract; a rejected config is logged and skipped.
+    try:
+        from backend.app.core.database import async_session as _oidc_session
+        from backend.app.core.oidc_env import apply_env_oidc_provider
+
+        async with _oidc_session() as _oidc_db:
+            await apply_env_oidc_provider(_oidc_db)
+    except Exception:  # noqa: BLE001 — nothing in startup may take the boot down
+        logging.getLogger(__name__).exception("Env-managed OIDC provider could not be applied")
+
+    # Zigbee coordinator. Best-effort by contract: start() never raises, so a
+    # missing, busy or wrong-mode dongle leaves the app fully usable with the
+    # reason available at GET /zigbee/status. Skipped entirely when disabled,
+    # which is the default — an install that never wants Zigbee pays nothing.
+    # The outer guard covers the settings read, not the coordinator: this is
+    # startup, and nothing here may take the application down.
+    try:
+        # ``async_session`` is aliased, not used from module scope: a later block
+        # in this same function imports that name locally, which makes Python
+        # treat it as a local for the WHOLE function — so the module-level one
+        # would raise UnboundLocalError here. Ruff (F823) catches it; the alias
+        # sidesteps the shadowing entirely.
+        from backend.app.api.routes.settings import get_setting as _zb_get_setting
+        from backend.app.core.database import async_session as _zb_session
+        from backend.app.services.zigbee.coordinator import zigbee_coordinator
+
+        async with _zb_session() as _zb_db:
+            _zb_settings = {
+                _k: (await _zb_get_setting(_zb_db, _k) or "")
+                for _k in ("zigbee_enabled", "zigbee_transport", "zigbee_path")
+            }
+        await zigbee_coordinator.start(_zb_settings)
+
+        # Reporting for every Zigbee plug already bound to a printer. Without
+        # this the driver looks configured and does half its job: commands go
+        # straight to the cluster and work, so the plug switches — but nothing
+        # feeds the cache, so status stays "unreachable" and energy never
+        # arrives. Best-effort, like the start above.
+        if zigbee_coordinator.app is not None:
+            from sqlalchemy import select as _zb_select
+
+            from backend.app.models.smart_plug import SmartPlug as _ZbPlug
+            from backend.app.services.zigbee.driver import zigbee_smart_plug_service as _zb_driver
+            from backend.app.services.zigbee.reporting import subscribe_all as _zb_subscribe
+
+            async with _zb_session() as _zb_db2:
+                _zb_rows = (
+                    (await _zb_db2.execute(_zb_select(_ZbPlug).where(_ZbPlug.plug_type == "zigbee"))).scalars().all()
+                )
+            if _zb_rows:
+                _zb_wired = await _zb_subscribe(_zb_driver, _zb_rows)
+                logging.getLogger(__name__).info("Zigbee reporting set up for %s/%s plug(s)", _zb_wired, len(_zb_rows))
+
+            # Sensor listeners, for every sensor already on the mesh. Purely
+            # local — no bind, no configure_reporting — which is what lets it
+            # run for a sleeping battery device too. Without it a sensor's
+            # reports reach zigpy after a restart and are dropped: the device
+            # looks perfectly paired and its readings stay blank for ever.
+            from backend.app.services.zigbee.reporting import attach_all_sensors as _zb_attach_sensors
+
+            _zb_sensors = _zb_attach_sensors(zigbee_coordinator.app)
+            if _zb_sensors:
+                logging.getLogger(__name__).info("Zigbee reporting attached for %s sensor(s)", _zb_sensors)
+
+            # Devices paired before this table existed get their rows now. The
+            # migration could not do it: it has no radio and cannot know what
+            # is paired. Idempotent, so later boots cost one query per device.
+            from backend.app.core.database import async_session as _zb_session
+            from backend.app.services.zigbee.device_settings import reconcile_device_rows as _zb_reconcile
+            from backend.app.services.zigbee.devices import describe_device as _zb_describe
+
+            async with _zb_session() as _zb_db:
+                _zb_added = await _zb_reconcile(
+                    [_zb_describe(d) for d in list(zigbee_coordinator.app.devices.values())],
+                    _zb_db,
+                )
+            if _zb_added:
+                logging.getLogger(__name__).info("Zigbee: recorded %s device(s) paired before this version", _zb_added)
+
+            # Polling, started whether or not any plug is configured yet: the
+            # loop re-queries each cycle, so a plug added later joins without a
+            # restart. Reporting alone does not keep readings current — ZHA
+            # polls this hardware class by default for the same reason.
+            from backend.app.services.zigbee.poller import zigbee_poller as _zb_poller
+
+            _zb_poller.start(_zb_driver, _zb_session)
+    except Exception as _zb_exc:
+        logging.getLogger(__name__).warning("Zigbee coordinator not started: %s", _zb_exc)
+
     # Drop timelapse frame directories no session will reclaim. Sessions are
     # tracked in memory, so a restart mid-print orphans one permanently and
     # nothing else ever walks that tree. Filesystem-only and best-effort — a
@@ -7022,6 +7367,14 @@ async def lifespan(app: FastAPI):
     # Start printer heater (nozzle/bed/chamber) history recording
     start_printer_sensor_history_recording()
 
+    # Rebuild MQTT sessions that stopped reconnecting on their own (#2732).
+    # check_staleness() only ever handles a client that is still *connected* and
+    # quiet, and we call it reactively from get_status() — so a printer nobody is
+    # looking at has nothing watching it at all.
+    from backend.app.services.connection_watchdog import start_connection_watchdog
+
+    start_connection_watchdog()
+
     # Start printer runtime tracking
     start_runtime_tracking()
 
@@ -7122,6 +7475,17 @@ async def lifespan(app: FastAPI):
     await background_dispatch.stop()
     smart_plug_manager.stop_scheduler()
     try:
+        from backend.app.services.zigbee.coordinator import zigbee_coordinator
+        from backend.app.services.zigbee.poller import zigbee_poller
+
+        # Poller first: it reads through the radio the coordinator owns, so
+        # stopping that out from under an in-flight read is how shutdown starts
+        # logging exceptions nobody can act on.
+        await zigbee_poller.stop()
+        await zigbee_coordinator.stop()
+    except Exception:
+        pass
+    try:
         from backend.app.services.obico_detection import obico_detection_service
 
         obico_detection_service.stop()
@@ -7156,6 +7520,9 @@ async def lifespan(app: FastAPI):
     local_backup_service.stop_scheduler()
     stop_ams_history_recording()
     stop_printer_sensor_history_recording()
+    from backend.app.services.connection_watchdog import stop_connection_watchdog
+
+    await stop_connection_watchdog()
     stop_runtime_tracking()
     stop_camera_cleanup()
     # Cancel any pending offline-notification debounce tasks (#1752) so the 60s
@@ -7679,6 +8046,9 @@ app.include_router(mfa.router, prefix=app_settings.api_prefix)
 app.include_router(users.router, prefix=app_settings.api_prefix)
 app.include_router(groups.router, prefix=app_settings.api_prefix)
 app.include_router(printers.router, prefix=app_settings.api_prefix)
+app.include_router(printer_locations.router, prefix=app_settings.api_prefix)
+# No prefix of its own: its two paths belong to two existing namespaces.
+app.include_router(measurement_history.router, prefix=app_settings.api_prefix)
 # archive_purge must come BEFORE archives so its `/archives/trash/*` routes
 # don't get swallowed by archives' `/archives/{archive_id}` catch-all.
 app.include_router(archive_purge.router, prefix=app_settings.api_prefix)
@@ -7694,6 +8064,7 @@ app.include_router(slicer_pipelines.router, prefix=app_settings.api_prefix)
 app.include_router(slice_jobs.router, prefix=app_settings.api_prefix)
 app.include_router(makerworld.router, prefix=app_settings.api_prefix)
 app.include_router(smart_plugs.router, prefix=app_settings.api_prefix)
+app.include_router(zigbee.router, prefix=app_settings.api_prefix)
 app.include_router(print_queue.router, prefix=app_settings.api_prefix)
 app.include_router(print_options_preferences.router, prefix=app_settings.api_prefix)
 app.include_router(auto_queue.router, prefix=app_settings.api_prefix)

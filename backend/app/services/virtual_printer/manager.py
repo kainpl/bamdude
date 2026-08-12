@@ -191,6 +191,7 @@ class VirtualPrinterInstance:
         auto_dispatch: bool = True,
         queue_force_color_match: bool = False,
         gcode_injection: bool = False,
+        save_ams_mapping: bool = False,
         bind_ip: str = "",
         remote_interface_ip: str = "",
         tailscale_disabled: bool = True,
@@ -213,6 +214,7 @@ class VirtualPrinterInstance:
         self.auto_dispatch = auto_dispatch
         self.queue_force_color_match = queue_force_color_match
         self.gcode_injection = gcode_injection
+        self.save_ams_mapping = save_ams_mapping
         self.bind_ip = bind_ip
         self.remote_interface_ip = remote_interface_ip
         self.tailscale_disabled = tailscale_disabled
@@ -923,6 +925,33 @@ class VirtualPrinterInstance:
                 # command["print"]). Do not conflate the two.
                 import json
 
+                # The slicer's own resolved AMS pick (#2700). Captured only
+                # when this VP asks for it: storing a mapping on the queue item
+                # makes ``_ensure_ams_mapping`` return early, which skips
+                # prefer_lowest_filament, the AMS-Backup gate, the
+                # inventory-remain overrides and FTS routing. Off is today's
+                # behaviour, exactly.
+                ams_mapping_json: str | None = None
+                if self.save_ams_mapping and slicer_opts is not None:
+                    raw_ams_mapping = slicer_opts.get("ams_mapping")
+                    if isinstance(raw_ams_mapping, str):
+                        try:
+                            raw_ams_mapping = json.loads(raw_ams_mapping)
+                        except json.JSONDecodeError:
+                            logger.warning(
+                                "[VP %s] Slicer ams_mapping is unparseable JSON, dropping: %r",
+                                self.name,
+                                raw_ams_mapping,
+                            )
+                            raw_ams_mapping = None
+                    # An all-[-1] mapping is the slicer saying "unresolved", not
+                    # a pick — storing it would be read downstream as an explicit
+                    # external-spool selection and print against an empty feed.
+                    if isinstance(raw_ams_mapping, list) and any(
+                        isinstance(v, int) and v >= 0 for v in raw_ams_mapping
+                    ):
+                        ams_mapping_json = json.dumps(raw_ams_mapping)
+
                 nozzle_mapping_json: str | None = None
                 if slicer_opts is not None:
                     raw_nozzle_mapping = slicer_opts.get("nozzle_mapping")
@@ -965,6 +994,8 @@ class VirtualPrinterInstance:
                         # of a multi-plate Send All so each plate replays the
                         # same pick (mirrors the #1697 / #1733 per-plate loop).
                         nozzle_mapping=nozzle_mapping_json,
+                        # None unless this VP opted in — see above.
+                        ams_mapping=ams_mapping_json,
                         # Per-VP opt-in for auto-print G-code injection (#1516).
                         # Default off; when on, the dispatcher still no-ops unless
                         # gcode_snippets are configured for the target model, so
@@ -1119,6 +1150,13 @@ class VirtualPrinterInstance:
                         "slot_id": slot["slot_id"],
                         "type": slot["type"],
                         "color": slot.get("color", ""),
+                        # Carry the slicer's spool identity so force_color_match
+                        # can tell Bambu's PLA variants apart (#2650): Basic,
+                        # Matte and Silk all report tray_type "PLA" and differ
+                        # only here. A blank idx (custom or third-party spool)
+                        # means "no variant constraint" and eligibility falls
+                        # back to type+colour.
+                        "tray_info_idx": slot.get("tray_info_idx", ""),
                         "force_color_match": True,
                     }
                     for slot in per_slot
@@ -1836,6 +1874,7 @@ class VirtualPrinterManager:
                 or instance.auto_dispatch != vp.auto_dispatch
                 or instance.queue_force_color_match != vp.queue_force_color_match
                 or instance.gcode_injection != vp.gcode_injection
+                or instance.save_ams_mapping != vp.save_ams_mapping
                 or proxy_target_changed
                 # tailscale_disabled is informational only (#1070 post-rip-out):
                 # the toggle decides whether the VP card surfaces the host's
@@ -1877,6 +1916,7 @@ class VirtualPrinterManager:
                     auto_dispatch=vp.auto_dispatch,
                     queue_force_color_match=vp.queue_force_color_match,
                     gcode_injection=vp.gcode_injection,
+                    save_ams_mapping=vp.save_ams_mapping,
                     bind_ip=vp.bind_ip or "",
                     remote_interface_ip=vp.remote_interface_ip or "",
                     tailscale_disabled=vp.tailscale_disabled,
@@ -1900,6 +1940,7 @@ class VirtualPrinterManager:
                     auto_dispatch=vp.auto_dispatch,
                     queue_force_color_match=vp.queue_force_color_match,
                     gcode_injection=vp.gcode_injection,
+                    save_ams_mapping=vp.save_ams_mapping,
                     bind_ip=vp.bind_ip or "",
                     remote_interface_ip=vp.remote_interface_ip or "",
                     tailscale_disabled=vp.tailscale_disabled,

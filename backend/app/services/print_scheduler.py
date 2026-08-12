@@ -149,6 +149,25 @@ class _StaggerSlot:
         self.interval_seconds = interval_seconds  # per-printer or system default
 
 
+def _timelapse_storage_full(printer_id: int) -> bool:
+    """Whether this printer has run out of room for a timelapse.
+
+    ⚠️ Answers False whenever the figure is unknown — no client, no camera
+    report, or a machine that keeps its timelapses on an SD card we cannot
+    measure. Pausing a queue on a number nobody has would strand a farm over a
+    guess, which is worse than the missing video this is meant to protect.
+    """
+    from backend.app.services.printer_manager import printer_manager as _pm
+    from backend.app.utils.timelapse import is_storage_low
+
+    client = _pm.get_client(printer_id)
+    if client is None:
+        return False
+
+    storage = (client.state.print_option_support or {}).get("internal_timelapse")
+    return is_storage_low(client.state.timelapse_storage or {}, "internal" if storage else "external")
+
+
 class PrintScheduler:
     """Background scheduler that processes the print queue."""
 
@@ -341,6 +360,29 @@ class PrintScheduler:
                 # Get printer_id from queue
                 printer_id = item.queue.printer_id if item.queue else None
                 if not printer_id:
+                    continue
+
+                # ⚠️ A timelapse that was asked for and has nowhere to go PAUSES
+                # the queue rather than printing without one. That is a farm
+                # decision, not BambuStudio's: Studio offers to delete the oldest
+                # recording or to untick the box, both of which need somebody
+                # present. Unattended, the only choice that does not quietly
+                # throw away what was asked for is to stop and say so.
+                #
+                # ⚠️ Only the SPACE check lives here. Whether the machine can
+                # record at all is asked in the scheduling dialog, where a person
+                # is choosing printers and can act on the answer — pausing for a
+                # missing card would strand work nobody can un-strand from here.
+                if getattr(item, "timelapse", False) and _timelapse_storage_full(printer_id):
+                    if not item.queue.is_paused:
+                        item.queue.is_paused = True
+                        logger.warning(
+                            "[Scheduler] Queue for printer %s paused: item %s wants a timelapse and "
+                            "the printer is out of space for one",
+                            printer_id,
+                            item.id,
+                        )
+                    skip_reasons["timelapse_storage_full"] = skip_reasons.get("timelapse_storage_full", 0) + 1
                     continue
 
                 # Check scheduled time first (scheduled_time is stored in UTC from ISO string)
@@ -579,28 +621,15 @@ class PrintScheduler:
             logger.debug("No filament requirements found for queue item %s", item.id)
             return None
 
-        # Apply filament overrides if present
-        if item.filament_overrides:
-            try:
-                overrides = json.loads(item.filament_overrides)
-                override_map = {o["slot_id"]: o for o in overrides}
-                for req in filament_reqs:
-                    if req["slot_id"] in override_map:
-                        override = override_map[req["slot_id"]]
-                        req["type"] = override["type"]
-                        req["color"] = override["color"]
-                        # Clear tray_info_idx so matching uses type+color instead of
-                        # the original 3MF's tray_info_idx (which would match the old filament)
-                        req["tray_info_idx"] = ""
-                        logger.debug(
-                            "Queue item %s: Override slot %d -> %s %s",
-                            item.id,
-                            req["slot_id"],
-                            override["type"],
-                            override["color"],
-                        )
-            except (json.JSONDecodeError, KeyError, TypeError) as e:
-                logger.warning("Failed to apply filament overrides for queue item %s: %s", item.id, e)
+        # No filament-override step here on purpose. ``print_queue`` lost
+        # ``filament_overrides`` in m002 along with model-based assignment, which
+        # is the auto-queue tier's job in this fork — ``auto_queue_ams`` applies
+        # the overrides and stores the resulting mapping on the row it creates,
+        # so by the time this recompute runs there is nothing left to apply. The
+        # block that used to stand here still read the dropped attribute; the
+        # AttributeError was swallowed by ``run()``'s bare ``except Exception``,
+        # so an item whose stored mapping was missing or all-[-1] logged one line
+        # and silently never dispatched, every pass.
 
         # Build loaded filaments from printer status
         loaded_filaments = self._build_loaded_filaments(status)
@@ -1003,7 +1032,6 @@ class PrintScheduler:
             req_tray_info_idx = req.get("tray_info_idx", "")
 
             # Find best match: unique tray_info_idx > exact color > similar color > type-only
-            idx_match = None
             exact_match = None
             similar_match = None
             type_only_match = None
@@ -1026,25 +1054,40 @@ class PrintScheduler:
             if prefer_lowest:
                 available.sort(key=lambda f: self._prefer_lowest_sort_key(f, inventory_remain_overrides))
 
-            # Check if tray_info_idx is unique among available trays
+            # Trays carrying the slicer's tray_info_idx.
+            #
+            # A unique idx match used to be taken as definitive, on the premise
+            # "same preset = same spool = same colour" (#2687). False: **an idx
+            # names the filament VARIANT, not a spool** — GFA00 is PLA Basic,
+            # GFA01 PLA Matte, GFA17 PLA Translucent, in every colour Bambu
+            # sells. One Matte spool therefore matched every Matte requirement
+            # whatever colour it was, and the comparison below never ran.
+            #
+            # The asymmetry is what gave it away: the ``> 1`` branch already
+            # compared colour. Only uniqueness was trusted to imply it. Every
+            # idx candidate is now classified the same way, so the variant still
+            # decides *selection* among colour-agreeing trays (#2650 — Basic is
+            # not Matte) without deciding the verdict by itself.
+            idx_type_only = None
             if req_tray_info_idx:
-                idx_matches = [f for f in available if f.get("tray_info_idx") == req_tray_info_idx]
-                if len(idx_matches) == 1:
-                    # Unique tray_info_idx - use it as definitive match
-                    idx_match = idx_matches[0]
+                # Type-filtered like the pass below. An idx encodes the preset,
+                # which implies the material, so a same-idx tray of another type
+                # is inconsistent data rather than a candidate — and the pass
+                # below has always filtered on type, so accepting one here made
+                # the two disagree.
+                idx_matches = [
+                    f
+                    for f in available
+                    if f.get("tray_info_idx") == req_tray_info_idx
+                    and _canonical_filament_type((f.get("type") or "").upper()) == _canonical_filament_type(req_type)
+                ]
+                if idx_matches:
                     logger.debug(
-                        f"Matched filament slot {req.get('slot_id')} by unique tray_info_idx={req_tray_info_idx} "
-                        f"-> tray {idx_match['global_tray_id']}"
+                        f"tray_info_idx={req_tray_info_idx} found in {len(idx_matches)} tray(s), "
+                        f"colour-matching among: {[f['global_tray_id'] for f in idx_matches]}"
                     )
-                elif len(idx_matches) > 1:
-                    # Multiple trays with same tray_info_idx - use color matching among them
-                    logger.debug(
-                        f"Non-unique tray_info_idx={req_tray_info_idx} found in {len(idx_matches)} trays, "
-                        f"using color matching among trays: {[f['global_tray_id'] for f in idx_matches]}"
-                    )
-                    if prefer_lowest:
+                    if prefer_lowest and len(idx_matches) > 1:
                         idx_matches.sort(key=lambda f: self._prefer_lowest_sort_key(f, inventory_remain_overrides))
-                    # Use color matching within this subset
                     for f in idx_matches:
                         f_color = f.get("color", "")
                         if self._normalize_color_for_compare(f_color) == self._normalize_color_for_compare(req_color):
@@ -1053,11 +1096,14 @@ class PrintScheduler:
                         elif self._colors_are_similar(f_color, req_color):
                             if not similar_match:
                                 similar_match = f
-                        elif not type_only_match:
-                            type_only_match = f
+                        elif not idx_type_only:
+                            # Right variant, wrong colour — last resort only.
+                            # Blocking pass 2 with it would hide a correctly
+                            # coloured tray of the same type in another slot.
+                            idx_type_only = f
 
-            # If no idx_match yet, do standard type/color matching on all available trays
-            if not idx_match and not exact_match and not similar_match and not type_only_match:
+            # If nothing agreed on colour yet, do standard type/color matching on all available trays
+            if not exact_match and not similar_match and not type_only_match:
                 for f in available:
                     f_type = (f.get("type") or "").upper()
                     if _canonical_filament_type(f_type) != _canonical_filament_type(req_type):
@@ -1074,7 +1120,10 @@ class PrintScheduler:
                     elif not type_only_match:
                         type_only_match = f
 
-            match = idx_match or exact_match or similar_match or type_only_match
+            # Colour agreement first, wherever it was found; then any tray of the
+            # right type; then the right-variant-wrong-colour tray, which beats
+            # nothing but must not outrank a colour match.
+            match = exact_match or similar_match or type_only_match or idx_type_only
             if match:
                 used_tray_ids.add(match["global_tray_id"])
                 comparisons.append({"slot_id": req.get("slot_id", 0), "global_tray_id": match["global_tray_id"]})
@@ -1829,23 +1878,6 @@ class PrintScheduler:
         """Get all smart plugs associated with a printer."""
         result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
         return list(result.scalars().all())
-
-    async def _get_smart_plug(self, db: AsyncSession, printer_id: int) -> SmartPlug | None:
-        """Get the smart plug that powers a printer (backwards compat).
-
-        Prefers the plug flagged ``controls_printer_power`` — powering on an
-        accessory plug (filter / light / dryer) would never bring the printer up,
-        and the queue would sit waiting for a connection that can't happen
-        (#2629). Falls back to the first plug so a farm that hasn't distinguished
-        its plugs yet keeps the previous behaviour.
-        """
-        plugs = await self._get_smart_plugs(db, printer_id)
-        if not plugs:
-            return None
-        for plug in plugs:
-            if plug.controls_printer_power:
-                return plug
-        return plugs[0]
 
     async def _power_on_and_wait(self, plug: SmartPlug, printer_id: int, db: AsyncSession) -> bool:
         """Turn on smart plug and wait for printer to connect.

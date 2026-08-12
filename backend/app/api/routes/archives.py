@@ -3,8 +3,7 @@ import json
 import logging
 import zipfile
 from collections import defaultdict
-from datetime import date, datetime, time, timedelta, timezone
-from decimal import ROUND_HALF_UP, Decimal
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
@@ -19,6 +18,7 @@ from backend.app.core.auth import (
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.timezones import client_timezone, day_bounds
 from backend.app.models.archive import PrintArchive
 from backend.app.models.spool_usage_history import SpoolUsageHistory
 from backend.app.models.user import User
@@ -34,16 +34,23 @@ from backend.app.schemas.archive import (
 )
 from backend.app.schemas.plate_objects import PlateObjectsResponse
 from backend.app.services.archive import ArchiveService, resolve_display_stem
+from backend.app.services.design_settings import overrides_from_config
+from backend.app.services.filament_cost import default_rate_per_kg
+from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.safe_path import safe_join_under
 from backend.app.utils.threemf_tools import (
+    expand_to_project_slots,
     extract_embedded_presets_from_3mf,
     extract_nozzle_mapping_from_3mf,
     extract_project_filaments_from_3mf,
 )
 
 logger = logging.getLogger(__name__)
+
+# Path of the embedded slicer config inside a BambuStudio / OrcaSlicer 3MF.
+_PROJECT_SETTINGS_PATH = "Metadata/project_settings.config"
 
 router = APIRouter(prefix="/archives", tags=["archives"])
 
@@ -164,6 +171,7 @@ def archive_to_response(
         "photos": archive.photos,
         "failure_reason": archive.failure_reason,
         "quantity": archive.quantity,
+        "defective_count": archive.defective_count,
         "energy_kwh": archive.energy_kwh,
         "energy_cost": archive.energy_cost,
         # Queue attribution (m019) + verbose error_message twin for failures.
@@ -378,6 +386,7 @@ async def get_archive_filter_options(
 
 @router.get("/slim", response_model=list[ArchiveSlim])
 async def list_archives_slim(
+    request: Request,
     date_from: date | None = Query(None),
     date_to: date | None = Query(None),
     limit: int = Query(default=10000, le=50000),
@@ -411,12 +420,12 @@ async def list_archives_slim(
     # has no created_by_id query param, so pin the owner filter directly.
     if current_user is not None and not can_read_all:
         filters.append(PrintArchive.created_by_id == current_user.id)
+    # Client's day boundaries — see get_archive_stats for why UTC was wrong.
+    _tz = client_timezone(request)
     if date_from:
-        dt_from = datetime.combine(date_from, time.min, tzinfo=timezone.utc)
-        filters.append(PrintArchive.created_at >= dt_from)
+        filters.append(PrintArchive.created_at >= day_bounds(date_from, _tz)[0])
     if date_to:
-        dt_to = datetime.combine(date_to, time.max, tzinfo=timezone.utc)
-        filters.append(PrintArchive.created_at <= dt_to)
+        filters.append(PrintArchive.created_at < day_bounds(date_to, _tz)[1])
 
     query = (
         select(
@@ -433,6 +442,14 @@ async def list_archives_slim(
             PrintArchive.filament_color,
             PrintArchive.status,
             PrintArchive.cost,
+            # Measured electricity, alongside the filament cost. ``cost`` is
+            # filament ONLY (usage_tracker: grams x that spool's price, plus the
+            # untracked remainder at the default rate), so a "most expensive
+            # print" computed from it alone is answering a narrower question
+            # than it claims. Both columns ride here because the records widget
+            # aggregates client-side from this payload.
+            PrintArchive.energy_kwh,
+            PrintArchive.energy_cost,
             PrintArchive.quantity,
             PrintArchive.created_at,
             PrintArchive.thumbnail_path,
@@ -460,6 +477,8 @@ async def list_archives_slim(
             "started_at": r.started_at,
             "completed_at": r.completed_at,
             "cost": r.cost,
+            "energy_kwh": r.energy_kwh,
+            "energy_cost": r.energy_cost,
             "quantity": r.quantity,
             "created_at": r.created_at,
             "thumbnail_path": r.thumbnail_path,
@@ -685,6 +704,7 @@ async def rebuild_search_index(
 
 @router.get("/analysis/failures")
 async def analyze_failures(
+    request: Request,
     days: int | None = None,
     date_from: date | None = Query(None),
     date_to: date | None = Query(None),
@@ -723,6 +743,7 @@ async def analyze_failures(
         printer_id=printer_id,
         project_id=project_id,
         created_by_id=scoped_user_id,
+        tz=client_timezone(request),
     )
 
 
@@ -930,6 +951,7 @@ async def no_3mf_warning(
 
 @router.get("/stats", response_model=ArchiveStats)
 async def get_archive_stats(
+    request: Request,
     date_from: date | None = Query(None, description="Start date (inclusive), YYYY-MM-DD"),
     date_to: date | None = Query(None, description="End date (inclusive), YYYY-MM-DD"),
     created_by_id: int | None = Query(None, description="Filter by user who created the print (-1 for no user)"),
@@ -951,12 +973,14 @@ async def get_archive_stats(
         PrintArchive.deleted_at.is_(None),
     ]
     _apply_user_filter(base_conditions, created_by_id)
+    # Client's day, not UTC's — the picker was filled in against their clock.
+    # This decides which prints land in the range at all, so a UTC boundary
+    # moved every print from the first hours of a local day into the one before.
+    _tz = client_timezone(request)
     if date_from:
-        dt_from = datetime.combine(date_from, time.min, tzinfo=timezone.utc)
-        base_conditions.append(PrintArchive.created_at >= dt_from)
+        base_conditions.append(PrintArchive.created_at >= day_bounds(date_from, _tz)[0])
     if date_to:
-        dt_to = datetime.combine(date_to, time.max, tzinfo=timezone.utc)
-        base_conditions.append(PrintArchive.created_at <= dt_to)
+        base_conditions.append(PrintArchive.created_at < day_bounds(date_to, _tz)[1])
 
     # Total counts
     total_result = await db.execute(select(func.count(PrintArchive.id)).where(*base_conditions))
@@ -1094,13 +1118,19 @@ async def get_archive_stats(
     elif energy_tracking_mode == "total":
         # Total consumption mode with a date filter (#941): use hourly snapshots
         # to compute per-plug (endpoint - baseline) deltas.
-        from datetime import time as _time
+        #
+        # Day boundaries are the CLIENT's, not UTC. The dates arrive as bare
+        # calendar days from a date picker someone filled in while looking at
+        # their own clock, so resolving them at UTC midnight put the first hours
+        # of every local day into the previous one — three hours' worth on a
+        # Europe/Kyiv farm, which is where this was noticed.
+        tz = client_timezone(request)
+        dt_from = day_bounds(date_from, tz)[0] if date_from else None
+        # Exclusive end from day_bounds: `time.max` would silently drop the last
+        # 999 microseconds of the range.
+        dt_to = day_bounds(date_to, tz)[1] if date_to else None
 
-        total_energy_kwh, energy_data_warming_up = await _sum_snapshot_deltas(
-            db,
-            dt_from=(datetime.combine(date_from, _time.min, tzinfo=timezone.utc) if date_from else None),
-            dt_to=(datetime.combine(date_to, _time.max, tzinfo=timezone.utc) if date_to else None),
-        )
+        total_energy_kwh, energy_data_warming_up = await _sum_snapshot_deltas(db, dt_from=dt_from, dt_to=dt_to)
         total_energy_cost = total_energy_kwh * energy_cost_per_kwh
     else:
         # Per-print mode: sum the per-print energy column directly.
@@ -1135,43 +1165,34 @@ async def _sum_live_plug_totals(db: AsyncSession) -> float:
     available so this can't be date-filtered - use `_sum_snapshot_deltas` for
     that case.
     """
-    from backend.app.api.routes.settings import get_setting
     from backend.app.models.smart_plug import SmartPlug
-    from backend.app.services.homeassistant import homeassistant_service
-    from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
-    from backend.app.services.rest_smart_plug import rest_smart_plug_service
-    from backend.app.services.tasmota import tasmota_service
 
     plugs_result = await db.execute(select(SmartPlug))
     plugs = list(plugs_result.scalars().all())
 
-    ha_url = await get_setting(db, "ha_url") or ""
-    ha_token = await get_setting(db, "ha_token") or ""
-    homeassistant_service.configure(ha_url, ha_token)
-
+    # Resolved per plug rather than branched on by hand. The chain this replaces
+    # had no ``else``, so a plug type it predated matched nothing and silently
+    # contributed zero to the total — the sibling of main.py::_get_plug_energy,
+    # whose own chain defaulted to Tasmota instead. Going through the manager
+    # means a new plug type is one line there. It also configures the Home
+    # Assistant service itself, which is why the ha_url/ha_token preamble that
+    # used to sit here is gone.
     total = 0.0
     for plug in plugs:
-        if plug.plug_type == "tasmota":
-            energy = await tasmota_service.get_energy(plug)
-            if energy and energy.get("total") is not None:
-                total += energy["total"]
-        elif plug.plug_type == "homeassistant":
-            energy = await homeassistant_service.get_energy(plug)
-            if energy and energy.get("total") is not None:
-                total += energy["total"]
-        elif plug.plug_type == "mqtt":
-            # Through the driver, and summing the LIFETIME figure like the
-            # branches above. This used to add the daily reading into a
-            # lifetime total; a plug with no lifetime source now contributes
-            # nothing, which is what the tasmota and homeassistant branches
-            # already do when their own total is missing.
-            energy = await mqtt_smart_plug_service.get_energy(plug)
-            if energy and energy.get("total") is not None:
-                total += energy["total"]
-        elif plug.plug_type == "rest":
-            energy = await rest_smart_plug_service.get_energy(plug)
-            if energy and energy.get("today") is not None:
-                total += energy["today"]
+        service = await smart_plug_manager.get_service_for_plug(plug, db)
+        energy = await service.get_energy(plug)
+        if not energy:
+            continue
+        # REST reports only a daily figure; every other driver reports a
+        # lifetime one. That asymmetry is real — a REST plug has no lifetime
+        # counter — so it survives the collapse of the per-type chain rather
+        # than being tidied into a single key, which would drop REST plugs out
+        # of the totals entirely.
+        value = energy.get("total")
+        if value is None and plug.plug_type == "rest":
+            value = energy.get("today")
+        if value is not None:
+            total += value
     return total
 
 
@@ -1533,88 +1554,6 @@ async def retry_archive_download(
     }
 
 
-@router.post("/{archive_id}/rescan", response_model=ArchiveResponse)
-async def rescan_archive(
-    archive_id: int,
-    db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.ARCHIVES_UPDATE_ALL),
-):
-    """Rescan the 3MF file and update metadata."""
-    from backend.app.api.routes.settings import get_setting
-    from backend.app.services.archive import ThreeMFParser
-
-    result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
-    archive = result.scalar_one_or_none()
-    if not archive:
-        raise HTTPException(404, "Archive not found")
-
-    file_path = settings.base_dir / archive.file_path
-    if not file_path.is_file():
-        raise HTTPException(404, "Archive file not found")
-
-    # Parse the 3MF file
-    parser = ThreeMFParser(file_path)
-    metadata = parser.parse()
-
-    # Update fields from metadata
-    if metadata.get("filament_type"):
-        archive.filament_type = metadata["filament_type"]
-    if metadata.get("filament_color"):
-        archive.filament_color = metadata["filament_color"]
-    if metadata.get("print_time_seconds"):
-        archive.print_time_seconds = metadata["print_time_seconds"]
-    if metadata.get("filament_used_grams"):
-        archive.filament_used_grams = metadata["filament_used_grams"]
-    if metadata.get("layer_height"):
-        archive.layer_height = metadata["layer_height"]
-    if metadata.get("nozzle_diameter"):
-        archive.nozzle_diameter = metadata["nozzle_diameter"]
-    if metadata.get("bed_temperature"):
-        archive.bed_temperature = metadata["bed_temperature"]
-    if metadata.get("bed_type"):
-        archive.bed_type = metadata["bed_type"]
-    if metadata.get("nozzle_temperature"):
-        archive.nozzle_temperature = metadata["nozzle_temperature"]
-    if metadata.get("makerworld_url"):
-        archive.makerworld_url = metadata["makerworld_url"]
-    if metadata.get("designer"):
-        archive.designer = metadata["designer"]
-
-    # Calculate cost: prefer spool usage history, fallback to default setting.
-    # When spool-based costs exist but don't cover every filament gram used
-    # (#1344), top up the untracked weight at the global default rate so the
-    # displayed cost still reflects the whole print.
-
-    if archive.filament_used_grams and archive.filament_type:
-        default_cost_setting = await get_setting(db, "default_filament_cost")
-        default_cost_per_kg = float(default_cost_setting) if default_cost_setting else 25.0
-        usage_result = await db.execute(
-            select(
-                func.sum(SpoolUsageHistory.cost),
-                func.sum(SpoolUsageHistory.weight_used),
-            ).where(SpoolUsageHistory.archive_id == archive.id)
-        )
-        usage_cost_row = usage_result.one()
-        usage_cost = usage_cost_row[0]
-        tracked_grams = float(usage_cost_row[1] or 0)
-        if usage_cost is not None and usage_cost > 0:
-            total_cost = float(usage_cost)
-            untracked_grams = max(0.0, archive.filament_used_grams - tracked_grams)
-            if untracked_grams > 0 and default_cost_per_kg > 0:
-                total_cost += (untracked_grams / 1000.0) * default_cost_per_kg
-            archive.cost = float(Decimal(str(total_cost)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-        else:
-            archive.cost = float(
-                Decimal(str((archive.filament_used_grams / 1000) * default_cost_per_kg)).quantize(
-                    Decimal("0.01"), rounding=ROUND_HALF_UP
-                )
-            )
-
-    await db.commit()
-    await db.refresh(archive)
-    return archive
-
-
 @router.post("/recalculate-costs")
 async def recalculate_all_costs(
     db: AsyncSession = Depends(get_db),
@@ -1622,14 +1561,11 @@ async def recalculate_all_costs(
 ):
     """Recalculate costs for all archives based on filament usage and prices."""
 
-    from backend.app.api.routes.settings import get_setting
-
     result = await db.execute(select(PrintArchive))
     archives = list(result.scalars().all())
 
     # Get default filament cost from settings
-    default_cost_setting = await get_setting(db, "default_filament_cost")
-    default_cost_per_kg = float(default_cost_setting) if default_cost_setting else 25.0
+    default_cost_per_kg = await default_rate_per_kg(db)
 
     # Pre-fetch all usage costs and tracked weight by archive_id. Tracked
     # weight tops up the cost at the default rate for any filament grams not
@@ -1670,7 +1606,7 @@ async def recalculate_all_costs(
             fallback_cost = usage_result.scalar()
             if fallback_cost is not None and fallback_cost > 0:
                 new_cost = round(fallback_cost, 2)
-            elif archive.filament_used_grams:
+            elif archive.filament_used_grams and default_cost_per_kg > 0:
                 new_cost = round((archive.filament_used_grams / 1000) * default_cost_per_kg, 2)
             else:
                 new_cost = None
@@ -1680,56 +1616,6 @@ async def recalculate_all_costs(
 
     await db.commit()
     return {"message": f"Recalculated costs for {updated} archives", "updated": updated}
-
-
-@router.post("/rescan-all")
-async def rescan_all_archives(
-    db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.ARCHIVES_UPDATE_ALL),
-):
-    """Rescan all archives and update their metadata."""
-    from backend.app.services.archive import ThreeMFParser
-
-    result = await db.execute(select(PrintArchive))
-    archives = list(result.scalars().all())
-
-    updated = 0
-    errors = []
-
-    for archive in archives:
-        try:
-            file_path = settings.base_dir / archive.file_path
-            if not file_path.is_file():
-                errors.append({"id": archive.id, "error": "File not found"})
-                continue
-
-            parser = ThreeMFParser(file_path)
-            metadata = parser.parse()
-
-            if metadata.get("filament_type"):
-                archive.filament_type = metadata["filament_type"]
-            if metadata.get("filament_color"):
-                archive.filament_color = metadata["filament_color"]
-            if metadata.get("print_time_seconds"):
-                archive.print_time_seconds = metadata["print_time_seconds"]
-            if metadata.get("filament_used_grams"):
-                archive.filament_used_grams = metadata["filament_used_grams"]
-            if metadata.get("layer_height"):
-                archive.layer_height = metadata["layer_height"]
-            if metadata.get("nozzle_diameter"):
-                archive.nozzle_diameter = metadata["nozzle_diameter"]
-            if metadata.get("makerworld_url"):
-                archive.makerworld_url = metadata["makerworld_url"]
-            if metadata.get("designer"):
-                archive.designer = metadata["designer"]
-
-            updated += 1
-        except Exception as e:
-            logger.exception("Failed to rescan archive %s: %s", archive.id, e)
-            errors.append({"id": archive.id, "error": "Failed to parse 3MF file"})
-
-    await db.commit()
-    return {"updated": updated, "errors": errors}
 
 
 @router.get("/{archive_id}/duplicates")
@@ -3065,6 +2951,81 @@ async def get_plate_preview(
         raise HTTPException(500, f"Error extracting plate preview: {str(e)}")
 
 
+@router.post("/{archive_id}/save-to-library")
+async def save_archive_to_library(
+    archive_id: int,
+    folder_id: int | None = Query(None, description="Target library folder; root when omitted"),
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.ARCHIVES_READ_ALL,
+            Permission.ARCHIVES_READ_OWN,
+        )
+    ),
+    _upload: User | None = RequirePermission(Permission.LIBRARY_UPLOAD),
+):
+    """Copy an archived print's 3MF into the library.
+
+    Reads the bytes off disk and hands them to ``save_3mf_bytes_to_library`` —
+    the same helper MakerWorld import and slicer output use — so the metadata
+    parse, thumbnail extraction, per-plate cache and content-hash dedupe all
+    behave identically to any other way a file arrives.
+
+    ⚠️ **The archive's copy on disk is the UNPATCHED original**, which is
+    exactly what belongs in a library: the patched variant is built per dispatch
+    and thrown away. See the archive chain-of-custody notes in CLAUDE.md.
+
+    ⚠️ **An archive may legitimately have no file.** When a print starts from the
+    printer's own screen and the 3MF cannot be pulled, the row is created with an
+    empty ``file_path`` and a retry marker. That is a 409 with an explanation,
+    not a 404 — the archive is real, the file is what is missing.
+    """
+    from backend.app.api.routes.library import save_3mf_bytes_to_library
+    from backend.app.models.library import LibraryFolder
+
+    user, can_read_all = auth_result
+    service = ArchiveService(db)
+    archive = _ensure_archive_visible(await service.get_archive(archive_id), user, can_read_all)
+
+    if not archive.file_path:
+        raise HTTPException(
+            status_code=409,
+            detail="This archive has no 3MF stored — it was printed from the printer's own screen and the file could not be retrieved.",
+        )
+
+    file_path = settings.base_dir / archive.file_path
+    if not file_path.is_file():
+        raise HTTPException(404, "The archive's file is no longer on disk")
+
+    folder = None
+    if folder_id is not None:
+        folder = (await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))).scalar_one_or_none()
+        if folder is None:
+            raise HTTPException(404, "Folder not found")
+
+    library_file, already_there = await save_3mf_bytes_to_library(
+        db,
+        content=file_path.read_bytes(),
+        filename=archive.filename,
+        folder=folder,
+        created_by_id=user.id if user else None,
+        # A new provenance value. Nothing branches on it beyond the readiness
+        # tag, which treats it as sliced — a file that came out of a print
+        # necessarily is.
+        source_type="archive",
+    )
+
+    return {
+        "success": True,
+        "file_id": library_file.id,
+        "filename": library_file.filename,
+        "folder_id": folder.id if folder else None,
+        # The helper dedupes on content hash, so re-saving the same print
+        # returns the row that is already there instead of a second copy.
+        "already_in_library": already_there,
+    }
+
+
 @router.get("/{archive_id}/plates")
 async def get_archive_plates(
     archive_id: int,
@@ -3096,9 +3057,23 @@ async def get_archive_plates(
     # back to its own defaults. Done outside the fast/slow plate split so both
     # return paths carry it.
     embedded_presets: dict[str, str | None] = {"printer": None, "process": None}
+    # Process settings the designer changed away from the stock preset (#2622).
+    # ⚡ Upstream added this to the library endpoint only, but the SliceModal
+    # re-slices archives through this one as well — leaving it out would make
+    # the offer appear and disappear depending on which door the same 3MF was
+    # opened from. One ZIP open, two answers.
+    design_overrides: list[dict] = []
     try:
         with zipfile.ZipFile(file_path, "r") as zf:
             embedded_presets = extract_embedded_presets_from_3mf(zf)
+            if _PROJECT_SETTINGS_PATH in zf.namelist():
+                try:
+                    design_overrides = [
+                        o._asdict()
+                        for o in overrides_from_config(json.loads(zf.read(_PROJECT_SETTINGS_PATH).decode("utf-8")))
+                    ]
+                except (ValueError, OSError, KeyError):
+                    design_overrides = []
     except Exception:
         pass
 
@@ -3133,6 +3108,7 @@ async def get_archive_plates(
             "has_gcode": has_gcode,
             "embedded_printer": embedded_presets["printer"],
             "embedded_process": embedded_presets["process"],
+            "design_overrides": design_overrides,
         }
 
     # Slow path: open ZIP + parse. Used for archives created before m023 ran.
@@ -3167,6 +3143,7 @@ async def get_archive_plates(
         "has_gcode": has_gcode,
         "embedded_printer": embedded_presets["printer"],
         "embedded_process": embedded_presets["process"],
+        "design_overrides": design_overrides,
     }
 
 
@@ -3286,6 +3263,8 @@ async def _try_preview_slice_filaments(
         file_bytes = file_path.read_bytes()
     except OSError:
         return None
+    from backend.app.services.slicer_api import get_stall_timeout_seconds
+
     return await get_preview_filaments(
         kind=kind,
         source_id=source_id,
@@ -3294,6 +3273,7 @@ async def _try_preview_slice_filaments(
         file_name=file_path.name,
         api_url=api_url,
         request_id=request_id,
+        timeout_seconds=await get_stall_timeout_seconds(db),
     )
 
 
@@ -3302,6 +3282,7 @@ async def get_filament_requirements(
     archive_id: int,
     plate_id: int | None = None,
     request_id: str | None = None,
+    full_slots: bool = False,
     db: AsyncSession = Depends(get_db),
     auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
@@ -3318,6 +3299,9 @@ async def get_filament_requirements(
     Args:
         archive_id: The archive ID
         plate_id: Optional plate index to filter filaments for (for multi-plate files)
+        full_slots: Return one entry per *project* slot rather than only the
+            slots the plate consumes — the slice modal's positional list needs
+            it, print-time AMS matching must not set it (#2712).
         request_id: forwarded to the sidecar's preview-slice fallback for
             unsliced project files; lets the SliceModal poll matching live
             progress.
@@ -3413,6 +3397,14 @@ async def get_filament_requirements(
                                     "used_in_plate": True,
                                 }
                             )
+
+            # Re-slicing a source that already carries slice_info (#2712).
+            # See library.py for the full rationale: the slice modal's list is
+            # positional, so a source using only slot 4 must still present four
+            # slots or the pick lands on slot 1. The print path keeps the
+            # used-only list it depends on.
+            if full_slots and filaments:
+                filaments = expand_to_project_slots(zf, filaments)
 
             # Unsliced project files: see library.py for full rationale.
             # Return the FULL project_settings.config slot list with a
@@ -3942,96 +3934,6 @@ async def download_source_3mf_for_slicer_with_token(
         filename=filename if filename.endswith(".3mf") else f"{filename}.3mf",
         media_type="application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
     )
-
-
-@router.post("/upload-source")
-async def upload_source_3mf_by_name(
-    file: UploadFile = File(...),
-    print_name: str = Query(None, description="Match archive by print name"),
-    db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.ARCHIVES_UPDATE_ALL),
-):
-    """Upload source 3MF and match to archive by print name.
-
-    This endpoint is designed for slicer post-processing scripts.
-    It finds the most recent archive matching the print name and attaches the source.
-    """
-    if not file.filename or not file.filename.endswith(".3mf"):
-        raise HTTPException(400, "File must be a .3mf file")
-
-    # Derive print name from filename if not provided
-    if not print_name:
-        # Remove .3mf extension and common suffixes
-        print_name = _safe_filename(file.filename).rsplit(".3mf", 1)[0]
-        # Remove _source suffix if present
-        if print_name.endswith("_source"):
-            print_name = print_name[:-7]
-
-    # Find matching archive - try exact match first, then fuzzy
-    result = await db.execute(
-        select(PrintArchive)
-        .where(PrintArchive.print_name == print_name)
-        .order_by(PrintArchive.created_at.desc())
-        .limit(1)
-    )
-    archive = result.scalar_one_or_none()
-
-    if not archive:
-        # Try matching filename without .gcode.3mf
-        result = await db.execute(
-            select(PrintArchive)
-            .where(PrintArchive.filename.like(f"{print_name}%"))
-            .order_by(PrintArchive.created_at.desc())
-            .limit(1)
-        )
-        archive = result.scalar_one_or_none()
-
-    if not archive:
-        # Try case-insensitive partial match on print_name
-        result = await db.execute(
-            select(PrintArchive)
-            .where(PrintArchive.print_name.ilike(f"%{print_name}%"))
-            .order_by(PrintArchive.created_at.desc())
-            .limit(1)
-        )
-        archive = result.scalar_one_or_none()
-
-    if not archive:
-        raise HTTPException(404, f"No archive found matching '{print_name}'")
-
-    # Save the source 3MF file - preserve original filename (sanitized).
-    # #1531: route through the helper so fallback archives (file_path="")
-    # don't 500 by resolving to a path outside the data volume.
-    source_filename = _safe_filename(file.filename)
-    source_path = _resolve_source_3mf_path(archive, source_filename)
-
-    # Delete old source file if exists
-    if archive.source_3mf_path:
-        old_source_path = settings.base_dir / archive.source_3mf_path
-        if old_source_path.exists():
-            old_source_path.unlink()
-
-    content = await file.read()
-    # #1401: same zip-header check as the other upload routes — the
-    # match-by-name endpoint is used by slicer post-processing scripts,
-    # so a misconfigured script is exactly how a bad 3MF would slip in.
-    from backend.app.api.routes.library import validate_print_file_upload
-
-    validate_print_file_upload(file.filename, content)
-    source_path.write_bytes(content)
-
-    # Update archive with source path
-    archive.source_3mf_path = str(source_path.relative_to(settings.base_dir))
-    await db.commit()
-    await db.refresh(archive)
-
-    return {
-        "status": "uploaded",
-        "archive_id": archive.id,
-        "archive_name": archive.print_name or archive.filename,
-        "source_3mf_path": archive.source_3mf_path,
-        "filename": source_filename,
-    }
 
 
 @router.delete("/{archive_id}/source")

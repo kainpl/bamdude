@@ -194,21 +194,6 @@ async def count_internal_spools_at_location(db: AsyncSession, location_id: int) 
     return int(result.scalar() or 0)
 
 
-async def count_spools_at_location_by_name(db: AsyncSession, name: str) -> int:
-    normalized = name.strip()
-    if not normalized:
-        return 0
-    result = await db.execute(
-        select(func.count())
-        .select_from(Spool)
-        .where(
-            Spool.archived_at.is_(None),
-            func.lower(func.trim(Spool.storage_location)) == normalized.lower(),
-        )
-    )
-    return int(result.scalar() or 0)
-
-
 async def enrich_spool_dicts_with_location_id(db: AsyncSession, spools: list[dict]) -> None:
     """Attach location_id to mapped Spoolman-style spool dicts in place."""
     keys = {location_name_key(s["storage_location"]) for s in spools if (s.get("storage_location") or "").strip()}
@@ -299,11 +284,6 @@ async def sync_locations_from_spoolman(db: AsyncSession, client) -> bool:
 # spool rename in Spoolman shows up on the next minute's refresh.
 _SPOOLMAN_LOCATION_SYNC_TTL_SECONDS = 60.0
 _spoolman_location_sync_last_run: dict[str, float] = {}
-
-
-def _spoolman_location_sync_cache_clear() -> None:
-    """Test hook: drop the TTL cache so each test starts from a clean slate."""
-    _spoolman_location_sync_last_run.clear()
 
 
 async def maybe_sync_spoolman_locations(db: AsyncSession, *, client=None) -> bool:

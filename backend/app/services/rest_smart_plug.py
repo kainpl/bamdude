@@ -25,17 +25,44 @@ class RESTSmartPlugService:
 
     @staticmethod
     def _validate_url(url: str) -> bool:
-        """Block cloud metadata and link-local IPs."""
+        """Block cloud-metadata, loopback and link-local destinations.
+
+        A REST plug is a device or bridge on the LAN, so a symbolic hostname
+        ("openhab.local") stays allowed — resolving it here would be a TOCTOU
+        and a network call this check has no business making.
+
+        The destination set comes from the shared guard. ``is_link_local`` alone
+        catches only AWS's IPv4 metadata address: Alibaba's 100.100.100.200 is
+        neither loopback nor link-local, AWS's IPv6 ``fd00:ec2::254`` is
+        unique-local, and an IPv4-mapped IPv6 literal smuggles any of them past
+        the per-class checks unless unwrapped first.
+        """
+        from backend.app.api.routes._url_safety import CLOUD_METADATA_IPS, NUMERIC_IP_RE, unwrap_ipv4_mapped
+
+        parsed = urlparse(url)
+        if parsed.scheme.lower() not in ("http", "https"):
+            return False
+        hostname = (parsed.hostname or "").lower()
+        if not hostname:
+            return False
+        # Numeric-encoded forms resolve for libc and browsers but raise in
+        # ``ipaddress``, so without this they reach the except-branch below and
+        # are waved through as "a hostname".
+        if NUMERIC_IP_RE.match(hostname):
+            return False
+
         try:
-            parsed = urlparse(url)
-            hostname = parsed.hostname
-            if not hostname:
-                return False
             addr = ipaddress.ip_address(hostname)
-            return not addr.is_loopback and not addr.is_link_local
         except ValueError:
             # Hostname is not an IP (e.g., "openhab.local") - allow it
             return True
+
+        effective = unwrap_ipv4_mapped(addr)
+        if effective in CLOUD_METADATA_IPS:
+            return False
+        if effective.is_multicast or effective.is_unspecified:
+            return False
+        return not effective.is_loopback and not effective.is_link_local
 
     def _parse_headers(self, headers_json: str | None) -> dict[str, str]:
         """Parse JSON string to dict of headers."""

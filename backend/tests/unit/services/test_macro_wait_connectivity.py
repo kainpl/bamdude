@@ -144,6 +144,97 @@ async def test_the_waiter_is_always_removed(monkeypatch):
     assert 1 not in manager._macro_waiters
 
 
+@pytest.mark.asyncio
+@pytest.mark.timeout(20)
+async def test_a_reconnect_mid_macro_is_survived_not_fatal(monkeypatch):
+    """The failure this was actually costing prints for.
+
+    ``connect_printer`` REPLACES ``self._clients[printer_id]`` rather than
+    mutating the client, and disconnects the old one on the way out. A reference
+    captured before the wait loop is therefore orphaned by any reconnect and
+    reports disconnected for ever, however healthy the printer is.
+
+    That is not a rare race. ``ensure_fresh_connection_for_printer`` recycles any
+    link older than ``mqtt_connection_timeout`` and is called from dispatch and
+    the scheduler, so the dispatcher placing the next job routinely recycles the
+    connection of a printer still running a swap macro. On one farm's log every
+    macro-wait failure — five of five — began within half a second of BamDude's
+    own reconnect, and not one ever recovered.
+
+    A longer grace period could never have fixed it: the object being watched
+    was already dead. The grace is shortened here so a regression fails in a
+    second rather than after the real 30.
+    """
+    monkeypatch.setattr("backend.app.services.printer_manager.MACRO_DISCONNECT_GRACE_SECONDS", 1.0)
+    manager = PrinterManager()
+    old = _client()
+    manager._clients[1] = old
+
+    async def reconnect_then_complete():
+        await asyncio.sleep(0.05)
+        # Exactly what connect_printer does: the old client is torn down and a
+        # NEW object takes its place in the registry.
+        old.state.connected = False
+        manager._clients[1] = _client(connected=True)
+        # Later than the grace period, so watching the dead object fails here.
+        await asyncio.sleep(1.5)
+        event, result = manager._macro_waiters[1]
+        result["status"] = "completed"
+        result["message"] = "done"
+        event.set()
+
+    task = asyncio.create_task(reconnect_then_complete())
+    ok, msg = await _run(manager)
+    await task
+
+    assert ok is True, f"a reconnect mid-macro must not fail the macro (got {msg!r})"
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(20)
+async def test_a_reconnect_that_lands_disconnected_still_times_out(monkeypatch):
+    """Following the live client must not become blind trust in it: if the new
+    connection is itself down, the grace period still has to expire."""
+    monkeypatch.setattr("backend.app.services.printer_manager.MACRO_DISCONNECT_GRACE_SECONDS", 1.0)
+    manager = PrinterManager()
+    manager._clients[1] = _client(connected=False)
+
+    async def swap_in_another_dead_client():
+        await asyncio.sleep(0.1)
+        manager._clients[1] = _client(connected=False)
+
+    task = asyncio.create_task(swap_in_another_dead_client())
+    ok, msg = await _run(manager)
+    await task
+
+    assert ok is False
+    assert "unknown" in msg.lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(20)
+async def test_a_client_that_disappears_entirely_counts_as_offline(monkeypatch):
+    """There is a window inside a reconnect where the entry is simply gone.
+
+    Timed out rather than left to run: with the old captured-client behaviour
+    this case never terminates at all, because the orphaned object goes on
+    reporting a healthy connection while nothing will ever set the event.
+    """
+    monkeypatch.setattr("backend.app.services.printer_manager.MACRO_DISCONNECT_GRACE_SECONDS", 1.0)
+    manager = PrinterManager()
+    manager._clients[1] = _client(connected=True)
+
+    async def drop_the_entry():
+        await asyncio.sleep(0.1)
+        manager._clients.pop(1, None)
+
+    task = asyncio.create_task(drop_the_entry())
+    ok, _ = await _run(manager)
+    await task
+
+    assert ok is False, "a missing client must be treated as offline, not waited on for ever"
+
+
 def test_the_grace_period_is_thirty_seconds():
     """Chosen with the operator: long enough to ride out the observed flaps,
     short enough that a genuinely dead printer is not waited on for minutes."""

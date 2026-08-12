@@ -115,7 +115,7 @@ class StartSessionIn(BaseModel):
     cali_mode: CaliMode
     method: CaliMethod
     nozzle_diameter: float
-    nozzle_volume_type: Literal["standard", "high_flow", "tpu_high_flow", "hybrid"]
+    nozzle_volume_type: Literal["standard", "high_flow", "tpu_high_flow", "hybrid", "e3d_high_flow"]
     extruder_id: int = 0
     filaments: list[CalibFilamentIn]
 

@@ -8,7 +8,9 @@ class KProfile(BaseModel):
 
     slot_id: int  # Storage slot on printer (limited capacity ~20 slots)
     extruder_id: int = 0  # 0 or 1 for dual nozzle printers
-    nozzle_id: str  # e.g., "HS00-0.4" (hardened steel 0.4mm)
+    # H + flow letter + material + "-" + diameter. "HS00-0.4" is a standard-flow
+    # stainless 0.4 — "00" is stainless, not hardened ("01").
+    nozzle_id: str
     nozzle_diameter: str  # e.g., "0.4"
     filament_id: str  # Bambu filament identifier
     name: str  # User-defined name for the profile
@@ -48,6 +50,14 @@ class KProfilesResponse(BaseModel):
     profiles: list[KProfile]
     nozzle_diameter: str  # Current nozzle filter
     fc_id_by_cali_idx: dict[int, int] = {}
+    # Whether the Standard / High Flow choice means anything on this printer
+    # (#1748). BS's own gate for this dialog — see
+    # ``printer_configs.supports_nozzle_flow_type``. It rides on this response
+    # rather than on ``PrinterResponse`` because half the answer is live MQTT
+    # state, and the route that builds this already holds the client; putting it
+    # on the printer schema would make a Pydantic model reach into
+    # ``printer_manager``. False when the printer has not spoken yet.
+    supports_flow_type: bool = False
 
 
 class KProfileDelete(BaseModel):

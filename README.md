@@ -116,6 +116,10 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - External camera support (MJPEG, RTSP, USB)
 - Build plate empty detection
 - Printer control (stop, pause, resume, light, speed)
+- **Timelapse pre-flight** — the tick is checked against the printer before it is promised: a machine with no SD card, an unreadable one or a read-only one is named in the print dialog with which of the three it is, and a queue whose printer has run out of room **pauses** instead of quietly dropping the recording. Printers with internal storage or a timelapse kit skip the card question entirely
+- **Motion control** — a round Bambu-Studio-style pad for the toolhead (10 mm / 1 mm rings, Home in the middle), the nozzle-bed gap, manual extrude / retract with the extruder drawn from Studio's own artwork, and release-motors. Reads which axes the printer says are homed, refuses a cold extruder below 170 °C, and speaks the newer `xyz_ctrl` protocol where the machine offers it
+- **Temperature control** — set nozzle, bed and chamber (both nozzles on dual-nozzle machines), with the limits the printer itself reports: an X1 on 220 V mains accepts a *lower* bed temperature, and the chamber ceiling differs per model. Zero always means off
+- **Fan and air-duct control on every model** — per-fan speeds, air-duct mode and filtration, with each fan labelled the way your printer names it. Machines that describe no air duct (P1S / P1P / X1C / A1) get the same controls built from what they do report
 - **Pause-state visualisation** — yellow status pip in compact mode, inline `Paused • {reason} · 14m` chip with live elapsed counter in card header (compact + expanded), instant WebSocket toast on RUNNING↔PAUSE edges with classified reason (door / filament runout / AI defect / plate-detect / etc.)
 - AMS management (RFID re-read, slot config, **Filament Backup status**) and **auto-drying** — per-filament humidity thresholds + alarms, a badge showing the active filament + target temp, H2C support, and opt-in **Continue drying while printing** on capable firmware (H2D / H2C / H2S / P2S / X2D / A2L / X1C)
 - HMS error monitoring with history — **actionable remediation buttons** (Resume / Stop / Ignore & Resume / Stop Drying / Turn off Fire Alarm / …) that send the command straight to the printer over MQTT
@@ -144,7 +148,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - **G-code macros** — execute from printer menu, ACK-based MQTT confirmation, `stg_cur` completion tracking, real-time status on printer card
 - Model-aware maintenance types with history tracking and Excel export
 - Clear plate confirmation between prints
-- Smart plug integration (Tasmota, HA, MQTT, REST/webhook)
+- Smart plug integration (Tasmota, HA, MQTT, REST/webhook, and **Zigbee** — BamDude drives the dongle itself, no Home Assistant or Zigbee2MQTT needed)
 - Energy consumption tracking
 - Auto power-on/off
 - Background print dispatch with WebSocket progress

@@ -1,0 +1,8 @@
+{
+  "temperature": "temperature",
+  "humidity": "humidity",
+  "co2": "CO₂",
+  "pm25": "PM2.5",
+  "battery": "battery",
+  "battery_voltage": "battery voltage"
+}

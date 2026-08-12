@@ -69,7 +69,27 @@ class HMSAction(StrEnum):
 def get_actions_for_error_code(device: str, error_code: str) -> list[str]:
     """Look up the action list for a printer SN prefix + short error code.
 
-    Returns the empty list if the printer model or the error code is unknown —
-    the modal renders no buttons in that case, which is the correct fallback.
+    Falls back to the ``default`` bucket — the model-independent rows Bambu
+    ships for faults that mean the same thing on every machine. BS matches an
+    entry when its ``ecode`` matches **and** its ``device`` is either this
+    printer's type *or* the literal ``"default"``
+    (``HMSQuery::_query_error_image_action``), so those rows are not a
+    lesser answer; they are the answer for every device at once.
+
+    ⚠️ We shipped the bucket and never read it. All **36** rows were
+    unreachable — verified: not one of them also appears under a prefix — and
+    they are the everyday faults, not exotica: filament runout (``07FF8030``),
+    power-loss recovery, the paused-for-unknown-reason pair. On a paused
+    machine the dialog rendered with zero buttons, which reads as "BamDude has
+    nothing to offer" rather than "we forgot to look here".
+
+    Returns the empty list when neither bucket has the code — the modal then
+    renders no buttons, which is the correct answer for an uncatalogued fault.
     """
-    return _actions.get(device, {}).get(error_code, [])
+    by_device = _actions.get(device)
+    if by_device is not None and error_code in by_device:
+        return by_device[error_code]
+    # Membership, not truthiness: an explicit empty list under the device is a
+    # deliberate "no actions for this model", and must not fall through to a
+    # generic row that offers buttons the model does not honour.
+    return _actions.get("default", {}).get(error_code, [])

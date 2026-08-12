@@ -6,7 +6,14 @@ from pydantic import BaseModel, Field, model_validator
 
 class SmartPlugBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
-    plug_type: Literal["tasmota", "homeassistant", "mqtt", "rest"] = "tasmota"
+    plug_type: Literal["tasmota", "homeassistant", "mqtt", "rest", "zigbee"] = "tasmota"
+
+    # Zigbee fields (required when plug_type="zigbee", m115)
+    #
+    # No scaling fields alongside it, unlike MQTT and REST: a Zigbee plug
+    # reports its own multiplier/divisor on the Metering cluster, so the device
+    # says what its counter means instead of the operator having to.
+    zigbee_ieee: str | None = None
 
     # Tasmota fields (required when plug_type="tasmota")
     ip_address: str | None = Field(default=None, pattern=r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
@@ -126,6 +133,11 @@ class SmartPlugBase(BaseModel):
         if self.plug_type == "rest":
             if not self.rest_on_url and not self.rest_off_url:
                 raise ValueError("At least one of ON URL or OFF URL is required for REST plugs")
+        if self.plug_type == "zigbee" and not self.zigbee_ieee:
+            # Only the shape is checked here. Whether the address is actually on
+            # the mesh is a question for the route, which can see the
+            # coordinator; a schema cannot.
+            raise ValueError("A Zigbee plug needs the IEEE address of a paired device")
         return self
 
 
@@ -135,7 +147,8 @@ class SmartPlugCreate(SmartPlugBase):
 
 class SmartPlugUpdate(BaseModel):
     name: str | None = None
-    plug_type: Literal["tasmota", "homeassistant", "mqtt", "rest"] | None = None
+    plug_type: Literal["tasmota", "homeassistant", "mqtt", "rest", "zigbee"] | None = None
+    zigbee_ieee: str | None = None
     ip_address: str | None = None
     ha_entity_id: str | None = None
     # Home Assistant energy sensor entities (optional)

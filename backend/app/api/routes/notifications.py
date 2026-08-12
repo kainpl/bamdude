@@ -51,6 +51,8 @@ _TELEGRAM_FORCED_TRUE_FIELDS = (
     "on_ams_temperature_high",
     "on_ams_ht_humidity_high",
     "on_ams_ht_temperature_high",
+    "on_sensor_threshold",
+    "on_sensor_silent",
     "on_plate_not_empty",
     "on_bed_cooled",
     "on_first_layer_complete",
@@ -106,6 +108,9 @@ def _provider_to_dict(provider: NotificationProvider) -> dict:
         # AMS-HT environmental alarms
         "on_ams_ht_humidity_high": provider.on_ams_ht_humidity_high,
         "on_ams_ht_temperature_high": provider.on_ams_ht_temperature_high,
+        # Zigbee sensor alerts
+        "on_sensor_threshold": provider.on_sensor_threshold,
+        "on_sensor_silent": provider.on_sensor_silent,
         # Build plate detection
         "on_plate_not_empty": provider.on_plate_not_empty,
         # Bed cooled
@@ -190,6 +195,9 @@ async def create_notification_provider(
         # AMS-HT environmental alarms
         on_ams_ht_humidity_high=provider_data.on_ams_ht_humidity_high,
         on_ams_ht_temperature_high=provider_data.on_ams_ht_temperature_high,
+        # Zigbee sensor alerts
+        on_sensor_threshold=provider_data.on_sensor_threshold,
+        on_sensor_silent=provider_data.on_sensor_silent,
         # Build plate detection
         on_plate_not_empty=provider_data.on_plate_not_empty,
         # Bed cooled

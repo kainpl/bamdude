@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
   Plus, Loader2, Trash2, Archive, RotateCcw, Edit2, Package,
-  Search, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
+  Search,
   TrendingDown, Layers, Printer, AlertTriangle, X, Clock, LayoutGrid, TableProperties, Columns,
   ArrowUp, ArrowDown, ArrowUpDown, Group, ChevronDown, Check, RefreshCw, Disc3, Copy, Eraser,
   TrendingUp, Lock, Sparkles, Upload, Download, MapPin,
@@ -14,6 +14,7 @@ import { ForecastPanel } from '../components/ForecastPanel';
 import { api, ApiError } from '../api/client';
 import type { InventorySpool, SpoolAssignment, SpoolCatalogEntry } from '../api/client';
 import { Button } from '../components/Button';
+import { PaginationBar } from '../components/PaginationBar';
 import { SpoolFormModal, type SpoolFormMode } from '../components/SpoolFormModal';
 import { SpoolCsvImportModal } from '../components/SpoolCsvImportModal';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -30,6 +31,16 @@ import { formatDateInput, parseUTCDate, type DateFormat } from '../utils/date';
 import { formatSlotLabel } from '../utils/amsHelpers';
 import { aggregateGroupSpool } from '../utils/inventoryGrouping';
 import {
+  loadFilters,
+  saveFilters,
+  withCurrentValue,
+  withCurrentId,
+  type ArchiveFilter,
+  type UsageFilter,
+  type StockFilter,
+  type ViewMode,
+} from '../utils/inventoryFilters';
+import {
   inventoryLocationsQueryKey,
   invalidateSpoolAndLocationQueries,
 } from '../utils/inventoryQueries';
@@ -40,9 +51,6 @@ import {
 } from '../utils/spoolName';
 // filterSpoolsByQuery — imported from utils/inventorySearch by Spoolman-mode upstream PR #1241; reserved for future Spoolman-side filtering paths.
 
-type ArchiveFilter = 'active' | 'archived';
-type UsageFilter = 'all' | 'used' | 'new' | 'lowstock';
-type ViewMode = 'table' | 'cards' | 'forecast';
 type SortDirection = 'asc' | 'desc';
 type SortState = { column: string; direction: SortDirection } | null;
 
@@ -689,20 +697,26 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
 
   const clearSelection = () => setSelectedIds(new Set());
 
-  const [archiveFilter, setArchiveFilter] = useState<ArchiveFilter>('active');
-  const [usageFilter, setUsageFilter] = useState<UsageFilter>('all');
-  const [materialFilter, setMaterialFilter] = useState('');
-  const [brandFilter, setBrandFilter] = useState('');
+  // Filters are restored from localStorage — see `loadFilters`. Read ONCE into
+  // the initialisers rather than pushed in by an effect: a later write would be
+  // a second render with a different list, and the selection-clearing effect
+  // below would fire on it.
+  const [storedFilters] = useState(loadFilters);
+
+  const [archiveFilter, setArchiveFilter] = useState<ArchiveFilter>(storedFilters.archiveFilter);
+  const [usageFilter, setUsageFilter] = useState<UsageFilter>(storedFilters.usageFilter);
+  const [materialFilter, setMaterialFilter] = useState(storedFilters.materialFilter);
+  const [brandFilter, setBrandFilter] = useState(storedFilters.brandFilter);
   // Filter by resolved colour NAME (single source of truth via the colour
   // catalog), with options drawn from existing (non-archived) spools only.
-  const [colorFilter, setColorFilter] = useState('');
+  const [colorFilter, setColorFilter] = useState(storedFilters.colorFilter);
   // Re-resolve colour-name options once the colour catalog finishes loading.
   const colorCatalogVersion = useColorCatalogVersion();
-  const [categoryFilter, setCategoryFilter] = useState('');
-  const [spoolFilter, setSpoolFilter] = useState('');
-  const [stockFilter, setStockFilter] = useState<'all' | 'stock' | 'configured'>('all');
-  const [search, setSearch] = useState('');
-  const [viewMode, setViewMode] = useState<ViewMode>('table');
+  const [categoryFilter, setCategoryFilter] = useState(storedFilters.categoryFilter);
+  const [spoolFilter, setSpoolFilter] = useState(storedFilters.spoolFilter);
+  const [stockFilter, setStockFilter] = useState<StockFilter>(storedFilters.stockFilter);
+  const [search, setSearch] = useState(storedFilters.search);
+  const [viewMode, setViewMode] = useState<ViewMode>(storedFilters.viewMode);
   const [sortState, setSortState] = useState<SortState>(loadSortState);
   const [columnConfig, setColumnConfig] = useState<ColumnConfig[]>(loadColumnConfig);
   const [showColumnModal, setShowColumnModal] = useState(false);
@@ -1430,12 +1444,27 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     [pagedItems],
   );
 
+  // Remember the filters. One effect rather than a write in each of the ~20
+  // places a filter changes — including `clearAllFilters`, which is how a clear
+  // becomes a cleared key without a second code path to keep in step.
+  useEffect(() => {
+    saveFilters({
+      archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter,
+      categoryFilter, spoolFilter, stockFilter, search, viewMode,
+    });
+  }, [archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter,
+      categoryFilter, spoolFilter, stockFilter, search, viewMode]);
+
   // Drop the selection whenever the visible set changes underneath it. A
   // toolbar reading "12 selected" over a list that no longer contains those
   // rows is how a Delete lands on the wrong spools.
+  //
+  // ⚠️ Category, spool, storage location and stock were missing from this list,
+  // so narrowing by those kept a selection made under the previous one.
   useEffect(() => {
     setSelectedIds(new Set());
-  }, [archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, search, groupSimilar, spoolmanMode]);
+  }, [archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, categoryFilter,
+      spoolFilter, storageLocationFilter, stockFilter, search, groupSimilar, spoolmanMode]);
 
   const selectedSpools = useMemo(
     () => filteredSpools.filter((sp) => selectedIds.has(sp.id)),
@@ -1464,6 +1493,26 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     setPageIndex(0);
     try { localStorage.setItem('bamdude-inventory-pageSize', String(size)); } catch { /* ignore */ }
   };
+
+  /**
+   * The table and the cards used to carry two copies of this control, already
+   * drifted apart (one had button tooltips, the other didn't) — now one shared
+   * component, the same one the archives page uses. `pageIndex` is 0-based here
+   * and the bar counts from 1, like the number it puts on screen; the two
+   * conversions live here so nothing downstream has to remember which is which.
+   */
+  const paginationBar = (variant: 'card' | 'bare') => (
+    <PaginationBar
+      page={safePageIndex + 1}
+      totalPages={totalPages}
+      perPage={pageSize}
+      total={totalDisplayItems}
+      items={totalDisplayItems !== 1 ? t('inventory.spools') : t('inventory.spool')}
+      variant={variant}
+      onPageChange={(p) => setPageIndex(p - 1)}
+      onPerPageChange={handlePageSizeChange}
+    />
+  );
 
   const clearAllFilters = () => {
     setArchiveFilter('active');
@@ -1884,7 +1933,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           }`}
         >
           <option value="">{t('inventory.material')}</option>
-          {uniqueMaterials.map((m) => (
+          {withCurrentValue(uniqueMaterials, materialFilter).map((m) => (
             <option key={m} value={m}>{m}</option>
           ))}
         </select>
@@ -1900,7 +1949,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           }`}
         >
           <option value="">{t('inventory.brand')}</option>
-          {uniqueBrands.map((b) => (
+          {withCurrentValue(uniqueBrands, brandFilter).map((b) => (
             <option key={b} value={b}>{b}</option>
           ))}
         </select>
@@ -1919,7 +1968,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             }`}
           >
             <option value="">{t('inventory.color')}</option>
-            {uniqueColors.map((c) => (
+            {withCurrentValue(uniqueColors, colorFilter).map((c) => (
               <option key={c} value={c}>{c}</option>
             ))}
           </select>
@@ -1938,10 +1987,12 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             }`}
           >
             <option value="">{t('inventory.category')}</option>
-            {uniqueCategories.map((c) => (
+            {/* `__none__` is a real value with its own option below, so it must
+                not be folded in as a literal alongside it. */}
+            {withCurrentValue(uniqueCategories, categoryFilter === '__none__' ? '' : categoryFilter).map((c) => (
               <option key={c} value={c}>{c}</option>
             ))}
-            {hasUncategorized && (
+            {(hasUncategorized || categoryFilter === '__none__') && (
               <option value="__none__">{t('inventory.categoryNone')}</option>
             )}
           </select>
@@ -1971,7 +2022,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         )}
 
         {/* Spool name dropdown chip */}
-        {uniqueSpoolCatalogIds.length > 0 && (
+        {/* `|| spoolFilter` — a restored filter whose catalog entry is gone
+            must still have a chip to clear it from. */}
+        {(uniqueSpoolCatalogIds.length > 0 || spoolFilter) && (
           <select
             value={spoolFilter}
             onChange={(e) => { setSpoolFilter(e.target.value); resetPage(); }}
@@ -1982,7 +2035,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             }`}
           >
             <option value="">{t('inventory.spoolName')}</option>
-            {uniqueSpoolCatalogIds.map((id) => (
+            {withCurrentId(uniqueSpoolCatalogIds, spoolFilter).map((id) => (
               <option key={id} value={id}>{catalogMap[id]?.name || `#${id}`}</option>
             ))}
           </select>
@@ -2108,16 +2161,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                 );
               })}
             </div>
-            {/* Pagination for cards */}
-            <PaginationBar
-              pageIndex={safePageIndex}
-              pageSize={pageSize}
-              totalRows={totalDisplayItems}
-              totalPages={totalPages}
-              onPageChange={setPageIndex}
-              onPageSizeChange={handlePageSizeChange}
-              t={t}
-            />
+            {/* Pagination for cards — bare, since a grid has no card of its
+                own for a footer to sit in. */}
+            {paginationBar('bare')}
           </>
         ) : (
           <EmptyFilterState
@@ -2336,71 +2382,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               </table>
             </div>
 
-            {/* Pagination inside card footer. Extra right padding keeps the
-                last-page button clear of the fixed bottom-right bug-report
-                bubble (BugReportBubble, ~64px corner footprint). */}
-            <div className="flex items-center justify-between py-3 pl-4 pr-14 bg-bambu-dark-tertiary/50 border-t border-bambu-dark-tertiary text-sm">
-              <span className="text-bambu-gray">
-                {showAll
-                  ? `${totalDisplayItems} ${totalDisplayItems !== 1 ? t('inventory.spools') : t('inventory.spool')}`
-                  : <>{t('inventory.showing')} {safePageIndex * effectivePageSize + 1} {t('inventory.to')}{' '}
-                    {Math.min((safePageIndex + 1) * effectivePageSize, totalDisplayItems)}{' '}
-                    {t('inventory.of')} {totalDisplayItems} {t('inventory.spools')}</>
-                }
-              </span>
-
-              <div className="flex items-center gap-2">
-                <span className="text-bambu-gray">{t('inventory.show')}</span>
-                <select
-                  value={pageSize}
-                  onChange={(e) => handlePageSizeChange(Number(e.target.value))}
-                  className="px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:outline-none focus:border-bambu-green"
-                >
-                  {[12, 24, 48, 96].map((n) => (
-                    <option key={n} value={n}>{n}</option>
-                  ))}
-                  <option value={-1}>{t('inventory.all')}</option>
-                </select>
-
-                {!showAll && (
-                  <>
-                    <button
-                      onClick={() => setPageIndex(0)}
-                      disabled={safePageIndex === 0}
-                      className="p-1.5 rounded text-bambu-gray hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                      title="First page"
-                    >
-                      <ChevronsLeft className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => setPageIndex((p) => Math.max(0, p - 1))}
-                      disabled={safePageIndex === 0}
-                      className="p-1.5 rounded text-bambu-gray hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                    >
-                      <ChevronLeft className="w-4 h-4" />
-                    </button>
-                    <span className="text-bambu-gray px-2 whitespace-nowrap">
-                      {t('inventory.page')} {safePageIndex + 1} {t('inventory.of')} {totalPages}
-                    </span>
-                    <button
-                      onClick={() => setPageIndex((p) => Math.min(totalPages - 1, p + 1))}
-                      disabled={safePageIndex >= totalPages - 1}
-                      className="p-1.5 rounded text-bambu-gray hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                    >
-                      <ChevronRight className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => setPageIndex(totalPages - 1)}
-                      disabled={safePageIndex >= totalPages - 1}
-                      className="p-1.5 rounded text-bambu-gray hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                      title="Last page"
-                    >
-                      <ChevronsRight className="w-4 h-4" />
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
+            {paginationBar('card')}
           </div>
           </>
         ) : (
@@ -2527,83 +2509,6 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         onClose={() => setLocationsModalOpen(false)}
         onPickLocation={(id) => setStorageLocationFilter(String(id))}
       />
-    </div>
-  );
-}
-
-/* Pagination bar (reused for cards view) */
-function PaginationBar({
-  pageIndex, pageSize, totalRows, totalPages, onPageChange, onPageSizeChange, t,
-}: {
-  pageIndex: number;
-  pageSize: number;
-  totalRows: number;
-  totalPages: number;
-  onPageChange: (page: number) => void;
-  onPageSizeChange: (size: number) => void;
-  t: (key: string) => string;
-}) {
-  const isShowAll = pageSize === -1;
-  if (totalPages <= 1 && !isShowAll) return null;
-  const effectiveSize = isShowAll ? totalRows || 1 : pageSize;
-  return (
-    <div className="flex items-center justify-between pt-2 pr-14 text-sm">
-      <span className="text-bambu-gray">
-        {isShowAll
-          ? `${totalRows} ${totalRows !== 1 ? t('inventory.spools') : t('inventory.spool')}`
-          : <>{t('inventory.showing')} {pageIndex * effectiveSize + 1} {t('inventory.to')}{' '}
-              {Math.min((pageIndex + 1) * effectiveSize, totalRows)}{' '}
-              {t('inventory.of')} {totalRows} {t('inventory.spools')}</>
-        }
-      </span>
-      <div className="flex items-center gap-2">
-        <span className="text-bambu-gray">{t('inventory.show')}</span>
-        <select
-          value={pageSize}
-          onChange={(e) => onPageSizeChange(Number(e.target.value))}
-          className="px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:outline-none focus:border-bambu-green"
-        >
-          {[12, 24, 48, 96].map((n) => (
-            <option key={n} value={n}>{n}</option>
-          ))}
-          <option value={-1}>{t('inventory.all')}</option>
-        </select>
-        {!isShowAll && (
-          <>
-            <button
-              onClick={() => onPageChange(0)}
-              disabled={pageIndex === 0}
-              className="p-1.5 rounded text-bambu-gray hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            >
-              <ChevronsLeft className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => onPageChange(Math.max(0, pageIndex - 1))}
-              disabled={pageIndex === 0}
-              className="p-1.5 rounded text-bambu-gray hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <span className="text-bambu-gray px-2 whitespace-nowrap">
-              {t('inventory.page')} {pageIndex + 1} {t('inventory.of')} {totalPages}
-            </span>
-            <button
-              onClick={() => onPageChange(Math.min(totalPages - 1, pageIndex + 1))}
-              disabled={pageIndex >= totalPages - 1}
-              className="p-1.5 rounded text-bambu-gray hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            >
-              <ChevronRight className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => onPageChange(totalPages - 1)}
-              disabled={pageIndex >= totalPages - 1}
-              className="p-1.5 rounded text-bambu-gray hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            >
-              <ChevronsRight className="w-4 h-4" />
-            </button>
-          </>
-        )}
-      </div>
     </div>
   );
 }

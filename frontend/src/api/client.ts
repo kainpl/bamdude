@@ -9,6 +9,8 @@ export class ApiError extends Error {
   }
 }
 
+import type { AppliedEntry } from '../utils/reportingStatus';
+
 const API_BASE = '/api/v1';
 
 // Auth token storage
@@ -37,9 +39,11 @@ function decodeJwt(token: string): { exp?: number; iat?: number } | null {
   }
 }
 
-function tokenExpiryMs(): number | null {
-  if (!authToken) return null;
-  const decoded = decodeJwt(authToken);
+// Defaults to our own token; takes an explicit one so a sibling tab's stored
+// token can be checked for freshness before we adopt it.
+function tokenExpiryMs(token: string | null = authToken): number | null {
+  if (!token) return null;
+  const decoded = decodeJwt(token);
   if (!decoded?.exp) return null;
   return decoded.exp * 1000;
 }
@@ -76,7 +80,12 @@ function scheduleProactiveRefresh() {
   }
   const exp = tokenExpiryMs();
   if (exp === null) return;
-  const delay = Math.max(0, exp - Date.now() - REFRESH_SAFETY_MS);
+  // Jitter, because the deadline is derived from the token itself: every tab
+  // holding it computes the identical instant and they all fire together.
+  // Web Locks already serialises them, so this is only about not queueing the
+  // whole browser on one lock at the same millisecond — belt to that braces.
+  const jitter = Math.random() * 5000;
+  const delay = Math.max(0, exp - Date.now() - REFRESH_SAFETY_MS - jitter);
   proactiveRefreshTimer = window.setTimeout(() => {
     proactiveRefreshTimer = null;
     // Fire-and-forget: a successful refresh re-arms via setAuthToken; a
@@ -187,24 +196,74 @@ const NON_REFRESHABLE_401_MESSAGES = [
 ];
 let refreshAccessTokenPromise: Promise<boolean> | null = null;
 
+// The singleton above coalesces within ONE tab. It cannot coalesce across
+// tabs — each tab is a separate JS context holding its own module instance,
+// while they all share the single HttpOnly refresh cookie. Two tabs therefore
+// send the same cookie to /auth/refresh and the backend, quite correctly, sees
+// the second as a replay.
+//
+// And they do not collide by chance: `scheduleProactiveRefresh` derives its
+// delay from the token's own `exp`, so every tab holding that token reaches the
+// same absolute deadline within milliseconds. Two tabs open meant a revoked
+// session roughly once an hour, which users reported as "the token randomly
+// expires".
+//
+// Web Locks serialises them. Unsupported (older Safari) falls through to the
+// old behaviour, which the backend's grace window now tolerates anyway — the
+// lock removes the collision, the grace survives the ones it cannot.
+const REFRESH_LOCK = 'bamdude:auth-refresh';
+
+/** A sibling tab's token from localStorage, when it is newer than ours. */
+function adoptSiblingToken(): boolean {
+  try {
+    const stored = localStorage.getItem('auth_token');
+    if (!stored || stored === authToken) return false;
+    // Only adopt something that actually outlives what we hold — a stale value
+    // left by a logged-out tab must not resurrect a dead session.
+    const storedExp = tokenExpiryMs(stored);
+    if (storedExp === null || storedExp <= Date.now()) return false;
+    setAuthToken(stored);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function doRefresh(): Promise<boolean> {
+  // Another tab may have rotated while we queued on the lock; taking its token
+  // is both cheaper and safer than spending our cookie on a second rotation.
+  if (adoptSiblingToken()) return true;
+  try {
+    const response = await fetch(`${API_BASE}/auth/refresh`, {
+      method: 'POST',
+      cache: 'no-store',
+      credentials: 'include',
+    });
+    if (!response.ok) {
+      // A lost race still 401s. The winner has already stored its token, so
+      // check once more before reporting failure — this is what keeps a tab
+      // that raced (or a browser with no Web Locks) from bouncing to /login.
+      return adoptSiblingToken();
+    }
+    const body = await response.json().catch(() => null);
+    if (body?.access_token) {
+      setAuthToken(body.access_token);
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 async function refreshAccessToken(): Promise<boolean> {
   if (refreshAccessTokenPromise) return refreshAccessTokenPromise;
   refreshAccessTokenPromise = (async () => {
     try {
-      const response = await fetch(`${API_BASE}/auth/refresh`, {
-        method: 'POST',
-        cache: 'no-store',
-        credentials: 'include',
-      });
-      if (!response.ok) return false;
-      const body = await response.json().catch(() => null);
-      if (body?.access_token) {
-        setAuthToken(body.access_token);
-        return true;
+      if (typeof navigator !== 'undefined' && navigator.locks?.request) {
+        return await navigator.locks.request(REFRESH_LOCK, doRefresh);
       }
-      return false;
-    } catch {
-      return false;
+      return await doRefresh();
     } finally {
       // Null-out only after the awaiting callers resolve so every queued
       // consumer sees the same outcome. Next 401 wave starts fresh.
@@ -269,6 +328,18 @@ function formatErrorDetail(detail: unknown, status: number): string {
   return `HTTP ${status}`;
 }
 
+// Resolved once: it cannot change without the page being reloaded, and calling
+// into Intl on every request would be noise. Empty string when the runtime has
+// no zone to report, in which case the header is omitted and the server answers
+// in its own timezone.
+const clientTimeZone: string = (() => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+  } catch {
+    return '';
+  }
+})();
+
 async function request<T>(
   endpoint: string,
   options: RequestInit = {},
@@ -289,6 +360,14 @@ async function request<T>(
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
+    // Whose "today" the server should answer with. Anything the server does on
+    // its own schedule keeps using the deployment's TZ; this only covers the
+    // question a person is asking right now, so "today's energy" on screen
+    // means the day the person reading it is having. Sent on every call rather
+    // than per-endpoint — the alternative is remembering to thread it through
+    // each new query, which is the kind of thing that gets remembered for the
+    // first three.
+    ...(clientTimeZone ? { 'X-Client-Timezone': clientTimeZone } : {}),
     ...options.headers as Record<string, string>,
   };
 
@@ -359,6 +438,24 @@ async function request<T>(
 }
 
 // Printer types
+/** A place on the farm. Distinct from spool storage, which is a different table. */
+export interface PrinterLocation {
+  id: number;
+  name: string;
+  parent_id: number | null;
+  /** Resolved by the backend on every read. Never stored, so renaming a parent
+   *  cannot leave a stale copy behind. */
+  path: string;
+}
+
+export interface PrinterLocationListItem extends PrinterLocation {
+  /** A root is 1. Drives the indent in every picker. */
+  depth: number;
+  printer_count: number;
+  sensor_count: number;
+  queued_count: number;
+}
+
 export interface Printer {
   id: number;
   name: string;
@@ -369,7 +466,10 @@ export interface Printer {
   // so it can't be harvested to bypass RBAC (upstream 8283b175 / 9a432f00).
   access_code?: string;
   model: string | null;
-  location: string | null;  // Group/location name
+  // The place this printer stands in. An object, not a name: renaming a
+  // location changes it everywhere at once because everything points at the id.
+  location: PrinterLocation | null;
+  location_id: number | null;
   nozzle_count: number;  // 1 or 2, auto-detected from MQTT
   is_active: boolean;
   // Soft-retire (#archived): archived printers are hidden from the whole app +
@@ -422,6 +522,15 @@ export interface AMSTray {
   tray_id_name: string | null;  // Bambu filament ID like "A00-Y2" (can decode to color)
   tray_info_idx: string | null;  // Filament preset ID like "GFA00" - maps to cloud setting_id
   remain: number;
+  // Every colour this spool carries; a single-colour spool gets a one-item list,
+  // so there is only one shape to handle. Hex WITHOUT the leading '#'.
+  cols?: string[];
+  // BambuStudio's DevFilaColorType. ⚠️ 0 = MULTI, 1 = GRADIENT, 2 = SINGLE —
+  // the numbering is not what the names suggest, so 0 does NOT mean "none".
+  // ⚠️ And the drawing rule inverts them again: MULTI blends first→last, while
+  // everything else with more than one colour draws equal bands. Copied from
+  // AMSItem.cpp rather than reasoned about.
+  ctype?: number | null;
   k: number | null;  // Pressure advance value (from tray or K-profile lookup)
   cali_idx: number | null;  // Calibration index for K-profile lookup
   tag_uid: string | null;  // RFID tag UID (any tag)
@@ -453,7 +562,7 @@ export interface AMSUnit {
 
 export interface NozzleInfo {
   nozzle_type: string;  // canonical material: "stainless_steel" / "hardened_steel" / ...
-  nozzle_flow: string;  // parsed flow: "standard" / "high_flow" / "tpu_high_flow"
+  nozzle_flow: string;  // "standard" / "high_flow" / "tpu_high_flow" / "e3d_high_flow"
   nozzle_diameter: string;  // e.g., "0.4"
 }
 
@@ -498,6 +607,25 @@ export interface FilaSwitchState {
   out_extruders: number[];
   stat: number;
   info: number;
+}
+
+export interface AirductFan {
+  part_id: number;      // BambuStudio AIR_FUN index: 2 / 10 = the two aux fans, 3 = chamber/exhaust
+  speed: number;        // 0-100 %
+  range_start: number;
+  range_end: number;
+  // What the active airduct mode does with this fan — BambuStudio's own three
+  // outcomes: 'ctrl' the user may set a speed, 'off' the mode forces it off,
+  // 'auto' the firmware drives it. 'off' and 'auto' are different answers for
+  // whoever is looking: one you can change by changing the mode, one you cannot.
+  control?: 'ctrl' | 'off' | 'auto';
+  // True only for 'ctrl'. Kept because the write path asks this narrower
+  // question, and older responses carry it alone.
+  controllable: boolean;
+  // i18n key under printers.fans.* when BambuStudio's own name is one we
+  // recognise; otherwise null and `label` carries that name verbatim.
+  label_key: string | null;
+  label: string | null;
 }
 
 export interface PrinterStatus {
@@ -559,7 +687,9 @@ export interface PrinterStatus {
   stg_cur_name: string | null;  // Human-readable current stage name
   stg: number[];  // List of stage numbers in calibration sequence
   stg_names?: string[];  // Human-readable name per entry in `stg` (parallel) — drives the calibration flow
-  // Air conditioning mode (0=cooling, 1=heating)
+  // Air-duct mode (0=cooling, 1=heating, 2=exhaust, 3=full cooling).
+  // -1 is the old protocol, where there is no mode to choose — BambuStudio
+  // stamps that value itself when it converts an older printer to look new.
   airduct_mode: number;
   // Print speed level (1=silent, 2=standard, 3=sport, 4=ludicrous)
   speed_level: number;
@@ -608,6 +738,56 @@ export interface PrinterStatus {
   big_fan1_speed: number | null;     // Auxiliary fan
   big_fan2_speed: number | null;     // Chamber/exhaust fan
   heatbreak_fan_speed: number | null; // Hotend heatbreak fan
+  // Fans reported through device.airduct (#2576). The second auxiliary fan —
+  // a kit on the P2S, factory-fitted on the X2D — has no flat big_fanX_speed
+  // field at all, which is why nothing could show it. Present only on printers
+  // with an airduct; the list contains only fans that physically exist.
+  airduct_fans?: AirductFan[];
+  // What each heater will accept, as [min, max]. Server-supplied because the
+  // answer depends on the model, on what the printer reported, and on the mains
+  // voltage — a table in the browser would be a second source of truth that
+  // disagrees the moment any of those changes.
+  temperature_limits?: { nozzle?: [number, number]; bed?: [number, number]; chamber?: [number, number] };
+  // Per-extruder "a hotend is fitted". ⚠️ A MISSING key means the machine cannot
+  // detect this at all (A and P series); only an explicit `false` means no
+  // hotend. Treating absent as false would disable the control everywhere.
+  ext_has_nozzle?: Record<number, boolean>;
+  // Whether the chamber can be COMMANDED, not merely read: the X1C and P2S
+  // report a chamber temperature they cannot change.
+  supports_chamber_heater?: boolean;
+  // Which axes the PRINTER says are homed. ⚠️ This is its own answer, not a
+  // browser-session guess — the guess was wrong in both directions: homing from
+  // the machine's screen still prompted, and losing home after our command did
+  // not. Absent keys mean the printer never reported, which reads as homed.
+  axis_at_home?: { x?: boolean; y?: boolean; z?: boolean };
+  // Per-extruder "filament is loaded". Drives whether the extruder graphic shows
+  // filament — a picture that always did would be a small lie told often.
+  ext_has_filament?: Record<number, boolean>;
+  // Whether a timelapse can be recorded, where it would go, and whether that
+  // place is nearly full. ⚠️ `reason` is a code, not a sentence — the backend
+  // does not know the user's language. Keys: `printModal.timelapseBlocked.*`.
+  timelapse_capability?: {
+    can_enable?: boolean;
+    reason?: string | null;
+    storage?: string;
+    storage_low?: boolean;
+    supports_internal?: boolean;
+    free_kb?: number | null;
+  };
+  // Firmware states in which the printer will not accept work. Both arrive on
+  // the ordinary LAN push — no cloud account involved — and `consistency_request`
+  // is reachable after an SD-card update leaves module versions disagreeing.
+  firmware_consistency_request?: boolean;
+  firmware_force_upgrade?: boolean;
+  // ⚠️ The mode ids this printer OFFERS — never a fixed four. BambuStudio builds
+  // one button per entry the printer reported, so a machine that lists two gets
+  // two. Empty means no air duct.
+  airduct_modes?: number[];
+  // "Filter" sub-mode: 1 on, 0 off, -1 absent.
+  airduct_sub_mode?: number;
+  // Whether the filtration toggle exists at all. It belongs to the cooling mode
+  // alone, so both this and airduct_mode decide whether to show it.
+  supports_cooling_filter?: boolean;
   firmware_version: string | null;   // Firmware version from MQTT
   // Developer LAN mode: true = enabled, false = disabled, null = unknown
   developer_mode: boolean | null;
@@ -633,7 +813,7 @@ export interface PrinterCreate {
   ip_address: string;
   access_code: string;
   model?: string;
-  location?: string;
+  location_id?: number | null;
   auto_archive?: boolean;
   // Maintenance Mode (#1476). Backend already gates MQTT, queue dispatch,
   // scheduler, metrics and the print picker on this; PATCH /printers/{id}
@@ -765,6 +945,10 @@ export interface Archive {
   photos: string[] | null;
   failure_reason: string | null;
   quantity: number;
+  /** Scrap out of this plate. Raised automatically when objects are skipped
+   *  (the printer's own s_obj list, so screen-initiated skips count too) and
+   *  editable by hand. Never subtracted from quantity or any total. */
+  defective_count: number;
   energy_kwh: number | null;
   energy_cost: number | null;
   swap_compatible: boolean;
@@ -795,7 +979,13 @@ export interface ArchiveSlim {
   status: string;
   started_at: string | null;
   completed_at: string | null;
+  // Filament only — grams x price per spool, plus the untracked remainder at
+  // the default rate. Electricity is NOT in here; it is the two fields below.
   cost: number | null;
+  // Measured electricity for this print, when a smart plug covered it. Null on
+  // a printer without one, and null outside per-print energy tracking mode.
+  energy_kwh: number | null;
+  energy_cost: number | null;
   quantity: number;
   created_at: string;
   thumbnail_path: string | null;
@@ -951,7 +1141,9 @@ export interface SimilarArchive {
 export interface ProjectStats {
   total_archives: number;
   total_items: number;  // Sum of quantities (total items printed)
-  completed_prints: number;  // Sum of quantities for completed prints (parts)
+  completed_prints: number;  // Usable parts: completed quantities less defective_parts
+  /** Scrap among completed prints, already subtracted from completed_prints. */
+  defective_parts: number;
   failed_prints: number;
   queued_prints: number;
   in_progress_prints: number;
@@ -1041,6 +1233,7 @@ export interface ProjectListItem {
   archive_count: number;  // Number of print jobs (plates)
   total_items: number;  // Sum of quantities (total items printed, including failed)
   completed_count: number;  // Sum of quantities for completed prints only (parts)
+  defective_count: number;  // Scrap off completed plates — already subtracted from completed_count
   failed_count: number;  // Sum of quantities for failed prints
   queue_count: number;
   progress_percent: number | null;  // Plates progress
@@ -1094,8 +1287,10 @@ export interface ProjectUpdate {
   description?: string;
   color?: string;
   status?: string;
-  target_count?: number;
-  target_parts_count?: number;
+  // 0 = "don't measure this project in plates/parts" (that progress bar is
+  // hidden); null clears the target entirely.
+  target_count?: number | null;
+  target_parts_count?: number | null;
   notes?: string;
   // null clears (the backend keys off model_fields_set), like budget/url.
   tags?: string | null;
@@ -1412,6 +1607,12 @@ export interface AppSettings {
   default_filament_cost: number;
   currency: string;
   energy_cost_per_kwh: number;
+  // Zigbee coordinator. Declared here as well as on the backend schema because
+  // the settings PATCH is typed by this interface — an undeclared key would be
+  // dropped on the way out, exactly as Pydantic drops one on the way in.
+  zigbee_enabled: boolean;
+  zigbee_transport: string;
+  zigbee_path: string;
   energy_tracking_mode: 'print' | 'total';
   check_updates: boolean;
   check_printer_firmware: boolean;
@@ -1430,6 +1631,10 @@ export interface AppSettings {
   ams_temp_good: number;      // <= this is green/blue
   ams_temp_fair: number;      // <= this is orange, > is red
   ams_history_retention_days: number;  // days to keep AMS sensor history
+  printer_sensor_history_retention_days?: number;  // days to keep printer heater history
+  plug_power_history_retention_days?: number;  // days to keep smart-plug power history
+  sensor_history_retention_days?: number;  // days to keep sensor measurement history
+  plug_power_sample_seconds?: number;  // how often plugs that never report are read
   log_retention_days: number;  // days to keep historical bamdude-YYYY-MM-DD.log archives
   // Queue auto-drying settings
   queue_drying_enabled: boolean;  // Auto-dry AMS between queued prints
@@ -1504,6 +1709,10 @@ export interface AppSettings {
   // back to env defaults configured on the server.
   orcaslicer_api_url?: string;
   bambu_studio_api_url?: string;
+  // Minutes of SILENCE from the sidecar's progress channel before a slice is
+  // abandoned — not a cap on how long a model may take. On a sidecar too old
+  // to report progress it falls back to bounding total elapsed time.
+  slicer_stall_timeout_minutes?: number;
   // Per-model auto-print G-code snippets (#422). JSON object keyed by printer
   // model name → { start_gcode, end_gcode }. Empty string = none configured.
   gcode_snippets?: string;
@@ -1579,6 +1788,17 @@ export interface ObicoStatus {
   action: 'notify' | 'pause' | 'pause_and_off';
   poll_interval: number;
   external_url_configured: boolean;
+}
+
+/** The printer-card view of AI detection: live classification only, no
+ * configuration. Served by a route that needs printers:read rather than
+ * settings:read, so an operator can see the badge without being handed the ML
+ * URL (#1546). `monitored_printers: null` means every printer is monitored. */
+export interface ObicoPrinterStatus {
+  enabled: boolean;
+  monitored_printers: number[] | null;
+  per_printer: Record<string, { class: string; frame_count: number; score: number }>;
+  last_error: string | null;
 }
 
 export interface ObicoTestConnection {
@@ -1933,6 +2153,11 @@ export interface SliceRequest {
   // etc.) instead of the picked profile triplet. The preset refs are still
   // required by the backend validator but go unused on this path.
   use_embedded_settings?: boolean;
+  /** Process setting keys the 3MF's designer changed away from the stock
+   * preset, to carry onto the picked process profile (#2622). Authoritative:
+   * a key not listed here is not applied. Mutually exclusive with
+   * `use_embedded_settings`, which bypasses the process JSON entirely. */
+  design_overrides?: string[];
   printer_preset_id?: number;
   process_preset_id?: number;
   filament_preset_id?: number;
@@ -2150,7 +2375,11 @@ export interface CloudDevice {
 export interface SmartPlug {
   id: number;
   name: string;
-  plug_type: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest';
+  plug_type: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest' | 'zigbee';
+  // Required for Zigbee, and addressed by IEEE rather than the short NWK
+  // address: NWK is reassigned when a device rejoins, so a stored one would
+  // eventually point at a different device.
+  zigbee_ieee: string | null;
   ip_address: string | null;  // Required for Tasmota
   ha_entity_id: string | null;  // Required for Home Assistant (e.g., "switch.printer_plug", "script.turn_on_printer")
   // Home Assistant energy sensor entities (optional)
@@ -2235,9 +2464,178 @@ export interface SmartPlug {
   updated_at: string;
 }
 
+// ---- Zigbee coordinator -----------------------------------------------------
+// BamDude drives the radio itself; there is no Home Assistant or Zigbee2MQTT in
+// this path. See backend/app/api/routes/zigbee.py.
+
+export interface ZigbeeCoordinatorInfo {
+  ieee: string;
+  nwk: number;
+  model: string | null;
+  manufacturer: string | null;
+  version: string | null;
+}
+
+export interface ZigbeeNetworkInfo {
+  channel: number | null;
+  pan_id: number | null;
+}
+
+export interface ZigbeeStatus {
+  state: 'disabled' | 'starting' | 'up' | 'error';
+  // The whole explanation of why the radio is not up ("port busy - Zigbee2MQTT
+  // or Home Assistant is the most likely owner"). Render it verbatim; mapping it
+  // to a friendlier string throws away the only thing that says what to do.
+  reason: string | null;
+  coordinator: ZigbeeCoordinatorInfo | null;
+  network: ZigbeeNetworkInfo | null;
+  // The address we used to run on, when the dongle answering now is a different
+  // one. A dongle carries its network with it, so a swapped stick comes up
+  // perfectly healthy with none of the paired devices on it — indistinguishable
+  // from a BamDude fault unless we name it. `null` means nothing to say.
+  radio_changed: string | null;
+}
+
+export interface ZigbeeDevice {
+  ieee: string;
+  nwk: number | null;
+  manufacturer: string | null;
+  model: string | null;
+  /** What BamDude can do with it. The set is closed: plugs and sensors, and
+   *  anything else is removed from the network rather than listed. */
+  kind: 'coordinator' | 'plug' | 'sensor' | 'unsupported';
+  /** Which quantities a sensor reports. Empty for a plug -- a relay with a
+   *  temperature cluster is still a relay, and the backend says so. */
+  measurements: string[];
+  /** The hardware's own name, recorded when it paired. Null until the row
+   *  exists. NOT the name an operator gives the plug or sensor. */
+  name: string | null;
+  /** Whether a plug or sensor row already points at this device. Computed from
+   *  those tables, so it covers sensors too -- checking the plug list alone
+   *  reported every adopted sensor as free. */
+  adopted: boolean;
+  /** Kept beside `kind` because the plug picker filters on it. */
+  is_coordinator: boolean;
+  is_plug: boolean;
+  has_metering: boolean;
+  has_electrical_measurement: boolean;
+}
+
+export interface SensorMeasurement {
+  value: number | null;
+  unit: string;
+  last_report_at: string | null;
+  /** Older than its own window. NOT an error: a battery sensor with a 900 s
+   *  max interval is legitimately silent for a quarter of an hour. */
+  stale: boolean;
+  /** Read but not shown in this stage -- the settings dialog's vocabulary. */
+  reporting: string;
+  verification: string;
+}
+
+export interface ZigbeeSensor {
+  id: number;
+  name: string;
+  location: PrinterLocation | null;
+  ieee: string;
+  nwk: number | null;
+  manufacturer: string | null;
+  model: string | null;
+  power: 'battery' | 'mains' | null;
+  quirk_applied: boolean | null;
+  /** On the mesh but silent past the point where we still vouch for it. */
+  unreachable: boolean;
+  /** On the mesh at all. False for a downed radio, a flat cell, a device
+   *  carried out of range -- the row, its name and its place survive. */
+  present: boolean;
+  measurements: Record<string, SensorMeasurement>;
+}
+
+export interface DeviceSettingsTarget {
+  min_interval: number;
+  max_interval: number;
+  reportable_change: number;
+}
+
+export interface DeviceSettings {
+  ieee: string;
+  kind: string;
+  name: string | null;
+  adopted: boolean;
+  /** Which of the three fields this target allows. A relay allows one. */
+  editable: Record<string, string[]>;
+  /** What the "change by" number is measured in. Empty for a relay. */
+  units: Record<string, string>;
+  desired: Record<string, DeviceSettingsTarget>;
+  applied: Record<string, AppliedEntry>;
+  poll_seconds: number;
+  /** False for a device that sleeps between reports. */
+  poll_supported: boolean;
+  stale_after_seconds: number;
+}
+
+export interface PlugPowerPoint {
+  recorded_at: string;
+  /** Null where nothing was recorded in this bucket. Draws as a gap: a flat
+   *  line and a lost connection must not look alike. */
+  power: number | null;
+}
+
+export interface PlugPowerHistory {
+  points: PlugPowerPoint[];
+  /** How wide each bucket is. A point is the AVERAGE over this many seconds,
+   *  not an instant, and the tooltip has to say so. */
+  bucket_seconds: number;
+  /** Over the readings, not the buckets -- this is where the peak survives the
+   *  averaging the line does. */
+  min_power: number | null;
+  avg_power: number | null;
+  max_power: number | null;
+}
+
+export interface SensorThreshold {
+  kind: string;
+  min_value: number | null;
+  max_value: number | null;
+  deadband: number;
+  enabled: boolean;
+  /** Read-only: what the last evaluation decided. `ok` / `above` / `below`. */
+  state: string;
+  unit: string;
+}
+
+/** What a write carries. `state` and `unit` are the backend's to say. */
+export type SensorThresholdInput = Omit<SensorThreshold, 'state' | 'unit'>;
+
+export interface SensorHistoryPoint {
+  recorded_at: string;
+  /** Never null. Unlike plug power, an empty bucket is simply not sent: a
+   *  sensor is silent on a schedule, not for want of an event. */
+  value: number;
+}
+
+export interface SensorHistory {
+  points: SensorHistoryPoint[];
+  /** How wide each bucket is. A point is the AVERAGE over this many seconds,
+   *  not an instant, and the tooltip has to say so. */
+  bucket_seconds: number;
+  /** Over the readings, not the buckets -- this is where the peak survives the
+   *  averaging the line does. */
+  min_value: number | null;
+  avg_value: number | null;
+  max_value: number | null;
+}
+
+export interface ZigbeePort {
+  device: string;
+  description: string;
+  hwid: string;
+}
+
 export interface SmartPlugCreate {
   name: string;
-  plug_type?: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest';
+  plug_type?: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest' | 'zigbee';
+  zigbee_ieee?: string | null;  // Required for Zigbee
   ip_address?: string | null;  // Required for Tasmota
   ha_entity_id?: string | null;  // Required for Home Assistant
   // Home Assistant energy sensor entities (optional)
@@ -2313,7 +2711,8 @@ export interface SmartPlugCreate {
 
 export interface SmartPlugUpdate {
   name?: string;
-  plug_type?: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest';
+  plug_type?: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest' | 'zigbee';
+  zigbee_ieee?: string | null;
   ip_address?: string | null;
   ha_entity_id?: string | null;
   // Home Assistant energy sensor entities (optional)
@@ -2591,7 +2990,7 @@ export interface PrinterQueue {
   printer_id: number;
   printer_name?: string | null;
   printer_model?: string | null;
-  printer_location?: string | null;
+  printer_location?: PrinterLocation | null;
   status: 'idle' | 'printing' | 'paused' | 'error';
   is_paused: boolean;
   last_activity_at: string | null;
@@ -2640,6 +3039,10 @@ export interface AutoQueueFilamentOverride {
   slot_id: number;
   type?: string | null;
   color?: string | null;
+  // Slicer spool identity ("GFA00" PLA Basic, "GFA01" Matte, "GFA06" Silk).
+  // Only read alongside force_color_match, where it keeps Bambu's PLA variants
+  // apart — they all report tray_type "PLA". Blank = no variant constraint.
+  tray_info_idx?: string | null;
   force_color_match?: boolean;
 }
 
@@ -2649,7 +3052,8 @@ export interface AutoQueueItem {
   library_file_id: number | null;
   project_id: number | null;
   target_model: string | null;
-  target_location: string | null;
+  target_location: PrinterLocation | null;
+  target_location_id: number | null;
   required_filament_types: string[] | null;
   filament_overrides: AutoQueueFilamentOverride[] | null;
   force_color_match: boolean;
@@ -2698,7 +3102,7 @@ export interface AutoQueueItemCreate {
   library_file_id?: number | null;
   project_id?: number | null;
   target_model?: string | null;
-  target_location?: string | null;
+  target_location_id?: number | null;
   required_filament_types?: string[] | null;
   filament_overrides?: AutoQueueFilamentOverride[] | null;
   force_color_match?: boolean;
@@ -2722,7 +3126,7 @@ export interface AutoQueueItemCreate {
 export interface AutoQueueItemUpdate {
   position?: number | null;
   target_model?: string | null;
-  target_location?: string | null;
+  target_location_id?: number | null;
   required_filament_types?: string[] | null;
   filament_overrides?: AutoQueueFilamentOverride[] | null;
   force_color_match?: boolean | null;
@@ -2797,15 +3201,11 @@ export interface KProfilesResponse {
   // Maps each live cali_idx → our stable filament_calibration.id so notes
   // (keyed by fc_id since m065) survive printer reorders.
   fc_id_by_cali_idx?: Record<number, number>;
-}
-
-export interface KProfileNote {
-  // Stable identity since m065. `setting_id` is still accepted as a hint —
-  // the backend resolves it to `filament_calibration_id` via the printer's
-  // live K-profile list.
-  filament_calibration_id?: number | null;
-  setting_id?: string | null;
-  note: string;
+  // Whether the Standard / High Flow choice means anything on this printer
+  // (#1748). BS's own gate for this dialog, from the mirrored per-model config
+  // plus live MQTT flags. Not the nozzle count: P1S and X1C are single-nozzle
+  // and this is false for them, while P2S is single-nozzle and it is true.
+  supports_flow_type?: boolean;
 }
 
 export interface KProfileNotesResponse {
@@ -2822,7 +3222,7 @@ export interface SlotPresetMapping {
 
 
 // Notification Provider types
-export type ProviderType = 'callmebot' | 'ntfy' | 'pushover' | 'telegram' | 'email' | 'discord' | 'webhook' | 'homeassistant';
+export type ProviderType = 'callmebot' | 'ntfy' | 'pushover' | 'bark' | 'telegram' | 'email' | 'discord' | 'webhook' | 'homeassistant';
 
 export interface NotificationProvider {
   id: number;
@@ -2851,6 +3251,11 @@ export interface NotificationProvider {
   // AMS-HT environmental alarms
   on_ams_ht_humidity_high: boolean;
   on_ams_ht_temperature_high: boolean;
+  // Zigbee sensor alerts
+  /** A reading left or returned to its limits. */
+  on_sensor_threshold: boolean;
+  /** A sensor stopped or resumed reporting. */
+  on_sensor_silent: boolean;
   // Build plate detection
   on_plate_not_empty: boolean;
   // Bed cooled
@@ -2912,6 +3317,11 @@ export interface NotificationProviderCreate {
   // AMS-HT environmental alarms
   on_ams_ht_humidity_high?: boolean;
   on_ams_ht_temperature_high?: boolean;
+  // Zigbee sensor alerts
+  /** A reading left or returned to its limits. */
+  on_sensor_threshold?: boolean;
+  /** A sensor stopped or resumed reporting. */
+  on_sensor_silent?: boolean;
   // Build plate detection
   on_plate_not_empty?: boolean;
   // Bed cooled
@@ -2967,6 +3377,11 @@ export interface NotificationProviderUpdate {
   // AMS-HT environmental alarms
   on_ams_ht_humidity_high?: boolean;
   on_ams_ht_temperature_high?: boolean;
+  // Zigbee sensor alerts
+  /** A reading left or returned to its limits. */
+  on_sensor_threshold?: boolean;
+  /** A sensor stopped or resumed reporting. */
+  on_sensor_silent?: boolean;
   // Build plate detection
   on_plate_not_empty?: boolean;
   // Bed cooled
@@ -3143,43 +3558,6 @@ export interface BackgroundDispatchResponse {
   dispatch_position: number | null;
   batch_id?: string | null;
   queued_copies?: number;
-}
-
-// Provider-specific config types for reference
-export interface CallMeBotConfig {
-  phone: string;
-  apikey: string;
-}
-
-export interface NtfyConfig {
-  server?: string;
-  topic: string;
-  auth_token?: string | null;
-}
-
-export interface PushoverConfig {
-  user_key: string;
-  app_token: string;
-  priority?: number;
-  /** Emergency priority (2) only: re-alert interval in seconds (30-10800). */
-  retry?: number;
-  /** Emergency priority (2) only: alert expiry in seconds (30-10800). */
-  expire?: number;
-}
-
-export interface TelegramConfig {
-  bot_token: string;
-  chat_id: string;
-}
-
-export interface EmailConfig {
-  smtp_server: string;
-  smtp_port?: number;
-  username: string;
-  password: string;
-  from_email: string;
-  to_email: string;
-  use_tls?: boolean;
 }
 
 // Notification Template types
@@ -3585,7 +3963,7 @@ export interface PrinterMaintenanceOverview {
   printer_id: number;
   printer_name: string;
   printer_model: string | null;
-  printer_location: string | null;
+  printer_location: PrinterLocation | null;
   total_print_hours: number;
   maintenance_items: MaintenanceStatus[];
   due_count: number;
@@ -3681,6 +4059,7 @@ export type Permission =
   | 'inventory:read' | 'inventory:create' | 'inventory:update' | 'inventory:delete' | 'inventory:view_assignments'
   | 'inventory:forecast_read' | 'inventory:forecast_write'
   | 'smart_plugs:read' | 'smart_plugs:create' | 'smart_plugs:update' | 'smart_plugs:delete' | 'smart_plugs:control'
+  | 'smart_sensors:read' | 'smart_sensors:create' | 'smart_sensors:update' | 'smart_sensors:delete'
   | 'camera:view'
   | 'maintenance:read' | 'maintenance:create' | 'maintenance:update' | 'maintenance:delete'
   | 'kprofiles:read' | 'kprofiles:create' | 'kprofiles:update' | 'kprofiles:delete'
@@ -3885,6 +4264,10 @@ export interface OIDCProvider {
   // #1589: when true, the LoginPage redirects unauthenticated visitors
   // straight to this provider on mount. At most one provider may carry this.
   is_autologin: boolean;
+  // #2593: declared by BAMDUDE_OIDC_* and rewritten on every boot. The row is
+  // read-only here and the API answers 409 to any write — the environment is
+  // not visible to the browser, so the server has to say so.
+  is_env_managed?: boolean;
 }
 
 export interface OIDCProviderCreate {
@@ -4054,6 +4437,8 @@ export interface AmsSystemSettingState {
   air_print_detect: boolean | null;
   firmware_idx_run: number | null;
   firmware_idx_sel: number | null;
+  /** A reflash is in progress — the picker is hidden while this holds. */
+  firmware_switching: boolean;
 }
 
 export interface AmsSystemSettingSupports {
@@ -4071,9 +4456,15 @@ export interface AmsSettingsUnitInfo {
   label: string;
 }
 
+/**
+ * One switchable AMS firmware, as the device reported it. `idx` is the
+ * device's own id and `label` its own name — never ours to invent, because an
+ * id paired with the wrong label reflashes the AMS into the other personality.
+ */
 export interface AmsSettingsFirmwareOption {
   idx: number;
   label: string;
+  version?: string | null;
 }
 
 export interface AmsSettingsGetResponse {
@@ -4220,7 +4611,10 @@ export type CaliMode =
 
 export type CaliMethod = 'auto' | 'manual';
 
-export type NozzleVolumeType = 'standard' | 'high_flow' | 'tpu_high_flow' | 'hybrid';
+// BambuStudio's NozzleVolumeType. ⚠️ Its numbering skips a value (E3D is 5, not
+// 4), and its 4-char code spells E3D High Flow with a **B** while **E** means
+// plain High Flow — the letters read backwards from what you would guess.
+export type NozzleVolumeType = 'standard' | 'high_flow' | 'tpu_high_flow' | 'hybrid' | 'e3d_high_flow';
 
 export type CalibModeState = 'disabled' | 'verification' | 'production';
 
@@ -4706,11 +5100,24 @@ export const api = {
       `/printers/${id}?delete_archives=${deleteArchives}`,
       { method: 'DELETE' }
     ),
+  getPrinterLocations: () =>
+    request<{ locations: PrinterLocationListItem[] }>('/printer-locations'),
+  createPrinterLocation: (name: string, parentId: number | null = null) =>
+    request<PrinterLocation>('/printer-locations', {
+      method: 'POST',
+      body: JSON.stringify({ name, parent_id: parentId }),
+    }),
+  // Partial on purpose: renaming must not move a location, and moving one back
+  // to the top level has to be sayable as an explicit null.
+  updatePrinterLocation: (id: number, payload: { name?: string; parent_id?: number | null }) =>
+    request<PrinterLocation>(`/printer-locations/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  deletePrinterLocation: (id: number) =>
+    request<{ deleted: number }>(`/printer-locations/${id}`, { method: 'DELETE' }),
   getDeveloperModeWarnings: () =>
     request<{ printer_id: number; name: string }[]>('/printers/developer-mode-warnings'),
-  getAvailableFilaments: (model: string, location?: string) => {
+  getAvailableFilaments: (model: string, locationId?: number) => {
     const params = new URLSearchParams({ model });
-    if (location) params.set('location', location);
+    if (locationId) params.set('location_id', String(locationId));
     return request<Array<{ type: string; color: string; tray_info_idx: string; tray_sub_brands: string; extruder_id: number | null }>>(`/printers/available-filaments?${params}`);
   },
   getPrinterStatus: (id: number) =>
@@ -4803,6 +5210,87 @@ export const api = {
     request<{ success: boolean; message: string }>(`/printers/${printerId}/chamber-light?on=${on}`, {
       method: 'POST',
     }),
+
+  // Airduct fan speed. Addressed by the part id the status reports, because the
+  // same id is a different fan on different models (part 10 is the left aux on
+  // a P2S and the right one on an X2D).
+  // `confirm` acknowledges the mid-print warning — BambuStudio's "Change
+  // Anyway". The server refuses without it while a print is running, so the
+  // guard survives a client that never shows the dialog.
+  setFanSpeed: (printerId: number, partId: number, percent: number, confirm = false) =>
+    request<{ success: boolean; part_id: number; percent: number }>(
+      `/printers/${printerId}/fan-speed?part_id=${partId}&percent=${percent}&confirm=${confirm}`,
+      { method: 'POST' },
+    ),
+
+  // One heater's target temperature. `target` of 0 turns it off — that is the
+  // only value exempt from the range, and BambuStudio treats it the same way
+  // (`TempInput::AddTemp(0)`).
+  //
+  // Bounds come from `status.temperature_limits` rather than from constants
+  // here: they depend on the model, on what the printer reported, and on the
+  // mains voltage, so a copy in the browser would disagree the first time any
+  // of those changed. `extruder_index` is ignored for bed and chamber.
+  //
+  // ⚠️ There is deliberately no `confirm` — unlike the fans, adjusting a
+  // temperature mid-print is ordinary tuning and BambuStudio gates none of the
+  // three on print state.
+  setTemperature: (
+    printerId: number,
+    part: 'nozzle' | 'bed' | 'chamber',
+    target: number,
+    extruderIndex = 0,
+  ) =>
+    request<{ success: boolean; part: string; target: number; limits: number[] }>(
+      `/printers/${printerId}/temperature?part=${part}&target=${target}&extruder_index=${extruderIndex}`,
+      { method: 'POST' },
+    ),
+
+  // Ask the printer whether there is room for this print's timelapse.
+  // ⚠️ The answer does NOT come back here — the printer republishes its free
+  // space in the next status push, so callers re-read the status after asking.
+  checkTimelapseStorage: (printerId: number, totalLayer: number) =>
+    request<{ success: boolean; storage: string; storage_low: boolean; free_kb: number | null }>(
+      `/printers/${printerId}/timelapse/check-storage?total_layer=${totalLayer}`,
+      { method: 'POST' },
+    ),
+
+  // Delete the oldest recording to make room. ⚠️ Destructive, and the printer
+  // chooses which file goes. Offered only where it has internal storage.
+  deleteOldestTimelapse: (printerId: number, totalLayer: number) =>
+    request<{ success: boolean; storage: string }>(
+      `/printers/${printerId}/timelapse/delete-oldest?total_layer=${totalLayer}`,
+      { method: 'POST' },
+    ),
+
+  // Move one axis by hand. `distance` is signed millimetres; on Z and E
+  // negative is the UI's "up" (closing the nozzle-bed gap / retracting).
+  //
+  // ⚠️ The backend picks the wire protocol per printer, and on machines that
+  // speak the newer one the distance collapses to a direction plus a
+  // coarse/fine flag (BambuStudio's `xyz_ctrl` carries nothing else). So do NOT
+  // present this as a precise measurement — offer the same fixed 1 mm / 10 mm
+  // steps BambuStudio does.
+  jogAxis: (printerId: number, axis: 'x' | 'y' | 'z' | 'e', distance: number, extruderIndex = 0) =>
+    request<{ success: boolean; axis: string; distance: number }>(
+      `/printers/${printerId}/jog?axis=${axis}&distance=${distance}&extruder_index=${extruderIndex}`,
+      { method: 'POST' },
+    ),
+
+  // Release the stepper motors (M84) so the toolhead can be pushed by hand.
+  // ⚠️ This drops whatever Z was holding — the bed on most machines, the
+  // toolhead on a bed-slinger.
+  disableSteppers: (printerId: number) =>
+    request<{ success: boolean }>(`/printers/${printerId}/disable-steppers`, { method: 'POST' }),
+
+  // Air-duct mode, and its "Filter" sub-mode. `confirm` acknowledges the
+  // mid-print filtration warning — it does NOT lift the mode-change refusal,
+  // which is absolute while a print runs (BambuStudio refuses it outright).
+  setAirductMode: (printerId: number, modeId: number, submode = -1, confirm = false) =>
+    request<{ success: boolean; mode_id: number; submode: number }>(
+      `/printers/${printerId}/airduct-mode?mode_id=${modeId}&submode=${submode}&confirm=${confirm}`,
+      { method: 'POST' },
+    ),
 
   // AMS Drying Control
   startDrying: (printerId: number, amsId: number, temp: number, duration: number, filament: string = '', rotateTray: boolean = false) =>
@@ -5242,6 +5730,7 @@ export const api = {
     error_message?: string | null;
     status?: string;
     quantity?: number;
+    defective_count?: number;
     external_url?: string | null;
   }) =>
     request<Archive>(`/archives/${id}`, {
@@ -5699,12 +6188,23 @@ export const api = {
     `${API_BASE}/archives/${archiveId}/dl/${token}/${encodeURIComponent(buildSlicerUrlFilename(filename))}`,
   getArchivePlates: (archiveId: number) =>
     request<ArchivePlatesResponse>(`/archives/${archiveId}/plates`),
-  getArchiveFilamentRequirements: (archiveId: number, plateId?: number, requestId?: string) => {
+  getArchiveFilamentRequirements: (
+    archiveId: number,
+    plateId?: number,
+    requestId?: string,
+    /** Ask for one entry per project slot instead of only the slots this plate
+     * consumes. The slice modal needs it: its filament list is positional, so a
+     * source whose only used slot is 4 must still present four rows or the
+     * user's pick binds to slot 1 (#2712). Print-time AMS matching must NOT set
+     * this — it wants the used-only list. */
+    fullSlots?: boolean,
+  ) => {
     // request_id flows to the sidecar's preview-slice fallback so the
     // SliceModal's inline spinner can poll matching live progress.
     const params = new URLSearchParams();
     if (plateId !== undefined) params.set('plate_id', String(plateId));
     if (requestId !== undefined) params.set('request_id', requestId);
+    if (fullSlots) params.set('full_slots', 'true');
     const qs = params.toString();
     return request<{
       archive_id: number;
@@ -5993,6 +6493,67 @@ export const api = {
     }),
   deleteSmartPlug: (id: number) =>
     request<void>(`/smart-plugs/${id}`, { method: 'DELETE' }),
+
+  // ---- Zigbee coordinator ---------------------------------------------------
+  // No client function for /zigbee/devices/{ieee}/attributes on purpose: it is a
+  // by-hand diagnostic (raw device value beside the post-quirk cached one) and
+  // an unused export is dead weight.
+  getZigbeeStatus: () => request<ZigbeeStatus>('/zigbee/status'),
+  getZigbeePorts: () => request<{ ports: ZigbeePort[] }>('/zigbee/ports'),
+  getZigbeeDevices: () => request<{ devices: ZigbeeDevice[] }>('/zigbee/devices'),
+  getZigbeeSensors: () => request<{ sensors: ZigbeeSensor[] }>('/zigbee/sensors'),
+  getDeviceSettings: (ieee: string) =>
+    request<DeviceSettings>(`/zigbee/devices/${encodeURIComponent(ieee)}/settings`),
+  updateDeviceSettings: (
+    ieee: string,
+    payload: {
+      reporting?: Record<string, Partial<DeviceSettingsTarget>>;
+      poll_seconds?: number;
+      stale_after_seconds?: number;
+    },
+  ) =>
+    request<DeviceSettings>(`/zigbee/devices/${encodeURIComponent(ieee)}/settings`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  // Drops this device's overrides so the farm defaults apply again -- and
+  // re-issues them to the device, which is the whole point.
+  clearDeviceSettings: (ieee: string) =>
+    request<DeviceSettings>(`/zigbee/devices/${encodeURIComponent(ieee)}/settings`, { method: 'DELETE' }),
+  adoptZigbeeSensor: (payload: { zigbee_ieee: string; name: string; location_id: number | null }) =>
+    request<{ id: number; name: string }>('/zigbee/sensors', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  // `location_id: null` clears the place; omitting the key leaves it alone.
+  updateZigbeeSensor: (id: number, payload: { name?: string; location_id?: number | null }) =>
+    request<{ id: number; name: string }>(`/zigbee/sensors/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  // Unbind, NOT remove from the network: the device stays paired and keeps its
+  // settings, so adopting it again restores what it had.
+  deleteZigbeeSensor: (id: number) =>
+    request<{ deleted: number }>(`/zigbee/sensors/${id}`, { method: 'DELETE' }),
+  permitZigbeeJoin: (seconds: number) =>
+    request<{ seconds: number }>('/zigbee/permit', {
+      method: 'POST',
+      body: JSON.stringify({ seconds }),
+    }),
+  removeZigbeeDevice: (ieee: string) =>
+    request<{ removed: string; outcome: 'left' | 'forced'; deleted_plug_id: number | null }>(
+      `/zigbee/devices/${encodeURIComponent(ieee)}`,
+      { method: 'DELETE' },
+    ),
+  restartZigbeeCoordinator: () => request<ZigbeeStatus>('/zigbee/restart', { method: 'POST' }),
+  // Reversible: stops the radio and clears the setting, keeping the network,
+  // the paired devices and every plug row. Connect brings it all back.
+  disconnectZigbeeCoordinator: () => request<ZigbeeStatus>('/zigbee/disconnect', { method: 'POST' }),
+  // NOT reversible without a backup: erases the network key, so every plug has
+  // to be re-paired by hand, at the plug. `plugs_kept` is how many rows are
+  // waiting for those devices to come back.
+  forgetZigbeeNetwork: () =>
+    request<{ removed: string[]; plugs_kept: number; state: string }>('/zigbee/network', { method: 'DELETE' }),
   controlSmartPlug: (id: number, action: 'on' | 'off' | 'toggle') =>
     request<{ success: boolean; action: string }>(`/smart-plugs/${id}/control`, {
       method: 'POST',
@@ -6000,6 +6561,17 @@ export const api = {
     }),
   getSmartPlugStatus: (id: number) =>
     request<SmartPlugStatus>(`/smart-plugs/${id}/status`),
+  getPlugPowerHistory: (plugId: number, hours: number) =>
+    request<PlugPowerHistory>(`/smart-plugs/${plugId}/power-history?hours=${hours}`),
+  getSensorHistory: (sensorId: number, kind: string, hours: number) =>
+    request<SensorHistory>(`/zigbee/sensors/${sensorId}/history?kind=${encodeURIComponent(kind)}&hours=${hours}`),
+  getSensorThresholds: (sensorId: number) =>
+    request<{ thresholds: SensorThreshold[] }>(`/zigbee/sensors/${sensorId}/thresholds`),
+  putSensorThresholds: (sensorId: number, thresholds: SensorThresholdInput[]) =>
+    request<{ thresholds: SensorThreshold[] }>(`/zigbee/sensors/${sensorId}/thresholds`, {
+      method: 'PUT',
+      body: JSON.stringify({ thresholds }),
+    }),
   testSmartPlugConnection: (ip_address: string, username?: string | null, password?: string | null) =>
     request<SmartPlugTestResult>('/smart-plugs/test-connection', {
       method: 'POST',
@@ -7224,6 +7796,23 @@ export const api = {
   },
 
   // Library (File Manager)
+  // Copy an archived print's 3MF into the library. Goes through the same
+  // helper as MakerWorld import and slicer output, so the metadata parse,
+  // thumbnail, per-plate cache and content-hash dedupe behave identically.
+  // ⚠️ `already_in_library` comes back true when the same bytes are already
+  // there — the row returned is the existing one, not a second copy.
+  saveArchiveToLibrary: (archiveId: number, folderId: number | null) =>
+    request<{
+      success: boolean;
+      file_id: number;
+      filename: string;
+      folder_id: number | null;
+      already_in_library: boolean;
+    }>(
+      `/archives/${archiveId}/save-to-library${folderId != null ? `?folder_id=${folderId}` : ''}`,
+      { method: 'POST' },
+    ),
+
   getLibraryFolders: () => request<LibraryFolderTree[]>('/library/folders'),
   createLibraryFolder: (data: LibraryFolderCreate) =>
     request<LibraryFolder>('/library/folders', {
@@ -7475,7 +8064,7 @@ export const api = {
       body: JSON.stringify({ file_ids: fileIds, folder_id: folderId }),
     }),
   bulkDeleteLibrary: (fileIds: number[], folderIds: number[]) =>
-    request<{ deleted_files: number; deleted_folders: number }>('/library/bulk-delete', {
+    request<{ deleted_files: number; deleted_folders: number; skipped_files: number }>('/library/bulk-delete', {
       method: 'POST',
       body: JSON.stringify({ file_ids: fileIds, folder_ids: folderIds }),
     }),
@@ -7545,10 +8134,18 @@ export const api = {
         ? `/library/files/${id}/plate-objects?plate=${plate}`
         : `/archives/${id}/plate-objects`,
     ),
-  getLibraryFileFilamentRequirements: (fileId: number, plateId?: number, requestId?: string) => {
+  getLibraryFileFilamentRequirements: (
+    fileId: number,
+    plateId?: number,
+    requestId?: string,
+    /** One entry per project slot rather than only the slots this plate
+     * consumes — see `getArchiveFilamentRequirements` (#2712). */
+    fullSlots?: boolean,
+  ) => {
     const params = new URLSearchParams();
     if (plateId !== undefined) params.set('plate_id', String(plateId));
     if (requestId !== undefined) params.set('request_id', requestId);
+    if (fullSlots) params.set('full_slots', 'true');
     const qs = params.toString();
     return request<{
       file_id: number;
@@ -7633,6 +8230,8 @@ export const api = {
   // Obico AI failure detection (#172)
   getObicoStatus: () =>
     request<ObicoStatus>('/obico/status'),
+  getObicoPrinterStatus: () =>
+    request<ObicoPrinterStatus>('/obico/printer-status'),
 
   testObicoConnection: (url: string) =>
     request<ObicoTestConnection>('/obico/test-connection', {
@@ -8034,8 +8633,10 @@ export interface LibraryFolderTree {
   external_path: string | null;
   external_readonly: boolean;
   file_count: number;
-  // #1770: max(folder.updated_at, newest immediate-child file.updated_at).
-  // Drives the folder tree's "sort by recent activity" mode.
+  // #1770 + #2680: the folder's own timestamp (real on-disk mtime when the
+  // external scan recorded one) against the newest activity anywhere in its
+  // subtree — not just among immediate children. Drives the folder tree's
+  // "sort by recent activity" mode.
   latest_activity_at: string | null;
   children: LibraryFolderTree[];
 }
@@ -8204,6 +8805,8 @@ export interface LibraryFile {
   created_by_username: string | null;
   created_at: string;
   updated_at: string;
+  // See LibraryFileListItem.fs_modified_at — m129 / #2680.
+  fs_modified_at: string | null;
   // Metadata fields
   print_name: string | null;
   print_time_seconds: number | null;
@@ -8239,6 +8842,10 @@ export interface LibraryFileListItem {
   created_by_id: number | null;
   created_by_username: string | null;
   created_at: string;
+  // Real on-disk mtime, external files only (m129 / #2680). NULL for uploads,
+  // where ``created_at`` already IS when the file arrived. Read it through
+  // ``fileActivityAt`` — never on its own, or an internal file loses its date.
+  fs_modified_at: string | null;
   print_name: string | null;
   print_time_seconds: number | null;
   filament_used_grams: number | null;
@@ -8256,6 +8863,9 @@ export interface LibraryFileListItem {
   source_type?: string | null;
   source_url?: string | null;
   notes_count: number;
+  // Successful completions only — the backend increments it on completion, so
+  // 0 means "never finished a print", not "never attempted one".
+  print_count: number;
   // #1268 — user-authored tags (M2M). DISTINCT from ``file_tags`` above,
   // which is the computed system-badge array. OPTIONAL because legacy msw
   // mocks build partial file shapes; read sites use ``file.tags ?? []``.
@@ -8274,6 +8884,13 @@ export interface LibraryTag {
   id: number;
   name: string;
   file_count: number;
+  /** System tags (m128) are handed out by the backend from the file itself and
+   *  cannot be renamed, deleted or attached by hand. The catalog returns both
+   *  kinds, so every consumer has to say which it wants. */
+  is_system: boolean;
+  /** Stable identifier a system tag is styled and translated by (`3mf`,
+   *  `sliced`, …); null on user tags. */
+  code: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -8569,6 +9186,7 @@ export interface VirtualPrinterConfig {
    *  as `force_color_match` overrides so the eligibility scheduler refuses printers
    *  loaded with the right material in the wrong colour (#1188). */
   queue_force_color_match: boolean;
+  save_ams_mapping: boolean;
   /** Per-VP opt-in for auto-print G-code injection (#1516). When on, files this VP
    *  queues (print_queue or auto_queue mode) carry gcode_injection=True so the
    *  dispatcher splices the per-model start/end snippets. No-op unless snippets exist. */
@@ -8627,6 +9245,7 @@ export const multiVirtualPrinterApi = {
     target_folder_id?: number;
     auto_dispatch?: boolean;
     queue_force_color_match?: boolean;
+    save_ams_mapping?: boolean;
     gcode_injection?: boolean;
     bind_ip?: string;
     remote_interface_ip?: string;
@@ -8651,6 +9270,7 @@ export const multiVirtualPrinterApi = {
     clear_target_folder?: boolean;
     auto_dispatch?: boolean;
     queue_force_color_match?: boolean;
+    save_ams_mapping?: boolean;
     gcode_injection?: boolean;
     bind_ip?: string;
     remote_interface_ip?: string;

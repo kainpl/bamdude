@@ -22,6 +22,7 @@ from backend.app.core.permissions import Permission
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.ams_label import AmsLabel
 from backend.app.models.printer import Printer
+from backend.app.models.printer_location import PrinterLocation
 from backend.app.models.slot_preset import SlotPresetMapping
 from backend.app.models.user import User
 from backend.app.schemas.printer import (
@@ -49,23 +50,38 @@ from backend.app.services.bambu_ftp import (
     get_storage_info_async,
     list_files_async,
 )
+from backend.app.services.bambu_mqtt import (
+    AIRDUCT_COOLING_FILT,
+    EXTRUDER_MIN_TEMP_C,
+    FAN_CTRL,
+    FAN_OFF,
+    HMS_UI_ONLY_ACTIONS,
+    airduct_fan_control,
+    airduct_mode_effective,
+    airduct_parts_effective,
+)
 from backend.app.services.printer_diagnostic import run_connection_diagnostic
+from backend.app.services.printer_location_service import load_tree, subtree_ids
 from backend.app.services.printer_manager import (
+    _airduct_fans,
     drying_screen_only,
     find_ams_unit,
     first_drying_blocking_reason,
     get_derived_status_name,
     get_stage_name,
-    is_bed_slinger,
+    is_printer_busy,
     printer_manager,
     resolve_expected_tray,
     resolve_plate_id,
+    supports_chamber_heater,
     supports_chamber_temp,
     supports_drying,
     supports_drying_while_printing,
 )
 from backend.app.utils.filament_ids import filament_id_to_setting_id
 from backend.app.utils.http import build_content_disposition
+from backend.app.utils.temperature_limits import is_within, limits_for
+from backend.app.utils.timelapse import capability_for as timelapse_capability_for
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/printers", tags=["printers"])
@@ -78,6 +94,59 @@ def _caller_can_view_printer_secrets(user: User | None) -> bool:
     if user is None:
         return False
     return user.has_permission(Permission.PRINTERS_UPDATE.value)
+
+
+# BS ``DevFilaColorType`` — ⚠️ 0 is MULTI and 2 is SINGLE, not the other way
+# round, so a bare ``ctype: 0`` must never be read as "no type".
+FILA_CTYPE_MULTI = 0
+FILA_CTYPE_GRADIENT = 1
+FILA_CTYPE_SINGLE = 2
+
+
+def _tray_remain_g(tray: dict) -> int:
+    """The firmware's own grams-remaining for a tray, or -1 when it has none.
+
+    BS reads this from both its tray parsers with a default of -1
+    (``DevFilaSystemParser`` and ``parse_vt_tray``), and prefers it over the
+    percentage wherever it is present.
+
+    ⚠️ **This is not a weight measurement, and no hardware measures weight.**
+    Bambu's AMS — including the 2 Pro — derives remaining filament from the RFID
+    tag plus how far the spool has turned; a load cell is an open feature
+    request, not a product. So the figure exists only for tagged spools and is
+    ``-1`` everywhere else. Reading it costs nothing and means the number is
+    used the day firmware or hardware starts providing it.
+    """
+    raw = tray.get("remain_g")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return -1
+    return int(raw)
+
+
+def _tray_colours(tray: dict, fallback_colour: str | None) -> tuple[list[str], int]:
+    """Every colour a tray carries, plus how it should be read.
+
+    BS applies both fallbacks in each of its two tray parsers, and we follow
+    them so a caller never has to special-case a firmware that omits a field:
+
+    * no ``cols`` → the single ``tray_color``, as a one-item list;
+    * no ``ctype`` → derived from the list, ``len > 1`` being MULTI.
+
+    Colours are returned without the leading ``#`` and lower-cased, matching
+    ``tray_color`` elsewhere in this response so the frontend has one shape to
+    handle.
+    """
+    raw = tray.get("cols")
+    cols: list[str] = []
+    if isinstance(raw, list):
+        cols = [str(c).replace("#", "").lower() for c in raw if isinstance(c, str) and c]
+    if not cols and fallback_colour:
+        cols = [fallback_colour.replace("#", "").lower()]
+
+    ctype = tray.get("ctype")
+    if not isinstance(ctype, int) or isinstance(ctype, bool):
+        ctype = FILA_CTYPE_MULTI if len(cols) > 1 else FILA_CTYPE_SINGLE
+    return cols, ctype
 
 
 def _serialize_printer(printer: Printer, *, include_secret: bool):
@@ -112,6 +181,19 @@ async def list_printers(
     return [_serialize_printer(p, include_secret=include_secret) for p in printers]
 
 
+async def _require_known_location(db, location_id: int | None) -> None:
+    """A location id that names nothing must not be stored.
+
+    SQLite does not enforce foreign keys by default, so without this the row
+    would take a dangling id and the printer would show no place with no error
+    anywhere — which is the silent-nothing this stage exists to remove.
+    """
+    if location_id is None:
+        return
+    if await db.get(PrinterLocation, location_id) is None:
+        raise HTTPException(422, "No such location.")
+
+
 @router.post("/", response_model=PrinterResponse)
 async def create_printer(
     printer_data: PrinterCreate,
@@ -129,6 +211,8 @@ async def create_printer(
         if existing.archived:
             raise HTTPException(409, "This serial belongs to an archived printer — unarchive it instead of re-adding")
         raise HTTPException(400, "Printer with this serial number already exists")
+
+    await _require_known_location(db, printer_data.location_id)
 
     printer = Printer(**printer_data.model_dump())
 
@@ -191,7 +275,7 @@ async def list_usb_cameras(
 @router.get("/available-filaments")
 async def get_available_filaments(
     model: str = Query(..., description="Target printer model"),
-    location: str | None = Query(None, description="Optional location filter"),
+    location_id: int | None = Query(None, description="Optional location filter"),
     _=RequirePermission(Permission.QUEUE_CREATE),
     db: AsyncSession = Depends(get_db),
 ):
@@ -210,8 +294,11 @@ async def get_available_filaments(
         .where(Printer.is_active == True)  # noqa: E712
         .where(Printer.archived.is_(False))
     )
-    if location:
-        query = query.where(Printer.location == location)
+    if location_id:
+        # The subtree, so "the workshop" means the same thing here as it does
+        # in the auto-queue and on screen.
+        tree = await load_tree(db)
+        query = query.where(Printer.location_id.in_(subtree_ids(tree, location_id)))
 
     result = await db.execute(query)
     printers_list = list(result.scalars().all())
@@ -352,6 +439,8 @@ async def update_printer(
         raise HTTPException(404, "Printer not found")
 
     update_data = printer_data.model_dump(exclude_unset=True)
+    if "location_id" in update_data:
+        await _require_known_location(db, update_data["location_id"])
 
     # Handle nested ROI object - flatten to individual columns
     if "plate_detection_roi" in update_data:
@@ -589,15 +678,19 @@ async def get_printer_status(
                 if k_value is None and cali_idx is not None and cali_idx in kprofile_map:
                     k_value = kprofile_map[cali_idx]
 
+                _tray_cols, _tray_ctype = _tray_colours(tray_data, tray_data.get("tray_color"))
                 trays.append(
                     AMSTray(
                         id=tray_data.get("id", 0),
                         tray_color=tray_data.get("tray_color"),
+                        cols=_tray_cols,
+                        ctype=_tray_ctype,
                         tray_type=tray_data.get("tray_type"),
                         tray_sub_brands=tray_data.get("tray_sub_brands"),
                         tray_id_name=tray_data.get("tray_id_name"),
                         tray_info_idx=tray_data.get("tray_info_idx"),
                         remain=tray_data.get("remain", 0),
+                        remain_g=_tray_remain_g(tray_data),
                         k=k_value,
                         cali_idx=cali_idx,
                         tag_uid=tag_uid,
@@ -693,15 +786,22 @@ async def get_printer_status(
                 vt_k_value = kprofile_map[vt_cali_idx]
 
             tray_id = int(vt_data.get("id", 254))
+            # The external spool carries the same colour fields as an AMS tray —
+            # BS parses them in both places, so a multi-colour spool on the
+            # external holder is not a different case.
+            _vt_cols, _vt_ctype = _tray_colours(vt_data, vt_data.get("tray_color"))
             vt_tray.append(
                 AMSTray(
                     id=tray_id,
                     tray_color=vt_data.get("tray_color"),
                     tray_type=vt_data.get("tray_type"),
+                    cols=_vt_cols,
+                    ctype=_vt_ctype,
                     tray_sub_brands=vt_data.get("tray_sub_brands"),
                     tray_id_name=vt_data.get("tray_id_name"),
                     tray_info_idx=vt_data.get("tray_info_idx"),
                     remain=vt_data.get("remain", 0),
+                    remain_g=_tray_remain_g(vt_data),
                     k=vt_k_value,
                     cali_idx=vt_cali_idx,
                     tag_uid=vt_tag_uid,
@@ -817,6 +917,7 @@ async def get_printer_status(
         ams_exists=ams_exists,
         vt_tray=vt_tray,
         sdcard=state.sdcard,
+        sdcard_state=state.sdcard_state,
         store_to_sdcard=state.store_to_sdcard,
         timelapse=state.timelapse,
         ipcam=state.ipcam,
@@ -830,7 +931,12 @@ async def get_printer_status(
         stg_cur_name=get_derived_status_name(state, printer.model),
         stg=state.stg,
         stg_names=[get_stage_name(s) for s in state.stg],
-        airduct_mode=state.airduct_mode,
+        firmware_consistency_request=state.firmware_consistency_request,
+        firmware_force_upgrade=state.firmware_force_upgrade,
+        airduct_mode=airduct_mode_effective(state),
+        airduct_modes=sorted(state.airduct_modes or {}),
+        airduct_sub_mode=state.airduct_sub_mode,
+        supports_cooling_filter=bool((state.print_option_support or {}).get("cooling_filter")),
         speed_level=state.speed_level,
         chamber_light=state.chamber_light,
         active_extruder=state.active_extruder,
@@ -868,6 +974,13 @@ async def get_printer_status(
         big_fan1_speed=state.big_fan1_speed,
         big_fan2_speed=state.big_fan2_speed,
         heatbreak_fan_speed=state.heatbreak_fan_speed,
+        airduct_fans=_airduct_fans(printer.model, state),
+        temperature_limits={k: list(v) for k, v in limits_for(printer.model, state).items()},
+        ext_has_nozzle=dict(state.ext_has_nozzle),
+        supports_chamber_heater=supports_chamber_heater(printer.model),
+        axis_at_home=dict(state.axis_at_home),
+        ext_has_filament=dict(state.ext_has_filament),
+        timelapse_capability=timelapse_capability_for(printer.model, state),
         firmware_version=state.firmware_version,
         developer_mode=state.developer_mode if state else None,
         ams_auto_switch_filament=state.ams_auto_switch_filament if state else None,
@@ -1027,22 +1140,6 @@ async def disconnect_printer(
 
     printer_manager.disconnect_printer(printer_id)
     return {"connected": False}
-
-
-@router.post("/test")
-async def test_printer_connection(
-    ip_address: str,
-    serial_number: str,
-    access_code: str,
-    _=RequirePermission(Permission.PRINTERS_CREATE),
-):
-    """Test connection to a printer without saving."""
-    result = await printer_manager.test_connection(
-        ip_address=ip_address,
-        serial_number=serial_number,
-        access_code=access_code,
-    )
-    return result
 
 
 @router.post("/diagnostic", response_model=PrinterDiagnosticResult)
@@ -2045,6 +2142,19 @@ async def clear_mqtt_logs(
 # (#2533). Refuse the command rather than let the caller believe it landed.
 _DRYING_SCREEN_ONLY_DETAIL = "This printer only supports AMS drying from its own screen"
 
+# Maximum drying temperature per AMS unit type — BS ``AMSDryControl.cpp``:
+#   { N3F, 45, 65, "AMS2" }, { N3S, 45, 85, "AMS-S" }
+# Keyed by the module-name prefix the printer reports (``_AMS_MODULE_PREFIXES``).
+#
+# Only the AMS HT reaches 85; the fallback is the lower one, which is also what
+# ``PrintersPage.tsx`` has always offered (``moduleType === 'n3s' ? 85 : 65``).
+# The backend was the flat 45-85, so the two disagreed about the same unit and
+# the more permissive answer was the one an API key got. Erring low costs a
+# retry once the module name arrives; erring high drives a spool twenty degrees
+# past what its unit is rated for.
+_AMS_DRY_MAX_TEMP = {"n3f": 65, "n3s": 85}
+_AMS_DRY_MAX_TEMP_FALLBACK = 65
+
 
 @router.post("/{printer_id}/drying/start")
 async def start_drying(
@@ -2071,8 +2181,22 @@ async def start_drying(
     if not supports_drying(printer.model, firmware):
         raise HTTPException(400, "Drying not supported for this printer model or firmware version")
 
-    if temp < 45 or temp > 85:
-        raise HTTPException(400, "Temperature must be 45-85°C")
+    # Per-unit ceiling, not one flat range. BS ``AMSDryControl.cpp`` keeps a
+    # table keyed by AMS type:
+    #     N3F (AMS 2 Pro) 45-65 · N3S (AMS HT) 45-85
+    # and warns when the entered value exceeds the unit's own maximum. Our flat
+    # 45-85 let an AMS 2 Pro be asked for 85 °C — twenty degrees above what that
+    # unit is rated to do, which is not a harmless over-permission when the
+    # thing being heated is a spool of plastic.
+    #
+    # The unit's ``module_type`` comes from the module name the printer reports
+    # (see ``_AMS_MODULE_PREFIXES``): "n3f" / "n3s" / "ams".
+    target_ams = find_ams_unit(live_state.raw_data if live_state else None, ams_id)
+
+    module_type = str((target_ams or {}).get("module_type") or "").lower()
+    max_temp = _AMS_DRY_MAX_TEMP.get(module_type, _AMS_DRY_MAX_TEMP_FALLBACK)
+    if temp < 45 or temp > max_temp:
+        raise HTTPException(400, f"Temperature must be 45-{max_temp}°C for this AMS unit")
     if duration < 1 or duration > 24:
         raise HTTPException(400, "Duration must be 1-24 hours")
 
@@ -2080,7 +2204,6 @@ async def start_drying(
     # firmware silently ignores the command — #971) and backfill an empty
     # filament field from the first loaded tray so the printer doesn't reject
     # the payload.
-    target_ams = find_ams_unit(live_state.raw_data if live_state else None, ams_id)
     if target_ams is not None:
         blocker = first_drying_blocking_reason(target_ams)
         if blocker is not None:
@@ -2133,77 +2256,6 @@ async def stop_drying(
 # ============================================
 
 
-@router.post("/{printer_id}/print-options")
-async def set_print_option(
-    printer_id: int,
-    module_name: str,
-    enabled: bool,
-    print_halt: bool = True,
-    sensitivity: str = "medium",
-    _=RequirePermission(Permission.PRINTERS_CONTROL),
-    db: AsyncSession = Depends(get_db),
-):
-    """Set an AI detection / print option on the printer.
-
-    Valid module_name values:
-    - spaghetti_detector: Spaghetti detection
-    - first_layer_inspector: First layer inspection
-    - printing_monitor: AI print quality monitoring
-    - buildplate_marker_detector: Build plate marker detection
-    - allow_skip_parts: Allow skipping failed parts
-    """
-    result = await db.execute(select(Printer).where(Printer.id == printer_id))
-    printer = result.scalar_one_or_none()
-    if not printer:
-        raise HTTPException(404, "Printer not found")
-
-    # re-Connect MQTT if stalled
-    if not await printer_manager.ensure_fresh_connection_for_printer(printer):
-        raise HTTPException(500, "Can`t re-connect printer MQTT")
-
-    client = printer_manager.get_client(printer_id)
-    if not client or not client.state.connected:
-        raise HTTPException(400, "Printer not connected")
-
-    # Validate module_name
-    valid_modules = [
-        "spaghetti_detector",
-        "first_layer_inspector",
-        "printing_monitor",
-        "buildplate_marker_detector",
-        "allow_skip_parts",
-        "pileup_detector",
-        "clump_detector",
-        "airprint_detector",
-        "auto_recovery_step_loss",
-    ]
-    if module_name not in valid_modules:
-        raise HTTPException(400, f"Invalid module_name. Must be one of: {valid_modules}")
-
-    # Validate sensitivity
-    valid_sensitivities = ["low", "medium", "high", "never_halt"]
-    if sensitivity not in valid_sensitivities:
-        raise HTTPException(400, f"Invalid sensitivity. Must be one of: {valid_sensitivities}")
-
-    success = client.set_xcam_option(
-        module_name=module_name,
-        enabled=enabled,
-        print_halt=print_halt,
-        sensitivity=sensitivity,
-    )
-
-    if not success:
-        raise HTTPException(500, "Failed to send command to printer")
-
-    return {
-        "success": True,
-        "module_name": module_name,
-        "enabled": enabled,
-        "print_halt": print_halt,
-        "sensitivity": sensitivity,
-    }
-
-
 # ============================================
 # Calibration
 # ============================================
@@ -2249,6 +2301,12 @@ async def start_calibration(
     client = printer_manager.get_client(printer_id)
     if not client or not client.state.connected:
         raise HTTPException(400, "Printer not connected")
+
+    if is_printer_busy(printer_id):
+        # BS marks a printing machine BUSY in its calibration picker and will
+        # not let you select it (CalibrationPanel.cpp). Every one of these
+        # routines moves the toolhead across the plate.
+        raise HTTPException(409, "Printer is busy — cannot calibrate while a job is on it")
 
     # Check that at least one option is selected
     if not any([bed_leveling, vibration, motor_noise, nozzle_offset, high_temp_heatbed, lidar, clump_pos]):
@@ -2302,7 +2360,12 @@ async def get_calibration_options(
 
     client = printer_manager.get_client(printer_id)
     live = client.state.device_cali_support if client else None
-    return resolve_device_calibrations(printer.model, live)
+    # The printer's own OTA version selects which config blocks apply. Without
+    # it the answer is the 2023 base block, where X1C carries
+    # ``support_ai_monitoring: false`` — and lidar calibration is gated on that
+    # AND the lidar flag, so the whole row was hidden on every X1C and X1.
+    firmware = client.state.firmware_version if client else None
+    return resolve_device_calibrations(printer.model, live, firmware)
 
 
 # ============================================================================
@@ -3094,9 +3157,13 @@ async def bed_jog(
 ):
     """Adjust the nozzle-bed gap by a relative distance.
 
-    Emits a short G-code sequence via MQTT, mirroring Bambu Studio's own jog
-    byte-for-byte (``DevAxis::Ctrl_Axis``, BS ``DeviceCore/DevAxisCtrl.cpp:49``,
-    published over the same ``gcode_line`` transport we use).
+    A thin wrapper over ``move_axis("Z", …)``, kept because its contract is the
+    nozzle-bed GAP rather than an axis — which is the question the card asks.
+
+    ⚠️ This used to send its own copy of the sequence at ``F600`` while claiming
+    to mirror BS "byte-for-byte". The sequence did match; the feedrate did not
+    (BS drives Z at 900), and BS offers fixed 1 mm / 10 mm steps where this takes
+    any distance. Both are now BS's — see ``DevAxis::Ctrl_Axis``.
 
     Soft-endstop policy (upstream #2579, adapted). The printer's software travel
     limits are the only thing between a jog button and a bed crash. Bambu's own
@@ -3136,26 +3203,180 @@ async def bed_jog(
     if not client:
         raise HTTPException(400, "Printer not connected")
 
-    # Model-aware direction flip — see docstring for the physics.
-    z_distance = -distance if is_bed_slinger(printer.model) else distance
+    if is_printer_busy(printer_id):
+        # Moving the bed under a running or paused print destroys it. The
+        # frontend already hides the control, but this route is reachable by
+        # API key and by a tab opened before the print started.
+        raise HTTPException(409, "Printer is busy — cannot jog while a job is on it")
 
-    # Byte-for-byte BS's jog sequence (DevAxisCtrl.cpp:49): push the endstop
-    # state, turn all three soft endstops ON, bracket the relative move in
-    # push/pop ref-mode, then pop the endstop state back. Never emit M211 S0.
-    lines = [
-        "M211 S",
-        "M211 X1 Y1 Z1",
-        "M1002 push_ref_mode",
-        "G91",
-        f"G1 Z{z_distance:.2f} F600",
-        "M1002 pop_ref_mode",
-        "M211 R",
-    ]
-
-    if not client.send_gcode("\n".join(lines)):
+    # One implementation for every axis — ``BambuMQTTClient.move_axis`` mirrors
+    # ``DevAxis::Ctrl_Axis``, including the bed-slinger flip described above and
+    # the choice between the g-code sequence and ``xyz_ctrl``.
+    if not client.move_axis("Z", distance):
         raise HTTPException(500, "Failed to send bed-jog command")
 
     return {"success": True, "message": f"Bed jog {distance:+.1f} mm sent"}
+
+
+@router.post("/{printer_id}/jog")
+async def jog_axis(
+    printer_id: int,
+    axis: str = Query(..., description="Which axis: x | y | z | e"),
+    distance: float = Query(..., description="Signed millimetres. On Z and E, negative is the UI's 'up'."),
+    extruder_index: int = Query(0, ge=0, le=1, description="E only: 0 = main, 1 = deputy"),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Move one axis by hand — BambuStudio's ``Ctrl_Axis``, gates included.
+
+    ⚠️ **X and Y are refused when the printer is not homed; Z is not.** That
+    asymmetry is BS's own and worth keeping straight: ``on_axis_ctrl_xy`` checks
+    ``IsAxisAtHomeX/Y`` *before* moving and returns without publishing, while the
+    Z handlers call ``Ctrl_Axis`` first and only then pop a recenter dialog — the
+    move has already gone. So refusing X/Y here is parity, and the stricter
+    not-homed modal the frontend puts in front of Z remains our own deliberate
+    divergence (an HTTP surface reachable from another room is not a desktop
+    window in front of the machine).
+
+    ⚠️ **The extruder is refused below 170 °C.** BS's own threshold; cold
+    extrusion grinds a flat onto the filament and packs the gear teeth.
+    """
+    axis = axis.lower()
+    if axis not in ("x", "y", "z", "e"):
+        raise HTTPException(400, "axis must be one of: x, y, z, e")
+    if distance == 0 or abs(distance) > 200:
+        raise HTTPException(400, "Distance must be non-zero and <= 200 mm")
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    if not client or not client.state.connected:
+        raise HTTPException(400, "Printer not connected")
+
+    if is_printer_busy(printer_id):
+        # Moving anything under a running or paused print destroys it. The
+        # frontend hides the controls, but this route is reachable by API key
+        # and by a tab opened before the print started.
+        raise HTTPException(409, "Printer is busy — cannot move an axis while a job is on it")
+
+    if axis in ("x", "y") and not client.state.axis_at_home.get(axis, True):
+        raise HTTPException(409, f"{axis.upper()} axis is not homed — run Auto Home first")
+
+    if axis == "e":
+        if extruder_index == 1 and not client._is_dual_nozzle:
+            raise HTTPException(400, "This printer has only one extruder")
+        temps = client.state.temperatures or {}
+        current = temps.get("nozzle_2" if extruder_index == 1 else "nozzle")
+        if current is None or current < EXTRUDER_MIN_TEMP_C:
+            raise HTTPException(
+                409,
+                f"Nozzle is below {EXTRUDER_MIN_TEMP_C:.0f} °C — heat it before moving filament",
+            )
+        if not client.extruder_control(distance, extruder_index):
+            raise HTTPException(500, "Failed to send extruder command")
+        return {"success": True, "axis": axis, "distance": distance, "extruder_index": extruder_index}
+
+    if not client.move_axis(axis.upper(), distance):
+        raise HTTPException(500, f"Failed to move {axis.upper()} axis")
+
+    return {"success": True, "axis": axis, "distance": distance}
+
+
+@router.post("/{printer_id}/timelapse/check-storage")
+async def check_timelapse_storage(
+    printer_id: int,
+    total_layer: int = Query(..., ge=1, description="Layer count of the print about to start"),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ask the printer whether there is room for this print's timelapse.
+
+    ⚠️ **The answer does not come back in a reply.** BambuStudio's
+    ``ipcam_get_media_info`` is a nudge — the printer republishes
+    ``device.cam.tl_*_free_kb`` in its status, which is where the figure is read
+    from. So this returns the capability as currently known and the caller
+    re-reads the status a moment later, rather than pretending to be a query.
+    """
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    if not client or not client.state.connected:
+        raise HTTPException(400, "Printer not connected")
+
+    capability = timelapse_capability_for(printer.model, client.state)
+    if not client.check_timelapse_storage(capability["storage"], total_layer):
+        raise HTTPException(500, "Failed to ask the printer about timelapse storage")
+
+    return {"success": True, **capability}
+
+
+@router.post("/{printer_id}/timelapse/delete-oldest")
+async def delete_oldest_timelapse(
+    printer_id: int,
+    total_layer: int = Query(..., ge=1, description="Layer count of the print about to start"),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Drop the oldest recording to make room — the "Confirm & Print" branch of
+    BambuStudio's low-storage dialog.
+
+    ⚠️ Deletes a file on the printer, and the printer chooses which one. Offered
+    only where the machine has internal timelapse storage, because that is the
+    only place this manages.
+    """
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    if not client or not client.state.connected:
+        raise HTTPException(400, "Printer not connected")
+
+    capability = timelapse_capability_for(printer.model, client.state)
+    if not capability.get("supports_internal"):
+        raise HTTPException(409, "This printer has no internal timelapse storage to manage")
+
+    if not client.delete_oldest_timelapse(capability["storage"], total_layer):
+        raise HTTPException(500, "Failed to delete the oldest timelapse")
+
+    return {"success": True, "storage": capability["storage"]}
+
+
+@router.post("/{printer_id}/disable-steppers")
+async def disable_steppers(
+    printer_id: int,
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Release the motors so the toolhead can be pushed by hand (``M84``).
+
+    ⚠️ Releasing Z drops whatever the axis was holding. On a bed-on-Z machine
+    that is the bed; on a bed-slinger it is the toolhead. Refused during a print
+    for the same reason a jog is.
+    """
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    if not client or not client.state.connected:
+        raise HTTPException(400, "Printer not connected")
+
+    if is_printer_busy(printer_id):
+        raise HTTPException(409, "Printer is busy — cannot release the motors while a job is on it")
+
+    if not client.disable_steppers():
+        raise HTTPException(500, "Failed to release the motors")
+
+    return {"success": True}
 
 
 @router.post("/{printer_id}/home-axes")
@@ -3199,6 +3420,25 @@ async def home_axes(
     if not client:
         raise HTTPException(400, "Printer not connected")
 
+    if is_printer_busy(printer_id):
+        # ⚠️ We are STRICTER than BambuStudio here, deliberately.
+        #
+        # BS does not refuse a mid-print home — it degrades one
+        # (``DevAxis::Ctrl_GoHome``):
+        #
+        #     is_in_printing() ? publish_gcode("G28 X\n") : publish_gcode("G28 \n")
+        #
+        # Homing X alone is safe mid-print because the bed never moves. This
+        # endpoint has no such mode: it always sends a bare ``G28`` on purpose
+        # (see the docstring — ``G28 Z`` skipped the toolhead park and drove the
+        # bed into the head on H2C, #1052), and a bare G28 mid-print parks the
+        # toolhead and re-homes every axis under a running job.
+        #
+        # So the honest answer is a refusal, not a degraded command we do not
+        # implement. An X-only mid-print home would be a new capability, not a
+        # guard, and belongs with the rest of the motion work.
+        raise HTTPException(409, "Printer is busy — cannot home while a job is on it")
+
     if not client.send_gcode("G28"):
         raise HTTPException(500, "Failed to send home command")
 
@@ -3231,6 +3471,207 @@ async def set_chamber_light(
         raise HTTPException(500, "Failed to control chamber light")
 
     return {"success": True, "message": f"Chamber light {'on' if on else 'off'}"}
+
+
+@router.post("/{printer_id}/fan-speed")
+async def set_fan_speed(
+    printer_id: int,
+    part_id: int = Query(..., description="Airduct part id as reported in status.airduct_fans"),
+    percent: int = Query(..., ge=0, le=100, description="Fan speed, 0-100 %"),
+    confirm: bool = Query(False, description='Acknowledge the mid-print warning (BS "Change Anyway")'),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set one airduct fan's speed.
+
+    Addressed by the part id the status reports, not by a name. The same id is a
+    different fan on different models — part 10 is the left auxiliary on a P2S
+    and the right one on an X2D — so a name in the API would have to be resolved
+    back to an id anyway, and the resolution differs per model. The client
+    speaks whichever wire protocol this printer uses; see
+    ``BambuMQTTClient.set_fan_speed``.
+    """
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    if not await printer_manager.ensure_fresh_connection_for_printer(printer):
+        raise HTTPException(500, "Can`t re-connect printer MQTT")
+
+    client = printer_manager.get_client(printer_id)
+    if not client or not client.state.connected:
+        raise HTTPException(400, "Printer not connected")
+
+    # Refuse an id this printer never reported rather than sending it. The parts
+    # list is the hardware inventory, so an unknown id is a fan that is not
+    # fitted — and a command for it would be accepted and do nothing.
+    if part_id not in airduct_parts_effective(client.state, printer.model):
+        raise HTTPException(400, f"Printer does not report a fan with part id {part_id}")
+    # Two different refusals, because they are two different situations for
+    # whoever is looking: the mode holds this fan off, or the firmware is
+    # driving it. Answering "forced off" for an auto fan would send someone
+    # looking for a mode setting that is not the cause.
+    _control = airduct_fan_control(client.state, part_id)
+    if _control == FAN_OFF:
+        raise HTTPException(409, "This fan is forced off by the current airduct mode")
+    if _control != FAN_CTRL:
+        raise HTTPException(409, "This fan is driven automatically in the current airduct mode")
+
+    # BS warns before changing a fan mid-print — "Changing fan speed during
+    # printing may affect print quality", with a "Change Anyway" button
+    # (``FanOperate::check_printing_state``). It is a warning, not a refusal, so
+    # this is overridable rather than absolute.
+    #
+    # It still has to live here and not only in the browser: a warning that
+    # exists in one client is not a warning, and this endpoint is reachable by
+    # API key and by a tab left open since before the print started — the same
+    # reasoning as the shared busy guards.
+    if not confirm and is_printer_busy(printer_id):
+        raise HTTPException(409, "Changing fan speed during a print needs confirm=true")
+
+    if not client.set_fan_speed(part_id, percent):
+        raise HTTPException(500, "Failed to set fan speed")
+
+    return {"success": True, "part_id": part_id, "percent": percent}
+
+
+@router.post("/{printer_id}/temperature")
+async def set_temperature(
+    printer_id: int,
+    part: str = Query(..., description="Which heater: nozzle | bed | chamber"),
+    target: int = Query(..., ge=0, description="Target °C. 0 turns the heater off."),
+    extruder_index: int = Query(0, ge=0, le=1, description="Nozzle only: 0 = main, 1 = deputy"),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set one heater's target temperature.
+
+    ⚠️ **Deliberately not guarded on "printing".** Every sibling control here
+    asks for ``confirm`` mid-print, and this one must not: adjusting a nozzle or
+    bed while a print runs is ordinary tuning, and BS gates none of the three on
+    print state either. A guard copied from the fans would be an obstacle in
+    front of the normal use.
+
+    The bounds come from ``BambuMQTTClient.temperature_limits`` — the same
+    answer the status snapshot publishes, so a client that bounds its input the
+    way the status told it to can never be refused here.
+    """
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    if part not in ("nozzle", "bed", "chamber"):
+        raise HTTPException(400, "part must be one of: nozzle, bed, chamber")
+
+    if not await printer_manager.ensure_fresh_connection_for_printer(printer):
+        raise HTTPException(500, "Can`t re-connect printer MQTT")
+
+    client = printer_manager.get_client(printer_id)
+    if not client or not client.state.connected:
+        raise HTTPException(400, "Printer not connected")
+
+    if part == "chamber" and not supports_chamber_heater(printer.model):
+        # BS shows the chamber field read-only unless ``SupportChamberEdit()``.
+        # A sensor is not a heater: X1C and P2S report a chamber temperature they
+        # cannot change.
+        raise HTTPException(409, "This printer has no controllable chamber heater")
+
+    if part == "nozzle":
+        if extruder_index == 1 and not client._is_dual_nozzle:
+            raise HTTPException(400, "This printer has only one nozzle")
+        # ⚠️ Only a machine that reported the bit may refuse. An absent entry
+        # means the machine cannot detect a hotend at all (A and P series), and
+        # BS defaults it to installed for exactly that reason.
+        if client.state.ext_has_nozzle.get(extruder_index) is False:
+            raise HTTPException(409, "No hotend detected on this extruder")
+
+    limits = client.temperature_limits()[part]
+    if not is_within(target, limits):
+        raise HTTPException(400, f"{part} target must be 0 (off) or between {limits[0]} and {limits[1]} °C")
+
+    if part == "nozzle":
+        sent = client.set_nozzle_temperature(target, extruder_index)
+    elif part == "bed":
+        sent = client.set_bed_temperature(target)
+    else:
+        sent = client.set_chamber_temperature(target)
+
+    if not sent:
+        raise HTTPException(500, f"Failed to set {part} temperature")
+
+    return {"success": True, "part": part, "target": target, "limits": list(limits)}
+
+
+@router.post("/{printer_id}/airduct-mode")
+async def set_airduct_mode(
+    printer_id: int,
+    mode_id: int = Query(..., description="Air-duct mode id, as listed in status.airduct_modes"),
+    submode: int = Query(-1, description='"Filter" sub-mode: 1 on, 0 off, -1 leave alone'),
+    confirm: bool = Query(False, description="Acknowledge the mid-print filtration warning"),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set the air-duct mode, and optionally its "Filter" sub-mode.
+
+    ⚠️ **The mode and the sub-mode are governed differently, and copying one
+    rule onto the other would be wrong in both directions.** BS
+    (``FanControlPopupNew``):
+
+    * changing the **mode** while printing is **refused outright** —
+      ``on_mode_changed`` shows an OK-only dialog ("The selected material only
+      supports the current fan mode, and it can't be changed during printing")
+      and ``return``\\ s without publishing. There is no "anyway";
+    * turning **filtration on** while printing is a **warning** with a "Change
+      Anyway" button, because it costs cooling rather than contradicting the
+      material. Turning it off is not warned about at all.
+
+    So this endpoint has one absolute refusal and one overridable one, and
+    ``confirm`` lifts only the second.
+    """
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    if not await printer_manager.ensure_fresh_connection_for_printer(printer):
+        raise HTTPException(500, "Can`t re-connect printer MQTT")
+
+    client = printer_manager.get_client(printer_id)
+    if not client or not client.state.connected:
+        raise HTTPException(400, "Printer not connected")
+
+    # Offer only what the printer listed. BS builds one button per entry in the
+    # reported modeList rather than from the AIR_DUCT enum, so a mode that is
+    # merely *named* in the protocol is not necessarily one this machine has.
+    available = client.state.airduct_modes or {}
+    if not available:
+        raise HTTPException(409, "This printer does not report an air duct")
+    if mode_id not in available:
+        raise HTTPException(400, f"Printer does not offer air-duct mode {mode_id}")
+
+    busy = is_printer_busy(printer_id)
+    changing_mode = mode_id != client.state.airduct_mode
+    if changing_mode and busy:
+        raise HTTPException(409, "The air-duct mode cannot be changed while a print is running")
+
+    if submode != -1:
+        if not (client.state.print_option_support or {}).get("cooling_filter"):
+            raise HTTPException(409, "This printer has no filtration sub-mode")
+        # BS shows the toggle only on the cooling mode (``UpdatePartSubMode``),
+        # so a sub-mode sent with any other one is a setting with nowhere to land.
+        if mode_id != AIRDUCT_COOLING_FILT:
+            raise HTTPException(409, "Filtration belongs to the cooling air-duct mode")
+        # Only switching it ON is warned about — filtration redirects a fan away
+        # from cooling. Switching it off gives cooling back and needs no ask.
+        if submode == 1 and busy and not confirm:
+            raise HTTPException(409, "Enabling filtration during a print needs confirm=true")
+
+    if not client.set_airduct_mode(mode_id, submode):
+        raise HTTPException(500, "Failed to set air-duct mode")
+
+    return {"success": True, "mode_id": mode_id, "submode": submode}
 
 
 @router.post("/{printer_id}/hms/clear")
@@ -3303,6 +3744,14 @@ async def execute_hms_action(
     success = client.execute_hms_action(body.print_error, body.action, body.job_id)
     if not success:
         raise HTTPException(400, "Failed to execute HMS action")
+
+    if body.action in HMS_UI_ONLY_ACTIONS:
+        # These publish nothing by design — the printer's own screen owns them.
+        # Running the ack probe below would wait 2.5 s for a pushall that was
+        # never provoked and then 502, reporting a transmission failure for
+        # something that was never a transmission. Answering honestly instead:
+        # handled here, nothing sent.
+        return {"success": True, "sent_to_printer": False, "message": "Handled in the interface"}
 
     # Give the printer time to push a status update. execute_hms_action already publishes
     # a pushall after every command, so a fresh status should arrive within ~1s; 2.5s
@@ -3538,6 +3987,23 @@ async def skip_objects(
 
     if not object_ids:
         raise HTTPException(400, "No object IDs provided")
+
+    # Both halves of BS's gate, neither of which was on the server. BS needs
+    # ``is_support_partskip`` (``fun`` bit 49 — the printer can do it) AND
+    # ``is_model_support_partskip`` (the sliced plate labelled its objects, so
+    # the g-code has markers to skip by). The second was enforced in the UI
+    # only, and the first was not decoded at all — so the endpoint published a
+    # skip to any connected printer for any plate, and firmware's answer to
+    # that is silence.
+    #
+    # Read from ``print_option_support`` rather than ``compute_printer_supports``
+    # on purpose: that dict distinguishes "reported False" from "not reported
+    # yet", and only the first is a refusal. A printer we have not heard the
+    # ``fun`` word from keeps working, as it did before this guard existed.
+    if (getattr(client.state, "print_option_support", None) or {}).get("partskip") is False:
+        raise HTTPException(409, "This printer does not support skipping objects")
+    if not client.state.skip_objects_supported:
+        raise HTTPException(409, "This plate was not sliced with object labels, so its parts cannot be skipped")
 
     # Validate object IDs exist in printable_objects
     invalid_ids = [oid for oid in object_ids if oid not in client.state.printable_objects]

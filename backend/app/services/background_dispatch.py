@@ -46,6 +46,40 @@ logger = logging.getLogger(__name__)
 # print_scheduler.py — kept duplicated to avoid coupling the two services.
 _ACTIVE_PRINT_STATES: frozenset[str] = frozenset({"PREPARE", "SLICING", "RUNNING", "PAUSE"})
 
+# The same code the printer's own screen shows, grouped the way it shows it.
+_HMS_VERIFY_FAILED_DISPLAY = "0500-0500-0001-0007"
+
+
+class PrintCommandRejectedError(RuntimeError):
+    """The printer refused the command outright — waiting will not help.
+
+    Distinguished from the ordinary "did not acknowledge" timeout because the
+    remedies are opposite. A timeout might come good on a retry; a printer
+    reporting ``HMS_MQTT_VERIFY_FAILED`` will refuse this job and every other
+    one until Developer Mode is enabled and the printer restarted, so spending
+    the rest of the dispatch window and two more 3MF uploads only burns an
+    upload slot the rest of the farm is queued behind (#2732).
+
+    A ``RuntimeError`` subclass on purpose: both dispatch paths already raise
+    ``RuntimeError`` here, so the failure is handled exactly as before — only
+    the message a user reads changes.
+    """
+
+
+def _mqtt_commands_rejected(status) -> bool:
+    """True when the printer is currently reporting that it refused a command.
+
+    Tolerates a missing status and errors carrying no ``full_code`` (the 8-char
+    ``print_error`` path builds :class:`HMSError` differently), so this is safe
+    to call on every watchdog poll.
+    """
+    from backend.app.services.bambu_mqtt import HMS_MQTT_VERIFY_FAILED
+
+    for err in getattr(status, "hms_errors", None) or []:
+        if getattr(err, "full_code", "") == HMS_MQTT_VERIFY_FAILED:
+            return True
+    return False
+
 
 async def _apply_calibrations_for_print(
     db,
@@ -223,6 +257,40 @@ async def _apply_calibrations_for_print(
                     ext_slot,
                     e,
                 )
+
+
+def _timelapse_or_off(printer_id: int, printer, requested: bool) -> bool:
+    """The timelapse flag actually sent, with the printer's own veto applied.
+
+    ⚠️ **The browser disabling the checkbox is not the guard.** This path is also
+    reached from the API, from the Telegram bot, and from a queue item created
+    hours before somebody pulled the SD card out — the same reasoning as every
+    other gate that refuses to live only in one client.
+
+    A refusal is silent by design: BambuStudio's own answer to "this printer
+    cannot record one" is to untick the box, not to abandon the print. Losing a
+    timelapse is not a reason to not print.
+    """
+    if not requested:
+        return False
+
+    from backend.app.services.printer_manager import printer_manager as _pm
+    from backend.app.utils.timelapse import capability_for
+
+    client = _pm.get_client(printer_id)
+    if client is None:
+        return requested
+
+    capability = capability_for(getattr(printer, "model", None), client.state)
+    if capability.get("can_enable"):
+        return True
+
+    logger.info(
+        "[%s] Timelapse was requested but the printer cannot record one (%s) — sending it off",
+        printer_id,
+        capability.get("reason"),
+    )
+    return False
 
 
 class DispatchJobCancelled(Exception):
@@ -883,7 +951,7 @@ class BackgroundDispatchService:
         raise RuntimeError(f"Unknown dispatch job kind: {job.kind}")
 
     async def _run_reprint_archive(self, job: PrintDispatchJob):
-        from backend.app.main import register_expected_print
+        from backend.app.main import register_expected_print, withdraw_expected_print
 
         job.outcome = {"success": False, "archive_id": None, "error": None, "cancelled": False}
 
@@ -923,6 +991,10 @@ class BackgroundDispatchService:
             # configured for this printer model).
             upload_file_path = file_path
             _patch_cleanup_dir = None
+            # Set at registration, cleared on a confirmed send, withdrawn in
+            # the finally. Initialised here so that finally cannot trip over an
+            # unbound name when the body fails before registration.
+            _unconfirmed_expected_print: tuple[int, str] | None = None
             inject_spec = await self._build_injection_spec(
                 job=job,
                 printer_model=printer_model,
@@ -1162,6 +1234,11 @@ class BackgroundDispatchService:
                     archive.id,
                     ams_mapping=job.options.get("ams_mapping"),
                 )
+                # Withdrawn in the ``finally`` unless the print command actually
+                # goes out — everything between here and ``start_print`` can still
+                # fail, and a leftover entry adopts the next print of this file
+                # into this archive for the next two hours.
+                _unconfirmed_expected_print = (job.printer_id, remote_filename)
 
                 plate_id = self._resolve_plate_id(file_path, job.options.get("plate_id"))
 
@@ -1220,7 +1297,9 @@ class BackgroundDispatchService:
                 # toolhead off the part every layer on prints the user opted out of.
                 # Finish-photo capture is now driven by the stg_cur=22 transition in
                 # bambu_mqtt.py (on_finish_photo_moment) with a FINISH-state fallback.
-                effective_timelapse = bool(job.options.get("timelapse", False))
+                effective_timelapse = _timelapse_or_off(
+                    job.printer_id, printer, bool(job.options.get("timelapse", False))
+                )
                 started = printer_manager.start_print(
                     job.printer_id,
                     remote_filename,
@@ -1234,6 +1313,10 @@ class BackgroundDispatchService:
                     nozzle_offset_cali=job.options.get("nozzle_offset_cali", False),
                     nozzle_mapping=job.options.get("nozzle_mapping"),
                 )
+
+                if started:
+                    # Confirmed send: the entry is now the printer's to resolve.
+                    _unconfirmed_expected_print = None
 
                 if not started:
                     await self._cleanup_sd_card_file(
@@ -1326,6 +1409,13 @@ class BackgroundDispatchService:
                 job.outcome = {"success": False, "archive_id": None, "error": str(e), "cancelled": False}
                 raise
             finally:
+                # An expected print whose command never went out must not linger.
+                # Same "every exit path" argument as the temp dir below, and the
+                # same single choke point: a raise, an early return, a cancel, or
+                # start_print returning False all land here.
+                if _unconfirmed_expected_print is not None:
+                    withdraw_expected_print(*_unconfirmed_expected_print)
+                    _unconfirmed_expected_print = None
                 # Patched-3MF temp dir must clean up on every exit path —
                 # cancel mid-upload otherwise leaks the temp into /tmp until
                 # process restart.
@@ -1375,7 +1465,7 @@ class BackgroundDispatchService:
             raise RuntimeError(f"Swap macro '{macro.name}' failed: {msg}")
 
     async def _run_print_library_file(self, job: PrintDispatchJob):
-        from backend.app.main import register_expected_print
+        from backend.app.main import register_expected_print, withdraw_expected_print
 
         # Seeded in case any early branch raises — keeps the outcome shape
         # consistent for queue-item callers awaiting completion_event.
@@ -1414,6 +1504,10 @@ class BackgroundDispatchService:
             # archive path above. See _maybe_inject_gcode → _build_injection_spec.
             upload_file_path = file_path
             _patch_cleanup_dir_lib = None
+            # Set at registration, cleared on a confirmed send, withdrawn in
+            # the finally. Initialised here so that finally cannot trip over an
+            # unbound name when the body fails before registration.
+            _unconfirmed_expected_print: tuple[int, str] | None = None
             inject_spec_lib = await self._build_injection_spec(
                 job=job,
                 printer_model=printer_model,
@@ -1680,6 +1774,11 @@ class BackgroundDispatchService:
                     archive.id,
                     ams_mapping=job.options.get("ams_mapping"),
                 )
+                # Withdrawn in the ``finally`` unless the print command actually
+                # goes out — everything between here and ``start_print`` can still
+                # fail, and a leftover entry adopts the next print of this file
+                # into this archive for the next two hours.
+                _unconfirmed_expected_print = (job.printer_id, remote_filename)
 
                 plate_id = self._resolve_plate_id(file_path, job.options.get("plate_id"))
 
@@ -1738,7 +1837,9 @@ class BackgroundDispatchService:
                 # toolhead off the part every layer on prints the user opted out of.
                 # Finish-photo capture is now driven by the stg_cur=22 transition in
                 # bambu_mqtt.py (on_finish_photo_moment) with a FINISH-state fallback.
-                effective_timelapse = bool(job.options.get("timelapse", False))
+                effective_timelapse = _timelapse_or_off(
+                    job.printer_id, printer, bool(job.options.get("timelapse", False))
+                )
                 started = printer_manager.start_print(
                     job.printer_id,
                     remote_filename,
@@ -1752,6 +1853,10 @@ class BackgroundDispatchService:
                     nozzle_offset_cali=job.options.get("nozzle_offset_cali", False),
                     nozzle_mapping=job.options.get("nozzle_mapping"),
                 )
+
+                if started:
+                    # Confirmed send: the entry is now the printer's to resolve.
+                    _unconfirmed_expected_print = None
 
                 if not started:
                     await self._cleanup_sd_card_file(
@@ -1875,6 +1980,13 @@ class BackgroundDispatchService:
                 job.outcome = {"success": False, "archive_id": archive.id, "error": str(e), "cancelled": False}
                 raise
             finally:
+                # An expected print whose command never went out must not linger.
+                # Same "every exit path" argument as the temp dir below, and the
+                # same single choke point: a raise, an early return, a cancel, or
+                # start_print returning False all land here.
+                if _unconfirmed_expected_print is not None:
+                    withdraw_expected_print(*_unconfirmed_expected_print)
+                    _unconfirmed_expected_print = None
                 # Patched-3MF temp dir must clean up on every exit path —
                 # cancel mid-upload otherwise leaks the temp into /tmp until
                 # process restart.
@@ -1944,6 +2056,16 @@ class BackgroundDispatchService:
                 # landed" and the dispatch job would be marked successful even
                 # though no print is running. Upstream #1370 / commit 5680f5d3.
                 return True
+            # Checked only AFTER the active-state exit above: a stale HMS left
+            # over from an earlier job must never abort a print that is visibly
+            # running. An actually-refused command leaves the printer idle, so
+            # this ordering costs the detection nothing (#2732).
+            if _mqtt_commands_rejected(state):
+                raise PrintCommandRejectedError(
+                    "The printer rejected the print command: MQTT command verification failed "
+                    f"(HMS {_HMS_VERIFY_FAILED_DISPLAY}). Enable Developer Mode on the printer, "
+                    "restart it, then start the job again."
+                )
             if (
                 not phase_a_reached
                 and pre_subtask_id is not None

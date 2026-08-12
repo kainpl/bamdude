@@ -429,4 +429,5 @@ describe('SettingsPage', () => {
       15000,
     );
   });
+
 });

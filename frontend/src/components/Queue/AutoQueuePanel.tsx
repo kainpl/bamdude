@@ -173,7 +173,7 @@ export function AutoQueuePanel() {
           const isBatch = groupItems.length > 1;
           const label = head.archive_name || head.library_file_name || `#${head.id}`;
           const targetModel = head.target_model || t('autoQueue.anyModel');
-          const targetLocation = head.target_location;
+          const targetLocation = head.target_location?.name;
           const waitingReason = head.waiting_reason;
 
           return (

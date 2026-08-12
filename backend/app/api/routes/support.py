@@ -1,6 +1,7 @@
 """Support endpoints for debug logging and support bundle generation."""
 
 import asyncio
+import gc
 import importlib.metadata
 import io
 import ipaddress
@@ -9,10 +10,12 @@ import logging
 import os
 import platform
 import re
+import time
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+import psutil
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -33,6 +36,7 @@ from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.spool import Spool
 from backend.app.models.user import User
 from backend.app.services.discovery import is_running_in_docker
+from backend.app.services.log_reader import sanitize_log_content
 from backend.app.services.network_utils import get_network_interfaces
 from backend.app.services.printer_manager import printer_manager
 from backend.app.utils.http import build_content_disposition
@@ -613,6 +617,124 @@ def _get_container_memory_limit() -> int | None:
     return None
 
 
+# Above this RSS the heap census is skipped — see _collect_process_info.
+_GC_CENSUS_RSS_LIMIT = 2 * 1024**3
+
+
+def _collect_process_info() -> dict:
+    """Snapshot this process's own resource usage, for reports about it growing.
+
+    A bundle described everything except the process it runs in, so "memory
+    climbs over days until the OOM killer fires" arrived with nothing to act on:
+    the numbers that name the mechanism only exist while it is happening, and by
+    the time anyone asks, the container has been restarted.
+
+    The figures are chosen to separate mechanisms that look identical from
+    outside:
+
+    * ``rss_bytes`` vs ``vms_bytes`` — a large virtual size against a modest
+      resident one is *address space* (thread stacks, allocator arenas), not a
+      heap full of live data. Upstream's reporter read 650 MB RSS / 12.9 GB VMS
+      as a leak; it is the opposite conclusion.
+    * ``num_threads`` — a leaked MQTT client reconnect leaves a paho network
+      thread behind, each reserving its stack. That is what inflates VMS.
+    * ``children_by_name`` — the ffmpeg-per-camera-stream leak class, which this
+      repo has hit twice (#776, #2675).
+    * ``open_files`` / ``connections`` — descriptors held by streams or sockets
+      nobody closed.
+
+    **Child command lines are deliberately not recorded, only executable names.**
+    An ffmpeg argv here carries the camera URL and with it the camera password —
+    the same reasoning as the log sanitiser. The count per name is what
+    identifies a leak; the arguments only add risk.
+
+    Every metric is independently best-effort. psutil raises on hardened kernels
+    and in restricted containers, and the bundle is *how somebody reports a
+    problem in the first place* — it has to be produced even when half the
+    numbers are unavailable.
+
+    Lands in both artefacts at once: the downloaded ZIP and the GitHub issue pack
+    share :func:`_collect_support_info`, which is the one place they do not
+    diverge.
+    """
+    out: dict = {}
+    try:
+        proc = psutil.Process()
+    except Exception:
+        return {"available": False}
+
+    out["available"] = True
+    try:
+        mem = proc.memory_info()
+        out["rss_bytes"] = mem.rss
+        out["rss_formatted"] = _format_bytes(mem.rss)
+        out["vms_bytes"] = mem.vms
+        out["vms_formatted"] = _format_bytes(mem.vms)
+    except Exception:
+        pass
+    try:
+        out["num_threads"] = proc.num_threads()
+    except Exception:
+        pass
+    try:
+        out["uptime_seconds"] = int(time.time() - proc.create_time())
+    except Exception:
+        pass
+    try:
+        out["open_files"] = len(proc.open_files())
+    except Exception:
+        pass
+    try:
+        out["connections"] = len(proc.net_connections(kind="inet"))
+    except Exception:
+        pass
+
+    try:
+        names: dict[str, int] = {}
+        for child in proc.children(recursive=True):
+            try:
+                names[child.name()] = names.get(child.name(), 0) + 1
+            except Exception:
+                names["<unknown>"] = names.get("<unknown>", 0) + 1
+        out["children_total"] = sum(names.values())
+        out["children_by_name"] = dict(sorted(names.items(), key=lambda kv: -kv[1]))
+    except Exception:
+        pass
+
+    # Live object counts by type, top 15 — the one thing RSS alone cannot say:
+    # whether the heap is growing, and with what.
+    #
+    # Skipped above _GC_CENSUS_RSS_LIMIT. ``gc.get_objects()`` materialises a
+    # list of every tracked object, so the census costs most on exactly the
+    # process that can least afford it: a bundle generated to diagnose runaway
+    # memory must not be the allocation that tips the host over. Everything that
+    # actually separates the mechanisms is collected above and unaffected, and
+    # the skip is recorded with its reason rather than silently omitted.
+    #
+    # Measured on this app rather than assumed: 461k tracked objects at 163 MiB
+    # RSS cost 175 ms end to end (35 ms to materialise, 140 ms to count). Roughly
+    # linear, so the gate caps the worst case at a couple of seconds — tolerable
+    # off the event loop, which is where the caller runs it.
+    rss = out.get("rss_bytes")
+    if rss is not None and rss > _GC_CENSUS_RSS_LIMIT:
+        out["gc_census"] = (
+            f"skipped: process is using {_format_bytes(rss)}, above the "
+            f"{_format_bytes(_GC_CENSUS_RSS_LIMIT)} limit for walking the heap"
+        )
+        return out
+    try:
+        counts: dict[str, int] = {}
+        for obj in gc.get_objects():
+            name = type(obj).__name__
+            counts[name] = counts.get(name, 0) + 1
+        out["gc_tracked_objects"] = sum(counts.values())
+        out["gc_top_types"] = dict(sorted(counts.items(), key=lambda kv: -kv[1])[:15])
+    except Exception:
+        pass
+
+    return out
+
+
 def _format_bytes(size_bytes: int) -> str:
     """Format bytes into human-readable string."""
     if size_bytes < 1024:
@@ -853,6 +975,12 @@ async def _collect_support_info() -> dict:
         "database": {},
         "printers": [],
         "settings": {},
+        # BamDude's own footprint. The only thing that makes a "memory grows
+        # over days" report triageable from the bundle rather than a round trip
+        # of shell commands. Off the event loop: the heap census walks every
+        # tracked object, and a bundle request must not stall MQTT status ingest
+        # while it does.
+        "process": await asyncio.to_thread(_collect_process_info),
     }
 
     # Docker-specific info
@@ -1235,39 +1363,17 @@ async def _collect_support_info() -> dict:
 
 
 def _sanitize_log_content(content: str, sensitive_strings: dict[str, str] | None = None) -> str:
-    """Remove sensitive data from log content."""
-    # First, replace known sensitive values (database-aware exact matching)
-    # This catches printer names, usernames, and other arbitrary user-chosen strings
-    # that regex patterns cannot detect
-    if sensitive_strings:
-        # Sort by length descending to avoid partial matches (e.g. "My Printer 1" before "My Printer")
-        for value, label in sorted(sensitive_strings.items(), key=lambda x: len(x[0]), reverse=True):
-            if len(value) < 3:
-                continue  # Skip very short strings to prevent over-redaction
-            content = re.sub(re.escape(value), label, content)
+    """Remove sensitive data from log content — see ``log_reader.sanitize_log_content``.
 
-    # Replace credentials in URLs (e.g. http://user:pass@host, rtsps://bblp:code@host)
-    content = re.sub(r"((?:https?|rtsps?)://)[^/:@\s]+:[^/@\s]+@", r"\1[CREDENTIALS]@", content)
-
-    # Replace email addresses
-    content = re.sub(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", "[EMAIL]", content)
-
-    # Replace Bambu Lab printer serial numbers (format: 00M/01D/01S/01P/03W + alphanumeric, 12-16 chars total)
-    content = re.sub(r"\b0[0-3][A-Z0-9][A-Z0-9]{9,13}\b", "[SERIAL]", content, flags=re.IGNORECASE)
-
-    # Replace IPv4 addresses (skip firmware versions like 01.09.01.00 which have leading zeros)
-    content = re.sub(
-        r"\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\b",
-        "[IP]",
-        content,
-    )
-
-    # Replace paths with usernames
-    content = re.sub(r"/home/[^/\s]+/", "/home/[user]/", content)
-    content = re.sub(r"/Users/[^/\s]+/", "/Users/[user]/", content)
-    content = re.sub(r"/opt/[^/\s]+/", "/opt/[user]/", content)
-
-    return content
+    This used to be a byte-identical copy of that function, and the duplication
+    was live: the support bundle (three call sites below) went through *this*
+    one, while the log-health scanner went through the other. Adding the LDAP-DN
+    pattern for #2681 to only one of them would have left the bundle — the file a
+    user actually emails us — still carrying the DN, which is the entire point of
+    that redaction. Kept as a thin alias rather than deleted so the call sites and
+    their tests keep their local name.
+    """
+    return sanitize_log_content(content, sensitive_strings)
 
 
 def _get_log_content(max_bytes: int = 10 * 1024 * 1024, sensitive_strings: dict[str, str] | None = None) -> bytes:

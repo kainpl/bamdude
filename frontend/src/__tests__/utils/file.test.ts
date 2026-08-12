@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatFileSize } from '../../utils/file';
+import { fileActivityAt, formatFileSize } from '../../utils/file';
 
 describe('formatFileSize', () => {
   it('returns "0 B" for 0 bytes', () => {
@@ -39,5 +39,29 @@ describe('formatFileSize', () => {
     expect(formatFileSize(1024)).toBe('1.0 KB');
     expect(formatFileSize(1048575)).toBe('1024.0 KB');
     expect(formatFileSize(1048576)).toBe('1.0 MB');
+  });
+});
+
+describe('fileActivityAt (#2680)', () => {
+  it('uses created_at for an uploaded file, which has no on-disk mtime', () => {
+    expect(fileActivityAt({ created_at: '2026-08-08T10:00:00', fs_modified_at: null })).toBe(
+      '2026-08-08T10:00:00'
+    );
+  });
+
+  it('prefers the on-disk mtime even when it is older than created_at', () => {
+    // This is the whole point. A folder scan writes the SAME created_at onto
+    // every row it discovers, so preferring the newer of the two would return
+    // the scan instant for everything and reproduce the tie the column exists
+    // to break. fs_modified_at replaces created_at; it does not compete with it.
+    expect(
+      fileActivityAt({ created_at: '2026-08-08T10:00:00', fs_modified_at: '2020-09-13T12:26:40' })
+    ).toBe('2020-09-13T12:26:40');
+  });
+
+  it('falls back when the field is absent entirely, not just null', () => {
+    // External rows scanned before m129 have no value, and an older backend
+    // omits the key — both must still produce a date rather than undefined.
+    expect(fileActivityAt({ created_at: '2026-08-08T10:00:00' })).toBe('2026-08-08T10:00:00');
   });
 });

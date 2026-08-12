@@ -217,7 +217,11 @@ class TestSliceWithProfiles:
             captured["body"] = request.content
             return httpx.Response(
                 status_code=200,
-                content=b"3MF-BYTES",
+                # A real ZIP: asked for a 3MF, a sidecar returns a 3MF
+                # container, and since #2671 anything else is refused. What
+                # this test asserts is the REQUEST it built, so the body only
+                # has to stop being a placeholder that contradicts the ask.
+                content=_zip_bytes(),
                 headers={
                     "x-print-time-seconds": "0",
                     "x-filament-used-g": "0",
@@ -401,7 +405,11 @@ class TestSliceWithoutProfilesEmbeddedSettings:
             captured["body"] = request.content
             return httpx.Response(
                 status_code=200,
-                content=b"; gcode-from-embedded",
+                # export_3mf=True below, so a real sidecar answers with a 3MF
+                # container, not gcode text. Since #2671 a non-ZIP body under
+                # that ask is refused; the assertions here are about the parts
+                # the request omits.
+                content=_zip_bytes(),
                 headers={
                     "x-print-time-seconds": "100",
                     "x-filament-used-g": "5",
@@ -468,3 +476,90 @@ class TestProgressPollerLoop:
         await asyncio.gather(task, return_exceptions=True)
         assert snapshots, "poller never forwarded a snapshot"
         assert snapshots[0]["stage"] == "Generating G-code"
+
+
+def _zip_bytes() -> bytes:
+    """A minimal but genuine ZIP — what a real 3MF container looks like."""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("3D/3dmodel.model", "<model/>")
+    return buf.getvalue()
+
+
+class TestSliceOutputValidation:
+    """A 200 with a body that is not a 3MF must not be stored (upstream #2671).
+
+    A stock or misconfigured sidecar, a proxy interstitial, a truncated response
+    or a CLI crash all answer 200 with a few bytes. Those bytes used to be
+    written out as a .gcode.3mf, queued, and FTP'd — so the failure surfaced at
+    the printer instead of at the slice.
+    """
+
+    def _handler(self, body: bytes, status: int = 200):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(status_code=status, content=body)
+
+        return handler
+
+    def _service(self, body: bytes, status: int = 200) -> SlicerApiService:
+        return SlicerApiService("http://sidecar:3000", client=_mock_client(self._handler(body, status)))
+
+    async def _slice_with(self, service, **kw):
+        return await service.slice_with_profiles(
+            model_bytes=b"solid Cube\n",
+            model_filename="Cube.stl",
+            printer_profile_json='{"name": "p"}',
+            process_profile_json='{"name": "pr"}',
+            filament_profile_jsons=['{"name": "f"}'],
+            **kw,
+        )
+
+    async def _slice_without(self, service, **kw):
+        return await service.slice_without_profiles(
+            model_bytes=b"solid Cube\n",
+            model_filename="Cube.stl",
+            **kw,
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_zip_body_is_rejected_when_a_3mf_was_requested(self):
+        service = self._service(b"<html>502 Bad Gateway</html>")
+        with pytest.raises(SlicerApiServerError) as exc:
+            await self._slice_with(service, export_3mf=True)
+        assert "not a valid" in str(exc.value)
+
+    @pytest.mark.asyncio
+    async def test_the_28_byte_blob_from_the_report_is_rejected(self):
+        service = self._service(b"x" * 28)
+        with pytest.raises(SlicerApiServerError) as exc:
+            await self._slice_with(service, export_3mf=True)
+        assert "28 bytes" in str(exc.value)
+
+    @pytest.mark.asyncio
+    async def test_a_real_zip_passes(self):
+        payload = _zip_bytes()
+        result = await self._slice_with(self._service(payload), export_3mf=True)
+        assert result.content == payload
+
+    @pytest.mark.asyncio
+    async def test_plain_gcode_is_untouched_when_no_3mf_was_requested(self):
+        """The guard must not fire on the gcode path, which is not a ZIP."""
+        result = await self._slice_with(self._service(b"; G-CODE\nG28\n"))
+        assert result.content == b"; G-CODE\nG28\n"
+
+    @pytest.mark.asyncio
+    async def test_the_profile_less_path_validates_too(self):
+        """Both entry points share one helper — that is why it exists."""
+        service = self._service(b"nope")
+        with pytest.raises(SlicerApiServerError):
+            await self._slice_without(service, export_3mf=True)
+
+    @pytest.mark.asyncio
+    async def test_413_names_the_proxy_not_the_slicer(self):
+        service = self._service(b"<html>413</html>", status=413)
+        with pytest.raises(SlicerInputError) as exc:
+            await self._slice_with(service, export_3mf=True)
+        assert "client_max_body_size" in str(exc.value)

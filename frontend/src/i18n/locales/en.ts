@@ -106,6 +106,12 @@ export default {
     left: 'Left',
     right: 'Right',
     showingRange: 'Showing {{from}}-{{to}} of {{total}}',
+    showingRangeItems: 'Showing {{from}}-{{to}} of {{total}} {{items}}',
+    pageOf: 'Page {{page}} of {{total}}',
+    firstPage: 'First page',
+    previousPage: 'Previous page',
+    nextPage: 'Next page',
+    lastPage: 'Last page',
     show: 'Show',
     total: 'total',
     history: 'History',
@@ -169,6 +175,19 @@ export default {
 
   // Printers page
   printers: {
+    ungrouped: 'Ungrouped',
+    locations: {
+      parent: 'Inside',
+      noParent: 'Top level',
+      hasChildren: 'holds {{count}} location(s)',
+      title: 'Locations',
+      addShort: '+ New',
+      add: 'Add location',
+      empty: 'No locations yet. Add one to group printers and sensors by where they stand.',
+      inUse: 'This location is still in use. Move what is in it first.',
+      nameTaken: 'A location with this name already exists.',
+      counts: '{{printers}} printers · {{sensors}} sensors · {{queued}} queued'
+    },
     title: 'Printers',
     addPrinter: 'Add Printer',
     addPreflight: {
@@ -274,6 +293,33 @@ export default {
       nozzle: 'Nozzle',
       bed: 'Bed',
       chamber: 'Chamber'
+    },
+    motion: {
+      title: 'Motion Control',
+      toolhead: 'Toolhead',
+      gap: 'Nozzle-bed gap',
+      extruder: 'Extruder',
+      home: 'Auto Home',
+      bed: 'Bed',
+      main: 'Main',
+      auxiliary: 'Auxiliary',
+      retract: 'Retract',
+      extrude: 'Extrude',
+      releaseMotors: 'Release motors',
+      notHomed: 'The toolhead is not homed — X and Y moves are refused until you run Auto Home.',
+      printingBlocked: 'A job is on this printer. Moving anything now would ruin it.',
+      tooCold: 'Nozzle is {{temp}} °C. Heat it to at least 170 °C before moving filament.'
+    },
+    temperatureControl: {
+      title: 'Temperature Control',
+      nozzleLeft: 'Nozzle L',
+      nozzleRight: 'Nozzle R',
+      turnOff: 'Off',
+      increase: 'Increase temperature',
+      decrease: 'Decrease temperature',
+      noHotend: 'No hotend detected on this extruder',
+      sensorOnly: 'This printer reads the chamber temperature but cannot change it',
+      noPermission: 'You do not have permission to control this printer'
     },
     heaterHistory: {
       title: 'Heater History',
@@ -514,6 +560,15 @@ export default {
       connected: 'Connected',
       offline: 'Offline'
     },
+    // AI failure detection badge on the printer card
+    ai: {
+      idle: 'AI Idle',
+      safe: 'AI Safe',
+      warning: 'AI Warning',
+      failure: 'AI Failure',
+      idleTitle: 'AI failure detection is on for this printer; nothing is being watched right now.',
+      scoreTitle: 'AI failure detection — current score {{score}}. Click for the full status and history.'
+    },
     plateStatus: {
       markCleared: 'Mark plate as cleared',
       cleared: 'Plate Clear',
@@ -720,7 +775,53 @@ export default {
     fans: {
       partCooling: 'Part Cooling Fan',
       auxiliary: 'Auxiliary Fan',
-      chamber: 'Chamber Fan'
+      chamber: 'Chamber Fan',
+      // BambuStudio's own names for the airduct fans, per model and per mode.
+      // The same part id is a different fan on a P2S and an X2D, so these are
+      // never chosen by id — the backend resolves the name from the mirrored
+      // printer config and sends the key. A name we do not recognise arrives as
+      // BS's English rather than as a missing key.
+      leftAux: 'Left Auxiliary Fan',
+      rightAux: 'Right Auxiliary Fan',
+      leftFilter: 'Left Filter Fan',
+      rightFilter: 'Right Filter Fan',
+      // Why a fan offers no speed control. BambuStudio writes these in place of
+      // the slider; our badge is 40 px wide, so they are the tooltip instead.
+      forcedOff: 'Held off by the current air duct mode',
+      autoDriven: 'Driven automatically in the current air duct mode',
+      turnOff: 'Turn off',
+      printingWarningTitle: 'Change fan speed while printing?',
+      printingWarningMessage:
+        'Changing fan speed during a print may affect print quality. Asked once per printer for this session.',
+      changeAnyway: 'Change anyway',
+    },
+    firmwareBlocked: {
+      badge: 'Firmware',
+      consistency: 'Firmware versions disagree — the printer needs a repair update before it will print',
+      forced: 'The printer requires a firmware update before it will continue',
+    },
+    airduct: {
+      title: 'Air duct',
+      mode: 'Mode',
+      fans: 'Fans',
+      fanOff: 'Off',
+      fanAuto: 'Auto',
+      filter: 'Filtration',
+      filterHint: 'Redirects one fan to filter chamber air, which reduces cooling.',
+      filterPrintingWarning:
+        'Enabling filtration during a print reduces cooling and may affect quality.',
+      modeLockedWhilePrinting:
+        'The air duct mode cannot be changed while a print is running — the loaded material depends on it.',
+      // BambuStudio's own mode names (enum AIR_DUCT). A printer offers only the
+      // ids it reports, so an unlisted one never renders.
+      modes: {
+        0: 'Cooling',
+        1: 'Heating',
+        2: 'Exhaust',
+        3: 'Full cooling',
+      },
+      leftHeating: 'Left Heating Fan',
+      rightHeating: 'Right Heating Fan'
     },
     // HMS errors
     clickToViewHmsErrors: 'Click to view HMS errors',
@@ -852,6 +953,7 @@ export default {
       exportFailed: 'Export failed'
     },
     menu: {
+      saveToLibrary: 'Save to library',
       retryDownload: 'Retry 3MF download',
       print: 'Print',
       schedule: 'Schedule',
@@ -896,6 +998,7 @@ export default {
       plateLabel: 'Plate {{index}}',
     },
     permission: {
+      noSaveToLibrary: 'You do not have permission to add files to the library',
       noReprint: 'You do not have permission to reprint this archive',
       noAddToQueue: 'You do not have permission to add to queue',
       noUpdateArchives: 'You do not have permission to update archives',
@@ -903,6 +1006,16 @@ export default {
       noDownload: 'You do not have permission to download archives',
       noCopyLink: 'You do not have permission to copy download links',
       noDelete: 'You do not have permission to delete this archive'
+    },
+    saveToLibrary: {
+      title: 'Save to library',
+      description: 'Copies the 3MF of "{{name}}" into your library, reading its metadata the same way an upload would.',
+      folder: 'Folder',
+      rootFolder: 'Library root',
+      action: 'Save',
+      saved: 'Saved to the library.',
+      viewInLibrary: 'View in library',
+      alreadyThere: 'This file is already in the library — the existing copy was kept.'
     },
     card: {
       previousPlate: 'Previous plate',
@@ -933,6 +1046,7 @@ export default {
       layers: '{{count}} layers',
       object: '{{count}} object',
       objects: '{{count}} objects',
+      defectiveTitle: '{{count}} defective part(s)',
       slicedFor: 'Sliced for {{model}}',
       uploadedBy: 'Uploaded By',
       noPermissionReprint: 'You do not have permission to reprint',
@@ -1009,6 +1123,9 @@ export default {
       matchAllColors: 'Match ALL selected colors',
       // Empty state
       archivesAutoCreated: 'Archives are created automatically when prints complete',
+      // Just the noun — the count is placed by the pagination bar's own phrase.
+      archiveCount_one: 'archive',
+      archiveCount_other: 'archives',
       // Printer name fallbacks
       unknownPrinter: 'Unknown',
       slicedFor: 'Sliced for {{model}}',
@@ -1036,7 +1153,8 @@ export default {
       printTime: 'Print time',
       estimated: 'Estimated',
       actual: 'Actual',
-      accuracy: 'Accuracy'
+      accuracy: 'Accuracy',
+      sortBy: 'Sort by'
     }
   },
 
@@ -1138,6 +1256,7 @@ export default {
 
   // QueueCard component
   queueCard: {
+    ungrouped: 'Ungrouped',
     status: {
       idle: 'Idle',
       printing: 'Printing',
@@ -1232,7 +1351,6 @@ export default {
     noPending: 'No pending items',
     pending: 'pending',
     manualStart: 'Manual',
-    ungrouped: 'Ungrouped'
   },
 
   backgroundDispatch: {
@@ -1356,6 +1474,11 @@ export default {
     longestPrint: 'Longest Print',
     heaviestPrint: 'Heaviest Print',
     mostExpensivePrint: 'Most Expensive',
+    // Breakdown under the Most Expensive record. Shown only when a smart plug
+    // measured the electricity, so the total can be reconciled against the
+    // print's own page instead of reading as a wrong filament cost.
+    filamentCostShort: 'filament',
+    energyCostShort: 'power',
     busiestDay: 'Busiest Day',
     successStreak: 'Success Streak',
     streakPrint: 'consecutive print',
@@ -1547,6 +1670,128 @@ export default {
 
   // Settings page
   settings: {
+    zigbee: {
+      removedLeft: 'Device removed from the network.',
+      removedForced: 'Device removed here, but it never answered — it keeps the network key and may rejoin when powered on. Reset it at the device to be sure.',
+      title: 'Zigbee coordinator',
+      description:
+        'BamDude drives the Zigbee dongle itself — no Home Assistant and no Zigbee2MQTT needed.',
+      enabled: 'Run the Zigbee coordinator',
+      transport: 'Connection',
+      transport_ethernet: 'Ethernet',
+      transport_usb: 'USB',
+      path: 'Address',
+      pathEthernetHint: 'Host and port of the dongle, for example 192.168.1.50:6638.',
+      pathUsbHint: 'Pick the serial port the dongle is plugged into.',
+      pickPort: 'Choose a port…',
+      noSerialPorts: 'No serial ports found on this machine.',
+      refreshPorts: 'Refresh the port list',
+      connect: 'Connect',
+      reconnect: 'Reconnect',
+      channel: 'channel',
+      pairDevice: 'Pair a device',
+      pairingCountdown: 'Ready to pair for {{seconds}}s — press and hold the button on the plug.',
+      pairingJoining: 'A device is joining…',
+      pairingPaired: '{{name}} paired.',
+      pairingRejected:
+        '{{name}} was rejected and removed from the network: BamDude can neither switch it nor read anything from it. Smart plugs and sensors only.',
+      pairedDevices: 'Paired devices',
+      noPairedDevices: 'Nothing paired yet.',
+      boundTo: 'bound to {{name}}',
+      // A sensor is adopted too, and its entity is not a plug -- so this says
+      // "in use" without claiming to know by what.
+      inUse: 'already added',
+      capabilityEnergy: 'switching + energy',
+      capabilitySwitchOnly: 'switching only',
+      capabilitySensor: 'measures {{what}}',
+      capabilityUnsupported: 'not supported',
+      sensors: {
+        title: 'Sensors',
+        notOnNetwork: 'Not on the network',
+        notOnNetworkHint: 'Its name and place are kept. Readings return when it does.',
+        notAnswering: 'Not answering',
+        battery: 'Battery {{percent}} %',
+        batteryVoltage: '{{volts}} V',
+        mainsPowered: 'Mains powered',
+        add: 'Add sensor',
+        empty: 'No sensors added yet.',
+        emptyHint: 'Pair one above, then add it here.',
+        radioDown:
+          'The Zigbee radio is down, so no readings are coming in. Your sensors are listed with what was last known about them.',
+        adoptTitle: 'Add a sensor',
+        editTitle: 'Edit sensor',
+        device: 'Device',
+        pickDevice: 'Choose a paired sensor…',
+        noFreeDevices: 'Every paired sensor has already been added. Pair another one above.',
+        nameLabel: 'Name',
+        unbindTitle: 'Remove {{name}} from the list?',
+        unbindBody:
+          'It stays on the Zigbee network and keeps its settings, so adding it again restores what it had. Taking it off the network is a separate action, in the coordinator card above, and needs the device pairing again by hand.',
+        unbindConfirm: 'Remove from the list',
+      },
+      thresholds: {
+        title: 'Alert limits',
+        hint: 'Leave a field empty for no limit. The margin is how far back inside the limit a reading must come before the alert clears.',
+        min: 'minimum',
+        max: 'maximum',
+        deadband: 'margin',
+      },
+      measurement: {
+        temperature: 'temperature',
+        humidity: 'humidity',
+        co2: 'CO₂',
+        pm25: 'PM2.5',
+        battery: 'battery',
+        battery_voltage: 'battery voltage',
+      },
+      removeDevice: 'Remove device',
+      addAsSensor: 'Add as sensor',
+      reporting: {
+        pending: 'Not confirmed yet',
+        unknown: 'Not asked yet',
+        refused: 'The device refused',
+        unanswered: 'The device did not answer',
+        mismatch: 'The device stored something else',
+        verified: 'Confirmed by the device',
+        unchecked: 'Accepted, not verified',
+        title: 'Reporting settings',
+        minInterval: 'Shortest gap',
+        maxInterval: 'Longest silence',
+        change: 'Change by',
+        seconds: 's',
+        minutesHint: '≈ {{minutes}} min',
+        poll: 'Poll every',
+        pollUnsupported:
+          'This device sleeps between reports, so it cannot be polled. It reports on its own — change how often instead.',
+        staleAfter: 'Trust a reading for',
+        reset: 'Return to the farm defaults',
+        savedAwake: 'Saved and applied.',
+        savedAsleep: 'Saved. It will take effect when the device next wakes.',
+        storedInstead: 'stored {{value}} s',
+        storedDifferent: 'stored a different amount',
+      },
+      removeDeviceConfirm:
+        'Remove {{name}} from the Zigbee network? It will stop responding until you pair it again by hand.',
+      radioDownShort: 'The Zigbee radio is down',
+      disconnect: 'Disconnect',
+      radioChangedTitle: 'This is a different Zigbee dongle',
+      radioChangedBody:
+        'A dongle carries its network with it, so the devices paired to the previous one ({{previous}}) are not on this one and will show as unreachable. Plug the old dongle back in to get them, or restore a backup taken while it was in use — backups include the Zigbee network.',
+      forgetTitle: 'Forget the Zigbee network',
+      forgetHint:
+        'Erases the network key. Every plug then has to be paired again by hand, at the plug. Disconnect above just stops the radio and costs nothing.',
+      forgetAction: 'Forget network',
+      forgetConfirm:
+        'Erase this Zigbee network? The devices keep believing they belong to it, so each plug must be re-paired in person, wherever it is installed. Your plugs and their settings are kept and come back on their own once re-paired. A backup taken before now can restore the network.',
+      forgetDone_one: 'Zigbee network erased. {{count}} plug is kept and will work again once re-paired.',
+      forgetDone_other: 'Zigbee network erased. {{count}} plugs are kept and will work again once re-paired.',
+      state: {
+        disabled: 'Off',
+        starting: 'Starting',
+        up: 'Connected',
+        error: 'Problem',
+      },
+    },
     title: 'Settings',
     general: 'General',
     // Tab names
@@ -1917,12 +2162,11 @@ export default {
     webhookEndpoints: 'Webhook Endpoints',
     webhookApiKeyHint: 'Use your API key in the X-API-Key header.',
     webhook: {
-      getAllStatus: 'Get all printer status',
-      getSpecificStatus: 'Get specific printer status',
-      addToQueue: 'Add to print queue',
-      pausePrint: 'Pause print',
-      resumePrint: 'Resume print',
-      stopPrint: 'Stop print'
+      queueStatus: 'Queue status for every printer, or one with ?printer_id=',
+      printerStatus: 'Status of one printer',
+      startNext: 'Start the next queued print',
+      stopPrint: 'Stop the running print',
+      cancelPrint: 'Cancel the running or paused print'
     },
     apiBrowser: 'API Browser',
     apiBrowserDescription: 'Explore and test all available API endpoints.',
@@ -2098,6 +2342,14 @@ export default {
     costTracking: 'Cost Tracking',
     printsOnly: 'Prints Only',
     totalConsumption: 'Total Consumption',
+    retention: {
+      title: 'Measurement history',
+      help: 'How long each kind of reading is kept. Older rows are removed once a day.',
+      ams: 'AMS humidity and temperature (days)',
+      printerSensors: 'Printer temperatures (days)',
+      plugPower: 'Smart plug power (days)',
+      sensors: 'Sensor readings (days)'
+    },
     dataManagement: 'Data Management',
     storageUsage: 'Storage Usage',
     storageUsageDescription: 'Breakdown of data usage by category',
@@ -2264,6 +2516,8 @@ export default {
     orcaslicerApiUrlDescription: 'Empty falls back to the SLICER_API_URL env default.',
     bambuStudioApiUrl: 'BambuStudio API URL',
     bambuStudioApiUrlDescription: 'Empty falls back to the BAMBU_STUDIO_API_URL env default.',
+    slicerStallTimeout: 'Slicer stall timeout (minutes)',
+    slicerStallTimeoutDescription: 'How long to keep waiting with no progress from the sidecar. This is not a limit on how long a model may take — a heavy model that keeps reporting runs to completion. On a sidecar that does not report progress it applies to total slicing time instead.',
     bothSlicersHint: 'When both URLs are set and reachable, the Slice modal lets you pick which slicer to use per file.',
     sidebarOrderDescription: 'Drag items in the sidebar to reorder. Reset to default order here.',
     setDefault: 'Set Default',
@@ -2299,6 +2553,8 @@ export default {
     styleGlow: 'Glow',
     styleVibrant: 'Vibrant',
     themeToggleHint: 'Toggle between dark, light, and system mode using the icon in the sidebar.',
+    progressInTitle: 'Show print progress in the browser tab',
+    progressInTitleHint: 'The soonest-finishing print\'s percentage appears in the tab title, with a matching progress ring as the tab icon. Applies to this browser only.',
     saveThumbnailsDescription: 'Extract and save preview images from 3MF files',
     captureFinishPhotoDescription: 'Take a photo from printer camera when print completes. BamDude records a brief timelapse during the print so the photo can be sourced from the moment before the bed drops; the timelapse file is kept if you enabled timelapse for this print, otherwise it is deleted automatically after the photo is captured.',
     ffmpegNotInstalled: 'ffmpeg not installed',
@@ -2441,7 +2697,7 @@ export default {
     metricsPrintsTotal: 'Total prints by result',
     metricsMore: '...and more (layers, fans, queue, filament usage)',
     // Smart Plugs
-    smartPlugsDescription: 'Connect smart plugs (Tasmota or Home Assistant) to automate power control and track energy usage for your printers.',
+    smartPlugsDescription: 'Connect smart plugs — Zigbee, Tasmota, Home Assistant, MQTT or a REST webhook — to automate power control and track energy usage for your printers.',
     allOn: 'All On',
     allOff: 'All Off',
     addSmartPlug: 'Add Smart Plug',
@@ -2511,6 +2767,10 @@ export default {
     },
     oidc: {
       title: 'SSO / OIDC Providers',
+      // #2593: this provider is declared by BAMDUDE_OIDC_* and rewritten on
+      // every boot, so its controls are absent rather than disabled.
+      envManaged: 'From environment',
+      envManagedHint: 'Configured by BAMDUDE_OIDC_* environment variables and reapplied on every restart. Edit those variables to change it; unset them to release it back to this page.',
       desc: 'Configure OpenID Connect providers to allow single sign-on via external identity providers.',
       addProvider: 'Add Provider',
       newProvider: 'New Provider',
@@ -2556,6 +2816,8 @@ export default {
     noErrors: 'No errors',
     viewOnWiki: 'View on Bambu Lab Wiki',
     unknownCode: 'Unknown HMS code — see the Bambu Lab wiki for details.',
+    mqttVerifyFailedRemedy:
+      'To fix: enable Developer Mode (LAN Mode) on the printer, then restart the printer. Bambu Lab\'s own advice for this code — update Bambu Studio or Handy — does not apply to a print sent from BamDude.',
     clearInstructions: 'Clear errors on the printer to dismiss them here.',
     clearErrors: 'Clear Errors',
     clearSuccess: 'HMS errors cleared',
@@ -3396,6 +3658,11 @@ export default {
     printer: 'Printer profile',
     useEmbedded: "Use the file's built-in settings",
     useEmbeddedHint: "Slice exactly as the designer set it up — wall count, infill and filament come from the file instead of the profiles below. Offered only when the selected printer matches the design's target.",
+    designSettings: "The designer's print settings",
+    designSettingsHint: '{{count}} setting(s) in this file differ from the stock profile. Ticked ones are carried onto the profile you pick.',
+    designSettingsSelected: '{{selected}} of {{total}}',
+    designSettingsPrinterCoupled: 'machine-tuned',
+    designSettingsPrinterCoupledHint: "Tuned for the designer's printer — speeds, accelerations, temperatures. Carrying these to another machine can slice badly or be rejected outright, so they are offered but not pre-selected.",
     process: 'Process profile',
     filament: 'Filament profile',
     filamentSlot: 'Filament {{index}} ({{type}})',
@@ -3478,7 +3745,7 @@ export default {
       noImage: 'This file has no plate preview image.',
       empty: 'No objects found on this plate.',
       plate: 'Plate {{index}}',
-      objectCount: '{{count}} object',
+      objectCount_one: '{{count}} object',
       objectCount_other: '{{count}} objects',
     },
     // Composite tag labels (m036). Surfaced by ``<FileTagBadges>`` in the
@@ -3718,6 +3985,17 @@ export default {
     tags: {
       title: 'Tags',
       subtitle: 'Label files for cross-cutting filtering — toys, kid-safe, PETG-only, anything.',
+      systemSection: 'Assigned automatically',
+      systemHint: 'BamDude sets these from the file itself. They cannot be renamed, deleted, or taken off a file.',
+      mineSection: 'Your tags',
+      deletePrompt_one: 'Delete "{{name}}" from {{count}} file?',
+      deletePrompt_other: 'Delete "{{name}}" from {{count}} files?',
+      deletePromptUnused: 'Delete "{{name}}"?',
+      deleteSelected_one: 'Delete {{count}} tag',
+      deleteSelected_other: 'Delete {{count}} tags',
+      deleteSelectedPrompt_one: 'Delete {{count}} tag?',
+      deleteSelectedPrompt_other: 'Delete {{count}} tags?',
+      newTagPlaceholder: 'New tag name',
       manage: 'Tags',
       manageTitle: 'Manage tag catalog',
       add: 'New tag',
@@ -3785,6 +4063,7 @@ export default {
     project: 'Project',
     archive: 'Archive',
     noProjectsFound: 'No projects found',
+    archiveLinkHint: 'Puts a shortcut on that archive that opens this folder. One archive can be linked to one folder only.',
     noArchivesFound: 'No archives found',
     unlink: 'Unlink',
     link: 'Link',
@@ -3847,6 +4126,12 @@ export default {
       truncated: 'Truncated',
     },
     allTypes: 'All types',
+    // "{{count}} time", not "once": Ukrainian's _one form covers 21, 31, 41 …
+    // as well as 1, so it must carry the number — and the parity gate requires
+    // both locales to use the same placeholders in the same leaf.
+    printedTimes_one: 'Printed {{count}} time',
+    printedTimes_other: 'Printed {{count}} times',
+    unprintedOnly: 'Not printed',
     ascending: 'Ascending',
     descending: 'Descending',
     resultsCount: '{{showing}} of {{total}} files',
@@ -3865,13 +4150,14 @@ export default {
     deleteFolder: 'Delete Folder',
     deleteFile: 'Delete File',
     deleteFilesCount: 'Delete {{count}} Files',
-    deleteFolderConfirm: 'Are you sure you want to delete this folder? All files inside will also be deleted.',
+    deleteFolderConfirm: 'Delete this folder? The files inside move to the trash, where they can be restored.',
     deleteFileConfirm: 'Are you sure you want to delete this file?',
-    deleteFilesConfirm: 'Are you sure you want to delete {{count}} selected files? This action cannot be undone.',
+    deleteFilesConfirm: 'Delete {{count}} selected files? They move to the trash, where they can be restored.',
     deleting: 'Deleting...',
     noPermissionRenameFolder: 'You do not have permission to rename folders',
     noPermissionLinkFolder: 'You do not have permission to link folders',
     noPermissionDeleteFolder: 'You do not have permission to delete folders',
+    onlyEmptyFolders: 'You can only delete empty folders',
     noPermissionPrint: 'You do not have permission to print',
     noPermissionAddToQueue: 'You do not have permission to add to queue',
     noPermissionSlice: 'You do not have permission to slice',
@@ -3893,6 +4179,9 @@ export default {
     externalPathHelp: 'Absolute path to the directory on the Docker host. Must be bind-mounted into the container.',
     readOnly: 'Read Only',
     readOnlyHelp: 'prevents uploads and deletions',
+    // Folder-name tooltip. "Activity", not "modified": the value is the newest
+    // thing anywhere in the folder's subtree, not the folder's own mtime.
+    lastActivity: 'Last activity',
     showHiddenFiles: 'Show hidden files (dotfiles)',
     externalFolder: 'External Folder',
     scanFolder: 'Scan',
@@ -3900,7 +4189,8 @@ export default {
       folderCreated: 'Folder created',
       folderDeleted: 'Folder deleted',
       fileDeleted: 'File deleted',
-      filesDeleted: 'Deleted {{count}} files',
+      filesDeleted: 'Moved {{count}} file(s) to the trash',
+      filesDeletedWithSkipped: 'Moved {{count}} file(s) to the trash · {{skipped}} skipped',
       filesMoved: 'Files moved',
       folderLinked: 'Folder linked',
       folderUnlinked: 'Folder unlinked',
@@ -3983,6 +4273,7 @@ export default {
     // Footer stats
     printJobs: 'Print jobs (plates)',
     partsPrinted: 'Parts printed',
+    defectiveParts: 'Defective parts (already deducted from parts printed)',
     failedParts: 'Failed parts',
     // Actions
     import: 'Import',
@@ -4051,6 +4342,7 @@ export default {
       inProgress: '{{count}} in progress',
       failed: '{{count}} failed',
       partsPrinted: '{{count}} parts printed',
+      defective: '{{count}} defective',
       printTime: 'Print Time',
       filamentUsed: 'Filament Used'
     },
@@ -4122,7 +4414,18 @@ export default {
     },
     timeline: {
       title: 'Activity Timeline',
-      empty: 'No activity yet.'
+      empty: 'No activity yet.',
+      showMore: 'Show {{count}} more',
+      showLess: 'Show less',
+      events: {
+        print_started: 'Print started',
+        print_completed: 'Print completed',
+        print_failed: 'Print failed',
+        print_cancelled: 'Print cancelled',
+        queued: 'Added to queue',
+        auto_queued: 'Added to auto-queue',
+        project_created: 'Project created'
+      }
     },
     template: {
       saveAsTemplate: 'Save as Template',
@@ -4148,6 +4451,11 @@ export default {
 
   // System info
   system: {
+    zigbeeCoordinator: 'Zigbee Coordinator',
+    zigbeeState: 'State',
+    zigbeePairedDevices: 'Paired Devices',
+    zigbeeRadio: 'Radio',
+    zigbeeAddress: 'Address',
     title: 'System Information',
     subtitle: 'Monitor system resources and database statistics',
     failedToLoad: 'Failed to load system information',
@@ -4511,6 +4819,8 @@ export default {
     autoIncrementLots: 'Auto-number lots (+1 per copy)',
     measuredWeightError: 'Measured weight must be between {{min}}g and {{max}}g.',
     slicerPreset: 'Slicer Preset',
+    suggested: 'Suggested',
+    allOptions: 'All',
     searchPresets: 'Search filament presets...',
     selectedPreset: 'Selected',
     noPresetsFound: 'No presets found',
@@ -4829,6 +5139,9 @@ export default {
     airPrintTip:
       'Detects clogging and filament grinding, halting printing immediately to conserve time and filament.',
     amsType: 'AMS Type',
+    amsTypeSwitching: 'Switching AMS type — this takes about 30 seconds.',
+    amsTypeUnknown: 'Not reported yet',
+    amsTypeRunning: 'Currently running: {{name}}',
     arrangeOrder: 'Arrange AMS Order',
     arrangeNote:
       "If you want a specific AMS ID sequence, please disconnect all AMS after clicking 'Reset', and then reconnect them in the desired order.",
@@ -5193,6 +5506,14 @@ export default {
     flowCalibrationDesc: 'Calibrate extrusion flow',
     layerInspectionDesc: 'AI inspection of first layer',
     timelapseDesc: 'Record timelapse video',
+    timelapseLowSpace: '{{printer}}: almost no room left for a timelapse',
+    timelapseFreeSpace: 'Free space',
+    timelapseBlocked: {
+      unsupported: 'this printer cannot record a timelapse',
+      no_storage: 'no SD card',
+      storage_unavailable: 'the SD card is unreadable',
+      storage_readonly: 'the SD card is read-only'
+    },
     meshModeFastCheck: 'Quick Vibration Check',
     meshModeFastCheckDesc: 'Runs once before printing to confirm belt tension is normal. Disable to skip for this job.',
     gcodeInjection: 'Inject G-code snippets',
@@ -5290,12 +5611,8 @@ export default {
     sendLabel: 'Send',
     toLabel: 'to',
     printJob: 'Print Job',
+    fileOfTotal: 'File {{current}} of {{total}}',
 
-    // FilamentOverride
-    filamentOverride: 'Filament Override',
-    filamentOverrideHint: 'Override the original filament choices with filaments available on the selected printers.',
-    originalFilament: 'Original',
-    resetToOriginal: 'Reset to original',
     forceColorMatch: 'Force color match'
   },
 
@@ -5456,6 +5773,8 @@ export default {
     noProject: 'No project',
     itemsPrinted: 'Items Printed',
     itemsPrintedHelp: 'Number of items produced in this print job',
+    defectiveParts: 'Defective Parts',
+    defectivePartsHelp: 'How many came out unusable. Counted automatically when objects are skipped during the print — including from the printer itself.',
     notes: 'Notes',
     notesPlaceholder: 'Add notes about this print...',
     externalLink: 'External Link',
@@ -5582,6 +5901,7 @@ export default {
       profilesSaved: 'K-profile saved to {{count}} extruders',
       noteSaved: 'Note saved (no printer change)',
       selectAtLeastOneExtruder: 'Please select at least one extruder',
+      invalidKValue: 'K must be between {{min}} and {{max}} (exclusive)',
       profileDeleted: 'K-profile deleted',
       profilesDeleted: 'Deleted {{count}} profiles',
       exportedProfiles: 'Exported {{count}} profiles',
@@ -5764,6 +6084,10 @@ export default {
       title: 'Force colour match',
       description: 'Pin per-slot type+colour from each 3MF so the auto-queue router refuses printers loaded with the right material in the wrong colour.'
     },
+    saveAmsMapping: {
+      title: "Use the slicer's AMS slots",
+      description: "Keep the exact slots picked in Bambu Studio instead of matching by filament type and colour — the only way to tell two spools of the same colour apart. Turns off BamDude's own slot picking for these prints, including lowest-spool-first and the Flow-Through routing rule."
+    },
     gcodeInjection: {
       title: 'G-code injection',
       description: 'Apply the per-model G-code snippets (Settings → Printers → G-code Snippets) to jobs this VP queues. Off by default; no-op unless snippets exist for the target model.'
@@ -5851,9 +6175,9 @@ export default {
     plateNumber: 'Plate {{number}}',
     plateCount_one: '{{count}} plate',
     plateCount_other: '{{count}} plates',
-    objectCount: '{{count}} object',
+    objectCount_one: '{{count}} object',
     objectCount_other: '{{count}} objects',
-    filamentCount: '{{count}} filament',
+    filamentCount_one: '{{count}} filament',
     filamentCount_other: '{{count}} filaments',
     eta: 'ETA {{minutes}} min',
     noPreview: 'No preview available for this file',
@@ -5891,7 +6215,46 @@ export default {
 
   // Maintenance type descriptions (built-in)
   // Smart Plugs
+  locationConditions: {
+    openChart: 'Readings chart — {{name}}',
+  },
+  sensorHistory: {
+    title: 'Readings history',
+    empty: 'Nothing recorded yet.',
+    error: 'Failed to load history',
+    min: 'Min',
+    avg: 'Average',
+    max: 'Peak',
+    bucketMinute: '{{value}} {{unit}} · 1-minute average',
+    bucketMinutes: '{{value}} {{unit}} · {{minutes}}-minute average',
+  },
   smartPlugs: {
+    powerHistory: {
+      title: 'Power history',
+      open: 'Power history',
+      empty: 'Nothing recorded yet.',
+      error: 'Failed to load history',
+      min: 'Min',
+      avg: 'Average',
+      max: 'Peak',
+      bucketMinute: '{{value}} W · 1-minute average',
+      bucketMinutes: '{{value}} W · {{minutes}}-minute average',
+    },
+    plugType: 'Plug type',
+    zigbeeDevice: 'Zigbee device',
+    zigbeePickDevice: 'Choose a paired device…',
+    zigbeeDeviceHint: 'Only paired devices that can be switched are listed.',
+    zigbeeDeviceRequired: 'Choose which paired Zigbee device this plug is.',
+    zigbeeNoDevices:
+        'No unbound Zigbee plugs. Pair one under Settings → Smart plugs → Zigbee coordinator.',
+    zigbeeCoordinatorDown:
+        'The Zigbee coordinator is not connected. Connect it under Settings → Smart plugs → Zigbee coordinator.',
+    zigbeeNoMeteringWarning:
+        'This device reports no energy, so it can be switched but the energy figures will stay empty.',
+    rebindDropsInflightEnergy:
+        'A print is measured against this plug. Changing the printer drops the energy figure for the print currently running, rather than recording one taken from two different meters.',
+    alreadyHasMainsPlug:
+        'This printer already has a power plug ({{name}}). Energy for its prints is measured with that one.',
     offline: 'Offline',
     admin: 'Admin',
     openPlugAdminPage: 'Open plug admin page',
@@ -6078,6 +6441,7 @@ export default {
       callmebot: 'CallMeBot/WhatsApp',
       ntfy: 'ntfy',
       pushover: 'Pushover',
+      bark: 'Bark',
       telegram: 'Telegram',
       email: 'Email',
       discord: 'Discord',
@@ -6091,6 +6455,7 @@ export default {
       discord: 'Send to Discord channel via webhook',
       ntfy: 'Free, self-hostable push notifications',
       pushover: 'Simple, reliable push notifications',
+      bark: 'iOS push notifications via Bark (self-hostable)',
       callmebot: 'Free WhatsApp notifications via CallMeBot',
       webhook: 'Generic HTTP POST to any URL',
       homeassistant: 'Persistent notifications in Home Assistant dashboard'
@@ -6107,6 +6472,15 @@ export default {
     // Event categories
     printEvents: 'Print Events',
     printerStatus: 'Printer Status',
+    sensorAlerts: 'Sensor alerts',
+    sensorThreshold: 'Sensor readings',
+    sensorThresholdDescription: 'A reading leaves the limits you set, and when it comes back',
+    sensorSilent: 'Sensor went silent',
+    sensorSilentDescription: 'A sensor stops reporting, and when it starts again',
+    sensorAboveMax: 'Reading above limit',
+    sensorBelowMin: 'Reading below limit',
+    sensorBackInRange: 'Reading back in range',
+    sensorSpeakingAgain: 'Sensor reporting again',
     amsAlarms: 'AMS Alarms',
     amsHtAlarms: 'AMS-HT Alarms',
     printQueue: 'Print Queue',
@@ -6208,6 +6582,15 @@ export default {
     configuration: 'Configuration',
     pushoverRetry: 'Emergency Retry (s)',
     pushoverExpire: 'Emergency Expire (s)',
+    barkDeviceKey: 'Device Key',
+    barkGroup: 'Group',
+    barkSound: 'Sound',
+    barkLevel: 'Interruption Level',
+    barkLevelDefault: 'Default',
+    barkLevelActive: 'Active',
+    barkLevelTimeSensitive: 'Time Sensitive (breaks through summaries)',
+    barkLevelCritical: 'Critical (bypasses Silent mode and Focus)',
+    barkLevelPassive: 'Passive (delivered without a sound)',
     testConfiguration: 'Test Configuration',
     printerFilter: 'Printer Filter',
     onlyFromPrinter: 'Only send notifications for events from this printer',
@@ -6231,6 +6614,8 @@ export default {
     add: 'Add',
     nameRequired: 'Name is required',
     fieldRequired: '{{field}} is required',
+    haDataLabel: 'Data (JSON, optional)',
+    haDataInvalid: 'The Data field must be a valid JSON object, for example {"priority": "high", "ttl": 0}',
     // Config field labels
     // NotificationTemplateEditor
     editTemplate: 'Edit Template: {{name}}',

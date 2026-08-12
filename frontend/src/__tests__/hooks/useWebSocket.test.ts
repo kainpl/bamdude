@@ -493,6 +493,42 @@ describe('useWebSocket hook', () => {
       expect(invalidateSpy).not.toHaveBeenCalled();
     });
 
+    it('a device leaving also refreshes the sensors', async () => {
+      // An adopted sensor that just left is still listed -- with its name and
+      // place -- so it must flip to "not on the network" now, not in 30 s.
+      vi.useFakeTimers();
+      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+        cb(0);
+        return 0;
+      });
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      renderHook(() => useWebSocket(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      const ws = await waitForWs();
+
+      act(() => {
+        ws.open();
+      });
+
+      act(() => {
+        ws.simulateMessage({ type: 'zigbee_device_left', ieee: 'aa:bb' });
+      });
+
+      await act(async () => {
+        vi.advanceTimersByTime(4000);
+      });
+
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['zigbee-sensors'] });
+
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
     it('handles malformed JSON gracefully', async () => {
       const { useWebSocket } = await import('../../hooks/useWebSocket');
 

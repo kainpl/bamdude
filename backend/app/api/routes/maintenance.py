@@ -26,6 +26,7 @@ from backend.app.schemas.maintenance import (
     PrinterMaintenanceResponse,
     PrinterMaintenanceUpdate,
 )
+from backend.app.schemas.printer_location import PrinterLocationOut
 from backend.app.services.notification_service import notification_service
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.printer_models import get_rod_type
@@ -469,7 +470,7 @@ async def _get_printer_maintenance_internal(
         printer_id=printer_id,
         printer_name=printer.name,
         printer_model=printer.model,
-        printer_location=printer.location,
+        printer_location=(PrinterLocationOut.from_location(printer.location)),
         total_print_hours=total_hours,
         maintenance_items=maintenance_items,
         due_count=due_count,

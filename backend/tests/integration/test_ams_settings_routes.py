@@ -19,8 +19,23 @@ def _state(connected=True, **overrides):
     s.ams_remain_capacity = None
     s.ams_auto_switch_filament = None
     s.ams_air_print_detect = None
+    # MagicMock would answer truthy for these, and ``firmware_switch`` is now
+    # ``bool(state.ams_firmwares)`` — an unset attribute would turn the switch
+    # ON for every printer in every test.
+    s.ams_firmwares = []
     s.ams_firmware_idx_run = None
     s.ams_firmware_idx_sel = None
+    s.ams_firmware_status = None
+    # Same reason as the block above, and a sharper one: several AMS rows are now
+    # answered from the model's mirrored config, whose blocks are layered by
+    # firmware version. A MagicMock here is not a version string, so every lookup
+    # would fall back to the 2023 base block — which understates the X1 family
+    # exactly where these tests assert it is supported.
+    s.firmware_version = "01.08.00.00"
+    s.print_option_support = {}
+    s.firmware_upgrade_status = None
+    s.ext_has_filament = {}
+    s.state = "IDLE"
     s.raw_data = {}
     for k, v in overrides.items():
         setattr(s, k, v)
@@ -140,7 +155,12 @@ async def test_post_reorder_no_payload_calls_ams_reset_sequence(async_client, pr
 
 @pytest.mark.asyncio
 async def test_post_unsupported_returns_409(async_client, printer_factory, db_session):
-    """A1 Mini doesn't support firmware_switch — only A1 (full) does."""
+    """A printer that offered no firmware list cannot be switched.
+
+    The gate used to be the model ("only a full A1"); it is now the device's own
+    answer — ``ams_firmwares`` empty means the printer never offered a switch.
+    The model here is incidental.
+    """
     printer = await printer_factory(model="A1 Mini")
     client = _client_with_state(_state())
     with patch("backend.app.api.routes.ams_settings.printer_manager") as pm:

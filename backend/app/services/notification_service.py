@@ -17,6 +17,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.api.routes._url_safety import assert_safe_lan_service_url
 from backend.app.core.config import APP_VERSION
 from backend.app.models.notification import NotificationDigestQueue, NotificationLog, NotificationProvider
 from backend.app.models.notification_template import NotificationTemplate
@@ -28,6 +29,10 @@ logger = logging.getLogger(__name__)
 # leaked python-httpx/<version>, both inconsistent with the rest of the project
 # and a more obvious bot signature for upstream WAFs (upstream Bambuddy #1534).
 _USER_AGENT = f"BamDude/{APP_VERSION} (+https://github.com/kainpl/bamdude)"
+
+# iOS interruption levels bark-server accepts. Anything else is dropped from the
+# payload rather than forwarded — see ``_send_bark``.
+_BARK_INTERRUPTION_LEVELS = frozenset({"active", "timeSensitive", "critical", "passive"})
 
 
 def _looks_like_cloudflare_challenge(response: httpx.Response) -> bool:
@@ -207,6 +212,8 @@ class NotificationService:
                 return await self._send_ntfy(config, title, message)
             elif provider_type == "pushover":
                 return await self._send_pushover(config, title, message)
+            elif provider_type == "bark":
+                return await self._send_bark(config, title, message)
             elif provider_type == "telegram":
                 return await self._send_telegram(config, f"*{title}*\n{message}")
             elif provider_type == "email":
@@ -258,6 +265,13 @@ class NotificationService:
 
         if not topic:
             return False, "Topic is required"
+
+        # A self-hosted ntfy on the same box or LAN is the normal case, so the
+        # LAN-service policy applies rather than a blanket private-address block.
+        try:
+            assert_safe_lan_service_url(server, label="ntfy server URL")
+        except ValueError as exc:
+            return False, str(exc)
 
         url = f"{server}/{topic}"
         # ntfy reads Title/Message from HTTP headers. httpx enforces ASCII
@@ -380,6 +394,71 @@ class NotificationService:
                 return False, f"Pushover error: {', '.join(errors)}"
             except Exception:
                 return False, f"HTTP {response.status_code}: {response.text[:200]}"
+
+    async def _send_bark(self, config: dict, title: str, message: str) -> tuple[bool, str]:
+        """Send notification via Bark, the account-free iOS push service (upstream Bambuddy #1495).
+
+        POSTs JSON to ``{server}/push``. Defaults to the official ``api.day.app``
+        relay; pointing ``server`` at a self-hosted ``bark-server`` is the other
+        supported shape, which is why the URL goes through the LAN-service policy
+        rather than a blanket private-address block (same as ntfy).
+
+        The reason this provider earns its keep next to ntfy and Pushover is
+        ``level="critical"``: iOS delivers it through Silent mode and Focus, so a
+        printer that stops at 03:00 can actually wake somebody.
+        """
+        server = (config.get("server") or "https://api.day.app").strip().rstrip("/")
+        device_key = (config.get("device_key") or "").strip()
+
+        if not device_key:
+            return False, "Device key is required"
+
+        try:
+            assert_safe_lan_service_url(server, label="Bark server URL")
+        except ValueError as exc:
+            return False, str(exc)
+
+        payload: dict[str, Any] = {
+            "device_key": device_key,
+            "title": title,
+            "body": message,
+        }
+        group = (config.get("group") or "").strip()
+        if group:
+            payload["group"] = group
+        sound = (config.get("sound") or "").strip()
+        if sound:
+            payload["sound"] = sound
+        # An unrecognised level is dropped, not forwarded: bark-server rejects
+        # the whole push on an unknown value, so passing it through would trade
+        # a missing sound for a missing notification.
+        level = (config.get("level") or "").strip()
+        if level in _BARK_INTERRUPTION_LEVELS:
+            payload["level"] = level
+
+        client = await self._get_client()
+        response = await client.post(f"{server}/push", json=payload)
+
+        if response.status_code == 200:
+            # bark-server reports some failures inside an HTTP 200 body
+            # ({"code": 400, "message": ...}), so the status alone is not the
+            # outcome. A body that isn't JSON at all is left to the status.
+            try:
+                body = response.json()
+            except ValueError:
+                body = None
+            if isinstance(body, dict) and body.get("code") not in (200, None):
+                return False, f"Bark error {body.get('code')}: {str(body.get('message'))[:200]}"
+            return True, "Message sent successfully"
+        if _looks_like_cloudflare_challenge(response):
+            # A self-hosted bark-server behind a Cloudflare Tunnel hits exactly
+            # the same wall ntfy did (#1534) — say so instead of dumping HTML.
+            return False, (
+                f"HTTP {response.status_code} — the Bark server is behind a Cloudflare "
+                "challenge, which cannot be solved from a backend. Add a security-skip "
+                "rule for this hostname or front it with Cloudflare Access."
+            )
+        return False, f"HTTP {response.status_code}: {response.text[:200]}"
 
     async def _send_telegram_to_chats(
         self,
@@ -808,6 +887,15 @@ class NotificationService:
         """
         webhook_url = config.get("webhook_url", "").strip()
         auth_header = config.get("auth_header", "").strip()
+
+        # Same reasoning as ntfy: a webhook receiver is routinely something the
+        # operator runs themselves, so loopback and RFC-1918 stay valid targets
+        # while cloud-metadata endpoints and numeric-encoded hosts do not.
+        if webhook_url:
+            try:
+                assert_safe_lan_service_url(webhook_url, label="Webhook URL")
+            except ValueError as exc:
+                return False, str(exc)
         payload_format = config.get("payload_format", "generic").strip()
 
         if not webhook_url:
@@ -930,6 +1018,27 @@ class NotificationService:
             "message": message,
         }
 
+        # Optional custom service-data (upstream Bambuddy #1441), forwarded as
+        # HA's nested "data" object — the same place an HA automation puts
+        # mobile-app push options (priority, ttl, channel, group). JSON rather
+        # than key=value lines so numbers stay numbers and nesting works.
+        #
+        # Only sent when configured: persistent_notification.create rejects
+        # unknown keys, so an always-present "data" would break the default path.
+        raw_data = config.get("data")
+        if raw_data:
+            if isinstance(raw_data, str):
+                try:
+                    parsed_data = json.loads(raw_data)
+                except json.JSONDecodeError as e:
+                    return False, f"Invalid JSON in the Data field: {e}"
+            else:
+                parsed_data = raw_data
+            if not isinstance(parsed_data, dict):
+                return False, 'The Data field must be a JSON object, e.g. {"priority": "high", "ttl": 0}'
+            if parsed_data:
+                payload["data"] = parsed_data
+
         client = await self._get_client()
         response = await client.post(url, json=payload, headers=headers)
 
@@ -967,6 +1076,8 @@ class NotificationService:
                 return await self._send_ntfy(config, title, message, image_data=image_data, event_type=event_type)
             elif provider.provider_type == "pushover":
                 return await self._send_pushover(config, title, message, image_data=image_data)
+            elif provider.provider_type == "bark":
+                return await self._send_bark(config, title, message)
             elif provider.provider_type == "telegram":
                 return await self._send_telegram_to_chats(
                     config,
@@ -1122,6 +1233,7 @@ class NotificationService:
         db: AsyncSession,
         event_field: str,
         printer_id: int | None = None,
+        unscoped_only: bool = False,
     ) -> list[NotificationProvider]:
         """Get all enabled providers that want a specific event type.
 
@@ -1131,6 +1243,11 @@ class NotificationService:
         downstream. Other provider types (email / ntfy / pushover / discord
         / webhook / homeassistant / callmebot) keep the legacy
         provider-level event gate.
+
+        ``unscoped_only`` is for farm-wide news that belongs to no printer —
+        a sensor stands in a place, not on a machine. Without it, calling with
+        ``printer_id=None`` applies no filter at all, so a provider somebody
+        deliberately bound to one printer would receive everything.
         """
         enabled_filter = NotificationProvider.enabled.is_(True)
         printer_filter = None
@@ -1153,6 +1270,10 @@ class NotificationService:
         if printer_filter is not None:
             telegram_q = telegram_q.where(printer_filter)
             other_q = other_q.where(printer_filter)
+
+        if unscoped_only:
+            telegram_q = telegram_q.where(NotificationProvider.printer_id.is_(None))
+            other_q = other_q.where(NotificationProvider.printer_id.is_(None))
 
         rows = list((await db.execute(telegram_q)).scalars().all())
         rows.extend((await db.execute(other_q)).scalars().all())
@@ -1197,7 +1318,6 @@ class NotificationService:
         event_type: str = "unknown",
         printer_id: int | None = None,
         printer_name: str | None = None,
-        force_immediate: bool = False,
         image_data: bytes | None = None,
         extra_data: dict | None = None,
         variables: dict[str, Any] | None = None,
@@ -1206,6 +1326,12 @@ class NotificationService:
 
         All notifications are always sent immediately. If digest mode is enabled,
         the notification is ALSO queued for the daily digest summary.
+
+        There is no "send this one immediately" switch, because everything is
+        already immediate. A ``force_immediate`` flag was accepted here and
+        never read, so six callers — the four AMS alarms, the plate check and
+        the low-filament warning — believed they bypassed the digest and did
+        not. Do not reintroduce it.
         """
         for provider in providers:
             try:
@@ -1649,7 +1775,6 @@ class NotificationService:
             "print_missing_spool_assignment",
             printer_id,
             printer_name,
-            force_immediate=True,
             variables=variables,
         )
 
@@ -1764,7 +1889,6 @@ class NotificationService:
             "plate_not_empty",
             printer_id,
             printer_name,
-            force_immediate=True,
             variables=variables,
         )
 
@@ -1850,7 +1974,7 @@ class NotificationService:
         threshold: float,
         db: AsyncSession,
     ):
-        """Handle AMS high humidity alarm event. Always sends immediately (bypasses digest)."""
+        """Handle AMS high humidity alarm event. Sent immediately, like everything else."""
         providers = await self._get_providers_for_event(db, "on_ams_humidity_high", printer_id)
         if not providers:
             return
@@ -1863,7 +1987,8 @@ class NotificationService:
         }
 
         title, message = await self._build_message_from_template(db, "ams_humidity_high", variables)
-        # Alarms always send immediately, bypassing digest mode
+        # Immediate, like every notification here. This once asked to bypass
+        # the digest through a flag that was never read.
         await self._send_to_providers(
             providers,
             title,
@@ -1872,7 +1997,6 @@ class NotificationService:
             "ams_humidity_high",
             printer_id,
             printer_name,
-            force_immediate=True,
             variables=variables,
         )
 
@@ -1885,7 +2009,7 @@ class NotificationService:
         threshold: float,
         db: AsyncSession,
     ):
-        """Handle AMS high temperature alarm event. Always sends immediately (bypasses digest)."""
+        """Handle AMS high temperature alarm event. Sent immediately, like everything else."""
         providers = await self._get_providers_for_event(db, "on_ams_temperature_high", printer_id)
         if not providers:
             return
@@ -1898,7 +2022,8 @@ class NotificationService:
         }
 
         title, message = await self._build_message_from_template(db, "ams_temperature_high", variables)
-        # Alarms always send immediately, bypassing digest mode
+        # Immediate, like every notification here. This once asked to bypass
+        # the digest through a flag that was never read.
         await self._send_to_providers(
             providers,
             title,
@@ -1907,7 +2032,6 @@ class NotificationService:
             "ams_temperature_high",
             printer_id,
             printer_name,
-            force_immediate=True,
             variables=variables,
         )
 
@@ -1920,7 +2044,7 @@ class NotificationService:
         threshold: float,
         db: AsyncSession,
     ):
-        """Handle AMS-HT high humidity alarm event. Always sends immediately (bypasses digest)."""
+        """Handle AMS-HT high humidity alarm event. Sent immediately, like everything else."""
         providers = await self._get_providers_for_event(db, "on_ams_ht_humidity_high", printer_id)
         if not providers:
             return
@@ -1934,7 +2058,8 @@ class NotificationService:
 
         # Use the same template as regular AMS (can create separate templates later if needed)
         title, message = await self._build_message_from_template(db, "ams_humidity_high", variables)
-        # Alarms always send immediately, bypassing digest mode
+        # Immediate, like every notification here. This once asked to bypass
+        # the digest through a flag that was never read.
         await self._send_to_providers(
             providers,
             title,
@@ -1943,7 +2068,6 @@ class NotificationService:
             "ams_ht_humidity_high",
             printer_id,
             printer_name,
-            force_immediate=True,
             variables=variables,
         )
 
@@ -1956,7 +2080,7 @@ class NotificationService:
         threshold: float,
         db: AsyncSession,
     ):
-        """Handle AMS-HT high temperature alarm event. Always sends immediately (bypasses digest)."""
+        """Handle AMS-HT high temperature alarm event. Sent immediately, like everything else."""
         providers = await self._get_providers_for_event(db, "on_ams_ht_temperature_high", printer_id)
         if not providers:
             return
@@ -1970,7 +2094,8 @@ class NotificationService:
 
         # Use the same template as regular AMS (can create separate templates later if needed)
         title, message = await self._build_message_from_template(db, "ams_temperature_high", variables)
-        # Alarms always send immediately, bypassing digest mode
+        # Immediate, like every notification here. This once asked to bypass
+        # the digest through a flag that was never read.
         await self._send_to_providers(
             providers,
             title,
@@ -1979,7 +2104,51 @@ class NotificationService:
             "ams_ht_temperature_high",
             printer_id,
             printer_name,
-            force_immediate=True,
+            variables=variables,
+        )
+
+    # Which provider column governs which message. Two columns against five
+    # templates on purpose: the raise and its all-clear are never divided —
+    # switching off the all-clear while keeping the alarm is the AMS fault this
+    # avoids — while "tell me about the room" versus "tell me about the device"
+    # is a division people do make.
+    _SENSOR_ALERT_FIELDS = {
+        "sensor_above_max": "on_sensor_threshold",
+        "sensor_below_min": "on_sensor_threshold",
+        "sensor_back_in_range": "on_sensor_threshold",
+        "sensor_silent": "on_sensor_silent",
+        "sensor_speaking_again": "on_sensor_silent",
+    }
+
+    async def on_sensor_alert(self, event, db: AsyncSession):
+        """One sensor alert, raised or cleared.
+
+        ``unscoped_only``: a sensor belongs to a place, not to a printer, so a
+        provider bound to one printer is not a recipient.
+        """
+        from backend.app.i18n import get_language, t
+
+        field = self._SENSOR_ALERT_FIELDS.get(event.template)
+        if field is None:
+            return
+        providers = await self._get_providers_for_event(db, field, unscoped_only=True)
+        if not providers:
+            return
+
+        variables = dict(event.variables)
+        quantity = variables.get("quantity")
+        if quantity:
+            # The template row was seeded once in the system language; the key
+            # substituted raw would be an English word inside that sentence.
+            variables["quantity"] = t(await get_language(), "measurements", quantity)
+
+        title, message = await self._build_message_from_template(db, event.template, variables)
+        await self._send_to_providers(
+            providers,
+            title,
+            message,
+            db,
+            event.template,
             variables=variables,
         )
 

@@ -125,21 +125,6 @@ class FolderTreeItem(BaseModel):
 # ============ File Schemas ============
 
 
-class FileCreate(BaseModel):
-    """Schema for creating a file entry (internal use after upload)."""
-
-    filename: str
-    file_path: str
-    file_type: str
-    file_size: int
-    file_hash: str | None = None
-    thumbnail_path: str | None = None
-    metadata: dict | None = None
-    folder_id: int | None = None
-    # m044: list of project IDs to associate the file with on creation.
-    project_ids: list[int] = Field(default_factory=list)
-
-
 class FileUpdate(BaseModel):
     """Schema for updating a file.
 
@@ -209,6 +194,8 @@ class FileResponse(BaseModel):
 
     created_at: datetime
     updated_at: datetime
+    # See FileListResponse.fs_modified_at — m129 / #2680.
+    fs_modified_at: datetime | None = None
 
     # Metadata fields
     print_name: str | None = None
@@ -250,6 +237,10 @@ class TagResponse(BaseModel):
     id: int
     name: str
     file_count: int
+    # Handed out by the system, not editable. ``code`` is the stable identifier
+    # the frontend styles and translates by; NULL on user tags.
+    is_system: bool = False
+    code: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -305,6 +296,12 @@ class FileListResponse(BaseModel):
     created_by_id: int | None = None
     created_by_username: str | None = None
     created_at: datetime
+    # Real on-disk mtime, external files only (m129 / #2680). NULL for uploads,
+    # where ``created_at`` already IS the moment the file arrived. The list
+    # renders and sorts on ``fs_modified_at ?? created_at``: a bulk external
+    # scan stamps one identical ``created_at`` across the whole batch, so
+    # sorting an external folder by date without this is sorting on a tie.
+    fs_modified_at: datetime | None = None
 
     # Key metadata fields for display
     print_name: str | None = None
@@ -326,6 +323,9 @@ class FileListResponse(BaseModel):
     # Number of notes attached (gh#3) - drives the card icon variant
     # (MessageSquarePlus when 0, MessageSquare when >0).
     notes_count: int = 0
+    # Successful completions only — the increment in ``_bump_library_file_usage``
+    # is gated on status, so a file attempted and failed reads as 0.
+    print_count: int = 0
     # #1268 — user-authored tags (M2M). DISTINCT from ``file_tags`` above,
     # which is the computed system-badge array (m036).
     tags: list["TagSummary"] = []
@@ -408,41 +408,13 @@ class BulkDeleteResponse(BaseModel):
 
     deleted_files: int
     deleted_folders: int
+    # What the caller asked for and did not get. Files skipped for ownership or
+    # because a queue item is mid-print were previously counted nowhere, so the
+    # interface reported them as deleted.
+    skipped_files: int = 0
 
 
 # ============ Queue Operations ============
-
-
-class AddToQueueRequest(BaseModel):
-    """Schema for adding library files to the print queue."""
-
-    file_ids: list[int] = Field(..., min_length=1)
-
-
-class AddToQueueResult(BaseModel):
-    """Result for a single file added to queue."""
-
-    file_id: int
-    filename: str
-    queue_item_id: int
-
-
-class AddToQueueError(BaseModel):
-    """Error for a file that couldn't be added to queue."""
-
-    file_id: int
-    filename: str
-    error: str
-
-
-class AddToQueueResponse(BaseModel):
-    """Schema for add-to-queue response."""
-
-    added: list[AddToQueueResult]
-    errors: list[AddToQueueError]
-
-
-# ============ ZIP Extraction ============
 
 
 class ZipExtractResult(BaseModel):

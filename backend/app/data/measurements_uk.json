@@ -1,0 +1,8 @@
+{
+  "temperature": "температура",
+  "humidity": "вологість",
+  "co2": "CO₂",
+  "pm25": "PM2.5",
+  "battery": "заряд",
+  "battery_voltage": "напруга елемента"
+}

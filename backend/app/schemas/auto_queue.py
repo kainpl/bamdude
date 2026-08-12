@@ -13,10 +13,11 @@ by *copying* it into that printer's print_queue.
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, PlainSerializer
+from pydantic import BaseModel, Field, PlainSerializer, model_validator
 
 from backend.app.schemas.calibration_mode import CalibrationMode
 from backend.app.schemas.print_queue import serialize_utc_datetime
+from backend.app.schemas.printer_location import PrinterLocationOut, reject_legacy_key
 
 UTCDatetime = Annotated[datetime | None, PlainSerializer(serialize_utc_datetime)]
 
@@ -27,6 +28,11 @@ class FilamentOverride(BaseModel):
     slot_id: int = Field(ge=1)  # 1-indexed slot
     type: str | None = None  # e.g. "PLA", "PETG"
     color: str | None = None  # hex like "#FF0000"
+    # Slicer spool identity ("GFA00" PLA Basic, "GFA01" PLA Matte, "GFA06" Silk,
+    # "P4d64437" a custom preset). Only meaningful alongside force_color_match,
+    # where it keeps the variants apart — everything reports tray_type "PLA"
+    # (#2650). Blank means "no variant constraint".
+    tray_info_idx: str | None = None
     force_color_match: bool = False  # exact-color requirement
 
 
@@ -38,7 +44,7 @@ class AutoQueueItemCreate(BaseModel):
 
     # Routing target
     target_model: str | None = None  # auto-detected from 3MF if omitted
-    target_location: str | None = None
+    target_location_id: int | None = None
     required_filament_types: list[str] | None = None  # auto-extracted from 3MF if omitted
     filament_overrides: list[FilamentOverride] | None = None
     force_color_match: bool = False
@@ -70,6 +76,11 @@ class AutoQueueItemCreate(BaseModel):
     # Batch: create N copies sharing a batch_id (1..50), like print_queue
     quantity: int = Field(default=1, ge=1, le=50)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _no_legacy_location(cls, values):
+        return reject_legacy_key(values, "target_location", "target_location_id")
+
 
 class AutoQueueItemUpdate(BaseModel):
     """Editable fields for items still in status='pending'.
@@ -80,7 +91,7 @@ class AutoQueueItemUpdate(BaseModel):
 
     position: int | None = None
     target_model: str | None = None
-    target_location: str | None = None
+    target_location_id: int | None = None
     required_filament_types: list[str] | None = None
     filament_overrides: list[FilamentOverride] | None = None
     force_color_match: bool | None = None
@@ -97,6 +108,11 @@ class AutoQueueItemUpdate(BaseModel):
     execute_swap_macros: bool | None = None
     swap_macro_events: list[str] | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _no_legacy_location(cls, values):
+        return reject_legacy_key(values, "target_location", "target_location_id")
+
 
 class AutoQueueItemResponse(BaseModel):
     id: int
@@ -105,7 +121,8 @@ class AutoQueueItemResponse(BaseModel):
     project_id: int | None
 
     target_model: str | None
-    target_location: str | None
+    target_location_id: int | None = None
+    target_location: PrinterLocationOut | None = None
     required_filament_types: list[str] | None = None
     filament_overrides: list[FilamentOverride] | None = None
     force_color_match: bool

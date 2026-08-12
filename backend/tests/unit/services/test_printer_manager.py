@@ -14,13 +14,13 @@ from backend.app.services.printer_manager import (
     get_derived_status_name,
     has_stg_cur_idle_bug,
     init_printer_connections,
-    is_bed_slinger,
     parse_plate_id,
     printer_state_to_dict,
     supports_chamber_temp,
     supports_drying,
     supports_drying_while_printing,
 )
+from backend.app.utils.printer_configs import is_bed_slinger
 
 
 class TestPrinterManager:
@@ -834,6 +834,21 @@ class TestPrinterStateToDict:
         state.raw_data = {}
         state.stg_cur = -1  # No calibration stage active
         state.firmware_version = None
+        # The heater bounds the projection publishes. A MagicMock answers every
+        # attribute with another MagicMock, so these have to be set to real
+        # values or the comparison against them is Mock-vs-int — which is a fact
+        # about the fixture, not about the code: production only ever passes a
+        # PrinterState, whose fields are typed and whose MQTT parse already
+        # rejects anything that is not an int.
+        state.nozzle_temp_range = None
+        state.bed_temp_range = None
+        state.bed_temperature_limit = None
+        state.is_220v = False
+        state.ext_has_nozzle = {}
+        state.axis_at_home = {"x": True, "y": True, "z": True}
+        state.ext_has_filament = {}
+        state.has_timelapse_kit = False
+        state.timelapse_storage = {}
         return state
 
     def test_basic_conversion(self, mock_state):
@@ -1178,6 +1193,18 @@ class TestStatusKeyDryingDedup:
         state.tray_now = None
         state.wifi_signal = -50
         state.stg_cur = -1
+        # Real values for the heater bounds — see the note on ``mock_state``: a
+        # MagicMock would answer these with more Mocks, which the projection then
+        # compares against integers.
+        state.nozzle_temp_range = None
+        state.bed_temp_range = None
+        state.bed_temperature_limit = None
+        state.is_220v = False
+        state.ext_has_nozzle = {}
+        state.axis_at_home = {"x": True, "y": True, "z": True}
+        state.ext_has_filament = {}
+        state.has_timelapse_kit = False
+        state.timelapse_storage = {}
 
         # First state: drying active with 30 minutes remaining
         state.raw_data = {"ams": [{"id": 0, "dry_time": 30, "module_type": "n3f", "tray": [{"id": 0}]}]}
@@ -1588,12 +1615,53 @@ class TestIsBedSlinger:
 
     def test_bed_on_z_models_return_false(self):
         """Every bed-on-Z model must NOT be classified as a bed-slinger."""
-        for model in ("X1C", "X1", "X1E", "P1S", "P1P", "H2D", "H2C", "H2S", "P2S"):
+        for model in ("X1C", "X1", "X1E", "P1S", "P1P", "H2D", "H2C", "H2S", "P2S", "X2D"):
             assert is_bed_slinger(model) is False, f"{model} should NOT be a bed-slinger"
+
+    def test_a2l_is_a_bed_slinger(self):
+        """The model the hardcoded set forgot.
+
+        ``A1_MODELS`` listed A1 and A1 mini. ``N9.json`` — the A2L's own mirrored
+        config — says ``printer_arch: "i3"``, so the machine IS a bed-slinger and
+        was getting the un-inverted sign: #1334 again, on a model released after
+        the list was written.
+        """
+        assert is_bed_slinger("A2L") is True
+        assert is_bed_slinger("N9") is True
+
+    def test_every_model_agrees_with_its_own_shipped_config(self):
+        """The property, not a list: whatever ``printer_arch`` says, we say.
+
+        This is what makes a future model correct on the day its config lands,
+        instead of on the day somebody remembers to edit a frozenset.
+        """
+        import glob
+        import json
+        from pathlib import Path
+
+        checked = 0
+        for path in glob.glob("backend/app/data/printers/*.json"):
+            if "blacklist" in path:
+                continue
+            base = json.loads(Path(path).read_text(encoding="utf-8")).get("00.00.00.00") or {}
+            name = (base.get("display_name") or "").replace("Bambu Lab ", "")
+            if not name:
+                continue
+            expected = base.get("printer_arch") == "i3"
+            assert is_bed_slinger(name) is expected, f"{name}: printer_arch says {base.get('printer_arch')}"
+            checked += 1
+        assert checked >= 14, f"only {checked} configs checked — did the folder move?"
 
     def test_none_and_empty_safe(self):
         assert is_bed_slinger(None) is False
         assert is_bed_slinger("") is False
+
+    def test_an_unknown_model_defaults_to_core_xy(self):
+        """BS's own default (``get_printer_arch`` returns ARCH_CORE_XY for an
+        unknown or unrecognised value), and the safe one: it means "do not
+        invert", i.e. leave the caller's g-code alone on a machine we cannot
+        identify rather than flip it on a guess."""
+        assert is_bed_slinger("DefinitelyNotABambu") is False
 
 
 class TestInitPrinterConnections:

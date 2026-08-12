@@ -267,10 +267,14 @@ def authenticate_ldap_user(config: LDAPConfig, username: str, password: str) -> 
             return None
 
         info = _extract_user_info(service_conn, config, user_entry, username)
+        # The raw DN stays out of the log: its leaf CN is the user's real name
+        # (#2681). Username + group count is everything this line was for. The
+        # support-bundle sanitizer redacts DNs that surface anyway — an ldap3
+        # exception string above, for one — but not writing PII to disk in the
+        # first place is the primary hygiene, not the fallback.
         logger.info(
-            "LDAP authentication successful for user: %s (DN: %s, groups: %d)",
+            "LDAP authentication successful for user: %s (groups: %d)",
             info.username,
-            user_dn,
             len(info.groups),
         )
         return info

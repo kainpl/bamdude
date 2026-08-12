@@ -133,17 +133,6 @@ class PlateDetector:
                 paths.append(path)
         return paths
 
-    def _get_next_reference_slot(self, printer_id: int) -> Path:
-        """Get the path for the next reference image slot (cycles through slots)."""
-        _get_calibration_dir().mkdir(parents=True, exist_ok=True)
-        # Find first empty slot, or use oldest (slot 0) and shift others
-        for i in range(self.MAX_REFERENCES):
-            path = _get_calibration_dir() / f"printer_{printer_id}_ref_{i}.jpg"
-            if not path.exists():
-                return path
-        # All slots full - return slot 0 (will be overwritten, but we rotate first)
-        return _get_calibration_dir() / f"printer_{printer_id}_ref_0.jpg"
-
     def _rotate_references(self, printer_id: int) -> None:
         """Rotate references: delete oldest (0), shift others down."""
         # Delete slot 0
@@ -604,8 +593,29 @@ async def capture_camera_image(
     image_data: bytes | None = None
     camera_source = "unknown"
 
+    # Reuse the live view's frame before touching ANY camera (#2707). The
+    # buffered-frame check below used to sit in the built-in branch only, so the
+    # docstring's promise not to compete with a viewer was true for one camera
+    # kind and not the other — and a USB device allows exactly one handle, so
+    # the external attempt did not degrade, it failed.
+    from backend.app.api.routes.camera import live_frame_for_capture
+
+    defer, buffered_live = live_frame_for_capture(printer_id)
+    if defer:
+        if buffered_live is None:
+            logger.debug(
+                "Plate detection: viewer attached for printer %s with an empty buffer — skipping "
+                "rather than opening a competing camera handle",
+                printer_id,
+            )
+            # The contract is (None, reason) — a bare None here would reach the
+            # caller as an unexplained failure.
+            return None, "Live camera view is attached and its buffer is empty"
+        image_data = buffered_live
+        camera_source = "live view (buffered)"
+
     # Try external camera first if requested and available
-    if use_external and external_camera_url and external_camera_type:
+    if image_data is None and use_external and external_camera_url and external_camera_type:
         try:
             from backend.app.services.external_camera import capture_frame
 

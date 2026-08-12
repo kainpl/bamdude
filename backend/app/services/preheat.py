@@ -25,16 +25,16 @@ Resolution order:
      PA's 50 (max-across-slots — PA's chamber requirement is binding).
   3. Three hardware tiers branch the wait:
      - Chamber heater (H2C/H2D/H2D Pro/H2S/X2D/X1E → ``supports_chamber_heater``):
-       M141 to target, then wait for the chamber sensor to reach it (or timeout).
-     - Chamber sensor only (X1C/P2S → ``supports_chamber_temp`` ∧ ¬heater): no M141,
+       ``set_ctt`` to target, then wait for the chamber sensor to reach it (or timeout).
+     - Chamber sensor only (X1C/P2S → ``supports_chamber_temp`` ∧ ¬heater): no setpoint,
        wait for radiant bed warm-up to raise the sensor OR fall through on timeout.
      - No chamber sensor (P1S/P1P/A1/A1 Mini): bed only, hold for the soak timer.
   4. Airduct flap (H2C/H2D/H2D Pro/H2S/X2D/P2S → ``supports_airduct``) is flipped to
      match the target — heating when chamber_target > 0, cooling otherwise — before
-     M141, since Bambu firmware does NOT auto-switch the flap and the default cooling
+     the setpoint, since Bambu firmware does NOT auto-switch the flap and the default cooling
      mode vents the chamber and fights the heater. Idempotent (skipped when already there).
 
-Best-effort throughout: printer drops, refused M141 / set_airduct, missing bed
+Best-effort throughout: printer drops, refused set_ctt / set_airduct, missing bed
 temperature all log and return cleanly. The normal upload + start path runs after
 this returns regardless. Only ``cancel_check`` is allowed to propagate.
 """
@@ -253,7 +253,7 @@ async def preheat_and_soak(
         logger.warning("Preheat bed M140 failed on printer %s: %s", printer.id, exc)
         return
 
-    # Airduct flap: flip to heating before M141 when the preheat wants chamber heat,
+    # Airduct flap: flip to heating before the setpoint when the preheat wants chamber heat,
     # back to cooling otherwise (a PLA-only print on an H2D that previously ran ABS
     # would else stay sealed in heating mode). Idempotent via the current-state read.
     if supports_airduct(model):
@@ -271,7 +271,7 @@ async def preheat_and_soak(
         try:
             client.set_chamber_temperature(chamber_target)
         except Exception as exc:  # noqa: BLE001 — best-effort
-            logger.warning("Preheat chamber M141 failed on printer %s: %s", printer.id, exc)
+            logger.warning("Preheat chamber set_ctt failed on printer %s: %s", printer.id, exc)
 
     # Release the pooled DB connection before the (potentially many-minute)
     # heat-soak wait below (#2572). Every setting this stage needs was read
@@ -282,7 +282,7 @@ async def preheat_and_soak(
     # there are no pending writes to lose here.
     await db.commit()
 
-    # Wait for convergence. Bed warm-up is fast; chamber via M141 a few minutes;
+    # Wait for convergence. Bed warm-up is fast; chamber via set_ctt a few minutes;
     # chamber via bed radiation can take 20+. "Converged" = bed reached target AND
     # (no chamber phase, no sensor, or sensor reached target).
     deadline = asyncio.get_event_loop().time() + max_wait

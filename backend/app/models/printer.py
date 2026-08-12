@@ -1,9 +1,13 @@
 from datetime import datetime
+from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Float, String, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
+
+if TYPE_CHECKING:
+    from backend.app.models.printer_location import PrinterLocation
 
 
 class Printer(Base):
@@ -15,7 +19,14 @@ class Printer(Base):
     ip_address: Mapped[str] = mapped_column(String(253))
     access_code: Mapped[str] = mapped_column(String(20))
     model: Mapped[str | None] = mapped_column(String(50))
-    location: Mapped[str | None] = mapped_column(String(100))  # Group/location name
+    # The place this printer stands in. A foreign key rather than a name, so a
+    # rename reaches every printer, sensor and queued item at once — and so a
+    # location that matches nothing can no longer be typed. See
+    # models/printer_location.py for why it is not the spool-storage table.
+    location_id: Mapped[int | None] = mapped_column(ForeignKey("printer_locations.id", ondelete="RESTRICT"))
+    # selectin, not lazy: the printer list is read on every dashboard poll, and
+    # a lazy load would be one extra query per printer on every one of them.
+    location: Mapped["PrinterLocation | None"] = relationship(lazy="selectin")
     nozzle_count: Mapped[int] = mapped_column(default=1)  # 1 or 2, auto-detected from MQTT
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     # Soft-retire: archived printers disappear from the whole app + MQTT while
@@ -25,9 +36,15 @@ class Printer(Base):
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     auto_archive: Mapped[bool] = mapped_column(Boolean, default=True)
     cleanup_after_print: Mapped[bool] = mapped_column(Boolean, default=False)  # Delete files from SD after print
-    mqtt_connection_timeout: Mapped[int] = mapped_column(
-        default=900
-    )  # How long MQTT connection is considered valid (seconds); 0 = disabled
+    # How long an MQTT connection is considered valid (seconds); 0 = disabled,
+    # and disabled is the default. Above zero, ``ensure_fresh_connection``
+    # discards the printer's client once the link is that old and builds a new
+    # one with empty state — which is what let a swap-macro wait watch a
+    # discarded connection and declare the macro failed, and what blanked the
+    # skip-objects list mid-print. A link that genuinely drops still reconnects
+    # through the normal connect loop; this only governs recycling a live one.
+    # m120 zeroes the column on existing installations for the same reason.
+    mqtt_connection_timeout: Mapped[int] = mapped_column(default=0)
     print_hours_offset: Mapped[float] = mapped_column(Float, default=0.0)  # Baseline hours to add
     runtime_seconds: Mapped[int] = mapped_column(default=0)  # Accumulated active runtime (RUNNING state only; #1521)
     last_runtime_update: Mapped[datetime | None] = mapped_column(

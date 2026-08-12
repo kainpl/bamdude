@@ -1,6 +1,8 @@
 import io
 import logging
 import os
+import shutil
+import sqlite3
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -525,6 +527,98 @@ async def get_homeassistant_settings(db: AsyncSession) -> dict:
     }
 
 
+def _snapshot_sqlite(src: Path, dest: Path) -> None:
+    """Consistent copy of a live SQLite database, WAL included.
+
+    A plain file copy is wrong here and silently so. zigpy runs its database in
+    WAL mode, so a freshly-formed network lives in ``zigbee.db-wal`` while
+    ``zigbee.db`` itself is still an empty 4 KB header — measured on the first
+    real dongle run: copying the main file alone produced a database with **zero
+    tables**, while the live one had 13 and held the network key.
+
+    That is the worst shape a backup bug can take: the ZIP looks right, the
+    restore reports success, and the operator discovers at the worst possible
+    moment that every device has to be paired again.
+
+    ``Connection.backup`` is the supported way to snapshot a database that
+    another process has open. Copying the -wal and -shm sidecars instead would
+    also work but has to catch them mid-write; this does not.
+    """
+    source = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+    try:
+        target = sqlite3.connect(dest)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+    finally:
+        source.close()
+
+
+def _stage_zigbee_db(data_dir: Path, staging: Path) -> None:
+    """Copy zigpy's device database into the backup staging tree.
+
+    That file holds the Zigbee **network key**. Without it a restore comes up
+    with no network and every paired plug has to be re-paired by hand, at the
+    device — the same class of unrecoverable artifact as the MFA encryption key
+    staged just above.
+
+    Unlike the MFA key, a failure here only warns. A missing MFA key corrupts
+    data the operator already has (encrypted secrets become unreadable), so that
+    one raises. A missing Zigbee database costs re-pairing, which is recoverable
+    by walking to each plug — failing an entire backup, prints and archives
+    included, over an optional radio would be the worse trade.
+    """
+    src = data_dir / "zigbee" / "zigbee.db"
+    if not src.is_file():
+        return  # no dongle on this install: the normal case
+    try:
+        dest_dir = staging / "zigbee"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        _snapshot_sqlite(src, dest_dir / "zigbee.db")
+    except (OSError, sqlite3.Error) as exc:
+        logger.warning(
+            "Could not include the Zigbee network database in backup (%s). "
+            "Restoring from this ZIP will require re-pairing every device.",
+            exc,
+        )
+
+
+def _restore_zigbee_db(staging: Path, data_dir: Path) -> None:
+    """Put zigpy's device database back, so the restored host adopts the network.
+
+    Absent from the ZIP means "this backup predates the feature, or the install
+    had no dongle" — never "delete what is there". Wiping a live network on
+    restore would be the exact failure this whole path exists to prevent.
+    """
+    src = staging / "zigbee" / "zigbee.db"
+    if not src.is_file():
+        return
+    try:
+        dest_dir = data_dir / "zigbee"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        # Drop the previous network's WAL sidecars BEFORE writing the restored
+        # file. They belong to the database being replaced, and leaving them to
+        # sit beside a different one means trusting SQLite's salt check to
+        # discard them. It does — but "the network key probably survives" is not
+        # a standard worth holding, and the staged file is a complete snapshot
+        # that needs no sidecar of its own.
+        # Written out rather than looped so the two names stay literal at the
+        # join site: the path-safety scanner reads `<dir> / <variable>` as
+        # arithmetic on untrusted input, and it is right to. A SEC-PATH-OK
+        # suppression would work here and be a small permanent debt; two lines
+        # are self-evidently safe to the scanner and to a reader.
+        (dest_dir / "zigbee.db-wal").unlink(missing_ok=True)
+        (dest_dir / "zigbee.db-shm").unlink(missing_ok=True)
+        shutil.copy2(src, dest_dir / "zigbee.db")
+        logger.info("Restored the Zigbee network database from backup")
+    except OSError as exc:
+        logger.error(
+            "Could not restore the Zigbee network database (%s). Zigbee devices will need to be paired again.",
+            exc,
+        )
+
+
 async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]:
     """Create a complete backup ZIP (database + all data directories).
 
@@ -593,6 +687,8 @@ async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]
                     exc,
                 )
                 raise
+
+        _stage_zigbee_db(resolve_data_dir(), temp_path)
 
         # Include the anonymous telemetry install id so a restore keeps the same
         # identity. Some users do a clean install then restore the old DB; without
@@ -808,6 +904,11 @@ async def restore_backup(
                         status_code=500,
                         detail="Restore aborted: MFA key write failed. Database is unchanged. Check server logs.",
                     ) from e
+
+            # zigpy's device database carries the Zigbee network key. Restored
+            # here, beside the other DATA_DIR artifacts and BEFORE the database
+            # swap, so a failure still leaves the live install untouched.
+            _restore_zigbee_db(temp_path, resolve_data_dir())
 
             # Restore the anonymous telemetry install id (best-effort). Keeps the
             # same identity when a user does a clean install then restores the old

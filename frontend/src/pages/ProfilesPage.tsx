@@ -23,7 +23,6 @@ import {
   Clock,
   Layers,
   Filter,
-  ChevronDown,
   ArrowUp,
   Upload,
   Download,
@@ -47,6 +46,7 @@ import { formatRelativeTime } from '../utils/date';
 import type { SlicerSetting, SlicerSettingsResponse, SlicerSettingDetail, SlicerSettingCreate, Printer, FieldDefinition, Permission } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
+import { FilterDropdown } from '../components/FilterDropdown';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { KProfilesView } from '../components/KProfilesView';
@@ -286,60 +286,6 @@ function LoginForm({ onSuccess, t }: { onSuccess: () => void; t: TFunction }) {
         </form>
       </CardContent>
     </Card>
-  );
-}
-
-// ============================================================================
-// FILTER DROPDOWN
-// ============================================================================
-
-export function FilterDropdown({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  options: { value: string; label: string; count?: number }[];
-  onChange: (value: string) => void;
-}) {
-  const [isOpen, setIsOpen] = useState(false);
-  const selectedOption = options.find(o => o.value === value);
-
-  return (
-    <div className="relative">
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-sm text-white hover:border-bambu-gray-dark transition-colors"
-      >
-        <span className="text-bambu-gray">{label}:</span>
-        <span>{selectedOption?.label || 'All'}</span>
-        <ChevronDown className={`w-4 h-4 text-bambu-gray transition-transform ${isOpen ? 'rotate-180' : ''}`} />
-      </button>
-
-      {isOpen && (
-        <>
-          <div className="fixed inset-0 z-10" onClick={() => setIsOpen(false)} />
-          <div className="absolute top-full left-0 mt-1 min-w-[160px] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl z-20 py-1 max-h-60 overflow-y-auto">
-            {options.map((option) => (
-              <button
-                key={option.value}
-                onClick={() => { onChange(option.value); setIsOpen(false); }}
-                className={`w-full px-3 py-2 text-left text-sm flex items-center justify-between hover:bg-bambu-dark-tertiary transition-colors ${
-                  value === option.value ? 'text-bambu-green' : 'text-white'
-                }`}
-              >
-                <span>{option.label}</span>
-                {option.count !== undefined && (
-                  <span className="text-bambu-gray text-xs">{option.count}</span>
-                )}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
   );
 }
 

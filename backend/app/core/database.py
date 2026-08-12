@@ -253,6 +253,7 @@ async def init_db():
         print_options_preference,
         print_queue,
         printer,
+        printer_location,
         printer_queue,
         printer_sensor_history,
         project,
@@ -264,6 +265,10 @@ async def init_db():
         slot_preset,
         smart_plug,
         smart_plug_energy_snapshot,
+        smart_plug_power_history,
+        smart_sensor,
+        smart_sensor_history,
+        smart_sensor_threshold,
         spool,
         spool_assignment,
         spool_catalog,
@@ -277,6 +282,7 @@ async def init_db():
         user_otp_code,
         user_totp,
         virtual_printer,
+        zigbee_device,
     )
 
     await run_all_migrations(engine, async_session)

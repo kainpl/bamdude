@@ -130,9 +130,26 @@ class ObicoDetectionService:
         else:
             enabled_printers = None  # None = all printers
 
+        # The ML endpoint is commonly self-hosted next to BamDude, so the
+        # LAN-service policy applies — loopback and RFC-1918 stay allowed, cloud
+        # metadata and numeric-encoded hosts do not. ``schemas/settings``
+        # validates the same value on save; this covers values stored before that
+        # validator existed. An unsafe URL reads as "not configured", which the
+        # poll loop already treats as "do nothing" (see the ``ml_url`` check
+        # below), rather than raising inside a background loop.
+        ml_url = (rows.get("obico_ml_url") or "").rstrip("/")
+        if ml_url:
+            from backend.app.api.routes._url_safety import assert_safe_lan_service_url
+
+            try:
+                assert_safe_lan_service_url(ml_url, label="Obico ML URL")
+            except ValueError as exc:
+                logger.warning("Refusing unsafe Obico ML URL: %s", exc)
+                ml_url = ""
+
         return {
             "enabled": rows.get("obico_enabled", "false").lower() == "true",
-            "ml_url": (rows.get("obico_ml_url") or "").rstrip("/"),
+            "ml_url": ml_url,
             "sensitivity": rows.get("obico_sensitivity", "medium"),
             "action": rows.get("obico_action", "notify"),
             "poll_interval": int(rows.get("obico_poll_interval", "10")),
@@ -199,7 +216,7 @@ class ObicoDetectionService:
         + #1348 / ce5f4e5f.
         """
         # Late import to avoid cycles at module load time
-        from backend.app.api.routes.camera import get_buffered_frame, is_stream_active
+        from backend.app.api.routes.camera import live_frame_for_capture
         from backend.app.services.camera import capture_camera_frame_bytes
         from backend.app.services.external_camera import capture_frame as capture_external_frame
 
@@ -209,6 +226,22 @@ class ObicoDetectionService:
             self._last_error = f"Printer {printer_id} not found"
             return None
 
+        # One rule for both camera kinds now. The external branch used to skip
+        # this entirely, but a USB camera is single-reader too — polling it
+        # while a viewer is attached does not degrade, it fails (#2707). Cost:
+        # at most one missed detection cycle per viewer-attach (~10 s lag);
+        # benefit: zero competing-handle events.
+        defer, buffered = live_frame_for_capture(printer_id)
+        if defer:
+            if buffered:
+                return buffered
+            logger.info(
+                "Obico: viewer attached for printer %s but the buffer is empty; skipping this "
+                "poll rather than opening a competing camera handle",
+                printer_id,
+            )
+            return None
+
         if printer.external_camera_enabled and printer.external_camera_url:
             return await capture_external_frame(
                 printer.external_camera_url,
@@ -216,12 +249,6 @@ class ObicoDetectionService:
                 timeout=SNAPSHOT_CAPTURE_TIMEOUT,
                 snapshot_url=printer.external_camera_snapshot_url,
             )
-
-        # Built-in camera: never compete with an attached viewer. Cost: at
-        # most one missed Obico detection cycle per viewer-attach (~10 s
-        # lag); benefit: zero competing-socket events.
-        if is_stream_active(printer_id):
-            return get_buffered_frame(printer_id)
 
         return await capture_camera_frame_bytes(
             ip_address=printer.ip_address,
@@ -319,6 +346,25 @@ class ObicoDetectionService:
 
     # ---- queries ----
 
+    def get_per_printer(self) -> dict:
+        """Live classification per actively monitored printer.
+
+        Only a printer with a running, monitored print has a state entry, so a
+        consumer gets "show nothing for idle printers" for free rather than
+        having to ask what is printing.
+
+        Split out of :meth:`get_status` so the printer-card endpoint and the
+        settings panel cannot drift into two answers to the same question.
+        """
+        return {
+            pid: {
+                "class": self._last_class.get(pid, "safe"),
+                "frame_count": state.frame_count,
+                "score": round(state.ewm_mean, 4),
+            }
+            for pid, state in self._states.items()
+        }
+
     def get_status(self, sensitivity: str = "medium") -> dict:
         # Report the thresholds for the configured sensitivity, not a hardcoded
         # "medium" — otherwise the Status panel always shows the medium row
@@ -328,14 +374,7 @@ class ObicoDetectionService:
         return {
             "is_running": self._task is not None and not self._task.done(),
             "last_error": self._last_error,
-            "per_printer": {
-                pid: {
-                    "class": self._last_class.get(pid, "safe"),
-                    "frame_count": state.frame_count,
-                    "score": round(state.ewm_mean, 4),
-                }
-                for pid, state in self._states.items()
-            },
+            "per_printer": self.get_per_printer(),
             "thresholds": {"low": low, "high": high},
             "history": list(self._history),
         }

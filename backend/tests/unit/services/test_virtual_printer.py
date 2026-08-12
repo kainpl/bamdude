@@ -693,7 +693,12 @@ class TestVirtualPrinterInstance:
         """``queue_force_color_match=True`` populates filament_overrides from the
         per-slot type+color in the 3MF (#1188). Each entry is the shape the
         eligibility scheduler's ``_get_missing_force_color_slots`` validates
-        against: ``{slot_id, type, color, force_color_match: True}``."""
+        against: ``{slot_id, type, color, tray_info_idx, force_color_match: True}``.
+
+        ``tray_info_idx`` joined that shape with #2650 — it is the only field
+        that separates PLA Basic from Matte from Silk, all of which report
+        ``tray_type == "PLA"``. Slot 2 carries none, which is what a third-party
+        spool looks like and must keep meaning "no variant constraint"."""
         import json as _json
 
         from backend.app.services.auto_queue_threemf import AutoQueueRequirements
@@ -740,8 +745,8 @@ class TestVirtualPrinterInstance:
         )
         # filament_requirements helper returns the per-slot type+color list.
         fake_per_slot = [
-            {"slot_id": 1, "type": "PLA", "color": "#FF0000", "used_grams": 10.0},
-            {"slot_id": 2, "type": "PLA", "color": "#00FF00", "used_grams": 12.0},
+            {"slot_id": 1, "type": "PLA", "color": "#FF0000", "tray_info_idx": "GFA01", "used_grams": 10.0},
+            {"slot_id": 2, "type": "PLA", "color": "#00FF00", "tray_info_idx": "", "used_grams": 12.0},
         ]
 
         with (
@@ -761,8 +766,8 @@ class TestVirtualPrinterInstance:
         item = added_items[0]
         overrides = _json.loads(item.filament_overrides)
         assert overrides == [
-            {"slot_id": 1, "type": "PLA", "color": "#FF0000", "force_color_match": True},
-            {"slot_id": 2, "type": "PLA", "color": "#00FF00", "force_color_match": True},
+            {"slot_id": 1, "type": "PLA", "color": "#FF0000", "tray_info_idx": "GFA01", "force_color_match": True},
+            {"slot_id": 2, "type": "PLA", "color": "#00FF00", "tray_info_idx": "", "force_color_match": True},
         ]
 
     @pytest.mark.asyncio
@@ -1142,6 +1147,10 @@ class TestVirtualPrinterManager:
             # MagicMock attribute is truthy and every unchanged-instance sync
             # test would see a spurious gcode_injection diff → restart.
             "gcode_injection": False,
+            # m131 (#2700): same reason again — the third flag to land in this
+            # comparison, and the third that would restart every VP on every
+            # sync if left as a truthy MagicMock attribute.
+            "save_ams_mapping": False,
             "tailscale_disabled": True,
             "position": 0,
         }

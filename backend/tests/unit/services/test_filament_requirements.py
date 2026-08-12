@@ -145,3 +145,48 @@ class TestExtractFilamentRequirements:
         _make_3mf(f)
         slots = extract_filament_requirements(str(f))
         assert len(slots) == 1
+
+
+class TestTrayInfoIdx:
+    """The slicer's spool identity has to survive the trip (#2650).
+
+    Bambu reports Basic, Matte and Silk all as ``tray_type == "PLA"``, so
+    ``tray_info_idx`` is the only thing that tells them apart. It travels
+    3MF → ``ThreeMFParser.filament_slots`` → here → the VP's force override →
+    ``_get_missing_force_color_slots``; dropping it anywhere on that path made
+    a job sliced for PLA Matte an exact match for every white PLA on the farm.
+    """
+
+    @staticmethod
+    def _write(path: Path, filaments: str) -> None:
+        with zipfile.ZipFile(path, "w") as zf:
+            zf.writestr(
+                "Metadata/slice_info.config",
+                SLICE_INFO_TEMPLATE.format(model_id="C11", filaments=filaments),
+            )
+
+    def test_variant_is_carried_through(self, tmp_path: Path) -> None:
+        f = tmp_path / "matte.3mf"
+        self._write(
+            f,
+            '    <filament id="1" type="PLA" color="#FFFFFF" tray_info_idx="GFA01" used_g="10"/>',
+        )
+        assert extract_filament_requirements(f)[0]["tray_info_idx"] == "GFA01"
+
+    def test_two_variants_of_one_colour_stay_distinct(self, tmp_path: Path) -> None:
+        f = tmp_path / "basic-and-matte.3mf"
+        self._write(
+            f,
+            '    <filament id="1" type="PLA" color="#FFFFFF" tray_info_idx="GFA00" used_g="10"/>\n'
+            '    <filament id="2" type="PLA" color="#FFFFFF" tray_info_idx="GFA01" used_g="10"/>',
+        )
+        slots = extract_filament_requirements(f)
+        assert [s["tray_info_idx"] for s in slots] == ["GFA00", "GFA01"]
+
+    def test_absent_idx_is_empty_not_missing(self, tmp_path: Path) -> None:
+        """Third-party spools and pre-field 3MFs carry none. Callers read the key
+        unconditionally and treat "" as "no variant constraint", so it has to be
+        present and falsy rather than absent."""
+        f = tmp_path / "third-party.3mf"
+        _make_3mf(f)
+        assert extract_filament_requirements(f)[0]["tray_info_idx"] == ""

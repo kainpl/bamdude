@@ -290,6 +290,11 @@ class TestEmbeddedSettingsFallback:
         call_count = {"n": 0}
 
         def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.startswith("/slice/progress/"):
+                # Since #2730 a slice is supervised by the progress poller, so
+                # the sidecar sees GETs alongside the POST. Only slice attempts
+                # are being counted here.
+                return httpx.Response(404)
             call_count["n"] += 1
             body = request.content
             if call_count["n"] == 1:
@@ -335,6 +340,11 @@ class TestEmbeddedSettingsFallback:
         call_count = {"n": 0}
 
         def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.startswith("/slice/progress/"):
+                # Since #2730 a slice is supervised by the progress poller, so
+                # the sidecar sees GETs alongside the POST. Only slice attempts
+                # are being counted here.
+                return httpx.Response(404)
             call_count["n"] += 1
             return httpx.Response(
                 status_code=500,
@@ -381,6 +391,11 @@ class TestEmbeddedSettingsFallback:
         call_count = {"n": 0}
 
         def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.startswith("/slice/progress/"):
+                # Since #2730 a slice is supervised by the progress poller, so
+                # the sidecar sees GETs alongside the POST. Only slice attempts
+                # are being counted here.
+                return httpx.Response(404)
             call_count["n"] += 1
             return httpx.Response(
                 status_code=500,

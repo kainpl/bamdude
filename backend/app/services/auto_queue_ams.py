@@ -6,12 +6,20 @@ slot in the 3MF. This module ports upstream Bambuddy's AMS-matching
 logic (see ``temp/upstream-queue-deep-dive.md``) adapted to BamDude's
 AutoQueueItem.
 
-Matching priority (mirrors upstream):
-    1. Unique ``tray_info_idx`` — slicer-stamped spool ID present on
-       exactly one loaded tray → use it.
-    2. Exact color match (type + RGB).
-    3. Similar color match (RGB within threshold).
-    4. Type-only fallback (any tray of the right canonical type).
+Matching priority:
+    1. Exact colour match (type + RGB), searched among the trays carrying the
+       slicer's ``tray_info_idx`` first, then among all loaded trays.
+    2. Similar colour match (RGB within threshold), same two rounds.
+    3. Type-only fallback (any tray of the right canonical type).
+    4. Right variant, wrong colour — last resort.
+
+⚠️ ``tray_info_idx`` names the filament **variant**, not an individual spool:
+GFA00 is PLA Basic, GFA01 PLA Matte, GFA17 PLA Translucent, in every colour
+Bambu sells. It therefore narrows *where to look first* and never substitutes
+for comparing the colour — a unique idx match used to be accepted as definitive
+on the premise "same preset = same spool = same colour", which mapped a red
+requirement onto a green tray whenever one spool of that variant was loaded
+(#2687).
 
 Filament overrides (with optional ``force_color_match``) and the
 ``prefer_lowest_filament`` setting are honoured the same way as in
@@ -245,7 +253,6 @@ def match_filaments_to_slots(
         req_color = req.get("color", "")
         req_tray_info_idx = req.get("tray_info_idx", "")
 
-        idx_match = None
         exact_match = None
         similar_match = None
         type_only_match = None
@@ -260,27 +267,50 @@ def match_filaments_to_slots(
         if prefer_lowest:
             available.sort(key=lambda f: f.get("remain", -1) if f.get("remain", -1) >= 0 else 101)
 
-        # Pass 1: unique tray_info_idx
+        # Pass 1: trays carrying the slicer's tray_info_idx.
+        #
+        # A unique idx match used to be accepted as definitive, on the premise
+        # "same preset = same spool = same colour" (#2687). The premise is false:
+        # **an idx names the filament VARIANT, not a spool** — GFA00 is PLA Basic,
+        # GFA01 PLA Matte, GFA17 PLA Translucent, in every colour Bambu sells. So
+        # with one Matte spool loaded, every Matte requirement matched it whatever
+        # colour it was, and the comparison below was never reached.
+        #
+        # The asymmetry gave it away: the ``> 1`` branch already compared colour.
+        # Only uniqueness was trusted to imply it. Now every idx candidate is
+        # classified the same way, so the variant still decides *selection* among
+        # colour-agreeing trays (#2650 — Basic is not Matte) and no longer decides
+        # the verdict on its own.
+        idx_type_only = None
         if req_tray_info_idx:
-            idx_matches = [f for f in available if f.get("tray_info_idx") == req_tray_info_idx]
-            if len(idx_matches) == 1:
-                idx_match = idx_matches[0]
-            elif len(idx_matches) > 1:
-                if prefer_lowest:
-                    idx_matches.sort(key=lambda f: f.get("remain", -1) if f.get("remain", -1) >= 0 else 101)
-                for f in idx_matches:
-                    f_color = f.get("color", "")
-                    if _normalize_color_for_compare(f_color) == _normalize_color_for_compare(req_color):
-                        if not exact_match:
-                            exact_match = f
-                    elif _colors_are_similar(f_color, req_color):
-                        if not similar_match:
-                            similar_match = f
-                    elif not type_only_match:
-                        type_only_match = f
+            # Type-filtered like pass 2 below. An idx encodes the preset, which
+            # implies the material, so a same-idx tray of another type is
+            # inconsistent data rather than a candidate — and pass 2 has always
+            # filtered on type, so accepting one here made the two disagree.
+            idx_matches = [
+                f
+                for f in available
+                if f.get("tray_info_idx") == req_tray_info_idx
+                and _canonical_filament_type((f.get("type") or "").upper()) == _canonical_filament_type(req_type)
+            ]
+            if prefer_lowest and len(idx_matches) > 1:
+                idx_matches.sort(key=lambda f: f.get("remain", -1) if f.get("remain", -1) >= 0 else 101)
+            for f in idx_matches:
+                f_color = f.get("color", "")
+                if _normalize_color_for_compare(f_color) == _normalize_color_for_compare(req_color):
+                    if not exact_match:
+                        exact_match = f
+                elif _colors_are_similar(f_color, req_color):
+                    if not similar_match:
+                        similar_match = f
+                elif not idx_type_only:
+                    # Right variant, wrong colour. Kept only as a last resort —
+                    # letting it block pass 2 would hide a correctly-coloured
+                    # tray of the same type sitting in another slot.
+                    idx_type_only = f
 
-        # Pass 2: standard type/color matching when no idx match
-        if not idx_match and not exact_match and not similar_match and not type_only_match:
+        # Pass 2: standard type/color matching when no idx match agreed on colour
+        if not exact_match and not similar_match and not type_only_match:
             for f in available:
                 f_type = (f.get("type") or "").upper()
                 if _canonical_filament_type(f_type) != _canonical_filament_type(req_type):
@@ -295,7 +325,10 @@ def match_filaments_to_slots(
                 elif not type_only_match:
                     type_only_match = f
 
-        match = idx_match or exact_match or similar_match or type_only_match
+        # Colour agreement first, wherever it was found; then any tray of the
+        # right type; then the right-variant-wrong-colour tray from pass 1, which
+        # is better than nothing but must not outrank a colour match.
+        match = exact_match or similar_match or type_only_match or idx_type_only
         if match:
             used_tray_ids.add(match["global_tray_id"])
             comparisons.append({"slot_id": req.get("slot_id", 0), "global_tray_id": match["global_tray_id"]})
@@ -346,8 +379,18 @@ async def compute_ams_mapping_for_printer(
                     o = override_map[req["slot_id"]]
                     req["type"] = o.get("type", req["type"])
                     req["color"] = o.get("color", req["color"])
-                    # Clear tray_info_idx so matching falls to type+color
-                    req["tray_info_idx"] = ""
+                    # A preference override SWAPS the slot's filament, so the 3MF's
+                    # tray_info_idx now points at the spool being replaced and must be
+                    # cleared — matching then falls back to type+colour. A
+                    # force_color_match override is not a swap: it carries the 3MF's
+                    # intended variant (PLA Basic GFA00 / Matte GFA01 / Silk GFA06),
+                    # so keep it and let the matcher pin the right tray on a printer
+                    # holding two same-colour spools of different variants (#2650).
+                    # Eligibility already refused printers without that variant, so
+                    # keeping it here is what stops dispatch landing on the very tray
+                    # the matcher just rejected. When the variant is absent the
+                    # matcher falls through to type+colour by itself.
+                    req["tray_info_idx"] = (o.get("tray_info_idx") or "") if o.get("force_color_match") else ""
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             logger.warning("Failed to apply filament_overrides for auto item %s: %s", item.id, e)
 

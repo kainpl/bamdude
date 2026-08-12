@@ -53,6 +53,7 @@ from backend.app.schemas.calibration_mode import derive_mode, mode_to_bool
 from backend.app.services.auto_queue_eligibility import find_eligible_printer
 from backend.app.services.auto_queue_threemf import extract_auto_queue_requirements
 from backend.app.services.filament_requirements import overrides_for_plate
+from backend.app.services.library_helpers import project_for_library_file
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,7 @@ def _to_response(item: AutoQueueItem) -> AutoQueueItemResponse:
         library_file_id=item.library_file_id,
         project_id=item.project_id,
         target_model=item.target_model,
+        target_location_id=item.target_location_id,
         target_location=item.target_location,
         required_filament_types=required_types,
         filament_overrides=overrides,
@@ -218,13 +220,8 @@ async def add_to_auto_queue(
         if not result.scalar_one_or_none():
             raise HTTPException(404, "Project not found")
 
-    # Inherit project from library file if not set explicitly. m044:
-    # multi-project file → first project as fallback (auto-queue items
-    # are single-project by design; operator passes ``project_id`` to
-    # disambiguate).
-    effective_project_id = data.project_id
-    if effective_project_id is None and library_file is not None and library_file.projects:
-        effective_project_id = library_file.projects[0].id
+    # One rule, shared with the queue and direct-print routes.
+    effective_project_id = project_for_library_file(data.project_id, library_file)
 
     # Resolve plate IDs to fan out (one row per plate)
     plate_ids: list[int | None]
@@ -282,7 +279,7 @@ async def add_to_auto_queue(
                     library_file_id=data.library_file_id,
                     project_id=effective_project_id,
                     target_model=target_model,
-                    target_location=data.target_location,
+                    target_location_id=data.target_location_id,
                     required_filament_types=required_types_json,
                     filament_overrides=plate_overrides_json,
                     force_color_match=data.force_color_match,
@@ -355,8 +352,10 @@ async def auto_queue_stats(
 ):
     """Archive-backed totals for auto-queue dispatched prints.
 
-    The ``auto_queue_items`` row is deleted once its print finishes
-    (it's a pre-dispatch router), so the lasting record is
+    ``auto_queue_items`` holds no history at all — it is a pre-dispatch
+    router. A row is deleted once its print finishes, and (since the
+    cancel path was made a hard delete) also when it is cancelled before
+    ever being routed. The lasting record is
     ``print_archives.from_auto_queue``. Mirrors the per-printer queue
     card footer: ``cancelled`` folds in ``aborted`` / ``stopped``.
 
@@ -445,20 +444,59 @@ async def cancel_auto_queue_item(
 ):
     """Cancel an auto-queue item.
 
-    - status='pending' → mark cancelled in auto_queue_items only.
-    - status='assigned' → also cancel the linked per-printer item if
-      it's still pending (printing items use the existing per-printer
-      stop endpoint).
+    - never routed (``status='pending'``) → the row is **deleted**. Nothing
+      records it: no archive exists yet, no ``print_queue`` item points at
+      it, the scheduler reads only ``status='pending'``, every UI query asks
+      for ``?status=pending``, and the counters come off
+      ``print_archives.from_auto_queue``. Marked ``cancelled`` it was
+      therefore invisible *and* permanent — the one delete this table has
+      (``queue_counters.detach_print_queue_refs``) starts from a
+      ``print_queue`` row, which a pre-dispatch cancel never had, so those
+      rows accumulated one per cancel with nothing able to reach them again.
+    - already routed → soft-cancel as before. The row stays: it is the
+      router-side half of a live per-printer item that points back at it via
+      ``PrintQueueItem.source_auto_item_id``, and it is deleted together with
+      that item when the item goes. The linked item is cancelled too if it
+      hasn't started (printing items use the per-printer stop endpoint).
+
+    The relationships are eager-loaded because the response has to be built
+    while the row still exists — and because ``_to_response`` reads them,
+    which under an ``AsyncSession`` cannot lazy-load.
     """
-    result = await db.execute(select(AutoQueueItem).where(AutoQueueItem.id == item_id))
+    result = await db.execute(
+        select(AutoQueueItem)
+        .options(
+            selectinload(AutoQueueItem.archive),
+            selectinload(AutoQueueItem.library_file),
+            selectinload(AutoQueueItem.created_by),
+            selectinload(AutoQueueItem.assigned_to)
+            .selectinload(PrintQueueItem.queue)
+            .selectinload(PrinterQueue.printer),
+        )
+        .where(AutoQueueItem.id == item_id)
+    )
     item = result.scalar_one_or_none()
     if not item:
         raise HTTPException(404, "Auto-queue item not found")
     if item.status == "cancelled":
         return _to_response(item)
 
+    now = datetime.now(timezone.utc)
+
+    if item.status == "pending" and item.assigned_to_item_id is None:
+        # Snapshot before the row stops existing. The client asked for a
+        # cancel and gets the item back in the state it asked for; the two
+        # fields are the response's alone, never written.
+        response = _to_response(item)
+        response.status = "cancelled"
+        response.cancelled_at = now
+        await db.delete(item)
+        await db.commit()
+        logger.info("Deleted un-routed auto-queue item %s on cancel", item_id)
+        return response
+
     item.status = "cancelled"
-    item.cancelled_at = datetime.now(timezone.utc)
+    item.cancelled_at = now
 
     if item.assigned_to_item_id:
         pq_result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item.assigned_to_item_id))
@@ -535,7 +573,12 @@ async def cancel_auto_queue_batch(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.QUEUE_DELETE_ALL),
 ):
-    """Cancel all pending items of a batch (mirrors ``POST /queue/batch/{id}/cancel``)."""
+    """Cancel all pending items of a batch (mirrors ``POST /queue/batch/{id}/cancel``).
+
+    Same rule as :func:`cancel_auto_queue_item`: an item that was never routed
+    is deleted rather than parked in ``status='cancelled'``, because nothing
+    can read such a row back. Items already routed keep their row.
+    """
     pending_result = await db.execute(
         select(AutoQueueItem).where(
             AutoQueueItem.batch_id == batch_id,
@@ -543,13 +586,11 @@ async def cancel_auto_queue_batch(
         )
     )
     pending = list(pending_result.scalars().all())
-    now = datetime.now(timezone.utc)
-    for item in pending:
-        item.status = "cancelled"
-        item.cancelled_at = now
 
-    # Also cancel any per-printer items dispatched from these auto items
-    # that are still pending
+    # The per-printer clean-up runs first, while every row of the batch is
+    # still there to be matched against: the ``source_auto_item_id`` lookup
+    # below has to see the pending ids too, in case the scheduler routed one
+    # of them between our read and this transaction.
     if pending:
         assigned_ids = [it.assigned_to_item_id for it in pending if it.assigned_to_item_id is not None]
         # Pending in this batch shouldn't have assigned_to set, but defensive:
@@ -575,6 +616,14 @@ async def cancel_auto_queue_batch(
         )
         for pq_item in pq_pending_result.scalars().all():
             pq_item.status = "cancelled"
+
+    now = datetime.now(timezone.utc)
+    for item in pending:
+        if item.assigned_to_item_id is None:
+            await db.delete(item)
+        else:
+            item.status = "cancelled"
+            item.cancelled_at = now
 
     await db.commit()
     return AutoQueueBatchActionResponse(affected=len(pending), batch_id=batch_id)

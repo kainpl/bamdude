@@ -8,7 +8,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from backend.app.i18n import escape_md, get_language, t
-from backend.app.services.printer_manager import printer_manager
+from backend.app.services.printer_manager import is_printer_busy, printer_manager
 from backend.app.services.telegram_handlers.common import NS, ensure_fresh, get_printers_data, has_perm
 
 if TYPE_CHECKING:
@@ -152,6 +152,12 @@ async def cb_calibration_start(callback: CallbackQuery, tg_chat: TelegramChat | 
     client = printer_manager.get_client(printer_id)
     if not client or not client.state.connected:
         await callback.answer(t(lang, NS, "printers.not_connected"), show_alert=True)
+        return
+
+    # The same refusal the HTTP route makes. The bot is a second front door to
+    # the identical command, and a guard only one of them enforces is not one.
+    if is_printer_busy(printer_id):
+        await callback.answer(t(lang, NS, "printers.busy_cannot_control"), show_alert=True)
         return
 
     success = client.start_calibration(

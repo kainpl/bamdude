@@ -49,7 +49,9 @@ _COPY_WITH_DEFAULTS: dict[str, dict[str, Any]] = {
         "require_plate_clear": 1,
         "plate_detection_enabled": 0,
         "cleanup_after_print": 1,
-        "mqtt_connection_timeout": 300,
+        # Disabled, matching the model default: an imported farm should not
+        # arrive with connection recycling switched on. See models/printer.py.
+        "mqtt_connection_timeout": 0,
     },
     "print_archives": {
         "swap_compatible": 0,
@@ -252,12 +254,6 @@ def _transform_ams_labels(row: dict[str, Any]) -> dict[str, Any]:
 def _transform_virtual_printer(row: dict[str, Any]) -> dict[str, Any]:
     """Fix SSDP model codes and add auto_dispatch default."""
     row.setdefault("auto_dispatch", 1)
-    return row
-
-
-def _transform_project_bom(row: dict[str, Any]) -> dict[str, Any]:
-    """Rename columns: quantity_printed -> quantity_acquired, notes -> remarks."""
-    # Renames are handled by the rename parameter, so this is a no-op safety net.
     return row
 
 
