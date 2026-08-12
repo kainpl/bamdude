@@ -57,7 +57,7 @@ support is a bug report, a translation PR or a star. If you would rather chip in
 
 ## What's different from Bambuddy?
 
-BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy), aimed at print farm operators. It still tracks upstream — each release is adapted through a tracked audit rather than a blind merge — so what the two projects share is deliberately **not** listed here. Everything below exists only in BamDude.
+BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy), aimed at print farm operators. It still tracks upstream — each release is adapted through a tracked audit rather than a blind merge — so what the two projects share is deliberately **not** listed here. Each item below is either absent upstream or built on a different principle.
 
 ### A queue built for a farm, in two tiers
 
@@ -93,10 +93,20 @@ Upstream has no Telegram integration at all. BamDude's is a complete aiogram 3.x
 
 - A workshop holds shelves, a shelf holds printers. Printers, sensors and spool storage attach at whichever level fits, and the printers, queues and maintenance views group by them.
 
-### More of the printer, and more of it writable
+### A wider command base to the printer
 
-- **Printer Settings and AMS Settings dialogs** mirroring BambuStudio's own, written through MQTT, with every applied change recorded in an audit table.
-- **Filament calibration wizard** — Pressure Advance end to end, with K-profiles read back from the printer itself, per nozzle and per extruder.
+Both projects can set a temperature, a fan speed and jog the bed. BamDude speaks a considerably wider slice of the MQTT protocol beyond that, mirrored from BambuStudio's own sequences:
+
+- **The extruder and the steppers.** Push and retract filament, and release the motors so the head can be pushed by hand. Both refuse a cold nozzle and a running print.
+- **The air duct as a whole**, not just a fan speed — mode, filtration and every fan the machine has, with each fan's controllability resolved per mode, and the steps the printer actually accepts rather than a made-up 0/25/50/75/100.
+- **The print options** Bambu Studio exposes and upstream never sends: air-print detection, auto-recovery, automatic filament switching, filament tangle, nozzle-blob detection, plate alignment, plate marking, plate type, air purification, sound, and saving remote prints to storage.
+- **The AMS as a device, not just slots** — calibrate it, switch its firmware personality, reset its sequence, change its user settings. Backed by a **Printer Settings** and an **AMS Settings** dialog, each writing through MQTT and recording every applied change in an audit table.
+- **Filament calibration over MQTT** — Pressure Advance and flow-rate runs started, tracked and read back, with K-profiles per nozzle and per extruder.
+- **Timelapse storage** — how much room is left, and dropping the oldest recording to make room for the next one.
+- **The printer's answer is read back.** Commands carry an acknowledgement listener, so a refusal is reported as a refusal instead of as success — and temperature requests are bounded by the machine's own limits rather than by a fixed table.
+
+Also here:
+
 - **G-code macros** — sequences you define, sent over MQTT, with plate-swap macros firing automatically between queued prints.
 - **3MF patching on the way to the printer** — mesh-mode flags and G-code injection are applied to a copy, so the archived file on disk stays the unpatched original.
 
