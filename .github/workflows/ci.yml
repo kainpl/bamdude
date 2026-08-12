@@ -340,8 +340,15 @@ jobs:
         run: npm run build
 
   # ============================================================================
-  # Docker Tests (matches test_docker.sh)
+  # Docker Tests — does the IMAGE work, not "do the unit tests pass"
   # ============================================================================
+  # No longer a mirror of test_docker.sh, which still runs everything locally.
+  # The unit suites used to run a second time here, inside the test images. That
+  # was ~10 minutes per run to re-learn what backend-tests and frontend-tests
+  # had just proved on the runner — and while both of those were
+  # continue-on-error, the duplicate was discarded as well. They gate now, so
+  # the copy buys nothing. What only this job can prove is kept: the production
+  # image builds, imports, ships static/, comes up healthy, and serves.
 
   docker-test:
     name: Docker Build
@@ -364,19 +371,7 @@ jobs:
       - name: Verify static files exist
         run: docker run --rm bamdude:test test -d /app/static
 
-      # Test 2: Backend Unit Tests in Docker
-      - name: Build backend test image
-        run: docker compose -f docker-compose.test.yml build backend-test
-      - name: Run backend tests in Docker
-        run: docker compose -f docker-compose.test.yml run --rm backend-test
-
-      # Test 3: Frontend Unit Tests in Docker
-      - name: Build frontend test image
-        run: docker compose -f docker-compose.test.yml build frontend-test
-      - name: Run frontend tests in Docker
-        run: docker compose -f docker-compose.test.yml run --rm frontend-test
-
-      # Test 4: Integration Tests
+      # Test 2: Integration Tests
       - name: Build integration container
         run: docker compose -f docker-compose.test.yml build integration
 
@@ -408,7 +403,7 @@ jobs:
           echo "Static files HTTP status: $STATUS"
           [ "$STATUS" = "200" ]
 
-      # Test 5: Integration Test Suite
+      # Test 3: Integration Test Suite
       - name: Build integration test runner
         run: docker compose -f docker-compose.test.yml build integration-test-runner
       - name: Run integration test suite
