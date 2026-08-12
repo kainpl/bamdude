@@ -49,6 +49,12 @@ function collectLeaves(node, prefix, leaves) {
     let name;
     if (ts.isIdentifier(prop.name)) name = prop.name.text;
     else if (ts.isStringLiteral(prop.name) || ts.isNoSubstitutionTemplateLiteral(prop.name)) name = prop.name.text;
+    // A numeric key is an ordinary key — `0:` and `'0':` are the same property
+    // at runtime, and both are reached by the same `t('a.b.0')` lookup. Groups
+    // keyed by an id the printer reports (air-duct modes) are written unquoted,
+    // so refusing to read them aborted the whole run on the FIRST such file and
+    // checked nothing at all — a parity hole disguised as a strictness rule.
+    else if (ts.isNumericLiteral(prop.name)) name = prop.name.text;
     else if (ts.isComputedPropertyName(prop.name)) {
       console.error(`ComputedPropertyName not allowed in locale file at path "${prefix}"`);
       process.exit(1);
