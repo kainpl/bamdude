@@ -6,17 +6,31 @@ the task can be garbage-collected mid-execution and the event loop logs
 ``Task was destroyed but it is pending!`` with no traceback. A support
 bundle review under #1648 surfaced 94 such warnings in 8 days of v0.2.4.5.
 
-``spawn_background_task`` is the one place in the codebase that calls
-``asyncio.create_task``. It stores the task in a module-level set, removes
-it when the task completes, and surfaces any uncaught exception through
-the logger so a silently-swallowed error becomes a visible WARNING with
-the originating traceback instead of an opaque GC warning.
+``spawn_background_task`` stores the task in a module-level set, removes it
+when the task completes, and surfaces any uncaught exception through the
+logger, so a silently-swallowed error becomes a visible WARNING with the
+originating traceback instead of an opaque GC warning.
 
 Use this for any work that should run in the background without being
 awaited inline. For tasks that the service owns and needs to cancel on
 shutdown, store the returned ``asyncio.Task`` on the service instance
 instead (the helper still adds the strong reference, so storing it twice
 is redundant but harmless).
+
+⚠️ **This is the intended route, not the only one taken.** This docstring
+used to claim ``spawn_background_task`` was "the one place in the codebase
+that calls ``asyncio.create_task``"; measured 2026-08-13, there are 66 raw
+``create_task`` call sites under ``backend/app`` and exactly one of them is
+here. Whether each of the other 65 keeps its own reference and
+cancels on shutdown — which the paragraph above explicitly permits — has not
+been audited, so treat that number as a list to check rather than a count of
+leaks. Re-measure before trusting it:
+
+    rg -c 'asyncio\\.create_task\\(' backend/app
+
+The claim was left standing long enough to be believed, which is the whole
+reason it is written down this way now: a rule and its observed compliance
+are two different facts, and only one of them was ever true here.
 """
 
 from __future__ import annotations
