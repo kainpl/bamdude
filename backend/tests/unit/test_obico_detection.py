@@ -132,6 +132,114 @@ class TestTestConnection:
         assert result["body"] == "something else"
 
 
+class TestMlApiToken:
+    """Obico's ML API gates ``/p/`` behind ML_API_TOKEN but leaves ``/hc/`` open.
+
+    That asymmetry is the whole point: health alone cannot tell a working setup
+    from one where every detection call comes back 401, which is exactly what
+    happened — Test Connection said the server was fine while nothing was ever
+    classified. Ported from upstream, which had this while we did not.
+    """
+
+    @pytest.mark.parametrize("token", [None, "", "   "])
+    def test_no_token_sends_no_header(self, token):
+        """With ML_API_TOKEN unset the server ignores the header entirely, so
+        sending nothing keeps the request byte-identical to what shipped before
+        this setting existed."""
+        from backend.app.services.obico_detection import auth_headers
+
+        assert auth_headers(token) == {}
+
+    def test_a_token_is_sent_as_a_bearer(self):
+        from backend.app.services.obico_detection import auth_headers
+
+        assert auth_headers("  s3cret ") == {"Authorization": "Bearer s3cret"}
+
+    def _client(self, hc, p):
+        client = MagicMock()
+        client.get = AsyncMock(side_effect=[hc, p])
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        return client
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_token_is_reported_even_though_health_passed(self):
+        """The failure this exists to catch: /hc/ answers ok, /p/ answers 401."""
+        svc = ObicoDetectionService()
+        client = self._client(MagicMock(status_code=200, text="ok"), MagicMock(status_code=401))
+
+        with patch("backend.app.services.obico_detection.httpx.AsyncClient", return_value=client):
+            result = await svc.test_connection("http://obico:3333", "wrong-token")
+
+        assert result["ok"] is False, "a server that rejects the token is not a working setup"
+        assert result["auth_ok"] is False
+        assert "ML_API_TOKEN" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_an_accepted_token_passes(self):
+        """422 is the success signal here: the auth decorator ran before the
+        handler, so the request got past auth and only then failed on the missing
+        ``img`` parameter. Anything that is not 401 means the token was fine."""
+        svc = ObicoDetectionService()
+        client = self._client(MagicMock(status_code=200, text="ok"), MagicMock(status_code=422))
+
+        with patch("backend.app.services.obico_detection.httpx.AsyncClient", return_value=client):
+            result = await svc.test_connection("http://obico:3333", "right-token")
+
+        assert result["ok"] is True
+        assert result["auth_ok"] is True
+
+    @pytest.mark.asyncio
+    async def test_the_token_reaches_both_probes(self):
+        svc = ObicoDetectionService()
+        client = self._client(MagicMock(status_code=200, text="ok"), MagicMock(status_code=422))
+
+        with patch("backend.app.services.obico_detection.httpx.AsyncClient", return_value=client):
+            await svc.test_connection("http://obico:3333", "tok")
+
+        sent = [call.kwargs["headers"] for call in client.get.await_args_list]
+        assert sent == [{"Authorization": "Bearer tok"}, {"Authorization": "Bearer tok"}]
+
+    @pytest.mark.asyncio
+    async def test_an_unhealthy_server_is_not_probed_for_auth(self):
+        """Nothing can be said about the token when the server is not answering
+        health — reporting it as unknown beats guessing."""
+        svc = ObicoDetectionService()
+        client = self._client(MagicMock(status_code=502, text="bad gateway"), MagicMock(status_code=401))
+
+        with patch("backend.app.services.obico_detection.httpx.AsyncClient", return_value=client):
+            result = await svc.test_connection("http://obico:3333", "tok")
+
+        assert result["ok"] is False
+        assert result["auth_ok"] is None
+        assert client.get.await_count == 1, "the probe must not run once health has already failed"
+
+    @pytest.mark.asyncio
+    async def test_a_probe_that_blows_up_does_not_fail_a_healthy_server(self):
+        svc = ObicoDetectionService()
+        client = MagicMock()
+        client.get = AsyncMock(side_effect=[MagicMock(status_code=200, text="ok"), RuntimeError("boom")])
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("backend.app.services.obico_detection.httpx.AsyncClient", return_value=client):
+            result = await svc.test_connection("http://obico:3333", "tok")
+
+        assert result["ok"] is True
+        assert result["auth_ok"] is None
+
+    @pytest.mark.asyncio
+    async def test_the_posted_url_is_held_to_the_lan_policy(self):
+        """This call takes its URL from a request body, so without a guard here
+        the settings-level one is sidestepped by testing a URL instead of saving
+        it — and the response body is handed back to the caller."""
+        svc = ObicoDetectionService()
+        result = await svc.test_connection("http://169.254.169.254/", "tok")
+
+        assert result["ok"] is False
+        assert "Obico ML URL" in result["error"]
+
+
 class TestPollOneStateLifecycle:
     """Confirms per-printer state is reset when a new print starts."""
 

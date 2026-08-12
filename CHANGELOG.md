@@ -14,6 +14,12 @@ All notable changes to BamDude will be documented in this file.
 
     Only reachable by someone who can already edit your settings, and no BamDude installation is known to have been reached this way. Found by comparing our checks against upstream Bambuddy's, which had both rules while we had neither.
 
+### Added
+
+- **AI failure detection can now sign in to an Obico ML server that asks for a token.** Obico's ML container can be started with `ML_API_TOKEN` set, and one that is refuses every detection request. BamDude sent no token at all, so on those servers nothing was ever classified — and the failure was invisible, because the health address Test Connection uses is left open even when the detection address is locked. You were told the server was fine while it was rejecting everything.
+
+    There is now an **ML API token** field beside the server address, and Test Connection checks the token as well as the server, saying which of the two is wrong. Leave it empty if your server runs without one — nothing changes for those, and the request goes out exactly as before.
+
 ### Fixed
 
 - **A printer whose dispatch was interrupted no longer refuses work for ever.** If BamDude was stopped, restarted or killed in the moment between accepting a queued job and sending the file — a container restart, an update, a power cut — that printer stayed marked as busy. Nothing ever cleared the mark: every routine that releases a printer needs either an archived print or a message from the printer saying it finished, and a job that never left the building has neither. The queue went on showing the job as printing, the printer was skipped for everything after it, and the farm quietly worked one machine short until somebody noticed.

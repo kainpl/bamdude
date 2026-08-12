@@ -17,6 +17,10 @@ router = APIRouter(prefix="/obico", tags=["obico"])
 
 class TestConnectionRequest(BaseModel):
     url: str
+    # None means "use the saved token"; "" means "test with no token at all", which
+    # is a distinct and useful case — it is how you check a server that runs
+    # without ML_API_TOKEN.
+    token: str | None = None
 
 
 @router.get("/status")
@@ -67,10 +71,26 @@ async def test_connection(
     req: TestConnectionRequest,
     _: User = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
-    """Ping the Obico ML API `/hc/` health endpoint. Returns ok + raw body."""
+    """Ping the Obico ML API and check the token. Returns ok + raw body + auth_ok.
+
+    A token omitted from the body falls back to the saved setting, so the operator
+    can test an already-configured server without retyping a secret the form does
+    not echo back.
+    """
     if not req.url:
-        return {"ok": False, "status_code": None, "body": None, "error": "URL is empty"}
-    return await obico_detection_service.test_connection(req.url)
+        return {"ok": False, "status_code": None, "body": None, "error": "URL is empty", "auth_ok": None}
+
+    token = req.token
+    if token is None:
+        from sqlalchemy import select
+
+        from backend.app.core.database import async_session
+        from backend.app.models.settings import Settings
+
+        async with async_session() as db:
+            row = (await db.execute(select(Settings).where(Settings.key == "obico_ml_token"))).scalar_one_or_none()
+            token = row.value if row else ""
+    return await obico_detection_service.test_connection(req.url, token)
 
 
 @router.get("/cached-frame/{nonce}")

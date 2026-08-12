@@ -1757,6 +1757,7 @@ export interface AppSettings {
   // Obico AI failure detection (#172)
   obico_enabled: boolean;
   obico_ml_url: string;
+  obico_ml_token: string;
   obico_sensitivity: 'low' | 'medium' | 'high';
   obico_action: 'notify' | 'pause' | 'pause_and_off';
   obico_poll_interval: number;
@@ -8233,10 +8234,12 @@ export const api = {
   getObicoPrinterStatus: () =>
     request<ObicoPrinterStatus>('/obico/printer-status'),
 
-  testObicoConnection: (url: string) =>
+  // `token` omitted means "use the saved one" — the form never echoes a secret
+  // back, so testing an already-configured server must not require retyping it.
+  testObicoConnection: (url: string, token?: string) =>
     request<ObicoTestConnection>('/obico/test-connection', {
       method: 'POST',
-      body: JSON.stringify({ url }),
+      body: JSON.stringify(token === undefined ? { url } : { url, token }),
     }),
 
   // Server-side slicing (B.4) — Phase 2 of 0.5.x cycle

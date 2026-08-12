@@ -6961,6 +6961,9 @@ export default {
     description: 'Monitor prints with a self-hosted Obico ML API and act on detected failures automatically.',
     mlUrl: 'Obico ML API URL',
     mlUrlHint: 'Base URL of your self-hosted Obico ml_api container (e.g. http://192.168.1.10:3333).',
+    mlToken: 'ML API token',
+    mlTokenHint:
+      "Only if your ml_api container runs with ML_API_TOKEN set — enter the same value. Leave empty otherwise. Without it the server answers every detection with 401 while the health check still passes, so Test reports the token separately.",
     test: 'Test',
     testSuccess: 'ML API reachable and healthy.',
     testFailed: 'Could not reach the ML API.',
