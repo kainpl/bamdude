@@ -84,6 +84,11 @@ Upstream has no Telegram integration at all. BamDude's is a complete aiogram 3.x
 - **Measurement history** — power draw and room conditions recorded as they arrive and kept for a month, charted per plug and per sensor. It is written above the plug drivers, so all five plug types get it rather than only the Zigbee ones.
 - **Sensor alarms** — a lowest and/or highest value for anything a sensor measures, including its own battery.
 
+### A Virtual Printer that saves into the library
+
+- **A file sent from the slicer lands in the file library, not in the print archive.** Upstream's virtual printer archives whatever it receives, or holds it for review. BamDude's default mode saves the 3MF into the library as a file you can browse, tag, move into a folder and print later — which leaves the archive as what it is meant to be, a record of prints that actually happened.
+- **It can also feed either queue tier** — a printer's own queue, or the Auto-Queue — as well as relay to a real printer.
+
 ### Locations that nest
 
 - A workshop holds shelves, a shelf holds printers. Printers, sensors and spool storage attach at whichever level fits, and the printers, queues and maintenance views group by them.
@@ -99,7 +104,6 @@ Upstream has no Telegram integration at all. BamDude's is a complete aiogram 3.x
 
 - **Ukrainian.** Upstream ships twelve locales and Ukrainian is not among them. BamDude ships English and Ukrainian only, and both are strict: a key missing from either fails CI, and so does a placeholder that drifted between them.
 - **Git backup to GitHub or GitLab**, where upstream backs up to GitHub.
-- **An Auto-Queue mode for the Virtual Printer**, alongside its queue, library and proxy modes.
 - **Notes on library files**, and **print-dialog options remembered per user and per printer model**.
 
 ---
