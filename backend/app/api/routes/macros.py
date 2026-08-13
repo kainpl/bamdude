@@ -27,6 +27,7 @@ MACRO_EVENTS = {
     "swap_mode_change_table": "Swap Mode - Change Table",
     "print_started": "Print Started (gcode_state → RUNNING)",
     "print_finished": "Print Finished (terminal status — completed/failed/cancelled)",
+    "layer_reached": "Layer Reached (print crosses a chosen layer)",
 }
 
 
@@ -154,6 +155,27 @@ def _validate_macro_action(
     return action.id, param
 
 
+def _validate_macro_event(event: str, action_type: str, trigger_layer: int | None) -> int | None:
+    """Cross-field validation for event + trigger_layer. Returns the normalized layer.
+
+    ``layer_reached`` needs a layer, and needs to be an ``mqtt_action``: the
+    event trigger refuses gcode macros (raw gcode mid-print fights the print
+    itself), so accepting one here would store a macro that can only ever be
+    skipped with a log line. Every other event stores no layer at all rather
+    than being rejected for carrying one.
+    """
+    from backend.app.services.macro_matcher import LAYER_REACHED_EVENT
+
+    if event != LAYER_REACHED_EVENT:
+        return None
+
+    if trigger_layer is None or trigger_layer < 1:
+        raise HTTPException(400, "event='layer_reached' requires trigger_layer >= 1")
+    if action_type != "mqtt_action":
+        raise HTTPException(400, "event='layer_reached' supports MQTT actions only, not gcode macros")
+    return trigger_layer
+
+
 @router.post("/", response_model=MacroResponse)
 async def create_macro(
     data: MacroCreate,
@@ -164,6 +186,7 @@ async def create_macro(
     normalized_action, normalized_param = _validate_macro_action(
         data.action_type, data.mqtt_action, data.gcode, data.mqtt_action_param
     )
+    normalized_layer = _validate_macro_event(data.event, data.action_type, data.trigger_layer)
 
     macro = Macro(
         name=data.name,
@@ -175,7 +198,7 @@ async def create_macro(
         action_type=data.action_type,
         mqtt_action=normalized_action,
         mqtt_action_param=normalized_param,
-        trigger_layer=data.trigger_layer,
+        trigger_layer=normalized_layer,
         delay_seconds=data.delay_seconds,
         gcode=data.gcode,
         enabled=data.enabled,
@@ -225,6 +248,12 @@ async def update_macro(
         # so a stale action can't survive the switch.
         update_data["mqtt_action"] = normalized_action
         update_data["mqtt_action_param"] = normalized_param
+
+    if "event" in update_data or "trigger_layer" in update_data or "action_type" in update_data:
+        next_event = update_data.get("event", macro.event)
+        next_action_type = update_data.get("action_type", macro.action_type)
+        next_layer = update_data.get("trigger_layer", macro.trigger_layer)
+        update_data["trigger_layer"] = _validate_macro_event(next_event, next_action_type, next_layer)
 
     for field, value in update_data.items():
         setattr(macro, field, value)

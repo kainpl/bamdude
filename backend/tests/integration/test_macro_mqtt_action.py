@@ -209,3 +209,76 @@ async def test_delay_seconds_bounds_enforced(async_client: AsyncClient):
         },
     )
     assert resp_neg.status_code == 422
+
+
+async def test_meta_offers_the_layer_event(async_client: AsyncClient):
+    meta = (await async_client.get("/api/v1/macros/meta")).json()
+    assert "layer_reached" in meta["events"]
+    assert "layer_reached" not in meta["swap_events"]
+
+
+async def test_create_layer_macro(async_client: AsyncClient):
+    resp = await async_client.post(
+        "/api/v1/macros/",
+        json={
+            "name": "Silent from 50",
+            "event": "layer_reached",
+            "trigger_layer": 50,
+            "action_type": "mqtt_action",
+            "mqtt_action": "print_speed",
+            "mqtt_action_param": "1",
+            "printer_models": ["*"],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["trigger_layer"] == 50
+
+
+async def test_layer_macro_needs_a_layer(async_client: AsyncClient):
+    resp = await async_client.post(
+        "/api/v1/macros/",
+        json={
+            "name": "No layer",
+            "event": "layer_reached",
+            "action_type": "mqtt_action",
+            "mqtt_action": "print_speed",
+            "mqtt_action_param": "1",
+            "printer_models": ["*"],
+        },
+    )
+    assert resp.status_code == 400
+    assert "layer" in resp.json()["detail"].lower()
+
+
+async def test_layer_macro_refuses_gcode(async_client: AsyncClient):
+    """A gcode macro mid-print fights the print; the trigger would skip it
+    silently, so refuse it at the door instead."""
+    resp = await async_client.post(
+        "/api/v1/macros/",
+        json={
+            "name": "Gcode at 50",
+            "event": "layer_reached",
+            "trigger_layer": 50,
+            "action_type": "gcode",
+            "gcode": "M106 S255",
+            "printer_models": ["*"],
+        },
+    )
+    assert resp.status_code == 400
+
+
+async def test_a_layer_on_another_event_is_dropped(async_client: AsyncClient):
+    resp = await async_client.post(
+        "/api/v1/macros/",
+        json={
+            "name": "Stray layer",
+            "event": "print_started",
+            "trigger_layer": 50,
+            "action_type": "mqtt_action",
+            "mqtt_action": "chamber_light",
+            "mqtt_action_param": "off",
+            "printer_models": ["*"],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["trigger_layer"] is None

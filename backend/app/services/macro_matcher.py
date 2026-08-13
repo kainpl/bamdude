@@ -1,21 +1,11 @@
 """Match macros to an (event, printer) tuple for future auto-execution.
 
-Status
+Wiring
 ------
-**Not yet wired to runtime events.** This helper is scaffolding for the
-planned "macros auto-fire on events" feature. Call sites that should
-eventually hook it in (but do not today):
-
-* ``backend/app/services/bambu_mqtt.py`` - print start / print complete /
-  print failed transitions.
-* ``backend/app/main.py`` queue orchestration - swap-mode start + table
-  swap around queue item boundaries.
-* Any future "on X" event bus.
-
-When wiring, call :func:`find_macros_for_event` to resolve the set of
-macros to run, then dispatch each one through the existing execute path
-in ``api/routes/macros.py::execute_macro`` (refactor the gcode-sending
-section into a shared helper at that time).
+``macro_trigger.fire_event_macros`` calls :func:`find_macros_for_event` from
+``main.on_print_start`` / ``on_print_complete``, and
+``macro_trigger.fire_layer_macros`` calls :func:`find_layer_macros` from the
+layer-change callback.
 
 Matcher semantics
 -----------------
@@ -48,6 +38,10 @@ from backend.app.models.macro import Macro
 from backend.app.models.printer import Printer
 
 logger = logging.getLogger(__name__)
+
+# The event whose macros fire mid-print, when the layer counter crosses
+# ``Macro.trigger_layer``.
+LAYER_REACHED_EVENT = "layer_reached"
 
 
 def _macro_targets_model(macro: Macro, model: str | None) -> bool:
@@ -99,3 +93,23 @@ def find_macros_for_event(
             [m.name for m in matched],
         )
     return matched
+
+
+def find_layer_macros(
+    printer: Printer,
+    macros: Iterable[Macro],
+    previous_layer: int,
+    layer: int,
+) -> list[Macro]:
+    """Return the macros whose ``trigger_layer`` the print has just crossed.
+
+    A crossing (``previous_layer < trigger_layer <= layer``), never an
+    equality: MQTT reports do get dropped, so a print can go from layer 48
+    straight to 52 — it has still passed 50, and the macro for 50 must run.
+
+    A row with no ``trigger_layer`` is skipped rather than treated as 0. The
+    API refuses to write one, but a hand-edited database should not make a
+    macro fire on every single layer.
+    """
+    candidates = find_macros_for_event(LAYER_REACHED_EVENT, printer, macros)
+    return [m for m in candidates if m.trigger_layer is not None and previous_layer < m.trigger_layer <= layer]
