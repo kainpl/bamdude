@@ -365,6 +365,7 @@ class FilePrintRequest(BaseModel):
     gcode_injection: bool = False
     execute_swap_macros: bool = True
     swap_macro_events: list[str] | None = None
+    selected_macro_ids: list[int] | None = None
     # Batch: first copy dispatches now, remaining (quantity-1) queue up
     quantity: int = 1
     # Project to associate the resulting archive with (when triggered from project view)

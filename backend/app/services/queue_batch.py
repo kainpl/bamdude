@@ -31,6 +31,7 @@ async def enqueue_batch_copies(
     gcode_injection: bool = False,
     execute_swap_macros: bool = False,
     swap_macro_events: list[str] | None = None,
+    selected_macro_ids: list[int] | None = None,
     auto_off_after: bool = False,
     created_by_id: int | None = None,
     project_id: int | None = None,
@@ -66,6 +67,7 @@ async def enqueue_batch_copies(
     nozzle_mode = normalize_mode(nozzle_offset_cali)
     ams_mapping_json = json.dumps(ams_mapping) if ams_mapping else None
     swap_macro_events_json = json.dumps(swap_macro_events) if execute_swap_macros and swap_macro_events else None
+    selected_macro_ids_json = json.dumps(selected_macro_ids) if selected_macro_ids is not None else None
 
     # Fallback: inherit project_id from the library file if caller didn't pass
     # an explicit one. m044: a file can belong to multiple projects — pick
@@ -108,6 +110,7 @@ async def enqueue_batch_copies(
                 gcode_injection=gcode_injection,
                 execute_swap_macros=execute_swap_macros,
                 swap_macro_events=swap_macro_events_json,
+                selected_macro_ids=selected_macro_ids_json,
                 auto_off_after=auto_off_after,
                 position=max_pos + 1 + i,
                 status="pending",

@@ -4513,6 +4513,7 @@ async def print_library_file(
             gcode_injection=body.gcode_injection,
             execute_swap_macros=body.execute_swap_macros,
             swap_macro_events=body.swap_macro_events,
+            selected_macro_ids=body.selected_macro_ids,
             created_by_id=current_user.id if current_user else None,
             project_id=project_for_library_file(body.project_id, lib_file),
         )

@@ -3547,6 +3547,7 @@ async def reprint_archive(
             gcode_injection=body.gcode_injection,
             execute_swap_macros=body.execute_swap_macros,
             swap_macro_events=body.swap_macro_events,
+            selected_macro_ids=body.selected_macro_ids,
             created_by_id=user.id if user else None,
             project_id=archive.project_id,
         )

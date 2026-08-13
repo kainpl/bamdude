@@ -5499,6 +5499,8 @@ export default {
 
   // Print modal
   printModal: {
+    eventMacros: 'Макроси',
+    eventMacrosCount: '{{selected}} з {{total}}',
     selectPrinter: 'Виберіть принтер',
     filamentMapping: 'Призначення філаменту',
     plateFilamentsUnreadable: 'Не вдалося прочитати філаменти однієї з обраних плит, тож призначити її неможливо. Зніміть з неї вибір, щоб поставити в чергу решту.',

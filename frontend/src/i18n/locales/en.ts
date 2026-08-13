@@ -5489,6 +5489,8 @@ export default {
 
   // Print modal
   printModal: {
+    eventMacros: 'Macros',
+    eventMacrosCount: '{{selected}} of {{total}}',
     selectPrinter: 'Select Printer',
     filamentMapping: 'Filament Mapping',
     plateFilamentsUnreadable: 'The filaments of a selected plate could not be read, so it cannot be mapped. Deselect it to queue the others.',

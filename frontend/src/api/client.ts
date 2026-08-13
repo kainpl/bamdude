@@ -2879,6 +2879,7 @@ export interface PrintQueueItem {
   mesh_mode_fast_check: boolean;
   execute_swap_macros: boolean;
   swap_macro_events: string[] | null;
+  selected_macro_ids: number[] | null;
   /** Auto-Print G-code Injection (#422). When true, dispatch resolves the per-model
       gcode_snippets server setting and splices snippets into the plate gcode at
       `; MACHINE_START_GCODE_END` (start) and EOF (end) before FTP upload. */
@@ -2953,6 +2954,7 @@ export interface PrintQueueItemCreate {
   mesh_mode_fast_check?: boolean;
   execute_swap_macros?: boolean;
   swap_macro_events?: string[] | null;
+  selected_macro_ids?: number[] | null;
   gcode_injection?: boolean;
   // Per-item preheat / heat-soak override (#1468)
   preheat_override?: 'inherit' | 'on' | 'off';
@@ -2980,6 +2982,7 @@ export interface PrintQueueItemUpdate {
   mesh_mode_fast_check?: boolean;
   execute_swap_macros?: boolean;
   swap_macro_events?: string[] | null;
+  selected_macro_ids?: number[] | null;
   gcode_injection?: boolean;
   // Per-item preheat / heat-soak override (#1468)
   preheat_override?: 'inherit' | 'on' | 'off';
@@ -3023,6 +3026,7 @@ export interface PrintQueueBulkUpdate {
   mesh_mode_fast_check?: boolean;
   execute_swap_macros?: boolean;
   swap_macro_events?: string[] | null;
+  selected_macro_ids?: number[] | null;
   gcode_injection?: boolean;
   // Per-item preheat / heat-soak override (#1468)
   preheat_override?: 'inherit' | 'on' | 'off';
@@ -3072,6 +3076,7 @@ export interface AutoQueueItem {
   mesh_mode_fast_check: boolean;
   execute_swap_macros: boolean;
   swap_macro_events: string[] | null;
+  selected_macro_ids: number[] | null;
   status: 'pending' | 'assigned' | 'cancelled';
   waiting_reason: string | null;
   assigned_to_item_id: number | null;
@@ -3117,6 +3122,7 @@ export interface AutoQueueItemCreate {
   mesh_mode_fast_check?: boolean;
   execute_swap_macros?: boolean;
   swap_macro_events?: string[] | null;
+  selected_macro_ids?: number[] | null;
   scheduled_time?: string | null;
   manual_start?: boolean;
   auto_off_after?: boolean;
@@ -3143,6 +3149,7 @@ export interface AutoQueueItemUpdate {
   mesh_mode_fast_check?: boolean | null;
   execute_swap_macros?: boolean | null;
   swap_macro_events?: string[] | null;
+  selected_macro_ids?: number[] | null;
 }
 
 // MQTT Logging types
@@ -4156,6 +4163,14 @@ export interface PrintOptionsPreferenceData {
     preheat_override: 'inherit' | 'on' | 'off';
     preheat_chamber_target_override: number | null;
   };
+  // Which macros the operator turns OFF for this model. Stored as the
+  // exception list, not the selection: a macro created after this preference
+  // was saved is then ticked by default instead of invisible until noticed.
+  //
+  // Optional because absent already means what it should — nothing deselected,
+  // everything ticked — which is exactly the state of every preference saved
+  // before this existed, and of the panels that build a blob without it.
+  event_macros?: { deselected_ids: number[] };
   swap_macros: {
     execute: boolean;
     events: string[];
@@ -6243,6 +6258,7 @@ export const api = {
       mesh_mode_fast_check?: boolean;
       execute_swap_macros?: boolean;
       swap_macro_events?: string[] | null;
+      selected_macro_ids?: number[] | null;
       quantity?: number;
     }
   ) =>
@@ -8100,6 +8116,7 @@ export const api = {
       mesh_mode_fast_check?: boolean;
       execute_swap_macros?: boolean;
       swap_macro_events?: string[] | null;
+      selected_macro_ids?: number[] | null;
       quantity?: number;
       project_id?: number;
       cleanup_library_after_dispatch?: boolean;
@@ -9649,6 +9666,11 @@ export const bugReportApi = {
 // Macros API
 export const macrosApi = {
   getMacros: () => request<Macro[]>('/macros/'),
+  // Separate from getMacros() rather than an optional argument: getMacros is
+  // passed by reference as a TanStack queryFn, and an optional parameter there
+  // breaks its type inference (same reason getPrintersWithArchived exists).
+  getMacrosForModel: (printerModel: string) =>
+    request<Macro[]>('/macros/?printer_model=' + encodeURIComponent(printerModel)),
   getMacroMeta: () => request<MacroMeta>('/macros/meta'),
   getSwapProfiles: () => request<SwapProfile[]>('/macros/swap-profiles'),
   createMacro: (data: MacroCreate) => request<Macro>('/macros/', { method: 'POST', body: JSON.stringify(data) }),

@@ -8,7 +8,7 @@ import type {
   PrintQueueItemUpdate,
   SpoolAssignment,
 } from '../../api/client';
-import { api } from '../../api/client';
+import { api, macrosApi } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { Card, CardContent } from '../Card';
 import { Button } from '../Button';
@@ -33,6 +33,7 @@ import { PrintOptionsPanel } from './PrintOptions';
 import { autoCalibrationCaps } from '../../utils/printerCapabilities';
 import { ScheduleOptionsPanel } from './ScheduleOptions';
 import { SwapMacrosPanel } from './SwapMacros';
+import { EventMacrosPanel } from './EventMacros';
 import type {
   FilamentReqsData,
   PrintModalProps,
@@ -141,6 +142,12 @@ export function PrintModal({
     }
     return DEFAULT_SWAP_MACROS_OPTIONS;
   });
+
+  // Which macros run for this print. Edit mode starts from what the item
+  // stored; every other mode is filled in from the model preference below.
+  const [selectedMacroIds, setSelectedMacroIds] = useState<number[]>(
+    () => (mode === 'edit-queue-item' && queueItem ? (queueItem.selected_macro_ids ?? []) : []),
+  );
 
   const [scheduleOptions, setScheduleOptions] = useState<ScheduleOptions>(() => {
     if (mode === 'edit-queue-item' && queueItem) {
@@ -341,6 +348,25 @@ export function PrintModal({
     staleTime: 60 * 1000,
   });
 
+  // Macros that could run on the target printer. Non-swap events only — swap
+  // macros have their own panel and their own fields.
+  const { data: modelMacros } = useQuery({
+    queryKey: ['macros', 'for-model', effectivePrinterModel],
+    queryFn: () => macrosApi.getMacrosForModel(effectivePrinterModel!),
+    enabled: !!effectivePrinterModel,
+    staleTime: 60 * 1000,
+  });
+
+  const applicableMacros = useMemo(() => {
+    const printer = printers?.find((p) => p.id === selectedPrinters[0]);
+    return (modelMacros ?? []).filter(
+      (m) =>
+        m.enabled &&
+        !m.event.startsWith('swap_mode_') &&
+        (!m.swap_profile || m.swap_profile === printer?.swap_profile),
+    );
+  }, [modelMacros, printers, selectedPrinters]);
+
   // Apply the saved preference once per model so user toggles after the
   // initial apply aren't clobbered by a re-render. The set lives in a ref
   // because we don't want it to participate in render-triggered effect deps.
@@ -360,6 +386,20 @@ export function PrintModal({
     appliedPreferenceModelsRef.current.add(effectivePrinterModel);
   }, [effectivePrinterModel, preferenceData]);
 
+  // Tick everything the operator has not explicitly turned off for this model.
+  // Storing the exceptions rather than the selection is what makes a macro
+  // created later arrive ticked instead of silently absent. Edit mode is
+  // excluded: there the item's own stored list is the authority.
+  const appliedMacroModelsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (mode === 'edit-queue-item') return;
+    if (!effectivePrinterModel || applicableMacros.length === 0) return;
+    if (appliedMacroModelsRef.current.has(effectivePrinterModel)) return;
+    const deselected = new Set(preferenceData?.options.event_macros?.deselected_ids ?? []);
+    setSelectedMacroIds(applicableMacros.filter((m) => !deselected.has(m.id)).map((m) => m.id));
+    appliedMacroModelsRef.current.add(effectivePrinterModel);
+  }, [mode, effectivePrinterModel, applicableMacros, preferenceData]);
+
   // Best-effort persist on submit. Failure is silently swallowed — the
   // print itself already succeeded; a failed preference write would only
   // mean defaults next time. Called from each successful submit branch
@@ -370,11 +410,14 @@ export function PrintModal({
       .upsertPrintOptionsPreference(effectivePrinterModel, {
         print_options: printOptions,
         swap_macros: { execute: swapMacros.execute, events: swapMacros.events },
+        event_macros: {
+          deselected_ids: applicableMacros.filter((m) => !selectedMacroIds.includes(m.id)).map((m) => m.id),
+        },
       })
       .catch(() => {
         // silent — preference is best-effort
       });
-  }, [effectivePrinterModel, printOptions, swapMacros]);
+  }, [effectivePrinterModel, printOptions, swapMacros, applicableMacros, selectedMacroIds]);
 
   const { data: spoolAssignments } = useQuery({
     queryKey: ['spool-assignments'],
@@ -753,6 +796,7 @@ export function PrintModal({
           execute_swap_macros: !swapCompatible && swapMacros.execute && swapMacros.events.length > 0,
           swap_macro_events:
             !swapCompatible && swapMacros.execute && swapMacros.events.length > 0 ? swapMacros.events : null,
+          selected_macro_ids: selectedMacroIds,
           scheduled_time:
             scheduleOptions.scheduleType === 'scheduled' && scheduleOptions.scheduledTime
               ? new Date(scheduleOptions.scheduledTime).toISOString()
@@ -893,6 +937,7 @@ export function PrintModal({
       const plateId = plateOverride !== undefined ? plateOverride : selectedPlate;
       return {
       queue_id: printerId,  // queue_id == printer_id (always per-printer queue)
+      selected_macro_ids: selectedMacroIds,
       // Use library_file_id for library files, archive_id for archives
       archive_id: isLibraryFile ? undefined : archiveId,
       library_file_id: isLibraryFile ? libraryFileId : undefined,
@@ -946,6 +991,7 @@ export function PrintModal({
                 ams_mapping: printerMapping,
                 ...printOptions,
                 ...swapPayload,
+                selected_macro_ids: selectedMacroIds,
                 quantity,
               });
             }
@@ -954,6 +1000,7 @@ export function PrintModal({
             const printerMapping = getMappingForPrinter(printerId, plateId);
             const updateData: PrintQueueItemUpdate = {
               queue_id: printerId,  // queue_id == printer_id
+              selected_macro_ids: selectedMacroIds,
               auto_off_after: scheduleOptions.autoOffAfter,
               manual_start: scheduleOptions.scheduleType === 'manual',
               require_previous_success: scheduleOptions.requirePreviousSuccess,
@@ -1369,6 +1416,16 @@ export function PrintModal({
             ) && (
               <SwapMacrosPanel options={swapMacros} onChange={setSwapMacros} />
             )}
+
+            {/* Which of the other macros run for this print. Outside the swap
+                condition above on purpose — these have nothing to do with swap
+                mode, and the panel hides itself when nothing applies. */}
+            <EventMacrosPanel
+              macros={applicableMacros}
+              selectedIds={selectedMacroIds}
+              onChange={setSelectedMacroIds}
+            />
+
 
             {/* Quantity (batch) - not for edit mode */}
             {mode !== 'edit-queue-item' && (effectivePrinterCount > 0 || isAutoMode) && (
