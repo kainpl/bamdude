@@ -23,9 +23,12 @@ Protocol reference: vault ``60-specs/bambu-file-tunnel-protocol.md``.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import ssl
+from collections.abc import Callable
+from pathlib import Path
 
 from backend.app.services.bambu_tunnel.codec import (
     HEADER_SIZE,
@@ -44,13 +47,22 @@ MTYPE_FILE = 12289  # 0x3001
 CMD_LIST = 1
 CMD_READ = 2
 CMD_DELETE = 3
+CMD_UPLOAD = 5
 CMD_HANDSHAKE = 7
 
 DEFAULT_PORT = 6000
 
-# The wire name for reading the internal medium; external is the ABSENCE of the
-# key. Exported so the transport layer does not have to spell it itself.
+# 255 KiB — the fragment size BambuStudio uses on the wire.
+CHUNK_SIZE = 261120
+
+# ⚠️ Three wire names for two media, and which one applies depends on the
+# operation. Reading the internal medium is ``internal`` and the external one is
+# the ABSENCE of the key; UPLOADING names them ``emmc`` and ``udisk``. None of
+# the three derives from another. Exported so the transport layer does not have
+# to spell them itself.
 WIRE_INTERNAL = "internal"
+WIRE_EMMC = "emmc"
+WIRE_UDISK = "udisk"
 
 
 class TunnelError(Exception):
@@ -196,6 +208,107 @@ class BambuTunnelClient:
 
     async def delete_files(self, paths: list[str]) -> None:
         await self._command(CMD_DELETE, {"paths": paths})
+
+    async def upload_file(
+        self,
+        local_path: Path,
+        remote_name: str,
+        storage: str,
+        progress_cb: Callable[[int, int], None] | None = None,
+    ) -> None:
+        """Send a file in three phases: open, fragments, final fragment.
+
+        ⚠️ **``result`` in a REQUEST means "more to come".** It is ``1`` on every
+        fragment and ``0`` on the last one — the opposite of ``result`` in a
+        reply, where ``0`` is success. Sending ``0`` throughout (the natural
+        reflex) declares every fragment final.
+
+        ⚠️ **The envelope and the bytes share one frame.** The chunk begins
+        immediately after the closing brace; there is no separate data frame.
+
+        ⚠️ **One sequence for the whole transfer**, with ``frag_id`` identifying
+        the chunk. Only the open and the completion are awaited — see below.
+
+        ⚠️ **The storage is ``emmc``/``udisk`` here, not ``internal``.** Upload
+        spells the same two media differently from listing.
+        """
+        total = local_path.stat().st_size
+        sequence = self._next_sequence()
+
+        # Phase 1 — the open, awaited: a refusal must stop us before any bytes
+        # go on the wire.
+        self._send(
+            TYPE_DATA_REQUEST,
+            sequence,
+            json.dumps(
+                {
+                    "mtype": MTYPE_FILE,
+                    "cmdtype": CMD_UPLOAD,
+                    "sequence": sequence,
+                    "req": {"path": remote_name, "storage": storage, "total": total, "type": "model"},
+                }
+            ).encode(),
+        )
+        answer, _body = await self._await_sequence(sequence)
+        if answer.get("result", 0) != 0:
+            raise TunnelError(f"tunnel refused the upload of {remote_name}", answer.get("result", -1))
+
+        digest = hashlib.md5(usedforsecurity=False)  # the printer's choice of digest, not ours
+        sent = 0
+        frag_id = 0
+
+        with local_path.open("rb") as handle:
+            while True:
+                chunk = handle.read(CHUNK_SIZE)
+                digest.update(chunk)
+                offset = sent
+                sent += len(chunk)
+                # An empty file still needs one fragment, or the printer waits
+                # for something that never arrives.
+                is_last = sent >= total
+
+                req: dict = {"offset": offset, "size": len(chunk)}
+                if is_last:
+                    # ⚠️ Lowercase here; the same digest goes UPPERCASE into the
+                    # MQTT project_file command.
+                    req["file_md5"] = digest.hexdigest()
+
+                self._send(
+                    TYPE_DATA_REQUEST,
+                    sequence,
+                    json.dumps(
+                        {
+                            "cmdtype": CMD_UPLOAD,
+                            "mtype": MTYPE_FILE,
+                            "sequence": sequence,
+                            "frag_id": frag_id,
+                            "req": req,
+                            "result": 0 if is_last else 1,
+                        }
+                    ).encode()
+                    + chunk,
+                )
+                if self._writer is not None:
+                    await self._writer.drain()
+
+                frag_id += 1
+                if progress_cb is not None:
+                    # An exception raised in here travels out untouched — the
+                    # dispatcher cancels a job from this callback and must not
+                    # have it reported as a transport failure.
+                    progress_cb(sent, total)
+
+                if is_last:
+                    break
+
+        # ⚠️ Only one await for the whole body. ``_parked`` is keyed by sequence
+        # and an upload keeps one throughout, so a per-fragment acknowledgement
+        # would be read as the completion. No capture shows the printer sending
+        # any, and this log line is what will tell us if one ever does.
+        logger.debug("[%s] upload of %s: %d fragment(s) sent, awaiting completion", self._ip, remote_name, frag_id)
+        answer, _body = await self._await_sequence(sequence)
+        if answer.get("result", 0) != 0:
+            raise TunnelError(f"tunnel rejected the uploaded {remote_name}", answer.get("result", -1))
 
     # -- plumbing -------------------------------------------------------
 

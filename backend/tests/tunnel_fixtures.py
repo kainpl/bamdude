@@ -65,6 +65,14 @@ class FakeTunnelServer:
         self.report_start = 0
         self.fail_next_with: int | None = None
         self.auth_rejected = False
+        # Uploads, reassembled from their fragments.
+        self.uploads: dict[str, bytes] = {}
+        self.upload_meta: dict[str, dict] = {}
+        # Every fragment envelope in order, so a test can assert on frag_id and
+        # on the result flag that means "more to come".
+        self.upload_frames: list[dict] = []
+        self._upload_open: dict[int, str] = {}
+        self._pending_body = b""
         self._server: asyncio.Server | None = None
         self._writers: set[asyncio.StreamWriter] = set()
 
@@ -111,9 +119,12 @@ class FakeTunnelServer:
                     return
                 _type_word, _sequence, payload = frame
                 try:
-                    envelope, _body = split_envelope(payload)
+                    envelope, body = split_envelope(payload)
                 except ValueError:
                     continue
+                # ⚠️ The bytes ride in the same frame as the envelope, so the
+                # reply logic needs them alongside it.
+                self._pending_body = body
                 self.requests.append(envelope)
 
                 if envelope.get("mtype") == MTYPE_SESSION:
@@ -173,6 +184,8 @@ class FakeTunnelServer:
             return self._data({"mtype": MTYPE_SESSION, "sequence": sequence, "result": 0, "reply": {}})
 
         cmdtype = envelope.get("cmdtype")
+        if cmdtype == 5:
+            return self._reply_for_upload(envelope, sequence)
         if cmdtype == 7:
             return self._data(
                 {
@@ -210,6 +223,34 @@ class FakeTunnelServer:
         if cmdtype == 3:
             self.deleted.extend((envelope.get("req") or {}).get("paths", []))
             return self._data({"cmdtype": 3, "mtype": MTYPE_FILE, "sequence": sequence, "result": 0, "reply": {}})
+        return None
+
+    def _reply_for_upload(self, envelope: dict, sequence: int) -> bytes | None:
+        """The three phases of ``cmdtype 5``, answered the way the printer does.
+
+        ⚠️ Only the open and the LAST fragment get a reply. ``result`` in the
+        request means "more to come", so a fragment carrying ``1`` is
+        acknowledged by silence — a fake that answered every fragment would let
+        a client that awaits per-fragment look correct.
+        """
+        req = envelope.get("req") or {}
+
+        if "path" in req:
+            self._upload_open[sequence] = req["path"]
+            self.uploads[req["path"]] = b""
+            self.upload_meta[req["path"]] = dict(req)
+            return self._data({"cmdtype": 5, "mtype": MTYPE_FILE, "sequence": sequence, "result": 0, "reply": {}})
+
+        self.upload_frames.append(envelope)
+        path = self._upload_open.get(sequence)
+        if path is None:
+            # A fragment for a transfer that was never opened.
+            return self._data({"cmdtype": 5, "mtype": MTYPE_FILE, "sequence": sequence, "result": 1, "reply": {}})
+
+        self.uploads[path] += self._pending_body
+        if envelope.get("result") == 0:
+            self.upload_meta[path]["file_md5"] = req.get("file_md5")
+            return self._data({"cmdtype": 5, "mtype": MTYPE_FILE, "sequence": sequence, "result": 0, "reply": {}})
         return None
 
     def _data(self, envelope: dict) -> bytes:
