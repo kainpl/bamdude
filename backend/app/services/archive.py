@@ -1524,6 +1524,24 @@ def remove_swap_pending_event(archive: PrintArchive, event: str) -> bool:
     return True
 
 
+def set_selected_macro_ids(archive: PrintArchive, macro_ids: list[int] | None) -> None:
+    """Record the per-print macro selection on the archive.
+
+    The copy that survives a backend restart between print start and print
+    finish; the in-memory registration in ``main`` covers the earlier window,
+    before this row exists at all.
+
+    ``None`` writes nothing. A dispatch that carried no selection must not be
+    made to look like one that chose an empty set — both fire nothing, but
+    only one of them was a decision, and the row is where that is legible.
+    """
+    if macro_ids is None:
+        return
+    merged = dict(archive.extra_data or {})
+    merged["selected_macro_ids"] = [int(i) for i in macro_ids]
+    archive.extra_data = merged
+
+
 def add_fired_layer_macro(archive: PrintArchive, macro_id: int) -> bool:
     """Record *macro_id* in ``archive.extra_data['layer_macros_fired']``.
 
@@ -2009,6 +2027,7 @@ class ArchiveService:
         subtask_id: str | None = None,
         library_file_id: int | None = None,
         swap_macro_events_pending: list[str] | None = None,
+        selected_macro_ids: list[int] | None = None,
         prefer_filename_for_name: bool = False,
         plate_index: int | None = None,
         dispatched_file: Path | None = None,
@@ -2280,6 +2299,11 @@ class ArchiveService:
         # writer and times out under busy_timeout.
         if swap_macro_events_pending and "swap_mode_change_table" in swap_macro_events_pending:
             metadata["swap_macro_events_pending"] = list(swap_macro_events_pending)
+        # Unlike the swap line above this records whatever was chosen, empty
+        # list included: "the operator ticked nothing" is an answer the
+        # triggers must be able to read back after a restart.
+        if selected_macro_ids is not None:
+            metadata["selected_macro_ids"] = [int(i) for i in selected_macro_ids]
 
         # Determine status and timestamps. Default `'completed'` covers the
         # path where on_print_complete archives a finished print without

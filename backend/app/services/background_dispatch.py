@@ -1047,6 +1047,7 @@ class BackgroundDispatchService:
                 if opts.get("execute_swap_macros") and "swap_mode_change_table" in (opts.get("swap_macro_events") or [])
                 else None
             )
+            selected_macros = opts.get("selected_macro_ids")
 
             await self._startup_lock.acquire()
             try:
@@ -1069,6 +1070,7 @@ class BackgroundDispatchService:
                     plate_index=source_archive.plate_index,
                     print_data={"status": "printing"},
                     swap_macro_events_pending=swap_pending,
+                    selected_macro_ids=selected_macros,
                 )
                 if not archive:
                     raise RuntimeError("Failed to create reprint archive")
@@ -1365,9 +1367,13 @@ class BackgroundDispatchService:
                 # archive_print's swap_macro_events_pending parameter for the
                 # library-file path, and the explicit pre-stamp block below
                 # the archive lookup for the reprint path.
-                from backend.app.main import register_swap_config
+                from backend.app.main import register_macro_selection, register_swap_config
 
                 register_swap_config(
+                    job.printer_id,
+                    job.options if isinstance(job.options, dict) else {},
+                )
+                register_macro_selection(
                     job.printer_id,
                     job.options if isinstance(job.options, dict) else {},
                 )
@@ -1597,6 +1603,9 @@ class BackgroundDispatchService:
                         job.options.get("swap_macro_events")
                         if isinstance(job.options, dict) and job.options.get("execute_swap_macros")
                         else None
+                    ),
+                    selected_macro_ids=(
+                        job.options.get("selected_macro_ids") if isinstance(job.options, dict) else None
                     ),
                     # Plate the user picked when scheduling — same value the
                     # dispatch loop already uses for FTP filename / MQTT
@@ -1874,9 +1883,13 @@ class BackgroundDispatchService:
                 # archive_print's swap_macro_events_pending parameter for the
                 # library-file path, and the explicit pre-stamp block below
                 # the archive lookup for the reprint path.
-                from backend.app.main import register_swap_config
+                from backend.app.main import register_macro_selection, register_swap_config
 
                 register_swap_config(
+                    job.printer_id,
+                    job.options if isinstance(job.options, dict) else {},
+                )
+                register_macro_selection(
                     job.printer_id,
                     job.options if isinstance(job.options, dict) else {},
                 )

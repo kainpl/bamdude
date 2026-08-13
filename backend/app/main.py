@@ -419,6 +419,17 @@ _print_ams_mappings: dict[int, list[int]] = {}
 # Only one print is active per printer at a time, so printer_id is a safe key.
 _active_swap_config: dict[int, dict] = {}
 
+# Which macros the operator ticked for the print currently on each printer.
+# ``{printer_id: [macro_id, ...]}``. Registered at dispatch, read by the macro
+# triggers, popped in on_print_complete.
+#
+# This exists because the archive copy cannot cover the whole window:
+# ``fire_event_macros("print_started")`` fires several hundred lines before
+# ``on_print_start`` gets round to creating or adopting the archive, so an
+# archive-only lookup would find nothing and print_started macros would never
+# run at all.
+_active_macro_selection: dict[int, list[int]] = {}
+
 # Track progress milestones for notifications: {printer_id: last_milestone_notified}
 # Milestones are 25, 50, 75. Value of 0 means no milestone notified yet for current print.
 _last_progress_milestone: dict[int, int] = {}
@@ -916,6 +927,27 @@ def withdraw_expected_print(printer_id: int, filename: str) -> None:
             filename,
             ", ".join(str(a) for a in sorted(archive_ids)),
         )
+
+
+def register_macro_selection(printer_id: int, options: dict) -> None:
+    """Register the per-print macro selection for *printer_id*.
+
+    Called from dispatch after a successful ``start_print``, next to
+    :func:`register_swap_config`. Unlike that one there is no master toggle to
+    gate on: an empty list is a real answer — the operator ticked nothing —
+    and is registered as such. Only a missing key, meaning a dispatch path
+    that never carried a selection at all, registers nothing.
+    """
+    ids = options.get("selected_macro_ids")
+    if ids is None:
+        return
+    _active_macro_selection[printer_id] = [int(i) for i in ids]
+    logging.getLogger(__name__).info("[MACRO-SEL] Registered %d selected macro(s) for printer %s", len(ids), printer_id)
+
+
+def clear_macro_selection(printer_id: int) -> None:
+    """Forget the selection — the print it belonged to is over."""
+    _active_macro_selection.pop(printer_id, None)
 
 
 def register_swap_config(printer_id: int, options: dict):
@@ -5027,6 +5059,12 @@ async def on_print_complete(printer_id: int, data: dict):
     from backend.app.services.macro_trigger import clear_fired_layer_macros
 
     clear_fired_layer_macros(printer_id)
+    # Only here, and only this late. The layer-fired guard above also resets on
+    # ``progress < 5``, but the selection must not: that point is the START of a
+    # print, and clearing there would throw away what dispatch just registered.
+    # This also has to sit below ``fire_event_macros("print_finished")`` — clear
+    # first and the finish macros would have nothing to match against.
+    clear_macro_selection(printer_id)
 
     swap_config = _active_swap_config.pop(printer_id, None)
     swap_events: list[str] = list(swap_config.get("swap_macro_events", [])) if swap_config else []

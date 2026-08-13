@@ -2205,6 +2205,11 @@ class PrintScheduler:
             "nozzle_mapping": item.nozzle_mapping,
             "execute_swap_macros": item.execute_swap_macros,
             "swap_macro_events": swap_events,
+            # Which macros the operator ticked for this job. None means no
+            # dialog ever asked — under opt-in that fires nothing.
+            "selected_macro_ids": (
+                json.loads(item.selected_macro_ids) if isinstance(item.selected_macro_ids, str) else None
+            ),
             "gcode_injection": item.gcode_injection,
             # Preheat / heat-soak per-item override (#1468). Read by the preheat
             # stage in background_dispatch (services/preheat.py) before start_print.
