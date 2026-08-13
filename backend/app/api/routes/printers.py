@@ -45,10 +45,8 @@ from backend.app.schemas.printer import (
 )
 from backend.app.services.bambu_ftp import (
     clear_sdcard_async,
-    delete_file_async,
     download_file_bytes_async,
     get_storage_info_async,
-    list_files_async,
 )
 from backend.app.services.bambu_mqtt import (
     AIRDUCT_COOLING_FILT,
@@ -61,6 +59,7 @@ from backend.app.services.bambu_mqtt import (
     airduct_parts_effective,
 )
 from backend.app.services.printer_diagnostic import run_connection_diagnostic
+from backend.app.services.printer_files.factory import transport_for
 from backend.app.services.printer_location_service import load_tree, subtree_ids
 from backend.app.services.printer_manager import (
     _airduct_fans,
@@ -1435,24 +1434,46 @@ async def _load_printer_or_404(printer_id: int) -> Printer:
     return printer
 
 
+def _resolve_storage(requested: str | None, model: str | None, state) -> str:
+    """Which medium this request is about.
+
+    An explicit value is honoured when the printer actually has it; ``None``
+    takes the capability default, which opens internal storage when there is no
+    card so the operator is not shown an empty screen where files exist.
+
+    ⚠️ Only our vocabulary is accepted. A wire spelling (``emmc``, ``udisk``)
+    arriving here means one escaped ``TunnelTransport``, and answering it would
+    hide the leak.
+    """
+    from backend.app.utils.printer_storage import EXTERNAL, INTERNAL, storage_capability_for
+
+    capability = storage_capability_for(model, state)
+    if requested is None:
+        return capability["default_storage"]
+    if requested not in (EXTERNAL, INTERNAL):
+        raise HTTPException(400, f"Unknown storage: {requested}")
+    if requested == INTERNAL and not capability["can_browse_internal"]:
+        raise HTTPException(400, "This printer has no internal storage")
+    return requested
+
+
 @router.get("/{printer_id}/files")
 async def list_printer_files(
     printer_id: int,
     path: str = "/",
+    storage: str | None = None,
     _=RequirePermission(Permission.PRINTERS_FILES),
 ):
     """List files on the printer at the specified path."""
     printer = await _load_printer_or_404(printer_id)
+    resolved = _resolve_storage(storage, printer.model, printer_manager.get_status(printer_id))
 
-    files = await list_files_async(printer.ip_address, printer.access_code, path, printer_model=printer.model)
-
-    # Add full path to each file
-    for f in files:
-        f["path"] = f"{path.rstrip('/')}/{f['name']}" if path != "/" else f"/{f['name']}"
+    files = await transport_for(printer, resolved).list_files(path)
 
     return {
         "path": path,
-        "files": files,
+        "storage": resolved,
+        "files": [entry.as_dict() for entry in files],
     }
 
 
@@ -1460,12 +1481,14 @@ async def list_printer_files(
 async def download_printer_file(
     printer_id: int,
     path: str,
+    storage: str | None = None,
     _=RequirePermission(Permission.PRINTERS_FILES),
 ):
     """Download a file from the printer."""
     printer = await _load_printer_or_404(printer_id)
+    resolved = _resolve_storage(storage, printer.model, printer_manager.get_status(printer_id))
 
-    data = await download_file_bytes_async(printer.ip_address, printer.access_code, path, printer_model=printer.model)
+    data = await transport_for(printer, resolved).read_bytes(path)
     if data is None:
         raise HTTPException(404, f"File not found: {path}")
 
@@ -1981,6 +2004,7 @@ async def import_printer_files_to_library(
 async def delete_printer_file(
     printer_id: int,
     path: str,
+    storage: str | None = None,
     _=RequirePermission(Permission.PRINTERS_FILES),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1992,7 +2016,8 @@ async def delete_printer_file(
 
     from backend.app.services.bambu_ftp import DeleteResult
 
-    result = await delete_file_async(printer.ip_address, printer.access_code, path, printer_model=printer.model)
+    resolved = _resolve_storage(storage, printer.model, printer_manager.get_status(printer_id))
+    result = await transport_for(printer, resolved).delete(path)
     if result == DeleteResult.NOT_FOUND:
         raise HTTPException(404, f"File not found on printer: {path}")
     if result == DeleteResult.FAILED:
