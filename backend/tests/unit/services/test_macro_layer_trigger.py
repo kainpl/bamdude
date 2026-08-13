@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import backend.app.models.printer_location  # noqa: F401 — Printer relates to it by name
+from backend.app import main
 from backend.app.models.archive import PrintArchive
 from backend.app.models.macro import Macro
 from backend.app.models.printer import Printer
@@ -135,8 +136,10 @@ def dispatched(monkeypatch):
         lambda coro, name=None: (coro.close(), calls.append(name))[1],
     )
     macro_trigger._fired_layer_macros.clear()
+    main._active_macro_selection.clear()
     yield calls
     macro_trigger._fired_layer_macros.clear()
+    main._active_macro_selection.clear()
 
 
 async def _a_layer_macro(db, printer_id: int, layer: int = 50) -> int:
@@ -187,6 +190,9 @@ class TestFiring:
         macro_id = await _a_layer_macro(db_session, printer.id)
         factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
         pm = _manager(_running_client())
+        # Macros are opt-in per print — without a selection nothing fires at all,
+        # which is a different question from the one these tests ask.
+        main.register_macro_selection(printer.id, {"selected_macro_ids": [macro_id]})
 
         await macro_trigger.fire_layer_macros(printer.id, 50, 49, factory, pm)
 
@@ -198,9 +204,10 @@ class TestFiring:
         """The replacement client's layer counter starts at 0, so the next
         report crosses the target a second time."""
         printer = await printer_factory(name="P1", model="P1S")
-        await _a_layer_macro(db_session, printer.id)
+        macro_id = await _a_layer_macro(db_session, printer.id)
         factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
         pm = _manager(_running_client())
+        main.register_macro_selection(printer.id, {"selected_macro_ids": [macro_id]})
 
         await macro_trigger.fire_layer_macros(printer.id, 50, 49, factory, pm)
         await macro_trigger.fire_layer_macros(printer.id, 62, 0, factory, pm)
@@ -211,9 +218,10 @@ class TestFiring:
         self, test_engine, db_session, printer_factory, dispatched
     ):
         printer = await printer_factory(name="P1", model="P1S")
-        await _a_layer_macro(db_session, printer.id)
+        macro_id = await _a_layer_macro(db_session, printer.id)
         factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
         pm = _manager(_running_client())
+        main.register_macro_selection(printer.id, {"selected_macro_ids": [macro_id]})
 
         await macro_trigger.fire_layer_macros(printer.id, 50, 49, factory, pm)
         macro_trigger.clear_fired_layer_macros(printer.id)

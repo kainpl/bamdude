@@ -51,6 +51,39 @@ def clear_fired_layer_macros(printer_id: int) -> None:
     _fired_layer_macros.pop(printer_id, None)
 
 
+async def _selected_macro_ids(db, printer_id: int) -> set[int]:
+    """The macros the operator ticked for the print now on *printer_id*.
+
+    Memory first — it is the only store that exists during the window between
+    ``start_print`` and the archive being created, and ``print_started`` fires
+    inside that window. The archive second, because it is the only one that
+    survives a restart. An empty set when neither answers, which under opt-in
+    means nothing fires.
+
+    A registration of ``[]`` is an answer, not a miss: the operator ticked
+    nothing. Falling through to the archive there would let a previous print's
+    row decide this one.
+    """
+    from backend.app.main import _active_macro_selection
+
+    in_memory = _active_macro_selection.get(printer_id)
+    if in_memory is not None:
+        return {int(i) for i in in_memory}
+
+    archive = (
+        await db.execute(
+            select(PrintArchive)
+            .where(PrintArchive.printer_id == printer_id, PrintArchive.status == "printing")
+            .order_by(PrintArchive.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if archive is None or not isinstance(archive.extra_data, dict):
+        return set()
+    stored = archive.extra_data.get("selected_macro_ids")
+    return {int(i) for i in stored} if isinstance(stored, list) else set()
+
+
 async def _run_one(
     macro: Macro,
     client: BambuMQTTClient,
@@ -114,8 +147,12 @@ async def fire_event_macros(
         all_macros = list(
             (await db.execute(select(Macro).where(Macro.event == event, Macro.enabled.is_(True)))).scalars()
         )
+        # Inside the session on purpose: the selection may have to be read off
+        # the archive, which needs a session, and matching without it would
+        # dispatch macros this print never asked for.
+        selected = await _selected_macro_ids(db, printer_id)
 
-    matched = find_macros_for_event(event, printer, all_macros)
+    matched = [m for m in find_macros_for_event(event, printer, all_macros) if m.id in selected]
     if not matched:
         return
 
@@ -170,7 +207,12 @@ async def fire_layer_macros(
                 await db.execute(select(Macro).where(Macro.event == LAYER_REACHED_EVENT, Macro.enabled.is_(True)))
             ).scalars()
         )
-        matched = [m for m in find_layer_macros(printer, all_macros, previous_layer, layer) if m.id not in fired]
+        selected = await _selected_macro_ids(db, printer_id)
+        matched = [
+            m
+            for m in find_layer_macros(printer, all_macros, previous_layer, layer)
+            if m.id in selected and m.id not in fired
+        ]
         if not matched:
             return
 

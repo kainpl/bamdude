@@ -24,6 +24,10 @@ All notable changes to BamDude will be documented in this file.
 
 ### Changed
 
+- **Macros are now chosen per print.** The print and queue dialogs list the macros that apply to the target printer, and only the ones you tick run for that job — with the choice remembered per printer model, the way swap macros already are. A macro you create later arrives ticked, because what's remembered is what you turned *off*.
+
+    **This changes existing behaviour.** A macro no longer fires on every print of a matching model. A print started outside BamDude — from the printer's screen, from Telegram, or through the virtual printer — has no dialog and therefore runs no macros; the same goes for anything already sitting in a queue from before the update. If you rely on a macro for those, tick it in the dialog for the jobs you queue.
+
 - **Macro MQTT actions now carry a value.** The two chamber-light actions became one **Chamber light** action with an On/Off setting, and a new **Print speed** action sets Silent, Standard, Sport or Ludicrous. Your existing light macros are converted the first time the new version starts — they keep doing exactly what they did.
 
 ### Fixed
