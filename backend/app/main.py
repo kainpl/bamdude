@@ -4872,7 +4872,12 @@ async def on_print_complete(printer_id: int, data: dict):
                     sanitized_base = subtask_name.replace(" ", "_")
                     for f in cache_files:
                         fname = f.get("name", "")
-                        if f.get("is_dir"):
+                        # ⚠️ ``is_directory``, not ``is_dir`` — the key the FTP
+                        # listing actually emits (bambu_ftp.list_files, pinned by
+                        # test_bambu_ftp). This guard read the wrong name and so
+                        # never fired: a directory in /cache went on to be passed
+                        # to DELE, which cannot delete one.
+                        if f.get("is_directory"):
                             continue
                         fname_lower = fname.lower()
 

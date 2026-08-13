@@ -1140,7 +1140,12 @@ class BackgroundDispatchService:
                 )
                 for f in cache_files:
                     fname = f.get("name", "")
-                    if f.get("is_dir"):
+                    # ⚠️ ``is_directory``, not ``is_dir`` — the key the FTP
+                    # listing actually emits (bambu_ftp.list_files, pinned by
+                    # test_bambu_ftp). Reading the wrong name meant this guard
+                    # never fired, and a directory in /cache went on to DELE,
+                    # which cannot delete one.
+                    if f.get("is_directory"):
                         continue
                     if fname == remote_filename or fname.endswith(f"_{sanitized_base}.bbl"):
                         try:
@@ -1687,7 +1692,12 @@ class BackgroundDispatchService:
                 )
                 for f in cache_files:
                     fname = f.get("name", "")
-                    if f.get("is_dir"):
+                    # ⚠️ ``is_directory``, not ``is_dir`` — the key the FTP
+                    # listing actually emits (bambu_ftp.list_files, pinned by
+                    # test_bambu_ftp). Reading the wrong name meant this guard
+                    # never fired, and a directory in /cache went on to DELE,
+                    # which cannot delete one.
+                    if f.get("is_directory"):
                         continue
                     if fname == remote_filename or fname.endswith(f"_{sanitized_base}.bbl"):
                         try:

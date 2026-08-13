@@ -38,6 +38,8 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **Post-print cleanup on the printer no longer tries to delete folders.** The three routines that tidy `/cache` after a print each meant to skip directories, and each asked the file listing the wrong question — so the check never once did anything, and any folder whose name matched was passed to a delete that cannot remove one. Harmless in practice, since the attempt simply failed and was ignored, but the code did the opposite of what it read as.
+
 - **A print that finished while BamDude was down now counts.** If the machine running BamDude restarts mid-print — a Windows update at four in the morning, say — the printer carries on and finishes alone. BamDude noticed on the next start and closed the print, but stopped there: the file's print count and "last printed" date stayed where they were, and the archive showed no energy at all, as though the print had drawn nothing. Both are now filled in when the print is recovered.
 
     The energy figure for such a print is **approximate** and says so: the meter kept counting through however long the printer sat idle before BamDude came back, so that idle draw is inside the number. It is a small amount next to a print, and worth having — an empty field reads as "this print used no power", which is further from the truth.
