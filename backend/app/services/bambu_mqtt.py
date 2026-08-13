@@ -2802,6 +2802,15 @@ class BambuMQTTClient:
             sup["fod_check"] = bool((fun2 >> 13) & 1)
             sup["displacement_detection"] = bool((fun2 >> 14) & 1)
             sup["smart_nozzle_blob"] = bool((fun2 >> 15) & 1)
+            # BS ``is_support_print_with_emmc`` (DeviceManager.cpp:4408) — may a
+            # print be sent when no card is inserted.
+            sup["print_with_emmc"] = bool(fun2 & 1)
+            # BS ``is_support_model_internal_storage`` (DeviceManager.cpp:4413) —
+            # does the file browser get an internal-storage tab. ⚠️ A DIFFERENT
+            # question from the bit above: Studio gates the storage tab on this
+            # one (MediaFilePanel.cpp:274) and the send on the other. A machine
+            # can have one without the other; never collapse them into one flag.
+            sup["model_internal_storage"] = bool((fun2 >> 17) & 1)
 
     def _parse_xcam_data(self, xcam_data):
         """Parse xcam data for camera settings and AI detection options."""
