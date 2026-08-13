@@ -80,6 +80,7 @@ async def try_download_3mf(
     candidates = build_filename_candidates(subtask_name, filename)
     if not candidates:
         return None
+    original_temp_dir = temp_dir
 
     _enabled, _count, _delay, ftp_timeout = await get_ftp_retry_settings()
     # Per-printer subdir avoids the cross-printer race when two printers
@@ -134,7 +135,7 @@ async def try_download_3mf(
     # lives in an unexpected subdir.
     search_term = (subtask_name or filename or "").lower().replace(".gcode", "").replace(".3mf", "")
     if not search_term:
-        return None
+        return await _try_internal_storage(printer, candidates, original_temp_dir)
 
     search_dirs = ["/", "/cache", "/model", "/data", "/data/Metadata"]
     search_normalized = search_term.replace(" ", "_")
@@ -162,7 +163,7 @@ async def try_download_3mf(
             fallback_paths.append((full_remote, fname))
 
     if not fallback_paths:
-        return None
+        return await _try_internal_storage(printer, candidates, original_temp_dir)
 
     # Single connection, try every fuzzy-matched path.
     fuzzy_filename = fallback_paths[0][1]
@@ -187,4 +188,53 @@ async def try_download_3mf(
     except Exception as e:
         logger.debug("fuzzy download_file_try_paths_async failed: %s", e)
 
-    return None
+    return await _try_internal_storage(printer, candidates, original_temp_dir)
+
+
+async def _try_internal_storage(printer: Printer, candidates: list[str], temp_dir: Path) -> tuple[Path, str] | None:
+    """Last resort: the file may be in the printer's internal storage.
+
+    FTP only ever sees the card. On a machine that keeps models internally —
+    X2D, the H2 family — a print started from the printer's own screen with no
+    card inserted leaves nothing for any of the stages above to find, and the
+    archive would keep ``file_path=""`` and ``no_3mf_available=True`` for ever
+    across all four of ``archive_download_retry``'s triggers, with the file
+    sitting right there on the machine.
+
+    ⚠️ Gated on the capability, not attempted blindly: on P1S and A1 mini port
+    6000 is open and completes a TLS handshake, but that is the camera daemon
+    and it answers no tunnel frame at all. Probing it would cost a timeout on
+    every failed recovery for the majority of the farm.
+    """
+    from backend.app.services.printer_files.factory import transport_for
+    from backend.app.services.printer_manager import printer_manager
+    from backend.app.utils.printer_storage import INTERNAL, storage_capability_for
+
+    capability = storage_capability_for(printer.model, printer_manager.get_status(printer.id))
+    if not capability["can_browse_internal"]:
+        return None
+
+    transport = transport_for(printer, INTERNAL)
+    try:
+        entries = await transport.list_files("/")
+    except Exception as e:
+        logger.debug("Tunnel listing failed while recovering a 3MF for %s: %s", printer.name, e)
+        return None
+
+    wanted = {c.lower() for c in candidates}
+    match = next((e for e in entries if e.name.lower() in wanted), None)
+    if match is None:
+        return None
+
+    data = await transport.read_bytes(match.path)
+    if not data:
+        return None
+
+    temp_dir = temp_dir / str(printer.id)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    # ``match.name`` comes from the printer's own listing — containment-check it
+    # the same way the FTP stages do.
+    temp_path = safe_join_under(temp_dir, match.name, http=False)
+    temp_path.write_bytes(data)
+    logger.info("Recovered %s from %s's internal storage", match.name, printer.name)
+    return temp_path, match.name

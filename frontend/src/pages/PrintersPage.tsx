@@ -3290,7 +3290,14 @@ function PrinterCard({
                   series can't happen here because our permissive sdcard parser
                   reads the top-level field only (it doesn't derive from
                   home_flag bits 8-9, which is what flipped on heartbeats). */}
-              {status?.connected && status?.sdcard === false && (
+              {/* ⚠️ Not shown on a machine that has somewhere else to put the
+                  file. On X2D and the H2 family a missing card is not a fault
+                  and not something to fix — the print goes to internal storage
+                  instead, and the old badge sent operators looking for a
+                  problem that was not there. */}
+              {status?.connected
+                && status?.sdcard === false
+                && !status?.storage_capability?.can_browse_internal && (
                 <button
                   onClick={() => setShowPrinterInfo(true)}
                   className="flex items-center gap-1 px-2 py-1 rounded-full text-xs bg-status-warning/20 text-status-warning cursor-pointer hover:opacity-80 transition-opacity"

@@ -22,6 +22,12 @@ All notable changes to BamDude will be documented in this file.
 
     Internal storage is a flat list rather than a folder tree, so the path bar and **Clear SD card** are not offered there; free space isn't shown either, because the printer doesn't report it over that channel. In place of the folder shortcuts there are two buttons — **Models** and **Timelapses** — because on internal storage those are two separate catalogues rather than two directories. The timelapse button appears only on printers that actually keep timelapses internally, which is a separate capability from keeping models.
 
+- **Printers with built-in storage can print without an SD card.** X2D and the H2 family keep files in internal storage, and BamDude could only ever send to a card — with none inserted every dispatch failed, telling you to check a card the machine does not need. Those printers now send to internal storage automatically when no card is present. Nothing changes when a card *is* in: it is still used, over the same transfer as before.
+
+    A card that is present but unreadable or write-protected still stops the print rather than quietly routing around it — an unreadable card means something is wrong with the machine — and the message now says which of the two situations you are in.
+
+    Prints started from the printer's own screen on such a machine also get their file into the archive now, instead of leaving an entry with nothing attached. And the "No SD" warning no longer appears on printers that do not need a card.
+
 - **Layer-triggered macros.** A macro can now fire when a print reaches a layer you choose — dropping to Silent speed from layer 50 onward, say, or turning the light off once the first few layers are down. It runs once per print: a printer that reconnects mid-print, or a BamDude restart, won't set it off a second time. It also waits for the print to genuinely start — some models tick the layer counter during the calibration they run beforehand, and that no longer counts.
 
 - **AI failure detection can now sign in to an Obico ML server that asks for a token.** Obico's ML container can be started with `ML_API_TOKEN` set, and one that is refuses every detection request. BamDude sent no token at all, so on those servers nothing was ever classified — and the failure was invisible, because the health address Test Connection uses is left open even when the detection address is locked. You were told the server was fine while it was rejecting everything.

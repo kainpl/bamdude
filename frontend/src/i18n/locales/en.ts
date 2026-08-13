@@ -485,7 +485,7 @@ export default {
     inserted: 'Inserted',
     notInserted: 'Not inserted',
     noSd: 'No SD',
-    sdCardMissing: 'No SD card detected. Prints that store files on the printer will fail; insert a card or switch "Store sent files" off.',
+    sdCardMissing: 'No SD card detected. This printer needs one to accept a print — insert a card, or switch "Store sent files" off.',
     door: {
       open: 'Enclosure door open',
       closed: 'Enclosure door closed'
