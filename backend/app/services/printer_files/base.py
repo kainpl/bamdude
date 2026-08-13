@@ -7,15 +7,17 @@ operations keep calling ``bambu_ftp`` directly and are deliberately absent from
 this interface — one that pretended the two were interchangeable would be false
 exactly where somebody leaned on it.
 
-⚠️ **Upload is absent on purpose.** It arrives with the dispatch stage, when
-both implementations can honour it. A method that one implementation raises on
-is the design this replaced.
+Upload joined in the dispatch stage, once both implementations could honour it
+— which was the condition for adding it at all. A method that one side raises
+on is the design this replaced.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Protocol
 
 # Re-exported rather than redefined: a delete has three outcomes, not two, and
@@ -74,3 +76,10 @@ class PrinterFileTransport(Protocol):
     async def read_bytes(self, path: str) -> bytes | None: ...
 
     async def delete(self, path: str) -> DeleteResult: ...
+
+    async def upload(
+        self,
+        local_path: Path,
+        remote_name: str,
+        progress_cb: Callable[[int, int], None] | None = None,
+    ) -> bool: ...

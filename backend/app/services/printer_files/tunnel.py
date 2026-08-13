@@ -14,10 +14,13 @@ open across them would be one more thing to notice a reconnect.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 
 from backend.app.services.bambu_tunnel.client import (
     DEFAULT_PORT,
+    WIRE_EMMC,
     WIRE_INTERNAL,
     BambuTunnelClient,
     TunnelError,
@@ -84,6 +87,26 @@ class TunnelTransport:
             except TunnelError as exc:
                 logger.info("[%s] tunnel delete refused for %s: %s", self._ip, path, exc)
                 return DeleteResult.FAILED
+
+    async def upload(
+        self,
+        local_path: Path,
+        remote_name: str,
+        progress_cb: Callable[[int, int], None] | None = None,
+    ) -> bool:
+        """⚠️ Only ``TunnelError`` is caught.
+
+        The dispatcher cancels a job by raising from inside ``progress_cb``, and
+        turning that into ``False`` would report a cancelled job as a failed
+        transfer — two different things with two different follow-ups.
+        """
+        async with self._client() as client:
+            try:
+                await client.upload_file(local_path, remote_name, WIRE_EMMC, progress_cb=progress_cb)
+                return True
+            except TunnelError as exc:
+                logger.info("[%s] tunnel upload refused for %s: %s", self._ip, remote_name, exc)
+                return False
 
     @staticmethod
     def _to_remote(entry: dict) -> RemoteFile:

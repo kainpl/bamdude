@@ -7,11 +7,15 @@ handling — already lives in ``bambu_ftp`` and is reached by calling it.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from pathlib import Path
+
 from backend.app.services.bambu_ftp import (
     DeleteResult,
     delete_file_async,
     download_file_bytes_async,
     list_files_async,
+    upload_file_async,
 )
 from backend.app.services.printer_files.base import FILE_TYPE_MODEL, RemoteFile
 
@@ -47,6 +51,24 @@ class FtpTransport:
 
     async def delete(self, path: str) -> DeleteResult:
         return await delete_file_async(self._ip, self._access_code, path, printer_model=self._model)
+
+    async def upload(
+        self,
+        local_path: Path,
+        remote_name: str,
+        progress_cb: Callable[[int, int], None] | None = None,
+    ) -> bool:
+        """The printer's FTP root is the card, so the name is the whole path."""
+        return bool(
+            await upload_file_async(
+                self._ip,
+                self._access_code,
+                str(local_path),
+                f"/{remote_name}",
+                progress_callback=progress_cb,
+                printer_model=self._model,
+            )
+        )
 
     @staticmethod
     def _join(directory: str, name: str) -> str:
