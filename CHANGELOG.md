@@ -16,7 +16,7 @@ All notable changes to BamDude will be documented in this file.
 
 ### Added
 
-- **The printer's internal storage is now browsable.** X2D and the H2 family keep files in built-in storage as well as on an SD card, and BamDude could only ever see the card — with no card inserted the file browser was simply empty, whatever was actually on the machine. Those printers now show a **SD card / Internal storage** switch, and everything the browser does works on both: listing, downloading, plate previews, importing into the library, and deleting.
+- **The printer's internal storage is now browsable.** X2D, P2S and the H2 family (H2C, H2D, H2D Pro, H2S) keep files in built-in storage as well as on an SD card, and BamDude could only ever see the card — with no card inserted the file browser was simply empty, whatever was actually on the machine. Those printers now show a **SD card / Internal storage** switch, and everything the browser does works on both: listing, downloading, plate previews, importing into the library, and deleting.
 
     A printer with no card inserted opens on its internal storage rather than on an empty list. Printers with only a card — every A1 and P1 — look and behave exactly as before, with no switch shown.
 
