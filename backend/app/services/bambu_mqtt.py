@@ -1393,7 +1393,7 @@ class BambuMQTTClient:
         on_print_start: Callable[[dict], None] | None = None,
         on_print_complete: Callable[[dict], None] | None = None,
         on_ams_change: Callable[[list], None] | None = None,
-        on_layer_change: Callable[[int], None] | None = None,
+        on_layer_change: Callable[[int, int], None] | None = None,
         on_macro_complete: Callable[[str, str], None] | None = None,
         on_kprofiles_changed: Callable[[], None] | None = None,
         on_first_status: Callable[[str, str, str, str], None] | None = None,
@@ -4139,9 +4139,11 @@ class BambuMQTTClient:
             if old_layer > 0:
                 self._last_valid_layer_num = old_layer
             self.state.layer_num = new_layer
-            # Trigger layer change callback if layer increased
+            # Trigger layer change callback if layer increased. Both edges are
+            # reported: a "fire at layer N" consumer needs to know whether the
+            # print crossed N, and dropped reports mean it can jump over it.
             if new_layer > old_layer and self.on_layer_change:
-                self.on_layer_change(new_layer)
+                self.on_layer_change(new_layer, old_layer)
             # Finish-photo on the last-layer edge (#1867). On models that skip the
             # stg_cur=22 stage (e.g. A1 Mini) the stage-22 trigger below never fires and
             # the FINISH fallback only lands after the user's End G-code has run (parked /

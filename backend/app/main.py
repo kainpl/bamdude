@@ -7092,7 +7092,7 @@ async def lifespan(app: FastAPI):
     printer_manager.set_ams_change_callback(on_ams_change)
 
     # Layer change callback for external camera timelapse
-    async def on_layer_change(printer_id: int, layer_num: int):
+    async def on_layer_change(printer_id: int, layer_num: int, previous_layer: int):
         """Capture timelapse frame on layer change + first layer notification."""
         from backend.app.services.layer_timelapse import on_layer_change as tl_layer_change
 
