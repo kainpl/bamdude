@@ -17,8 +17,8 @@ async def test_meta_exposes_mqtt_actions_and_print_started(async_client: AsyncCl
 
     assert "mqtt_actions" in meta
     ids = [a["id"] for a in meta["mqtt_actions"]]
-    assert "chamber_light_off" in ids
-    assert "chamber_light_on" in ids
+    assert "chamber_light" in ids
+    assert "print_speed" in ids
 
     assert "print_started" in meta["events"]
     assert "print_started" not in meta["swap_events"]

@@ -107,26 +107,35 @@ def dispatch_mqtt_action(
     client: BambuMQTTClient,
     mqtt_action: str,
     macro_name: str,
+    param: str | None = None,
 ) -> tuple[bool, str]:
-    """Execute a named MQTT action (e.g. ``chamber_light_off``) for a macro.
+    """Execute a named MQTT action (e.g. ``chamber_light``) for a macro.
 
     Synchronous — MQTT command methods themselves publish-and-forget over
     MQTT, so there's nothing to await. Unlike gcode macros we don't wrap
     with M1002 markers (the printer doesn't ACK these).
 
+    *param* is the action's single argument where it declares one. It is
+    validated here as well as at write time, because a stale row can carry a
+    value the catalog no longer offers and ``int(None)`` inside a dispatcher
+    would surface as a traceback rather than a refusal.
+
     Returns ``(success, error_message)``.
     """
-    from backend.app.core.mqtt_macro_actions import get_action
+    from backend.app.core.mqtt_macro_actions import resolve_action
 
     if not client or not client.state or not client.state.connected:
         return False, "Printer is not connected"
 
-    action = get_action(mqtt_action)
+    action, resolved_param = resolve_action(mqtt_action, param)
     if action is None:
         return False, f"Unknown mqtt_action: {mqtt_action}"
 
+    if action.param is not None and not action.param.is_valid(resolved_param):
+        return False, f"mqtt_action '{action.id}' needs a valid parameter, got {resolved_param!r}"
+
     try:
-        ok = action.dispatch(client)
+        ok = action.dispatch(client, resolved_param)
     except Exception as e:  # pragma: no cover — dispatcher is a thin adapter
         logger.exception("[MACRO-EXEC] mqtt_action '%s' for macro '%s' raised: %s", mqtt_action, macro_name, e)
         return False, f"Dispatch error: {e}"

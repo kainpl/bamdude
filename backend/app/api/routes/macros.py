@@ -108,7 +108,7 @@ def _validate_macro_action(action_type: str, mqtt_action: str | None, gcode: str
     Reused by create and patch paths so errors stay consistent.
     Raises ``HTTPException`` on mismatch.
     """
-    from backend.app.core.mqtt_macro_actions import MQTT_MACRO_ACTIONS
+    from backend.app.core.mqtt_macro_actions import MQTT_MACRO_ACTIONS, get_action
 
     if action_type not in ("gcode", "mqtt_action"):
         raise HTTPException(400, f"Unknown action_type '{action_type}'")
@@ -116,7 +116,9 @@ def _validate_macro_action(action_type: str, mqtt_action: str | None, gcode: str
     if action_type == "mqtt_action":
         if not mqtt_action:
             raise HTTPException(400, "action_type='mqtt_action' requires mqtt_action to be set")
-        if mqtt_action not in MQTT_MACRO_ACTIONS:
+        # Through the catalog, not a bare membership test: an id from before
+        # the light actions were parameterized still names a real command.
+        if get_action(mqtt_action) is None:
             raise HTTPException(
                 400,
                 f"Unknown mqtt_action '{mqtt_action}'. Valid options: {sorted(MQTT_MACRO_ACTIONS)}",
