@@ -669,7 +669,7 @@ async def _get_plug_energy(plug, db, *, force_read: bool = False) -> dict | None
     return await service.get_energy(plug)
 
 
-async def _record_print_energy(archive_id: int, printer_id: int) -> None:
+async def _record_print_energy(archive_id: int, printer_id: int, *, approximate: bool = False) -> None:
     """Calculate and save energy usage in background.
 
     Reads the starting kWh from the archive row (#941: persisted so a mid-print
@@ -679,6 +679,12 @@ async def _record_print_energy(archive_id: int, printer_id: int) -> None:
     is easy to get silently wrong — asking the plug for a fresh reading rather
     than accepting the cache — fails by producing a slightly small number, which
     is the one kind of wrong nobody notices.
+
+    ``approximate`` is set by the reconciliation sweep, which reaches a print
+    that ended while the process was down. The counter has climbed since, so
+    the printer's idle draw over the gap is inside the figure; the archive is
+    flagged rather than left empty, because "no energy recorded" reads as "this
+    print used nothing".
     """
     logger = logging.getLogger(__name__)
     try:
@@ -741,8 +747,18 @@ async def _record_print_energy(archive_id: int, printer_id: int) -> None:
             cost_per_kwh = float(energy_cost_per_kwh) if energy_cost_per_kwh else 0.15
             archive.energy_kwh = energy_used
             archive.energy_cost = round(energy_used * cost_per_kwh, 3)
+            if approximate:
+                # Reassign the dict so SQLAlchemy flags the JSON column dirty.
+                extra = dict(archive.extra_data or {})
+                extra["energy_is_approximate"] = True
+                archive.extra_data = extra
             await db.commit()
-            logger.info("[ENERGY-BG] Saved: %s kWh, cost=%s", energy_used, archive.energy_cost)
+            logger.info(
+                "[ENERGY-BG] Saved: %s kWh, cost=%s%s",
+                energy_used,
+                archive.energy_cost,
+                " (approximate — recovered print)" if approximate else "",
+            )
     except Exception as e:
         logger.warning("[ENERGY-BG] Failed: %s", e)
 

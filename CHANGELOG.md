@@ -28,6 +28,10 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **A print that finished while BamDude was down now counts.** If the machine running BamDude restarts mid-print — a Windows update at four in the morning, say — the printer carries on and finishes alone. BamDude noticed on the next start and closed the print, but stopped there: the file's print count and "last printed" date stayed where they were, and the archive showed no energy at all, as though the print had drawn nothing. Both are now filled in when the print is recovered.
+
+    The energy figure for such a print is **approximate** and says so: the meter kept counting through however long the printer sat idle before BamDude came back, so that idle draw is inside the number. It is a small amount next to a print, and worth having — an empty field reads as "this print used no power", which is further from the truth.
+
 - **A printer whose dispatch was interrupted no longer refuses work for ever.** If BamDude was stopped, restarted or killed in the moment between accepting a queued job and sending the file — a container restart, an update, a power cut — that printer stayed marked as busy. Nothing ever cleared the mark: every routine that releases a printer needs either an archived print or a message from the printer saying it finished, and a job that never left the building has neither. The queue went on showing the job as printing, the printer was skipped for everything after it, and the farm quietly worked one machine short until somebody noticed.
 
     BamDude now hands those printers back on startup, and returns their jobs to the queue to be sent again. It only does so where it can **prove** nothing reached the printer: the file is archived before it is uploaded, so an archive that does not exist means the upload never started. A printer with a print behind it is left alone, and so is one running a job started from its own screen — those are read from the printer itself, not from our records.

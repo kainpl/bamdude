@@ -202,18 +202,26 @@ async def _reconcile_complete_archive(
     *,
     status: str,
     uncertain: bool,
-) -> None:
+) -> int:
     """Close one orphan ``printing`` archive and advance its queue.
 
     ``status`` is ``"completed"`` or ``"failed"``. ``uncertain`` records
     that the printer had moved on, so the outcome could not be verified.
     Best-effort slicer estimates fill telemetry fields only when they are
-    still ``NULL`` — never overwrites a real value. Energy is left
-    untouched: a smart-plug reading taken now would over-count the idle
-    draw since the print actually finished.
+    still ``NULL`` — never overwrites a real value.
 
-    The caller commits.
+    A print that ended while the process was down is still a finished print,
+    so the completion bookkeeping happens here too: the library counters are
+    bumped exactly as the live handler does, and the archive id is returned so
+    the caller can recover the energy figure after it commits.
+
+    Energy is deliberately NOT read here. It needs a live round-trip to the
+    plug, which has no business inside the sweep's transaction, and it is only
+    meaningful once this row is committed.
+
+    Returns the archive id. The caller commits.
     """
+    from backend.app.main import _bump_library_file_usage
     from backend.app.services.queue_counters import set_queue_error, set_queue_idle, update_queue_counters
 
     now = datetime.now(timezone.utc)
@@ -244,6 +252,11 @@ async def _reconcile_complete_archive(
         extra["recovered_outcome_uncertain"] = True
     archive.extra_data = extra
 
+    # Successes only, matching the live handler: a file attempted three times
+    # and failed three times has a print_count of 0.
+    if status == "completed":
+        await _bump_library_file_usage(db, archive.library_file_id)
+
     # Advance the linked queue item, if any.
     item = (
         await db.execute(select(PrintQueueItem).where(PrintQueueItem.archive_id == archive.id))
@@ -271,6 +284,7 @@ async def _reconcile_complete_archive(
         status,
         " (outcome uncertain)" if uncertain else "",
     )
+    return archive.id
 
 
 def _recovered_completed_at(
@@ -328,10 +342,11 @@ async def _reconcile(
     live_file: str,
     live_subtask_id: str = "",
     live_subtask_name: str = "",
-) -> None:
+) -> list[int]:
     """Reconcile every orphan ``printing`` archive for one printer.
 
-    Takes an explicit session so tests can drive it directly;
+    Returns the ids of the archives it closed, for the caller's post-commit
+    energy recovery. Takes an explicit session so tests can drive it directly;
     :func:`reconcile_printer_prints` is the production wrapper.
     """
     # Pre-push_status guard (upstream #1679 parity). On the bare-connect edge
@@ -344,7 +359,7 @@ async def _reconcile(
     # unreachable; it's belt-and-braces for any future caller that reconciles
     # earlier in the connect sequence.
     if (live_state or "").upper() in ("", "UNKNOWN"):
-        return
+        return []
 
     # A dispatch in flight is not an orphan.
     #
@@ -372,7 +387,7 @@ async def _reconcile(
             "reconcile: printer %d was handed a job that has not started yet — leaving its archives alone",
             printer_id,
         )
-        return
+        return []
 
     # The dispatch hold above only exists once the print command has *landed*
     # (``_mark_printer_dispatched`` runs after a successful dispatch), and the
@@ -396,9 +411,10 @@ async def _reconcile(
         ).scalars()
     )
     if not orphans:
-        return
+        return []
 
     closed = 0
+    recovered: list[int] = []
     for archive in orphans:
         created = archive.created_at
         if created is not None:
@@ -427,15 +443,16 @@ async def _reconcile(
         if action == "running":
             continue  # still printing — the live RUNNING status self-arms completion
         if action == "failed":
-            await _reconcile_complete_archive(db, archive, status="failed", uncertain=False)
+            recovered.append(await _reconcile_complete_archive(db, archive, status="failed", uncertain=False))
         elif action == "uncertain":
-            await _reconcile_complete_archive(db, archive, status="completed", uncertain=True)
+            recovered.append(await _reconcile_complete_archive(db, archive, status="completed", uncertain=True))
         else:  # completed
-            await _reconcile_complete_archive(db, archive, status="completed", uncertain=False)
+            recovered.append(await _reconcile_complete_archive(db, archive, status="completed", uncertain=False))
         closed += 1
 
     if closed:
         logger.info("reconcile: closed %d orphan print(s) on startup for printer %d", closed, printer_id)
+    return recovered
 
 
 async def reconcile_printer_prints(
@@ -449,12 +466,34 @@ async def reconcile_printer_prints(
     connect. Opens its own session and commits."""
     from backend.app.core.database import async_session
 
+    recovered: list[int] = []
     try:
         async with async_session() as db:
-            await _reconcile(db, printer_id, live_state, live_file, live_subtask_id, live_subtask_name)
+            recovered = await _reconcile(db, printer_id, live_state, live_file, live_subtask_id, live_subtask_name)
             await db.commit()
     except Exception:  # noqa: BLE001 — a background sweep must never crash the connect path
         logger.exception("reconcile: connect-edge sweep failed for printer %d", printer_id)
+
+    # Energy for a print that ended while we were down. Spawned rather than
+    # awaited, and only after the commit: the reading is a live round-trip to
+    # the plug (a Zigbee radio read takes seconds) and this runs on the connect
+    # path. Same call the live handler makes, so there is one implementation of
+    # "counter now, minus what was banked at start".
+    #
+    # The figure is marked approximate because it is: the counter has kept
+    # climbing since the print really ended, so the printer's idle draw over
+    # the gap is folded in. That is a known over-count on the order of tens of
+    # watts, against a print measured in hundreds — and it is worth having,
+    # because the alternative is an archive that reads as though the print
+    # used no power at all.
+    for archive_id in recovered:
+        from backend.app.core.tasks import spawn_background_task
+        from backend.app.main import _record_print_energy
+
+        spawn_background_task(
+            _record_print_energy(archive_id, printer_id, approximate=True),
+            name=f"reconcile-energy-{archive_id}",
+        )
 
 
 async def release_interrupted_dispatch_claims(db: AsyncSession) -> int:

@@ -149,6 +149,68 @@ class TestTheEndOfAPrintAsksThePlugItself:
         assert seen["force_read"] is True
         assert archive.energy_kwh == 0.25, "and the delta is still computed from it"
 
+    @pytest.mark.asyncio
+    async def test_a_recovered_print_is_flagged_approximate(self):
+        """A print that ended while the process was down still gets a figure.
+
+        The counter kept climbing over the gap, so the printer's idle draw is
+        inside it. Flagged rather than withheld: an archive with no energy at
+        all reads as though the print used none.
+        """
+        from contextlib import asynccontextmanager
+
+        from backend.app import main
+
+        archive = SimpleNamespace(energy_start_kwh=1.0, energy_kwh=None, energy_cost=None, extra_data={"notes": "x"})
+        db = SimpleNamespace(get=AsyncMock(return_value=archive), commit=AsyncMock())
+
+        @asynccontextmanager
+        async def fake_session():
+            yield db
+
+        async def fake_energy(plug, db, *, force_read=False):
+            return {"total": 1.25}
+
+        with (
+            patch.object(main, "async_session", fake_session),
+            patch.object(main, "_energy_plug_for_printer", AsyncMock(return_value=_plug("zigbee"))),
+            patch.object(main, "_get_plug_energy", fake_energy),
+            patch.object(main.smart_plug_manager, "record_energy_snapshot", AsyncMock()),
+            patch("backend.app.api.routes.settings.get_setting", AsyncMock(return_value="0.20")),
+        ):
+            await main._record_print_energy(archive_id=7, printer_id=3, approximate=True)
+
+        assert archive.energy_kwh == 0.25
+        assert archive.extra_data["energy_is_approximate"] is True
+        assert archive.extra_data["notes"] == "x", "and nothing else in extra_data is lost"
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_completion_carries_no_such_flag(self):
+        from contextlib import asynccontextmanager
+
+        from backend.app import main
+
+        archive = SimpleNamespace(energy_start_kwh=1.0, energy_kwh=None, energy_cost=None, extra_data={})
+        db = SimpleNamespace(get=AsyncMock(return_value=archive), commit=AsyncMock())
+
+        @asynccontextmanager
+        async def fake_session():
+            yield db
+
+        async def fake_energy(plug, db, *, force_read=False):
+            return {"total": 1.25}
+
+        with (
+            patch.object(main, "async_session", fake_session),
+            patch.object(main, "_energy_plug_for_printer", AsyncMock(return_value=_plug("zigbee"))),
+            patch.object(main, "_get_plug_energy", fake_energy),
+            patch.object(main.smart_plug_manager, "record_energy_snapshot", AsyncMock()),
+            patch("backend.app.api.routes.settings.get_setting", AsyncMock(return_value="0.20")),
+        ):
+            await main._record_print_energy(archive_id=7, printer_id=3)
+
+        assert "energy_is_approximate" not in archive.extra_data
+
     def test_the_zigbee_driver_is_the_one_that_declares_a_cache(self):
         """Pins the flag to the driver rather than to the test's own stub."""
         from backend.app.services.zigbee.driver import ZigbeeSmartPlugService

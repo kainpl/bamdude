@@ -6,7 +6,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import backend.app.models.printer_location  # noqa: F401 — Printer relates to it by name
 from backend.app.models.archive import PrintArchive
+from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services.print_reconciliation import (
@@ -566,3 +568,65 @@ class TestADispatchInFlightIsNotAnOrphan:
             self._clear(9)
 
         assert archive.status == "completed"
+
+
+# --- Recovered prints do the completion bookkeeping too --------------------
+#
+# A print that ended while the process was down is still a finished print. The
+# sweep used to close the archive and stop there, so the library counters and
+# the energy figure stayed at whatever they were when the machine died.
+
+
+async def _make_library_file(db, **overrides):
+    lib = LibraryFile(
+        filename=overrides.get("filename", "widget.3mf"),
+        file_path=overrides.get("file_path", "lib/widget.3mf"),
+        file_type=overrides.get("file_type", "3mf"),
+        file_size=overrides.get("file_size", 1),
+        print_count=overrides.get("print_count", 0),
+    )
+    db.add(lib)
+    await db.flush()
+    return lib
+
+
+@pytest.mark.asyncio
+async def test_a_recovered_completion_bumps_the_library_counters(db_session):
+    lib = await _make_library_file(db_session)
+    archive = await _make_archive(db_session)
+    archive.library_file_id = lib.id
+    await db_session.flush()
+
+    await _reconcile_complete_archive(db_session, archive, status="completed", uncertain=False)
+
+    assert lib.print_count == 1
+    assert lib.last_printed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_recovered_failure_does_not_bump_the_library_counters(db_session):
+    """Parity with the live handler: successes only."""
+    lib = await _make_library_file(db_session)
+    archive = await _make_archive(db_session)
+    archive.library_file_id = lib.id
+    await db_session.flush()
+
+    await _reconcile_complete_archive(db_session, archive, status="failed", uncertain=False)
+
+    assert lib.print_count == 0
+    assert lib.last_printed_at is None
+
+
+@pytest.mark.asyncio
+async def test_an_archive_with_no_library_file_bumps_nothing(db_session):
+    archive = await _make_archive(db_session)
+    await _reconcile_complete_archive(db_session, archive, status="completed", uncertain=False)
+    assert archive.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_reports_which_archives_it_recovered(db_session):
+    """The energy read happens after the commit, so the caller needs the ids."""
+    archive = await _make_archive(db_session)
+    recovered = await _reconcile_complete_archive(db_session, archive, status="completed", uncertain=False)
+    assert recovered == archive.id
