@@ -2317,8 +2317,12 @@ export default {
       swap_mode_start: 'Swap Mode. Start',
       swap_mode_change_table: 'Swap Mode. Change Table',
       print_started: 'Print started',
-      print_finished: 'Print finished'
+      print_finished: 'Print finished',
+      layer_reached: 'Layer reached'
     },
+    macroTriggerLayer: 'Layer',
+    macroTriggerLayerHint: 'Fires once, when the print reaches this layer.',
+    macroLayerBadge: 'Layer {{layer}}',
     macroActionType: 'Action type',
     macroActionTypeGcode: 'G-code',
     macroActionTypeMqtt: 'MQTT action',
@@ -2327,8 +2331,20 @@ export default {
     macroDelaySeconds: 'Delay before firing (seconds)',
     macroDelayHint: '0 = fire immediately on event. Useful for letting heat-up / PREPARE finish first.',
     mqttActions: {
-      chamberLightOff: 'Chamber light - off',
-      chamberLightOn: 'Chamber light - on'
+      chamberLight: 'Chamber light',
+      printSpeed: 'Print speed'
+    },
+    mqttActionParams: {
+      lightState: 'State',
+      speedLevel: 'Speed'
+    },
+    mqttActionValues: {
+      on: 'On',
+      off: 'Off',
+      silent: 'Silent',
+      standard: 'Standard',
+      sport: 'Sport',
+      ludicrous: 'Ludicrous'
     },
     newWindow: 'New Window',
     embeddedOverlay: 'Embedded Overlay',

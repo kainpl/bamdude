@@ -353,6 +353,8 @@ export function SettingsPage() {
     event: 'swap_mode_start',
     action_type: 'gcode',
     mqtt_action: null,
+    mqtt_action_param: null,
+    trigger_layer: null,
     delay_seconds: 0,
     gcode: '',
     enabled: true,
@@ -612,6 +614,8 @@ export function SettingsPage() {
       event: 'swap_mode_start',
       action_type: 'gcode',
       mqtt_action: null,
+      mqtt_action_param: null,
+      trigger_layer: null,
       delay_seconds: 0,
       gcode: '',
       enabled: true,
@@ -630,6 +634,8 @@ export function SettingsPage() {
       event: macro.event,
       action_type: macro.action_type,
       mqtt_action: macro.mqtt_action,
+      mqtt_action_param: macro.mqtt_action_param,
+      trigger_layer: macro.trigger_layer,
       delay_seconds: macro.delay_seconds,
       gcode: macro.gcode,
       enabled: macro.enabled,
@@ -3211,9 +3217,14 @@ export function SettingsPage() {
                             {macro.action_type === 'mqtt_action' && (
                               <span
                                 className="text-xs px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-400 border border-amber-800/50"
-                                title={macro.mqtt_action ?? ''}
+                                title={[macro.mqtt_action, macro.mqtt_action_param].filter(Boolean).join(': ')}
                               >
                                 MQTT
+                              </span>
+                            )}
+                            {macro.trigger_layer != null && (
+                              <span className="text-xs px-1.5 py-0.5 rounded bg-sky-900/40 text-sky-400 border border-sky-800/50">
+                                {t('settings.macroLayerBadge', { layer: macro.trigger_layer })}
                               </span>
                             )}
                             {macro.action_type !== 'mqtt_action' && macro.gcode && <span className="text-xs text-bambu-gray" title="Has G-code"><Code className="w-3 h-3 inline" /></span>}
@@ -6795,7 +6806,9 @@ export function SettingsPage() {
                     >
                       {macroMeta?.events ? (
                         Object.entries(macroMeta.events).map(([code, label]) => (
-                          <option key={code} value={code}>{label}</option>
+                          <option key={code} value={code}>
+                            {t(`settings.macroEvents.${code}`, { defaultValue: label })}
+                          </option>
                         ))
                       ) : (
                         <>
@@ -6805,8 +6818,24 @@ export function SettingsPage() {
                       )}
                     </select>
                   </div>
+                  {macroForm.event === 'layer_reached' && (
+                    <div>
+                      <label className="block text-sm text-bambu-gray mb-1">{t('settings.macroTriggerLayer')}</label>
+                      <input
+                        type="number"
+                        min={1}
+                        value={macroForm.trigger_layer ?? 1}
+                        onChange={(e) => setMacroForm(prev => ({
+                          ...prev,
+                          trigger_layer: Math.max(1, parseInt(e.target.value, 10) || 1),
+                        }))}
+                        className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                      />
+                      <p className="text-xs text-bambu-gray mt-1">{t('settings.macroTriggerLayerHint')}</p>
+                    </div>
+                  )}
                   {/* Action-type selector: gcode (default, sends gcode to printer) vs
-                      mqtt_action (invokes a named MQTT command like chamber_light_off). */}
+                      mqtt_action (invokes a named MQTT command like chamber_light). */}
                   <div>
                     <label className="block text-sm text-bambu-gray mb-1">{t('settings.macroActionType')}</label>
                     <div className="flex gap-2">
@@ -6847,7 +6876,15 @@ export function SettingsPage() {
                       <label className="block text-sm text-bambu-gray mb-1">{t('settings.macroMqttAction')}</label>
                       <select
                         value={macroForm.mqtt_action ?? ''}
-                        onChange={(e) => setMacroForm(prev => ({ ...prev, mqtt_action: e.target.value || null }))}
+                        onChange={(e) => {
+                          const nextId = e.target.value || null;
+                          const nextSpec = (macroMeta?.mqtt_actions ?? []).find(a => a.id === nextId)?.param ?? null;
+                          setMacroForm(prev => ({
+                            ...prev,
+                            mqtt_action: nextId,
+                            mqtt_action_param: nextSpec?.default ?? null,
+                          }));
+                        }}
                         className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
                       >
                         {(macroMeta?.mqtt_actions ?? []).map((a) => (
@@ -6858,6 +6895,32 @@ export function SettingsPage() {
                       </select>
                     </div>
                   )}
+                  {/* The parameter control is described by the server, so this
+                      block never learns that print_speed in particular has four
+                      levels — a new action with a value renders here for free. */}
+                  {(() => {
+                    if (macroForm.action_type !== 'mqtt_action') return null;
+                    const spec = (macroMeta?.mqtt_actions ?? []).find(a => a.id === macroForm.mqtt_action)?.param;
+                    if (!spec) return null;
+                    return (
+                      <div>
+                        <label className="block text-sm text-bambu-gray mb-1">
+                          {t(`settings.mqttActionParams.${spec.i18n_key}`, { defaultValue: spec.i18n_key })}
+                        </label>
+                        <select
+                          value={macroForm.mqtt_action_param ?? spec.default ?? ''}
+                          onChange={(e) => setMacroForm(prev => ({ ...prev, mqtt_action_param: e.target.value }))}
+                          className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                        >
+                          {spec.choices.map((c) => (
+                            <option key={c.value} value={c.value}>
+                              {t(`settings.mqttActionValues.${c.i18n_key}`, { defaultValue: c.label })}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    );
+                  })()}
                   <div>
                     <label className="block text-sm text-bambu-gray mb-1">
                       {t('settings.macroDelaySeconds')}

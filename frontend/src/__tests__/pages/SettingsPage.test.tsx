@@ -430,4 +430,72 @@ describe('SettingsPage', () => {
     );
   });
 
+
+  describe('macro editor — layer trigger and action parameter', () => {
+    beforeEach(() => {
+      server.use(
+        http.get('/api/v1/macros/', () => HttpResponse.json([])),
+        http.get('/api/v1/macros/meta', () =>
+          HttpResponse.json({
+            events: { swap_mode_start: 'Swap Mode - Start', layer_reached: 'Layer Reached' },
+            swap_events: ['swap_mode_start'],
+            printer_models: {},
+            swap_profiles: [],
+            mqtt_actions: [
+              {
+                id: 'print_speed',
+                label: 'Print speed',
+                i18n_key: 'printSpeed',
+                param: {
+                  kind: 'choice',
+                  i18n_key: 'speedLevel',
+                  default: '2',
+                  choices: [
+                    { value: '1', label: 'Silent', i18n_key: 'silent' },
+                    { value: '2', label: 'Standard', i18n_key: 'standard' },
+                  ],
+                  min_value: null,
+                  max_value: null,
+                  unit: null,
+                },
+              },
+            ],
+          })
+        )
+      );
+    });
+
+    const openMacroModal = async (user: ReturnType<typeof userEvent.setup>) => {
+      render(<SettingsPage />);
+      await user.click(await screen.findByText('Printing'));
+      await user.click(await screen.findByText('Add Macro'));
+      await screen.findByText('Event');
+    };
+
+    it('asks for a layer only on the layer_reached event', async () => {
+      const user = userEvent.setup();
+      await openMacroModal(user);
+
+      expect(screen.queryByText('Fires once, when the print reaches this layer.')).not.toBeInTheDocument();
+
+      // The label isn't tied to the select, so reach it through an option only
+      // it can own.
+      const eventSelect = (await screen.findByRole('option', { name: 'Layer reached' })).closest('select')!;
+      await user.selectOptions(eventSelect, 'layer_reached');
+
+      expect(await screen.findByText('Fires once, when the print reaches this layer.')).toBeInTheDocument();
+    });
+
+    it('renders the parameter control the server describes', async () => {
+      const user = userEvent.setup();
+      await openMacroModal(user);
+
+      await user.click(screen.getByText('MQTT action', { selector: 'button' }));
+
+      expect(await screen.findByText('Speed')).toBeInTheDocument();
+      expect(screen.getByText('Silent')).toBeInTheDocument();
+      expect(screen.getByText('Standard')).toBeInTheDocument();
+    });
+  });
+
 });

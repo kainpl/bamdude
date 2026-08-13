@@ -9522,10 +9522,29 @@ export interface SwapProfile {
 
 export type MacroActionType = 'gcode' | 'mqtt_action';
 
+export interface MqttActionChoice {
+  value: string;
+  label: string;
+  i18n_key: string;
+}
+
+/** The single argument an MQTT action takes, described by the server so the
+ *  editor can render the right control without knowing the action. */
+export interface MqttActionParam {
+  kind: string;
+  i18n_key: string;
+  default: string | null;
+  choices: MqttActionChoice[];
+  min_value: number | null;
+  max_value: number | null;
+  unit: string | null;
+}
+
 export interface MqttMacroAction {
   id: string;
   label: string;
   i18n_key: string;
+  param: MqttActionParam | null;
 }
 
 export interface Macro {
@@ -9538,6 +9557,8 @@ export interface Macro {
   event: string;
   action_type: MacroActionType;
   mqtt_action: string | null;
+  mqtt_action_param: string | null;
+  trigger_layer: number | null;
   delay_seconds: number;
   gcode: string;
   is_custom: boolean;
@@ -9555,6 +9576,8 @@ export interface MacroCreate {
   event: string;
   action_type?: MacroActionType;
   mqtt_action?: string | null;
+  mqtt_action_param?: string | null;
+  trigger_layer?: number | null;
   delay_seconds?: number;
   gcode: string;
   enabled: boolean;
@@ -9569,6 +9592,8 @@ export interface MacroUpdate {
   event?: string;
   action_type?: MacroActionType;
   mqtt_action?: string | null;
+  mqtt_action_param?: string | null;
+  trigger_layer?: number | null;
   delay_seconds?: number;
   gcode?: string;
   enabled?: boolean;

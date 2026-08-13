@@ -2327,8 +2327,12 @@ export default {
       swap_mode_start: 'Swap Mode. Старт',
       swap_mode_change_table: 'Swap Mode. Зміна столу',
       print_started: 'Старт друку',
-      print_finished: 'Завершення друку'
+      print_finished: 'Завершення друку',
+      layer_reached: 'Досягнуто шар'
     },
+    macroTriggerLayer: 'Шар',
+    macroTriggerLayerHint: 'Спрацює один раз, коли друк дійде до цього шару.',
+    macroLayerBadge: 'Шар {{layer}}',
     macroActionType: 'Тип дії',
     macroActionTypeGcode: 'G-код',
     macroActionTypeMqtt: 'MQTT-команда',
@@ -2337,8 +2341,20 @@ export default {
     macroDelaySeconds: 'Затримка перед виконанням (сек)',
     macroDelayHint: '0 = виконати одразу при події. Корисно щоб пропустити фазу прогріву.',
     mqttActions: {
-      chamberLightOff: 'Вимкнути світло камери',
-      chamberLightOn: 'Увімкнути світло камери'
+      chamberLight: 'Світло камери',
+      printSpeed: 'Швидкість друку'
+    },
+    mqttActionParams: {
+      lightState: 'Стан',
+      speedLevel: 'Швидкість'
+    },
+    mqttActionValues: {
+      on: 'Увімкнено',
+      off: 'Вимкнено',
+      silent: 'Тихий',
+      standard: 'Стандартний',
+      sport: 'Спортивний',
+      ludicrous: 'Максимальний'
     },
     newWindow: 'Нове вікно',
     embeddedOverlay: 'Вбудоване накладання',
