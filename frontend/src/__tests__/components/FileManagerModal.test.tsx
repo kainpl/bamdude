@@ -475,6 +475,46 @@ describe('FileManagerModal', () => {
       expect(screen.queryByTitle(/clear/i)).not.toBeInTheDocument();
     });
 
+    it('offers the two catalogues on internal storage', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/status', () =>
+          HttpResponse.json({
+            storage_capability: bothWithNoCard,
+            timelapse_capability: { supports_internal: true },
+          }),
+        ),
+      );
+      let askedType: string | null = null;
+      server.use(
+        http.get('/api/v1/printers/:id/files', ({ request }) => {
+          askedType = new URL(request.url).searchParams.get('type');
+          return HttpResponse.json({ files: mockFiles });
+        }),
+      );
+
+      render(<FileManagerModal printerId={1} printerName="X2D" onClose={mockOnClose} />);
+
+      await waitFor(() => expect(askedType).toBe('model'));
+      fireEvent.click(screen.getByRole('tab', { name: /timelapse/i }));
+      await waitFor(() => expect(askedType).toBe('timelapse'));
+    });
+
+    it('hides the timelapse catalogue when the printer keeps none internally', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/status', () =>
+          HttpResponse.json({
+            storage_capability: bothWithNoCard,
+            timelapse_capability: { supports_internal: false },
+          }),
+        ),
+      );
+
+      render(<FileManagerModal printerId={1} printerName="X2D" onClose={mockOnClose} />);
+
+      expect(await screen.findByText('benchy.3mf')).toBeInTheDocument();
+      expect(screen.queryByRole('tab', { name: /timelapse/i })).not.toBeInTheDocument();
+    });
+
     it('clears the selection when the storage changes', async () => {
       withCapability({ ...bothWithNoCard, card_state: 1, default_storage: 'external' });
       render(<FileManagerModal printerId={1} printerName="X2D" onClose={mockOnClose} />);

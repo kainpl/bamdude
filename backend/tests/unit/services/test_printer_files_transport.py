@@ -100,6 +100,43 @@ async def test_the_wire_storage_name_never_leaves_the_transport():
 
 
 @pytest.mark.asyncio
+async def test_the_catalogue_type_reaches_the_wire():
+    """⚠️ On the card a timelapse lives in a directory; over the tunnel it is a
+    different catalogue asked for by name. Same idea, two mechanisms."""
+    server = FakeTunnelServer()
+    host, port = await server.start()
+    try:
+        await _tunnel_to(host, port).list_files("/", file_type="timelapse")
+        listing = [r for r in server.requests if r.get("cmdtype") == 1][0]
+        assert listing["req"]["type"] == "timelapse"
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_models_are_the_default_catalogue():
+    server = FakeTunnelServer()
+    host, port = await server.start()
+    try:
+        await _tunnel_to(host, port).list_files("/")
+        listing = [r for r in server.requests if r.get("cmdtype") == 1][0]
+        assert listing["req"]["type"] == "model"
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_ftp_transport_accepts_the_type_and_ignores_it():
+    """On the card the path already says which catalogue this is — /timelapse
+    is a real directory. Accepting the argument keeps one protocol; acting on
+    it would invent a second way to say the same thing."""
+    import inspect
+
+    signature = inspect.signature(FtpTransport.list_files)
+    assert "file_type" in signature.parameters
+
+
+@pytest.mark.asyncio
 async def test_the_tunnel_transport_reads_bytes():
     server = FakeTunnelServer()
     path = "/userdata/model/history/a.gcode.3mf"

@@ -22,7 +22,7 @@ from backend.app.services.bambu_tunnel.client import (
     BambuTunnelClient,
     TunnelError,
 )
-from backend.app.services.printer_files.base import DeleteResult, RemoteFile
+from backend.app.services.printer_files.base import FILE_TYPE_MODEL, DeleteResult, RemoteFile
 
 logger = logging.getLogger(__name__)
 
@@ -43,14 +43,21 @@ class TunnelTransport:
             connector=self._connector,
         )
 
-    async def list_files(self, path: str) -> list[RemoteFile]:
+    async def list_files(self, path: str, file_type: str = FILE_TYPE_MODEL) -> list[RemoteFile]:
         """``path`` is ignored: the internal catalogue is flat, not a tree.
 
         Asking for a subdirectory is not an error here — there are none, so the
-        only honest answer is the same catalogue.
+        only honest answer is the same catalogue. ``file_type`` is what actually
+        selects between models and timelapses, because on this medium they are
+        two catalogues rather than two directories.
+
+        ⚠️ Their availability is gated by two DIFFERENT flags: models by ``fun2``
+        bit 17, timelapses by ``fun`` bit 28. A machine can have one and not the
+        other, so the caller must check the right one — see
+        ``utils/timelapse.py::capability_for`` for the timelapse side.
         """
         async with self._client() as client:
-            entries = await client.list_files(WIRE_INTERNAL)
+            entries = await client.list_files(WIRE_INTERNAL, file_type=file_type)
         return [self._to_remote(entry) for entry in entries]
 
     async def read_bytes(self, path: str) -> bytes | None:

@@ -24,7 +24,7 @@ import {
   Box,
   Eraser,
 } from 'lucide-react';
-import { api, type PrinterStorage } from '../api/client';
+import { api, type PrinterFileType, type PrinterStorage } from '../api/client';
 import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
@@ -326,6 +326,12 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
   const capability = printerStatus?.storage_capability;
   const canSwitchStorage = capability?.can_browse_internal ?? false;
   const isInternal = storage === 'internal';
+  // ⚠️ A DIFFERENT flag from the one that gates models: BambuStudio reads
+  // `fun` bit 28 for timelapses and `fun2` bit 17 for models, and a machine can
+  // have one without the other. Reusing can_browse_internal here would offer a
+  // catalogue the printer may not keep.
+  const [fileType, setFileType] = useState<PrinterFileType>('model');
+  const hasInternalTimelapses = printerStatus?.timelapse_capability?.supports_internal ?? false;
 
   // ⚠️ Settles on failure too. Gating on "we know the capability" would leave
   // the browser permanently empty whenever the status call fails — a hard hang
@@ -412,18 +418,29 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
   // changes on upload / delete (the mutations below invalidate the query)
   // or when a print finishes; the manual Refresh button covers the rest.
   const { data, isLoading, refetch } = useQuery({
-    queryKey: ['printerFiles', printerId, storage, currentPath],
-    queryFn: () => api.getPrinterFiles(printerId, currentPath, storage ?? undefined),
+    queryKey: ['printerFiles', printerId, storage, fileType, currentPath],
+    queryFn: () =>
+      api.getPrinterFiles(printerId, currentPath, storage ?? undefined, isInternal ? fileType : undefined),
     // Wait for the capability rather than fetching the wrong medium first and
     // correcting it — that showed the card's files for a moment on a printer
     // that has none.
     enabled: storage !== null,
   });
 
+  const switchFileType = (next: PrinterFileType) => {
+    if (next === fileType) return;
+    setFileType(next);
+    setSelectedFiles(new Set());
+    setSearchQuery('');
+  };
+
   const switchStorage = (next: PrinterStorage) => {
     if (next === storage) return;
     setStorage(next);
     setCurrentPath('/');
+    // Back to models: the card's view has no catalogue concept, and coming
+    // back to internal on "timelapses" would be a state the operator never set.
+    setFileType('model');
     // ⚠️ A selection that outlives the list it was made from is a second source
     // of truth about what the operator picked — the same reason the inventory
     // selection clears on any filter change.
@@ -668,6 +685,28 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
               {dir.label}
             </button>
           ))}
+          {/* On internal storage the folder shortcuts are replaced by the two
+              catalogues the tunnel actually serves. ⚠️ The timelapse one is
+              offered only when the printer keeps timelapses internally — a
+              different flag from the one that gave us this tab at all. */}
+          {isInternal && hasInternalTimelapses &&
+            (['model', 'timelapse'] as PrinterFileType[]).map((option) => (
+              <button
+                key={option}
+                role="tab"
+                aria-selected={fileType === option}
+                onClick={() => switchFileType(option)}
+                className={`px-3 py-1 text-sm rounded-full transition-colors ${
+                  fileType === option
+                    ? 'bg-bambu-green text-white'
+                    : 'bg-bambu-dark-tertiary text-bambu-gray hover:text-white'
+                }`}
+              >
+                {option === 'model'
+                  ? t('printerFiles.catalogueModels')
+                  : t('printerFiles.catalogueTimelapses')}
+              </button>
+            ))}
           <div className="flex-1" />
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray" />

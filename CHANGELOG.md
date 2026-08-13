@@ -20,7 +20,7 @@ All notable changes to BamDude will be documented in this file.
 
     A printer with no card inserted opens on its internal storage rather than on an empty list. Printers with only a card — every A1 and P1 — look and behave exactly as before, with no switch shown.
 
-    Internal storage is a flat list of models rather than a folder tree, so the folder shortcuts, the path bar and **Clear SD card** are not offered there; free space isn't shown either, because the printer doesn't report it over that channel.
+    Internal storage is a flat list rather than a folder tree, so the path bar and **Clear SD card** are not offered there; free space isn't shown either, because the printer doesn't report it over that channel. In place of the folder shortcuts there are two buttons — **Models** and **Timelapses** — because on internal storage those are two separate catalogues rather than two directories. The timelapse button appears only on printers that actually keep timelapses internally, which is a separate capability from keeping models.
 
 - **Layer-triggered macros.** A macro can now fire when a print reaches a layer you choose — dropping to Silent speed from layer 50 onward, say, or turning the light off once the first few layers are down. It runs once per print: a printer that reconnects mid-print, or a BamDude restart, won't set it off a second time. It also waits for the print to genuinely start — some models tick the layer counter during the calibration they run beforehand, and that no longer counts.
 

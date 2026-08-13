@@ -2904,6 +2904,8 @@ export default {
     storageFree: 'Free:',
     storageExternal: 'SD card',
     storageInternal: 'Internal storage',
+    catalogueModels: 'Models',
+    catalogueTimelapses: 'Timelapses',
     filterPlaceholder: 'Filter files...',
     deleteButton: 'Delete',
     deleteFiles: 'Delete {{count}} Files',

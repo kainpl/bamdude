@@ -13,7 +13,7 @@ from backend.app.services.bambu_ftp import (
     download_file_bytes_async,
     list_files_async,
 )
-from backend.app.services.printer_files.base import RemoteFile
+from backend.app.services.printer_files.base import FILE_TYPE_MODEL, RemoteFile
 
 
 class FtpTransport:
@@ -22,7 +22,14 @@ class FtpTransport:
         self._access_code = printer.access_code
         self._model = printer.model
 
-    async def list_files(self, path: str) -> list[RemoteFile]:
+    async def list_files(self, path: str, file_type: str = FILE_TYPE_MODEL) -> list[RemoteFile]:
+        """⚠️ ``file_type`` is accepted and ignored, on purpose.
+
+        On the card a timelapse is not a catalogue but a directory —
+        ``/timelapse`` — so the path the caller already passed says which is
+        meant. Acting on the argument here would invent a second way to express
+        the same thing, and the two would eventually disagree.
+        """
         entries = await list_files_async(self._ip, self._access_code, path, printer_model=self._model)
         return [
             RemoteFile(

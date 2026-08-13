@@ -1462,22 +1462,42 @@ def _resolve_storage(requested: str | None, model: str | None, state) -> str:
     return requested
 
 
+def _resolve_file_type(requested: str | None) -> str:
+    """Which catalogue this listing is about.
+
+    ⚠️ Only meaningful on internal storage, where models and timelapses are two
+    catalogues asked for by name. On the card they are two directories and the
+    path already says which — the transport accepts this argument there and
+    ignores it.
+    """
+    from backend.app.services.printer_files.base import FILE_TYPE_MODEL, FILE_TYPES
+
+    if requested is None:
+        return FILE_TYPE_MODEL
+    if requested not in FILE_TYPES:
+        raise HTTPException(400, f"Unknown file type: {requested}")
+    return requested
+
+
 @router.get("/{printer_id}/files")
 async def list_printer_files(
     printer_id: int,
     path: str = "/",
     storage: str | None = None,
+    type: str | None = None,
     _=RequirePermission(Permission.PRINTERS_FILES),
 ):
     """List files on the printer at the specified path."""
     printer = await _load_printer_or_404(printer_id)
     resolved = _resolve_storage(storage, printer.model, printer_manager.get_status(printer_id))
+    file_type = _resolve_file_type(type)
 
-    files = await transport_for(printer, resolved).list_files(path)
+    files = await transport_for(printer, resolved).list_files(path, file_type=file_type)
 
     return {
         "path": path,
         "storage": resolved,
+        "type": file_type,
         "files": [entry.as_dict() for entry in files],
     }
 

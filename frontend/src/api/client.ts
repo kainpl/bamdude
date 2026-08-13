@@ -637,6 +637,10 @@ export interface AirductFan {
 /** Printer storage: what exists, what the browser opens, where a print may go. */
 export type PrinterStorage = 'external' | 'internal';
 
+/** The two catalogues internal storage serves. ⚠️ On the card these are
+ *  directories, not catalogues — there the path says which is meant. */
+export type PrinterFileType = 'model' | 'timelapse';
+
 export interface StorageCapability {
   storages: PrinterStorage[];
   can_browse_internal: boolean;
@@ -5560,10 +5564,16 @@ export const api = {
   // Printer File Manager
   // ``storage`` is optional everywhere: omitted, the backend answers with the
   // printer's default medium (internal when no card is inserted).
-  getPrinterFiles: (printerId: number, path = '/', storage?: PrinterStorage) =>
+  getPrinterFiles: (
+    printerId: number,
+    path = '/',
+    storage?: PrinterStorage,
+    fileType?: PrinterFileType,
+  ) =>
     request<{
       path: string;
       storage: PrinterStorage;
+      type: PrinterFileType;
       files: Array<{
         name: string;
         is_directory: boolean;
@@ -5571,7 +5581,10 @@ export const api = {
         path: string;
         mtime?: string;
       }>;
-    }>(`/printers/${printerId}/files?path=${encodeURIComponent(path)}${storageParam(storage)}`),
+    }>(
+      `/printers/${printerId}/files?path=${encodeURIComponent(path)}${storageParam(storage)}` +
+        (fileType ? `&type=${encodeURIComponent(fileType)}` : ''),
+    ),
   getPrinterFileDownloadUrl: (printerId: number, path: string, storage?: PrinterStorage) =>
     `${API_BASE}/printers/${printerId}/files/download?path=${encodeURIComponent(path)}${storageParam(storage)}`,
   getPrinterFileGcodeUrl: (printerId: number, path: string, storage?: PrinterStorage) =>

@@ -2920,6 +2920,8 @@ export default {
     storageFree: 'Вільно:',
     storageExternal: 'SD-карта',
     storageInternal: 'Внутрішнє сховище',
+    catalogueModels: 'Моделі',
+    catalogueTimelapses: 'Таймлапси',
     filterPlaceholder: 'Фільтр файлів...',
     deleteButton: 'Видалити',
     deleteFiles: 'Видалити {{count}} файлів',

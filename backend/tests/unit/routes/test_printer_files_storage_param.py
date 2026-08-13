@@ -49,6 +49,25 @@ def test_a_disconnected_printer_still_answers_external():
     assert _resolve_storage(None, "X2D", None) == "external"
 
 
+def test_the_catalogue_type_defaults_to_models_and_accepts_timelapses():
+    from backend.app.api.routes.printers import _resolve_file_type
+
+    assert _resolve_file_type(None) == "model"
+    assert _resolve_file_type("model") == "model"
+    assert _resolve_file_type("timelapse") == "timelapse"
+
+
+def test_an_unknown_catalogue_type_is_refused():
+    """The tunnel serves exactly two catalogues. Anything else is a typo or a
+    guess, and answering it would mean asking the printer something it does
+    not understand."""
+    from backend.app.api.routes.printers import _resolve_file_type
+
+    with pytest.raises(HTTPException) as excinfo:
+        _resolve_file_type("video")
+    assert excinfo.value.status_code == 400
+
+
 def test_the_status_projection_carries_the_storage_capability():
     """The switcher is drawn off the same answer the dispatcher will use."""
     from backend.app.services.bambu_mqtt import PrinterState

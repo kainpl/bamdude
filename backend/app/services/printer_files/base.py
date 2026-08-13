@@ -23,7 +23,14 @@ from typing import Protocol
 # introduced to stop (see its docstring in bambu_ftp).
 from backend.app.services.bambu_ftp import DeleteResult
 
-__all__ = ["DeleteResult", "PrinterFileTransport", "RemoteFile"]
+__all__ = [
+    "FILE_TYPES",
+    "FILE_TYPE_MODEL",
+    "FILE_TYPE_TIMELAPSE",
+    "DeleteResult",
+    "PrinterFileTransport",
+    "RemoteFile",
+]
 
 
 @dataclass(frozen=True)
@@ -52,8 +59,17 @@ class RemoteFile:
         return entry
 
 
+# The two catalogues the tunnel serves. ⚠️ On the external medium these are not
+# catalogues at all — ``/timelapse`` is an ordinary directory and the path
+# already says which is meant. The argument exists for the medium where the
+# distinction is a field in the request rather than a place on a disk.
+FILE_TYPE_MODEL = "model"
+FILE_TYPE_TIMELAPSE = "timelapse"
+FILE_TYPES = (FILE_TYPE_MODEL, FILE_TYPE_TIMELAPSE)
+
+
 class PrinterFileTransport(Protocol):
-    async def list_files(self, path: str) -> list[RemoteFile]: ...
+    async def list_files(self, path: str, file_type: str = FILE_TYPE_MODEL) -> list[RemoteFile]: ...
 
     async def read_bytes(self, path: str) -> bytes | None: ...
 
