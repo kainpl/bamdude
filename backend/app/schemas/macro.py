@@ -18,6 +18,8 @@ class MacroResponse(BaseModel):
     event: str
     action_type: str = "gcode"
     mqtt_action: str | None = None
+    mqtt_action_param: str | None = None
+    trigger_layer: int | None = None
     delay_seconds: int = 0
     gcode: str
     is_custom: bool
@@ -49,6 +51,8 @@ class MacroCreate(BaseModel):
     event: str = Field(max_length=50)
     action_type: str = Field(default="gcode", max_length=20)
     mqtt_action: str | None = Field(default=None, max_length=50)
+    mqtt_action_param: str | None = Field(default=None, max_length=50)
+    trigger_layer: int | None = Field(default=None, ge=1)
     delay_seconds: int = Field(default=0, ge=0, le=3600)
     gcode: str = ""
     enabled: bool = True
@@ -67,6 +71,8 @@ class MacroUpdate(BaseModel):
     event: str | None = Field(default=None, max_length=50)
     action_type: str | None = Field(default=None, max_length=20)
     mqtt_action: str | None = Field(default=None, max_length=50)
+    mqtt_action_param: str | None = Field(default=None, max_length=50)
+    trigger_layer: int | None = Field(default=None, ge=1)
     delay_seconds: int | None = Field(default=None, ge=0, le=3600)
     gcode: str | None = None
     enabled: bool | None = None

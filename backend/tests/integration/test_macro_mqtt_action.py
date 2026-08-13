@@ -31,7 +31,8 @@ async def test_create_mqtt_action_macro(async_client: AsyncClient):
             "name": "Lights off on print",
             "event": "print_started",
             "action_type": "mqtt_action",
-            "mqtt_action": "chamber_light_off",
+            "mqtt_action": "chamber_light",
+            "mqtt_action_param": "off",
             "delay_seconds": 0,
             "printer_models": ["*"],
         },
@@ -39,9 +40,74 @@ async def test_create_mqtt_action_macro(async_client: AsyncClient):
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["action_type"] == "mqtt_action"
-    assert data["mqtt_action"] == "chamber_light_off"
+    assert data["mqtt_action"] == "chamber_light"
+    assert data["mqtt_action_param"] == "off"
     assert data["delay_seconds"] == 0
     assert data["gcode"] == ""
+
+
+async def test_create_parameterized_action_macro(async_client: AsyncClient):
+    resp = await async_client.post(
+        "/api/v1/macros/",
+        json={
+            "name": "Slow down at night",
+            "event": "print_started",
+            "action_type": "mqtt_action",
+            "mqtt_action": "print_speed",
+            "mqtt_action_param": "1",
+            "printer_models": ["*"],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["mqtt_action_param"] == "1"
+
+
+async def test_a_legacy_light_id_is_normalized_on_write(async_client: AsyncClient):
+    """Storage stays canonical — the alias exists for old rows, not new ones."""
+    resp = await async_client.post(
+        "/api/v1/macros/",
+        json={
+            "name": "Lights out",
+            "event": "print_started",
+            "action_type": "mqtt_action",
+            "mqtt_action": "chamber_light_off",
+            "printer_models": ["*"],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["mqtt_action"] == "chamber_light"
+    assert body["mqtt_action_param"] == "off"
+
+
+async def test_a_missing_param_is_refused(async_client: AsyncClient):
+    resp = await async_client.post(
+        "/api/v1/macros/",
+        json={
+            "name": "Speed with no level",
+            "event": "print_started",
+            "action_type": "mqtt_action",
+            "mqtt_action": "print_speed",
+            "printer_models": ["*"],
+        },
+    )
+    assert resp.status_code == 400
+    assert "parameter" in resp.json()["detail"].lower()
+
+
+async def test_an_unknown_param_value_is_refused(async_client: AsyncClient):
+    resp = await async_client.post(
+        "/api/v1/macros/",
+        json={
+            "name": "Speed nine",
+            "event": "print_started",
+            "action_type": "mqtt_action",
+            "mqtt_action": "print_speed",
+            "mqtt_action_param": "9",
+            "printer_models": ["*"],
+        },
+    )
+    assert resp.status_code == 400
 
 
 async def test_mqtt_action_requires_action_id(async_client: AsyncClient):

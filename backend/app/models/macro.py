@@ -40,18 +40,28 @@ class Macro(Base):
     # swap_mode_start - injected before first print in swap sequence
     # swap_mode_change_table - injected between plates (table swap)
     # print_started - fires on gcode_state PREPARE→RUNNING transition
+    # layer_reached - fires when the running print crosses ``trigger_layer``
     event: Mapped[str] = mapped_column(String(50))
 
     # What kind of action this macro performs:
     # - ``gcode`` (default, legacy): send the ``gcode`` field as printer gcode
     # - ``mqtt_action``: invoke a named MQTT-level printer command
-    #   (``chamber_light_off`` / ``chamber_light_on`` on MVP). ``gcode`` field
-    #   is ignored for this type; the command code lives in ``mqtt_action``.
+    #   (``chamber_light``, ``print_speed``). ``gcode`` field is ignored for
+    #   this type; the command code lives in ``mqtt_action``.
     action_type: Mapped[str] = mapped_column(String(20), default="gcode", server_default="gcode")
 
     # Named command from the MQTT-action catalog (core/mqtt_macro_actions.py).
     # Only meaningful when ``action_type='mqtt_action'``. Null for gcode macros.
     mqtt_action: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    # Single argument for ``mqtt_action``, where the catalog entry declares
+    # one (e.g. ``"on"`` for chamber_light, ``"3"`` for print_speed). Null
+    # for gcode macros and for actions that take no argument.
+    mqtt_action_param: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    # Target layer for the ``layer_reached`` event — the macro fires when the
+    # print crosses it. Null for every other event.
+    trigger_layer: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Optional delay before firing the action, in seconds. 0 = fire immediately
     # on the event. Useful for e.g. "turn light off 30s after print_started"

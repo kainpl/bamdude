@@ -102,27 +102,56 @@ async def get_macro(
     return macro
 
 
-def _validate_macro_action(action_type: str, mqtt_action: str | None, gcode: str | None) -> None:
-    """Cross-field validation for action_type + mqtt_action + gcode.
+def _validate_macro_action(
+    action_type: str,
+    mqtt_action: str | None,
+    gcode: str | None,
+    mqtt_action_param: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Cross-field validation for action_type + mqtt_action + param + gcode.
 
-    Reused by create and patch paths so errors stay consistent.
+    Reused by create and patch paths so errors stay consistent. Returns the
+    normalized ``(mqtt_action, mqtt_action_param)`` — a legacy id is folded
+    into the canonical action plus its value here, at the one place that
+    writes, so storage never carries two spellings of the same command.
     Raises ``HTTPException`` on mismatch.
     """
-    from backend.app.core.mqtt_macro_actions import MQTT_MACRO_ACTIONS, get_action
+    from backend.app.core.mqtt_macro_actions import MQTT_MACRO_ACTIONS, resolve_action
 
     if action_type not in ("gcode", "mqtt_action"):
         raise HTTPException(400, f"Unknown action_type '{action_type}'")
 
-    if action_type == "mqtt_action":
-        if not mqtt_action:
-            raise HTTPException(400, "action_type='mqtt_action' requires mqtt_action to be set")
-        # Through the catalog, not a bare membership test: an id from before
-        # the light actions were parameterized still names a real command.
-        if get_action(mqtt_action) is None:
-            raise HTTPException(
-                400,
-                f"Unknown mqtt_action '{mqtt_action}'. Valid options: {sorted(MQTT_MACRO_ACTIONS)}",
-            )
+    if action_type != "mqtt_action":
+        return None, None
+
+    if not mqtt_action:
+        raise HTTPException(400, "action_type='mqtt_action' requires mqtt_action to be set")
+
+    # Through the catalog, not a bare membership test: an id from before
+    # the light actions were parameterized still names a real command.
+    action, resolved_param = resolve_action(mqtt_action, mqtt_action_param)
+    if action is None:
+        raise HTTPException(
+            400,
+            f"Unknown mqtt_action '{mqtt_action}'. Valid options: {sorted(MQTT_MACRO_ACTIONS)}",
+        )
+
+    if action.param is None:
+        return action.id, None
+
+    # A legacy id carries its own value (``mqtt_action != action.id`` is
+    # exactly "was an alias"); anything else has to state one. We don't fall
+    # back to the spec default on write — a "print speed" macro that silently
+    # means Standard is not what anybody asked for. The dispatcher does fall
+    # back, because a stale row must not raise on the print path.
+    param = resolved_param if mqtt_action != action.id else mqtt_action_param
+    if not action.param.is_valid(param):
+        raise HTTPException(
+            400,
+            f"mqtt_action '{action.id}' needs a parameter, one of "
+            f"{[c.value for c in action.param.choices]} — got {param!r}",
+        )
+    return action.id, param
 
 
 @router.post("/", response_model=MacroResponse)
@@ -132,7 +161,9 @@ async def create_macro(
     _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Create a custom macro."""
-    _validate_macro_action(data.action_type, data.mqtt_action, data.gcode)
+    normalized_action, normalized_param = _validate_macro_action(
+        data.action_type, data.mqtt_action, data.gcode, data.mqtt_action_param
+    )
 
     macro = Macro(
         name=data.name,
@@ -142,7 +173,9 @@ async def create_macro(
         swap_profile=(data.swap_profile or None),
         event=data.event,
         action_type=data.action_type,
-        mqtt_action=data.mqtt_action if data.action_type == "mqtt_action" else None,
+        mqtt_action=normalized_action,
+        mqtt_action_param=normalized_param,
+        trigger_layer=data.trigger_layer,
         delay_seconds=data.delay_seconds,
         gcode=data.gcode,
         enabled=data.enabled,
@@ -180,15 +213,18 @@ async def update_macro(
 
     # Validate action_type / mqtt_action pair against the catalog. Use the
     # incoming update when present, else fall back to the stored row.
-    if "action_type" in update_data or "mqtt_action" in update_data:
+    if "action_type" in update_data or "mqtt_action" in update_data or "mqtt_action_param" in update_data:
         next_action_type = update_data.get("action_type", macro.action_type)
         next_mqtt_action = update_data.get("mqtt_action", macro.mqtt_action)
+        next_param = update_data.get("mqtt_action_param", macro.mqtt_action_param)
         next_gcode = update_data.get("gcode", macro.gcode)
-        _validate_macro_action(next_action_type, next_mqtt_action, next_gcode)
-        # Clear mqtt_action when switching back to gcode so we don't carry
-        # stale bindings.
-        if next_action_type == "gcode":
-            update_data["mqtt_action"] = None
+        normalized_action, normalized_param = _validate_macro_action(
+            next_action_type, next_mqtt_action, next_gcode, next_param
+        )
+        # Normalization also clears the binding when switching back to gcode,
+        # so a stale action can't survive the switch.
+        update_data["mqtt_action"] = normalized_action
+        update_data["mqtt_action_param"] = normalized_param
 
     for field, value in update_data.items():
         setattr(macro, field, value)
@@ -304,7 +340,7 @@ async def execute_macro(
     )
 
     if macro.action_type == "mqtt_action":
-        success, error_msg = dispatch_mqtt_action(client, macro.mqtt_action or "", macro.name)
+        success, error_msg = dispatch_mqtt_action(client, macro.mqtt_action or "", macro.name, macro.mqtt_action_param)
     else:
         success, error_msg = await send_macro_and_await_ack(client, macro.gcode, macro.name, printer.model)
 

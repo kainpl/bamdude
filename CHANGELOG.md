@@ -20,6 +20,10 @@ All notable changes to BamDude will be documented in this file.
 
     There is now an **ML API token** field beside the server address, and Test Connection checks the token as well as the server, saying which of the two is wrong. Leave it empty if your server runs without one — nothing changes for those, and the request goes out exactly as before.
 
+### Changed
+
+- **Macro MQTT actions now carry a value.** The two chamber-light actions became one **Chamber light** action with an On/Off setting, and a new **Print speed** action sets Silent, Standard, Sport or Ludicrous. Your existing light macros are converted the first time the new version starts — they keep doing exactly what they did.
+
 ### Fixed
 
 - **A printer whose dispatch was interrupted no longer refuses work for ever.** If BamDude was stopped, restarted or killed in the moment between accepting a queued job and sending the file — a container restart, an update, a power cut — that printer stayed marked as busy. Nothing ever cleared the mark: every routine that releases a printer needs either an archived print or a message from the printer saying it finished, and a job that never left the building has neither. The queue went on showing the job as printing, the printer was skipped for everything after it, and the farm quietly worked one machine short until somebody noticed.

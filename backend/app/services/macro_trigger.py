@@ -58,7 +58,7 @@ async def _run_one(
             )
             return
 
-        success, err = dispatch_mqtt_action(client, macro.mqtt_action or "", macro.name)
+        success, err = dispatch_mqtt_action(client, macro.mqtt_action or "", macro.name, macro.mqtt_action_param)
         if not success:
             logger.warning(
                 "[MACRO-TRIGGER] macro '%s' failed: %s",
