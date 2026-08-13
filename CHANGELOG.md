@@ -16,6 +16,12 @@ All notable changes to BamDude will be documented in this file.
 
 ### Added
 
+- **The printer's internal storage is now browsable.** X2D and the H2 family keep files in built-in storage as well as on an SD card, and BamDude could only ever see the card — with no card inserted the file browser was simply empty, whatever was actually on the machine. Those printers now show a **SD card / Internal storage** switch, and everything the browser does works on both: listing, downloading, plate previews, importing into the library, and deleting.
+
+    A printer with no card inserted opens on its internal storage rather than on an empty list. Printers with only a card — every A1 and P1 — look and behave exactly as before, with no switch shown.
+
+    Internal storage is a flat list of models rather than a folder tree, so the folder shortcuts, the path bar and **Clear SD card** are not offered there; free space isn't shown either, because the printer doesn't report it over that channel.
+
 - **Layer-triggered macros.** A macro can now fire when a print reaches a layer you choose — dropping to Silent speed from layer 50 onward, say, or turning the light off once the first few layers are down. It runs once per print: a printer that reconnects mid-print, or a BamDude restart, won't set it off a second time. It also waits for the print to genuinely start — some models tick the layer counter during the calibration they run beforehand, and that no longer counts.
 
 - **AI failure detection can now sign in to an Obico ML server that asks for a token.** Obico's ML container can be started with `ML_API_TOKEN` set, and one that is refuses every detection request. BamDude sent no token at all, so on those servers nothing was ever classified — and the failure was invisible, because the health address Test Connection uses is left open even when the detection address is locked. You were told the server was fine while it was rejecting everything.

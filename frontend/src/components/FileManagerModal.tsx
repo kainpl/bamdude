@@ -24,7 +24,7 @@ import {
   Box,
   Eraser,
 } from 'lucide-react';
-import { api } from '../api/client';
+import { api, type PrinterStorage } from '../api/client';
 import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
@@ -309,6 +309,32 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [importFolderId, setImportFolderId] = useState<number | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  // null until the printer's capability answers — then the default medium,
+  // which is internal storage when no card is inserted. Opening on external and
+  // painting an empty grid (what BambuStudio does) reads as a malfunction.
+  const [storage, setStorage] = useState<PrinterStorage | null>(null);
+
+  // The capability comes from the printer's status, not from the file listing:
+  // a dead tunnel must not be able to remove the switcher that lets the
+  // operator get back to the card.
+  const { data: printerStatus, isFetched: statusSettled } = useQuery({
+    queryKey: ['printerStatus', printerId],
+    queryFn: () => api.getPrinterStatus(printerId),
+    staleTime: 30000,
+    retry: false,
+  });
+  const capability = printerStatus?.storage_capability;
+  const canSwitchStorage = capability?.can_browse_internal ?? false;
+  const isInternal = storage === 'internal';
+
+  // ⚠️ Settles on failure too. Gating on "we know the capability" would leave
+  // the browser permanently empty whenever the status call fails — a hard hang
+  // instead of the momentary flicker the gate exists to avoid. An unreachable
+  // printer falls back to the card, which is what every printer has.
+  useEffect(() => {
+    if (storage !== null || !statusSettled) return;
+    setStorage(capability?.default_storage ?? 'external');
+  }, [capability, statusSettled, storage]);
 
   // Library folder tree — fetched lazily, only when the import dialog opens.
   // Same shape the VP card / Makerworld page consume.
@@ -324,7 +350,7 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
 
   const importMutation = useMutation({
     mutationFn: (params: { paths: string[]; folderId: number | null }) =>
-      api.importPrinterFilesToLibrary(printerId, params.paths, params.folderId),
+      api.importPrinterFilesToLibrary(printerId, params.paths, params.folderId, storage ?? undefined),
     onSuccess: (result) => {
       const total = result.imported.length + result.skipped.length;
       const importedCount = result.imported.length;
@@ -386,9 +412,24 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
   // changes on upload / delete (the mutations below invalidate the query)
   // or when a print finishes; the manual Refresh button covers the rest.
   const { data, isLoading, refetch } = useQuery({
-    queryKey: ['printerFiles', printerId, currentPath],
-    queryFn: () => api.getPrinterFiles(printerId, currentPath),
+    queryKey: ['printerFiles', printerId, storage, currentPath],
+    queryFn: () => api.getPrinterFiles(printerId, currentPath, storage ?? undefined),
+    // Wait for the capability rather than fetching the wrong medium first and
+    // correcting it — that showed the card's files for a moment on a printer
+    // that has none.
+    enabled: storage !== null,
   });
+
+  const switchStorage = (next: PrinterStorage) => {
+    if (next === storage) return;
+    setStorage(next);
+    setCurrentPath('/');
+    // ⚠️ A selection that outlives the list it was made from is a second source
+    // of truth about what the operator picked — the same reason the inventory
+    // selection clears on any filter change.
+    setSelectedFiles(new Set());
+    setSearchQuery('');
+  };
 
   const { data: storageData } = useQuery({
     queryKey: ['printerStorage', printerId],
@@ -400,7 +441,7 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
     mutationFn: async (paths: string[]) => {
       // Delete files one by one
       for (const path of paths) {
-        await api.deletePrinterFile(printerId, path);
+        await api.deletePrinterFile(printerId, path, storage ?? undefined);
       }
     },
     onSuccess: () => {
@@ -487,7 +528,7 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
       // double-click and queue a second pull.
       setDownloadProgress({ current: 0, total: 1 });
       try {
-        await api.downloadPrinterFile(printerId, paths[0]);
+        await api.downloadPrinterFile(printerId, paths[0], storage ?? undefined);
         setSelectedFiles(new Set());
       } catch (error) {
         console.error('Printer file download failed:', error);
@@ -504,7 +545,7 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
     // Multiple files - download as ZIP
     setDownloadProgress({ current: 0, total: paths.length });
     try {
-      const blob = await api.downloadPrinterFilesAsZip(printerId, paths);
+      const blob = await api.downloadPrinterFilesAsZip(printerId, paths, storage ?? undefined);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -527,13 +568,18 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
     setFilesToDelete(Array.from(selectedFiles));
   };
 
-  // Quick navigation buttons for common directories
-  const quickDirs = [
-    { path: '/', label: 'Root' },
-    { path: '/cache', label: 'Cache' },
-    { path: '/model', label: 'Models' },
-    { path: '/timelapse', label: 'Timelapse' },
-  ];
+  // Quick navigation buttons for common directories. ⚠️ Empty on internal
+  // storage: the tunnel serves one flat catalogue of models, so there are no
+  // directories to jump between and inventing some would be a lie the first
+  // error message exposes.
+  const quickDirs = isInternal
+    ? []
+    : [
+        { path: '/', label: 'Root' },
+        { path: '/cache', label: 'Cache' },
+        { path: '/model', label: 'Models' },
+        { path: '/timelapse', label: 'Timelapse' },
+      ];
 
   return (
     <div
@@ -554,8 +600,33 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
               </div>
             </div>
             <div className="flex items-center gap-4">
-              {/* Storage info */}
-              {storageData && (storageData.used_bytes != null || storageData.free_bytes != null) && (
+              {/* Storage switcher — only where the printer reports two media.
+                  ⚠️ Driven by fun2 bit 17, which is a different question from
+                  "may this printer print without a card" (bit 0). */}
+              {canSwitchStorage && (
+                <div className="flex items-center gap-1 bg-bambu-dark rounded-lg p-1" role="tablist">
+                  {(['external', 'internal'] as PrinterStorage[]).map((option) => (
+                    <button
+                      key={option}
+                      role="tab"
+                      aria-selected={storage === option}
+                      onClick={() => switchStorage(option)}
+                      className={`px-3 py-1 text-sm rounded-md transition-colors ${
+                        storage === option
+                          ? 'bg-bambu-green text-white'
+                          : 'text-bambu-gray hover:text-white'
+                      }`}
+                    >
+                      {option === 'external'
+                        ? t('printerFiles.storageExternal')
+                        : t('printerFiles.storageInternal')}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {/* Storage info. ⚠️ External only — the tunnel reports no free
+                  space at all, and Studio never asks it for any. */}
+              {!isInternal && storageData && (storageData.used_bytes != null || storageData.free_bytes != null) && (
                 <div className="text-sm text-bambu-gray flex items-center gap-2">
                   {storageData.used_bytes != null && (
                     <span>{t('printerFiles.storageUsed')} {formatStorageSize(storageData.used_bytes)}</span>
@@ -634,8 +705,10 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
           </Button>
         </div>
 
-        {/* Path breadcrumb */}
-        <div className="flex items-center gap-2 px-4 py-2 bg-bambu-dark text-sm flex-shrink-0">
+        {/* Path breadcrumb. ⚠️ Absent on internal storage: there is no tree to
+            be anywhere in, so a path and an "up" button would both be fiction. */}
+        {!isInternal && (
+          <div className="flex items-center gap-2 px-4 py-2 bg-bambu-dark text-sm flex-shrink-0">
             <button
               onClick={navigateUp}
               disabled={currentPath === '/'}
@@ -647,10 +720,14 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
             </button>
             <span className="text-bambu-gray font-mono">{currentPath}</span>
           </div>
+        )}
 
         {/* File list */}
         <div className="flex-1 overflow-y-auto p-2 min-h-0">
-            {isLoading ? (
+            {/* Still spinning while the storage is being resolved: the files
+                query is disabled until then, so `isLoading` alone would leave a
+                blank panel where the operator expects something to happen. */}
+            {isLoading || storage === null ? (
               <div className="flex items-center justify-center py-12">
                 <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
               </div>
@@ -793,19 +870,24 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
                 )}
               </div>
             )}
-            <button
-              onClick={() => setShowClearConfirm(true)}
-              disabled={clearSdCardMutation.isPending}
-              className="flex items-center gap-1 text-xs text-red-700 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 transition-colors disabled:opacity-50"
-              title={t('printerFiles.clearSdCardHint')}
-            >
-              {clearSdCardMutation.isPending ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Eraser className="w-4 h-4" />
-              )}
-              {t('printerFiles.clearSdCard')}
-            </button>
+            {/* ⚠️ Clearing is an operation on the removable medium — it wipes
+                the card. There is no counterpart on internal storage, and
+                offering one here would promise something no transport does. */}
+            {!isInternal && (
+              <button
+                onClick={() => setShowClearConfirm(true)}
+                disabled={clearSdCardMutation.isPending}
+                className="flex items-center gap-1 text-xs text-red-700 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 transition-colors disabled:opacity-50"
+                title={t('printerFiles.clearSdCardHint')}
+              >
+                {clearSdCardMutation.isPending ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Eraser className="w-4 h-4" />
+                )}
+                {t('printerFiles.clearSdCard')}
+              </button>
+            )}
           </div>
           <div className="flex gap-2">
             <Button

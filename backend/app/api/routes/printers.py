@@ -45,7 +45,6 @@ from backend.app.schemas.printer import (
 )
 from backend.app.services.bambu_ftp import (
     clear_sdcard_async,
-    download_file_bytes_async,
     get_storage_info_async,
 )
 from backend.app.services.bambu_mqtt import (
@@ -1520,14 +1519,16 @@ async def download_printer_file(
 async def get_printer_file_gcode(
     printer_id: int,
     path: str,
+    storage: str | None = None,
     _=RequirePermission(Permission.PRINTERS_FILES),
 ):
     """Get gcode for a file stored on a printer (for preview)."""
     import io
 
     printer = await _load_printer_or_404(printer_id)
+    resolved = _resolve_storage(storage, printer.model, printer_manager.get_status(printer_id))
 
-    data = await download_file_bytes_async(printer.ip_address, printer.access_code, path, printer_model=printer.model)
+    data = await transport_for(printer, resolved).read_bytes(path)
     if data is None:
         raise HTTPException(404, f"File not found: {path}")
 
@@ -1554,6 +1555,7 @@ async def get_printer_file_gcode(
 async def get_printer_file_plates(
     printer_id: int,
     path: str = Query(..., description="Full path to the 3MF file on the printer"),
+    storage: str | None = None,
     _=RequirePermission(Permission.PRINTERS_FILES),
 ):
     """Get available plates from a multi-plate 3MF file stored on a printer."""
@@ -1563,6 +1565,7 @@ async def get_printer_file_plates(
     import defusedxml.ElementTree as ET
 
     printer = await _load_printer_or_404(printer_id)
+    resolved = _resolve_storage(storage, printer.model, printer_manager.get_status(printer_id))
 
     filename = path.split("/")[-1]
     if not filename.lower().endswith(".3mf"):
@@ -1574,7 +1577,7 @@ async def get_printer_file_plates(
             "is_multi_plate": False,
         }
 
-    data = await download_file_bytes_async(printer.ip_address, printer.access_code, path, printer_model=printer.model)
+    data = await transport_for(printer, resolved).read_bytes(path)
     if data is None:
         raise HTTPException(404, f"File not found: {path}")
 
@@ -1794,14 +1797,16 @@ async def get_printer_file_plate_thumbnail(
     printer_id: int,
     plate_index: int,
     path: str = Query(..., description="Full path to the 3MF file on the printer"),
+    storage: str | None = None,
     _=RequirePermission(Permission.PRINTERS_FILES),
 ):
     """Get a plate thumbnail image from a printer-stored 3MF file."""
     import io
 
     printer = await _load_printer_or_404(printer_id)
+    resolved = _resolve_storage(storage, printer.model, printer_manager.get_status(printer_id))
 
-    data = await download_file_bytes_async(printer.ip_address, printer.access_code, path, printer_model=printer.model)
+    data = await transport_for(printer, resolved).read_bytes(path)
     if data is None:
         raise HTTPException(404, f"File not found: {path}")
 
@@ -1831,15 +1836,18 @@ async def download_printer_files_as_zip(
         raise HTTPException(400, "No files specified")
 
     printer = await _load_printer_or_404(printer_id)
+    # Resolved once for the whole request: every path in one ZIP comes from the
+    # storage the browser was showing, and re-resolving per path would let a
+    # single archive silently mix two media.
+    resolved = _resolve_storage(request.get("storage"), printer.model, printer_manager.get_status(printer_id))
+    transport = transport_for(printer, resolved)
 
     # Create ZIP in memory
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for path in paths:
             try:
-                data = await download_file_bytes_async(
-                    printer.ip_address, printer.access_code, path, printer_model=printer.model
-                )
+                data = await transport.read_bytes(path)
                 if data:
                     filename = path.split("/")[-1]
                     zf.writestr(filename, data)
@@ -1945,6 +1953,11 @@ async def import_printer_files_to_library(
     imported: list[dict] = []
     skipped: list[dict] = []
 
+    # Resolved once: every path in one import comes from the storage the browser
+    # was showing, and re-resolving per path would let one request mix two media.
+    resolved = _resolve_storage(request.get("storage"), printer.model, printer_manager.get_status(printer_id))
+    transport = transport_for(printer, resolved)
+
     for path in paths:
         if not isinstance(path, str) or not path:
             skipped.append({"path": path, "reason": "invalid_path"})
@@ -1957,14 +1970,9 @@ async def import_printer_files_to_library(
             continue
 
         try:
-            data = await download_file_bytes_async(
-                printer.ip_address,
-                printer.access_code,
-                path,
-                printer_model=printer.model,
-            )
+            data = await transport.read_bytes(path)
         except Exception as e:
-            logger.warning("Printer FTP read failed for %s: %s", path, e)
+            logger.warning("Printer file read failed for %s (%s): %s", path, resolved, e)
             skipped.append({"path": path, "reason": "download_failed", "detail": str(e)})
             continue
 

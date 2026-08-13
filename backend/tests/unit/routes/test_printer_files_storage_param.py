@@ -42,3 +42,18 @@ def test_a_disconnected_printer_still_answers_external():
     """get_status returns None before the first connection; the browser must
     still open on something rather than fail."""
     assert _resolve_storage(None, "X2D", None) == "external"
+
+
+def test_the_status_projection_carries_the_storage_capability():
+    """The switcher is drawn off the same answer the dispatcher will use."""
+    from backend.app.services.bambu_mqtt import PrinterState
+    from backend.app.services.printer_manager import printer_state_to_dict
+
+    state = PrinterState()
+    state.sdcard_state = SDCARD_NONE
+    state.print_option_support = {"model_internal_storage": True, "print_with_emmc": True}
+
+    payload = printer_state_to_dict(state, model="X2D")
+    assert payload["storage_capability"]["can_browse_internal"] is True
+    assert payload["storage_capability"]["default_storage"] == "internal"
+    assert payload["storage_capability"]["print_target"] == "internal"

@@ -23,6 +23,7 @@ from backend.app.services.bambu_mqtt import (
     get_stage_name,
 )
 from backend.app.utils.printer_configs import airduct_fan_label, get_device_support_flags
+from backend.app.utils.printer_storage import storage_capability_for
 from backend.app.utils.temperature_limits import limits_for
 from backend.app.utils.timelapse import capability_for as timelapse_capability_for
 
@@ -1915,6 +1916,11 @@ def printer_state_to_dict(
         "door_open": state.door_open,
         "sdcard": state.sdcard,
         "sdcard_state": state.sdcard_state,
+        # One composed answer about storage, so the file browser's switcher and
+        # the dispatcher's transport choice cannot drift apart. See
+        # utils/printer_storage.py — it is the same discipline as
+        # utils/timelapse.py::capability_for.
+        "storage_capability": storage_capability_for(model, state),
         "store_to_sdcard": state.store_to_sdcard,
         "timelapse": state.timelapse,
         "ipcam": state.ipcam,

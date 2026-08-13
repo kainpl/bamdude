@@ -414,4 +414,83 @@ describe('FileManagerModal', () => {
       expect(loader).toBeInTheDocument();
     });
   });
+
+  describe('storage switcher', () => {
+    const withCapability = (capability: Record<string, unknown>) =>
+      server.use(
+        http.get('/api/v1/printers/:id/status', () =>
+          HttpResponse.json({ storage_capability: capability }),
+        ),
+      );
+
+    const externalOnly = {
+      storages: ['external'],
+      can_browse_internal: false,
+      card_state: 1,
+      default_storage: 'external',
+      print_target: 'external',
+      reason: null,
+    };
+
+    const bothWithNoCard = {
+      storages: ['external', 'internal'],
+      can_browse_internal: true,
+      card_state: 0,
+      default_storage: 'internal',
+      print_target: 'internal',
+      reason: null,
+    };
+
+    it('offers no switcher on a printer without internal storage', async () => {
+      withCapability(externalOnly);
+      render(<FileManagerModal printerId={1} printerName="P1S" onClose={mockOnClose} />);
+
+      expect(await screen.findByText('benchy.3mf')).toBeInTheDocument();
+      expect(screen.queryByRole('tab')).not.toBeInTheDocument();
+    });
+
+    it('opens internal storage when no card is inserted', async () => {
+      withCapability(bothWithNoCard);
+      let asked: string | null = null;
+      server.use(
+        http.get('/api/v1/printers/:id/files', ({ request }) => {
+          asked = new URL(request.url).searchParams.get('storage');
+          return HttpResponse.json({ files: mockFiles });
+        }),
+      );
+
+      render(<FileManagerModal printerId={1} printerName="X2D" onClose={mockOnClose} />);
+
+      await waitFor(() => expect(asked).toBe('internal'));
+    });
+
+    it('hides the path bar and clear-SD on internal storage', async () => {
+      withCapability(bothWithNoCard);
+      render(<FileManagerModal printerId={1} printerName="X2D" onClose={mockOnClose} />);
+
+      expect(await screen.findByText('benchy.3mf')).toBeInTheDocument();
+      // The breadcrumb renders currentPath in a mono span; on a flat catalogue
+      // there is no path to be at.
+      expect(document.querySelector('.font-mono')).not.toBeInTheDocument();
+      expect(screen.queryByTitle(/clear/i)).not.toBeInTheDocument();
+    });
+
+    it('clears the selection when the storage changes', async () => {
+      withCapability({ ...bothWithNoCard, card_state: 1, default_storage: 'external' });
+      render(<FileManagerModal printerId={1} printerName="X2D" onClose={mockOnClose} />);
+
+      expect(await screen.findByText('benchy.3mf')).toBeInTheDocument();
+      // Same idiom as the selection tests above: only files carry a checkbox.
+      const checkbox = screen
+        .getAllByRole('button')
+        .find((btn) => btn.querySelector('svg')?.classList.contains('lucide-square'));
+      expect(checkbox).toBeDefined();
+      fireEvent.click(checkbox!);
+      await waitFor(() => expect(screen.getByText(/1 selected/i)).toBeInTheDocument());
+
+      fireEvent.click(screen.getByRole('tab', { name: /internal/i }));
+
+      await waitFor(() => expect(screen.queryByText(/1 selected/i)).not.toBeInTheDocument());
+    });
+  });
 });

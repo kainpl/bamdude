@@ -2918,6 +2918,8 @@ export default {
     title: 'Файловий менеджер',
     storageUsed: 'Використано:',
     storageFree: 'Вільно:',
+    storageExternal: 'SD-карта',
+    storageInternal: 'Внутрішнє сховище',
     filterPlaceholder: 'Фільтр файлів...',
     deleteButton: 'Видалити',
     deleteFiles: 'Видалити {{count}} файлів',

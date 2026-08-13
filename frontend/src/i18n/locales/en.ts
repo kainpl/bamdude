@@ -2902,6 +2902,8 @@ export default {
     title: 'File Manager',
     storageUsed: 'Used:',
     storageFree: 'Free:',
+    storageExternal: 'SD card',
+    storageInternal: 'Internal storage',
     filterPlaceholder: 'Filter files...',
     deleteButton: 'Delete',
     deleteFiles: 'Delete {{count}} Files',

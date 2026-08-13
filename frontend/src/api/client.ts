@@ -157,6 +157,12 @@ function buildSlicerUrlFilename(filename: string): string {
   return safe.toLowerCase().endsWith('.3mf') ? safe : `${safe}.3mf`;
 }
 
+/** `&storage=…`, or nothing at all — an omitted storage lets the backend pick
+ *  the printer's default medium, which is not the same as asking for external. */
+function storageParam(storage?: string): string {
+  return storage ? `&storage=${encodeURIComponent(storage)}` : '';
+}
+
 function parseContentDispositionFilename(header: string | null): string | null {
   if (!header) return null;
   // RFC 5987: filename*=utf-8''percent-encoded-name
@@ -628,6 +634,19 @@ export interface AirductFan {
   label: string | null;
 }
 
+/** Printer storage: what exists, what the browser opens, where a print may go. */
+export type PrinterStorage = 'external' | 'internal';
+
+export interface StorageCapability {
+  storages: PrinterStorage[];
+  can_browse_internal: boolean;
+  card_state: number;
+  default_storage: PrinterStorage;
+  /** null when no print can be sent at all; `reason` says why. */
+  print_target: PrinterStorage | null;
+  reason: 'no_card_no_internal' | 'card_unusable' | null;
+}
+
 export interface PrinterStatus {
   id: number;
   name: string;
@@ -673,6 +692,9 @@ export interface PrinterStatus {
   ams_exists: boolean;
   vt_tray: AMSTray[];  // Virtual tray / external spool(s)
   sdcard: boolean;  // SD card inserted
+  // Which media this printer has and where a print may go — one composed answer
+  // from the backend so the file browser and the dispatcher cannot disagree.
+  storage_capability: StorageCapability;
   store_to_sdcard: boolean;  // Store sent files on SD card
   timelapse: boolean;  // Timelapse recording active
   ipcam: boolean;  // Live view enabled
@@ -5536,9 +5558,12 @@ export const api = {
     }),
 
   // Printer File Manager
-  getPrinterFiles: (printerId: number, path = '/') =>
+  // ``storage`` is optional everywhere: omitted, the backend answers with the
+  // printer's default medium (internal when no card is inserted).
+  getPrinterFiles: (printerId: number, path = '/', storage?: PrinterStorage) =>
     request<{
       path: string;
+      storage: PrinterStorage;
       files: Array<{
         name: string;
         is_directory: boolean;
@@ -5546,12 +5571,12 @@ export const api = {
         path: string;
         mtime?: string;
       }>;
-    }>(`/printers/${printerId}/files?path=${encodeURIComponent(path)}`),
-  getPrinterFileDownloadUrl: (printerId: number, path: string) =>
-    `${API_BASE}/printers/${printerId}/files/download?path=${encodeURIComponent(path)}`,
-  getPrinterFileGcodeUrl: (printerId: number, path: string) =>
-    `${API_BASE}/printers/${printerId}/files/gcode?path=${encodeURIComponent(path)}`,
-  getPrinterFilePlates: (printerId: number, path: string) =>
+    }>(`/printers/${printerId}/files?path=${encodeURIComponent(path)}${storageParam(storage)}`),
+  getPrinterFileDownloadUrl: (printerId: number, path: string, storage?: PrinterStorage) =>
+    `${API_BASE}/printers/${printerId}/files/download?path=${encodeURIComponent(path)}${storageParam(storage)}`,
+  getPrinterFileGcodeUrl: (printerId: number, path: string, storage?: PrinterStorage) =>
+    `${API_BASE}/printers/${printerId}/files/gcode?path=${encodeURIComponent(path)}${storageParam(storage)}`,
+  getPrinterFilePlates: (printerId: number, path: string, storage?: PrinterStorage) =>
     request<{
       printer_id: number;
       path: string;
@@ -5573,16 +5598,22 @@ export const api = {
         }>;
       }>;
       is_multi_plate: boolean;
-    }>(`/printers/${printerId}/files/plates?path=${encodeURIComponent(path)}`),
-  getPrinterFilePlateThumbnail: (printerId: number, plateIndex: number, path: string) =>
-    `${API_BASE}/printers/${printerId}/files/plate-thumbnail/${plateIndex}?path=${encodeURIComponent(path)}`,
-  downloadPrinterFile: async (printerId: number, path: string): Promise<void> => {
+    }>(`/printers/${printerId}/files/plates?path=${encodeURIComponent(path)}${storageParam(storage)}`),
+  getPrinterFilePlateThumbnail: (
+    printerId: number,
+    plateIndex: number,
+    path: string,
+    storage?: PrinterStorage,
+  ) =>
+    `${API_BASE}/printers/${printerId}/files/plate-thumbnail/${plateIndex}` +
+    `?path=${encodeURIComponent(path)}${storageParam(storage)}`,
+  downloadPrinterFile: async (printerId: number, path: string, storage?: PrinterStorage): Promise<void> => {
     const headers: Record<string, string> = {};
     if (authToken) {
       headers['Authorization'] = `Bearer ${authToken}`;
     }
     const response = await fetch(
-      `${API_BASE}/printers/${printerId}/files/download?path=${encodeURIComponent(path)}`,
+      `${API_BASE}/printers/${printerId}/files/download?path=${encodeURIComponent(path)}${storageParam(storage)}`,
       { headers }
     );
     if (!response.ok) {
@@ -5601,7 +5632,11 @@ export const api = {
     document.body.removeChild(a);
     window.URL.revokeObjectURL(url);
   },
-  downloadPrinterFilesAsZip: async (printerId: number, paths: string[]): Promise<Blob> => {
+  downloadPrinterFilesAsZip: async (
+    printerId: number,
+    paths: string[],
+    storage?: PrinterStorage,
+  ): Promise<Blob> => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (authToken) {
       headers['Authorization'] = `Bearer ${authToken}`;
@@ -5609,7 +5644,7 @@ export const api = {
     const response = await fetch(`${API_BASE}/printers/${printerId}/files/download-zip`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ paths }),
+      body: JSON.stringify({ paths, storage }),
     });
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
@@ -5617,10 +5652,11 @@ export const api = {
     }
     return response.blob();
   },
-  deletePrinterFile: (printerId: number, path: string) =>
-    request<{ status: string; path: string }>(`/printers/${printerId}/files?path=${encodeURIComponent(path)}`, {
-      method: 'DELETE',
-    }),
+  deletePrinterFile: (printerId: number, path: string, storage?: PrinterStorage) =>
+    request<{ status: string; path: string }>(
+      `/printers/${printerId}/files?path=${encodeURIComponent(path)}${storageParam(storage)}`,
+      { method: 'DELETE' },
+    ),
   clearPrinterSdCard: (printerId: number) =>
     request<{ status: string; deleted: number; failed: number; folders_removed: number }>(
       `/printers/${printerId}/files/clear-sdcard`,
@@ -5630,6 +5666,7 @@ export const api = {
     printerId: number,
     paths: string[],
     folderId: number | null,
+    storage?: PrinterStorage,
   ) =>
     request<{
       imported: Array<{
@@ -5641,7 +5678,7 @@ export const api = {
       skipped: Array<{ path: string; reason: string; detail?: string }>;
     }>(`/printers/${printerId}/files/import-to-library`, {
       method: 'POST',
-      body: JSON.stringify({ paths, folder_id: folderId }),
+      body: JSON.stringify({ paths, folder_id: folderId, storage }),
     }),
   getPrinterStorage: (printerId: number) =>
     request<{ used_bytes: number | null; free_bytes: number | null }>(`/printers/${printerId}/storage`),
