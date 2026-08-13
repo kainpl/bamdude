@@ -16,6 +16,8 @@ All notable changes to BamDude will be documented in this file.
 
 ### Added
 
+- **Layer-triggered macros.** A macro can now fire when a print reaches a layer you choose — dropping to Silent speed from layer 50 onward, say, or turning the light off once the first few layers are down. It runs once per print: a printer that reconnects mid-print, or a BamDude restart, won't set it off a second time. It also waits for the print to genuinely start — some models tick the layer counter during the calibration they run beforehand, and that no longer counts.
+
 - **AI failure detection can now sign in to an Obico ML server that asks for a token.** Obico's ML container can be started with `ML_API_TOKEN` set, and one that is refuses every detection request. BamDude sent no token at all, so on those servers nothing was ever classified — and the failure was invisible, because the health address Test Connection uses is left open even when the detection address is locked. You were told the server was fine while it was rejecting everything.
 
     There is now an **ML API token** field beside the server address, and Test Connection checks the token as well as the server, saying which of the two is wrong. Leave it empty if your server runs without one — nothing changes for those, and the request goes out exactly as before.

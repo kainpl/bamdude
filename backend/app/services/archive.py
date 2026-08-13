@@ -1524,6 +1524,34 @@ def remove_swap_pending_event(archive: PrintArchive, event: str) -> bool:
     return True
 
 
+def add_fired_layer_macro(archive: PrintArchive, macro_id: int) -> bool:
+    """Record *macro_id* in ``archive.extra_data['layer_macros_fired']``.
+
+    The mirror image of :func:`remove_swap_pending_event`. That one keeps a
+    checklist of what is still owed, because swap intent is fixed at dispatch.
+    This one keeps a record of what already ran, because the set of layer
+    macros is *not* fixed at dispatch — a macro can be added or edited
+    mid-print — so "what was planned" would be a lie by the time it mattered.
+
+    The record survives a backend restart, which the in-memory guard cannot.
+    It has to: after a restart the MQTT state starts at layer 0 and the next
+    report looks like a jump from 0, re-crossing every target in the print.
+
+    Returns True iff the id was newly added (i.e. the caller has dirty state
+    to commit, and the macro has not run yet). Returns False if it was already
+    there — an idempotent no-op, so a second call can't double-fire.
+    """
+    existing = archive.extra_data if isinstance(archive.extra_data, dict) else {}
+    raw = existing.get("layer_macros_fired")
+    fired = [int(m) for m in raw] if isinstance(raw, list) else []
+    if macro_id in fired:
+        return False
+    merged = dict(existing)
+    merged["layer_macros_fired"] = [*fired, macro_id]
+    archive.extra_data = merged
+    return True
+
+
 def load_objects_from_archive_into_state(archive: PrintArchive, printer_id: int) -> bool:
     """Parse the archive's stored 3MF and push printable_objects into MQTT state.
 

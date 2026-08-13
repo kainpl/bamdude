@@ -1559,6 +1559,9 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         # Reset milestone tracking when print restarts or new print begins
         _last_progress_milestone[printer_id] = 0
         _first_layer_notified[printer_id] = False
+        from backend.app.services.macro_trigger import clear_fired_layer_macros
+
+        clear_fired_layer_macros(printer_id)
 
     # HMS error codes that should not trigger notifications even though they
     # have known descriptions (e.g. user-initiated actions, not real errors).
@@ -2886,9 +2889,10 @@ async def on_print_start(printer_id: int, data: dict):
         printer = result.scalar_one_or_none()
 
         # Auto-light-off used to fire here; it's superseded by the generic
-        # macro framework (configure a ``chamber_light_off`` mqtt-action
-        # macro on the ``print_started`` event). fire_event_macros() above
-        # already dispatched those — nothing to do here.
+        # macro framework (configure a ``chamber_light`` mqtt-action macro
+        # with the value ``off`` on the ``print_started`` event).
+        # fire_event_macros() above already dispatched those — nothing to do
+        # here.
 
         # Plate detection check - pause if objects detected on build plate
         logger.info(
@@ -5004,6 +5008,10 @@ async def on_print_complete(printer_id: int, data: dict):
     # macro a second time. The in-memory ``_active_swap_config.pop`` already
     # provided this idempotency for the fast path; the persisted marker
     # needs the same protection.
+    from backend.app.services.macro_trigger import clear_fired_layer_macros
+
+    clear_fired_layer_macros(printer_id)
+
     swap_config = _active_swap_config.pop(printer_id, None)
     swap_events: list[str] = list(swap_config.get("swap_macro_events", [])) if swap_config else []
     if not swap_events and archive_id:
@@ -7106,6 +7114,12 @@ async def lifespan(app: FastAPI):
         # before the first-layer block below, which returns early when the
         # printer isn't RUNNING.
         await _maybe_bank_inprint_frame(printer_id, layer_num)
+
+        # Layer-triggered macros. Sits before the first-layer block below,
+        # which returns early when the printer isn't RUNNING.
+        from backend.app.services.macro_trigger import fire_layer_macros
+
+        await fire_layer_macros(printer_id, layer_num, previous_layer, async_session, printer_manager)
 
         # First-layer-complete notification (layer_num >= 2 means layer 1 is done).
         # Gated on the printer actually PRINTING: some models (e.g. P1S) tick layer_num
