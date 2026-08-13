@@ -8,6 +8,7 @@ request latency so the UI can continue immediately after dispatch.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 import zipfile
@@ -32,6 +33,7 @@ from backend.app.services.bambu_ftp import (
     with_ftp_retry,
 )
 from backend.app.services.gcode_patcher import GcodeInjectionSpec
+from backend.app.services.printer_files.factory import transport_for
 from backend.app.services.printer_manager import printer_manager
 from backend.app.utils.filename import derive_remote_filename
 
@@ -48,6 +50,87 @@ _ACTIVE_PRINT_STATES: frozenset[str] = frozenset({"PREPARE", "SLICING", "RUNNING
 
 # The same code the printer's own screen shows, grouped the way it shows it.
 _HMS_VERIFY_FAILED_DISPLAY = "0500-0500-0001-0007"
+
+# ⚠️ Never mentions a card to a machine that does not need one. The text this
+# replaced told every operator to check a card and format it FAT32/exFAT,
+# including on models that print from internal storage — advice that cannot be
+# followed and sends people looking for a fault that is not there.
+_REFUSAL_MESSAGES = {
+    "no_card_no_internal": "This printer needs an SD card to accept a print, and none is inserted.",
+    "card_unusable": (
+        "The SD card is present but unreadable or write-protected. Reformat it (FAT32/exFAT) or replace it."
+    ),
+}
+
+
+def _dispatch_refusal_message(reason: str | None) -> str:
+    return _REFUSAL_MESSAGES.get(reason or "", "The printer would not accept the file transfer.")
+
+
+def _file_digest(path: str) -> str:
+    """MD5 of the bytes we uploaded, for ``project_file``.
+
+    ⚠️ Lowercase here; ``start_print`` upper-cases it for the MQTT command,
+    which is the spelling that channel uses. Read in blocks — a 3MF is tens of
+    megabytes and this runs on the dispatch path.
+    """
+    digest = hashlib.md5(usedforsecurity=False)  # the printer's choice of digest, not ours
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _upload_failure_message(storage: str) -> str:
+    """⚠️ An upload that failed after the medium was chosen is a different
+    story from a refusal before it. The card advice belongs only on the path
+    that used a card — on internal storage it would send the operator looking
+    for a slot the print never went near."""
+    if storage == "external":
+        return "Failed to upload file to printer. Check if SD card is inserted and properly formatted (FAT32/exFAT)."
+    return "Failed to upload the file into the printer's internal storage."
+
+
+def resolve_dispatch_storage(model: str | None, state) -> tuple[str | None, str | None]:
+    """``(storage, reason)`` for one dispatch.
+
+    ⚠️ Asks :func:`storage_capability_for` and nothing else. Re-deriving this
+    from ``sdcard_state`` or a ``fun2`` bit here would be a second answer to a
+    question that already has one, and the two would drift apart — which is
+    exactly what that helper exists to prevent.
+
+    The rule it enforces: the tunnel carries a print **only** when the printer
+    reports no card. A healthy card is always FTP, and a damaged or read-only
+    one refuses rather than falling back.
+    """
+    from backend.app.utils.printer_storage import storage_capability_for
+
+    capability = storage_capability_for(model, state)
+    return capability["print_target"], capability["reason"]
+
+
+async def clear_same_named_on_internal(transport, remote_filename: str) -> None:
+    """Remove an existing file of this name from internal storage.
+
+    ⚠️ **Internal-only, because only internal storage has this problem.** Over
+    FTP the printer's root is the card, so the name *is* the path and the
+    dispatcher deletes it directly — with the configured socket timeout, which
+    matters on the slower A1 controllers. Here the tunnel deletes by the
+    absolute path its own listing reports (``/userdata/model/history/<name>``),
+    which cannot be guessed: deleting by bare name silently does nothing and
+    leaves the old file in place, making the whole delete-then-upload decision
+    inert on the very medium it was written for.
+
+    Best-effort: a missing file is the normal case, and an unreachable printer
+    fails at the upload with a message of its own.
+    """
+    try:
+        for entry in await transport.list_files("/"):
+            if entry.name == remote_filename:
+                await transport.delete(entry.path)
+                return
+    except Exception as exc:  # noqa: BLE001 — cleanup must never fail a dispatch
+        logger.debug("Pre-upload cleanup of %s on internal storage skipped: %s", remote_filename, exc)
 
 
 class PrintCommandRejectedError(RuntimeError):
@@ -1116,27 +1199,44 @@ class BackgroundDispatchService:
             remote_filename = derive_remote_filename(source_archive.filename)
             remote_path = f"/{remote_filename}"
 
+            # Which medium this print goes to. Decided once, here, and carried
+            # all the way to start_print — the choice of medium and the URL
+            # scheme are one decision, not two.
+            storage, refusal = resolve_dispatch_storage(printer_model, printer_manager.get_status(job.printer_id))
+            if storage is None:
+                raise RuntimeError(_dispatch_refusal_message(refusal))
+            transport = transport_for(printer, storage)
+
             ftp_retry_enabled, ftp_retry_count, ftp_retry_delay, ftp_timeout = await get_ftp_retry_settings()
             self._raise_if_cancel_requested(job)
 
             await self._set_active_message(job, f"Preparing upload to {printer_name}...")
-            await delete_file_async(
-                printer_ip,
-                printer_access_code,
-                remote_path,
-                socket_timeout=ftp_timeout,
-                printer_model=printer_model,
-            )
-
-            # Clean up /cache/ - delete stale .3mf and .bbl files from previous prints
-            sanitized_base = remote_filename[:-4] if remote_filename.endswith(".3mf") else remote_filename
-            try:
-                cache_files = await list_files_async(
+            if storage == "external":
+                await delete_file_async(
                     printer_ip,
                     printer_access_code,
-                    "/cache",
+                    remote_path,
                     socket_timeout=ftp_timeout,
                     printer_model=printer_model,
+                )
+            else:
+                await clear_same_named_on_internal(transport, remote_filename)
+
+            # Clean up /cache/ - delete stale .3mf and .bbl files from previous
+            # prints. ⚠️ External only: /cache is a directory on the card, and
+            # internal storage has no such place.
+            sanitized_base = remote_filename[:-4] if remote_filename.endswith(".3mf") else remote_filename
+            try:
+                cache_files = (
+                    await list_files_async(
+                        printer_ip,
+                        printer_access_code,
+                        "/cache",
+                        socket_timeout=ftp_timeout,
+                        printer_model=printer_model,
+                    )
+                    if storage == "external"
+                    else []
                 )
                 for f in cache_files:
                     fname = f.get("name", "")
@@ -1187,7 +1287,13 @@ class BackgroundDispatchService:
                             lambda u=uploaded, t=total: asyncio.create_task(self._set_active_upload_progress(job, u, t))
                         )
 
-                if ftp_retry_enabled:
+                # ⚠️ The FTP branch is untouched, retry wrapper and all. Routing
+                # it through the transport would have silently dropped the
+                # configured socket timeout and the retry settings on the path
+                # that already works for every printer with a card.
+                if storage != "external":
+                    uploaded = await transport.upload(Path(upload_file_path), remote_filename, upload_progress_callback)
+                elif ftp_retry_enabled:
                     uploaded = await with_ftp_retry(
                         upload_file_async,
                         printer_ip,
@@ -1217,9 +1323,11 @@ class BackgroundDispatchService:
                     await self._set_active_upload_progress(job, 1, 1)
 
                 if not uploaded:
-                    raise RuntimeError(
-                        "Failed to upload file to printer. Check if SD card is inserted and properly formatted (FAT32/exFAT)."
-                    )
+                    raise RuntimeError(_upload_failure_message(storage))
+
+                # Only the internal path needs a digest; the FTP command has
+                # always sent an empty one and still does.
+                file_md5 = _file_digest(upload_file_path) if storage != "external" else ""
 
                 # Preheat / heat-soak (#1468) — bring the bed (and chamber, on supported
                 # models) up to temperature on the now-idle printer before start_print.
@@ -1319,6 +1427,10 @@ class BackgroundDispatchService:
                     use_ams=job.options.get("use_ams", True),
                     nozzle_offset_cali=job.options.get("nozzle_offset_cali", False),
                     nozzle_mapping=job.options.get("nozzle_mapping"),
+                    # The medium and the URL scheme are one decision, carried
+                    # here from where it was made rather than re-derived.
+                    storage=storage,
+                    file_md5=file_md5,
                 )
 
                 if started:
@@ -1668,27 +1780,44 @@ class BackgroundDispatchService:
             remote_filename = derive_remote_filename(lib_file.filename)
             remote_path = f"/{remote_filename}"
 
+            # Which medium this print goes to. Decided once, here, and carried
+            # all the way to start_print — the choice of medium and the URL
+            # scheme are one decision, not two.
+            storage, refusal = resolve_dispatch_storage(printer_model, printer_manager.get_status(job.printer_id))
+            if storage is None:
+                raise RuntimeError(_dispatch_refusal_message(refusal))
+            transport = transport_for(printer, storage)
+
             ftp_retry_enabled, ftp_retry_count, ftp_retry_delay, ftp_timeout = await get_ftp_retry_settings()
             self._raise_if_cancel_requested(job)
 
             await self._set_active_message(job, f"Preparing upload to {printer_name}...")
-            await delete_file_async(
-                printer_ip,
-                printer_access_code,
-                remote_path,
-                socket_timeout=ftp_timeout,
-                printer_model=printer_model,
-            )
-
-            # Clean up /cache/ - delete stale .3mf and .bbl files from previous prints
-            sanitized_base = remote_filename[:-4] if remote_filename.endswith(".3mf") else remote_filename
-            try:
-                cache_files = await list_files_async(
+            if storage == "external":
+                await delete_file_async(
                     printer_ip,
                     printer_access_code,
-                    "/cache",
+                    remote_path,
                     socket_timeout=ftp_timeout,
                     printer_model=printer_model,
+                )
+            else:
+                await clear_same_named_on_internal(transport, remote_filename)
+
+            # Clean up /cache/ - delete stale .3mf and .bbl files from previous
+            # prints. ⚠️ External only: /cache is a directory on the card, and
+            # internal storage has no such place.
+            sanitized_base = remote_filename[:-4] if remote_filename.endswith(".3mf") else remote_filename
+            try:
+                cache_files = (
+                    await list_files_async(
+                        printer_ip,
+                        printer_access_code,
+                        "/cache",
+                        socket_timeout=ftp_timeout,
+                        printer_model=printer_model,
+                    )
+                    if storage == "external"
+                    else []
                 )
                 for f in cache_files:
                     fname = f.get("name", "")
@@ -1739,7 +1868,13 @@ class BackgroundDispatchService:
                             lambda u=uploaded, t=total: asyncio.create_task(self._set_active_upload_progress(job, u, t))
                         )
 
-                if ftp_retry_enabled:
+                # ⚠️ The FTP branch is untouched, retry wrapper and all. Routing
+                # it through the transport would have silently dropped the
+                # configured socket timeout and the retry settings on the path
+                # that already works for every printer with a card.
+                if storage != "external":
+                    uploaded = await transport.upload(Path(upload_file_path), remote_filename, upload_progress_callback)
+                elif ftp_retry_enabled:
                     uploaded = await with_ftp_retry(
                         upload_file_async,
                         printer_ip,
@@ -1770,9 +1905,11 @@ class BackgroundDispatchService:
 
                 if not uploaded:
                     await db.rollback()
-                    raise RuntimeError(
-                        "Failed to upload file to printer. Check if SD card is inserted and properly formatted (FAT32/exFAT)."
-                    )
+                    raise RuntimeError(_upload_failure_message(storage))
+
+                # Only the internal path needs a digest; the FTP command has
+                # always sent an empty one and still does.
+                file_md5 = _file_digest(upload_file_path) if storage != "external" else ""
 
                 # Preheat / heat-soak (#1468) — same idle-window stage as the reprint
                 # path: bed (and chamber, on supported models) up to temperature before
@@ -1871,6 +2008,10 @@ class BackgroundDispatchService:
                     use_ams=job.options.get("use_ams", True),
                     nozzle_offset_cali=job.options.get("nozzle_offset_cali", False),
                     nozzle_mapping=job.options.get("nozzle_mapping"),
+                    # The medium and the URL scheme are one decision, carried
+                    # here from where it was made rather than re-derived.
+                    storage=storage,
+                    file_md5=file_md5,
                 )
 
                 if started:

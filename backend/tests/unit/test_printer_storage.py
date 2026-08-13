@@ -109,6 +109,15 @@ def test_no_live_state_at_all_opens_the_medium_every_model_has():
     assert cap["default_storage"] == "external"  # but this is where it opens
 
 
+def test_the_browser_and_the_dispatcher_agree_when_nothing_is_known():
+    """⚠️ One input, one answer. A default_storage of external beside a
+    print_target of internal would be two answers to the same question, and
+    whichever one a caller happened to read would decide the medium."""
+    cap = storage_capability_for("X2D", None)
+    assert cap["default_storage"] == cap["print_target"] == "external"
+    assert cap["reason"] is None
+
+
 def test_a_reported_false_still_beats_the_model_config_for_browsing():
     reported_off = type(
         "S",

@@ -82,7 +82,15 @@ def storage_capability_for(model: str | None, state: object) -> dict:
     card_state = int(getattr(state, "sdcard_state", SDCARD_NONE) or 0)
     can_browse_internal = _reported_or_model(sup, "model_internal_storage", model)
 
-    if card_state == SDCARD_NORMAL:
+    # ⚠️ "Nothing reported" is not "no card". With no live state at all,
+    # ``card_state`` is 0 because the printer has never spoken, and reading that
+    # as an empty slot would route a print into internal storage on a machine
+    # holding a card. Both answers below depend on this, and they must agree:
+    # a ``default_storage`` of external beside a ``print_target`` of internal
+    # would be two answers to one question.
+    card_state_is_known = state is not None
+
+    if not card_state_is_known or card_state == SDCARD_NORMAL:
         print_target, reason = EXTERNAL, None
     elif card_state in (SDCARD_ABNORMAL, SDCARD_READONLY):
         print_target, reason = None, REASON_CARD_UNUSABLE
@@ -97,12 +105,8 @@ def storage_capability_for(model: str | None, state: object) -> dict:
     # and paints an empty grid. An empty screen where files exist reads as a
     # malfunction, so a missing card opens the storage that has something in it.
     #
-    # ⚠️ But only on evidence. With no live state at all — a printer that has
-    # never connected, or is offline — ``card_state`` is 0 because nothing was
-    # reported, not because the slot is empty. Reading that absence as "no card"
-    # would open internal storage on a machine that has a card sitting in it.
-    # Unknown falls back to the medium every model has.
-    card_state_is_known = state is not None
+    # ⚠️ But only on evidence — see ``card_state_is_known`` above. Unknown falls
+    # back to the medium every model has.
     default_storage = (
         INTERNAL if (can_browse_internal and card_state_is_known and card_state != SDCARD_NORMAL) else EXTERNAL
     )
