@@ -87,6 +87,11 @@ class PrintQueueItem(Base):
     execute_swap_macros: Mapped[bool] = mapped_column(Boolean, default=True)
     swap_macro_events: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # JSON array of ``macros.id`` the operator ticked for this job. Non-swap
+    # macros are opt-in per print: NULL and ``[]`` both mean "run none", and
+    # every path without a dialog leaves it NULL.
+    selected_macro_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Auto-Print G-code Injection (#422). When True, dispatch resolves the
     # ``gcode_snippets`` setting (per-model JSON: ``{model: {start_gcode,
     # end_gcode}}``), substitutes ``{header_keys}`` from the 3MF gcode header,

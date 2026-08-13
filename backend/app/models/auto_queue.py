@@ -77,6 +77,10 @@ class AutoQueueItem(Base):
     execute_swap_macros: Mapped[bool] = mapped_column(Boolean, default=True)
     swap_macro_events: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Copied onto the per-printer item by the distributor — see
+    # ``PrintQueueItem.selected_macro_ids``.
+    selected_macro_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Scheduling
     position: Mapped[int] = mapped_column(Integer, default=0)
     scheduled_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -197,6 +197,7 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         "mesh_mode_fast_check": item.mesh_mode_fast_check,
         "execute_swap_macros": item.execute_swap_macros,
         "swap_macro_events": json.loads(item.swap_macro_events) if item.swap_macro_events else None,
+        "selected_macro_ids": json.loads(item.selected_macro_ids) if item.selected_macro_ids else None,
         "gcode_injection": item.gcode_injection,
         "preheat_override": getattr(item, "preheat_override", "inherit"),
         "preheat_chamber_target_override": getattr(item, "preheat_chamber_target_override", None),
@@ -596,6 +597,9 @@ async def update_queue_item(
     if "swap_macro_events" in update_data:
         events = update_data["swap_macro_events"]
         update_data["swap_macro_events"] = json.dumps(events) if events else None
+    if "selected_macro_ids" in update_data:
+        ids = update_data["selected_macro_ids"]
+        update_data["selected_macro_ids"] = json.dumps(ids) if ids is not None else None
 
     for field, value in update_data.items():
         if field in _CALI_MODE_FIELDS:
@@ -1393,6 +1397,9 @@ async def update_batch(
     if "swap_macro_events" in update_data:
         events = update_data["swap_macro_events"]
         update_data["swap_macro_events"] = json.dumps(events) if events else None
+    if "selected_macro_ids" in update_data:
+        ids = update_data["selected_macro_ids"]
+        update_data["selected_macro_ids"] = json.dumps(ids) if ids is not None else None
 
     for item in pending:
         for field, value in update_data.items():

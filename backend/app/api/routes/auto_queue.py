@@ -103,6 +103,13 @@ def _to_response(item: AutoQueueItem) -> AutoQueueItemResponse:
         except (ValueError, TypeError):
             swap_events = None
 
+    selected_macros = None
+    if item.selected_macro_ids:
+        try:
+            selected_macros = json.loads(item.selected_macro_ids)
+        except (ValueError, TypeError):
+            selected_macros = None
+
     response = AutoQueueItemResponse(
         id=item.id,
         archive_id=item.archive_id,
@@ -128,6 +135,7 @@ def _to_response(item: AutoQueueItem) -> AutoQueueItemResponse:
         mesh_mode_fast_check=item.mesh_mode_fast_check,
         execute_swap_macros=item.execute_swap_macros,
         swap_macro_events=swap_events,
+        selected_macro_ids=selected_macros,
         status=item.status,
         waiting_reason=item.waiting_reason,
         assigned_to_item_id=item.assigned_to_item_id,
@@ -248,6 +256,7 @@ async def add_to_auto_queue(
     # Raw override dicts; narrowed per-plate inside the loop below (#2551).
     overrides_list = [o.model_dump() for o in data.filament_overrides] if data.filament_overrides else []
     swap_events_json = json.dumps(data.swap_macro_events) if data.swap_macro_events else None
+    selected_macros_json = json.dumps(data.selected_macro_ids) if data.selected_macro_ids is not None else None
 
     items: list[AutoQueueItem] = []
     pos_offset = 0
@@ -292,6 +301,7 @@ async def add_to_auto_queue(
                     mesh_mode_fast_check=data.mesh_mode_fast_check,
                     execute_swap_macros=data.execute_swap_macros,
                     swap_macro_events=swap_events_json,
+                    selected_macro_ids=selected_macros_json,
                     position=max_pos + pos_offset,
                     scheduled_time=data.scheduled_time,
                     manual_start=data.manual_start,
@@ -425,6 +435,9 @@ async def update_auto_queue_item(
         if key == "filament_overrides" and value is not None:
             value = json.dumps([o if isinstance(o, dict) else o.model_dump() for o in value])
         elif key == "required_filament_types" and value is not None or key == "swap_macro_events" and value is not None:
+            value = json.dumps(value)
+        elif key == "selected_macro_ids" and value is not None:
+            # Encoded even when empty — an empty tick-list is a real answer.
             value = json.dumps(value)
         elif key in ("bed_levelling", "flow_cali"):
             # No *_mode column on auto-queue — store the bool mirror only.

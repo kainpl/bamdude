@@ -197,6 +197,52 @@ class TestPrintQueueAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_add_to_queue_with_macro_selection(self, async_client: AsyncClient, printer_factory, archive_factory):
+        """The ticked macros ride on the item as JSON text and come back a list."""
+        _printer, queue = await printer_factory()
+        archive = await archive_factory()
+
+        response = await async_client.post(
+            "/api/v1/queue/",
+            json={"queue_id": queue.id, "archive_id": archive.id, "selected_macro_ids": [7, 9]},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["selected_macro_ids"] == [7, 9]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_an_item_with_no_macro_selection_reads_back_as_null(
+        self, async_client: AsyncClient, printer_factory, archive_factory
+    ):
+        """Every path without a dialog leaves it unset, and that means "run none"."""
+        _printer, queue = await printer_factory()
+        archive = await archive_factory()
+
+        response = await async_client.post(
+            "/api/v1/queue/",
+            json={"queue_id": queue.id, "archive_id": archive.id},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["selected_macro_ids"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_an_empty_macro_selection_survives_as_empty(
+        self, async_client: AsyncClient, printer_factory, archive_factory
+    ):
+        """ "I ticked nothing" must not be normalised away into "never asked"."""
+        _printer, queue = await printer_factory()
+        archive = await archive_factory()
+
+        created = await async_client.post(
+            "/api/v1/queue/",
+            json={"queue_id": queue.id, "archive_id": archive.id, "selected_macro_ids": []},
+        )
+        assert created.status_code == 200, created.text
+        assert created.json()["selected_macro_ids"] == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_add_to_queue_with_manual_start(
         self, async_client: AsyncClient, printer_factory, archive_factory, db_session
     ):

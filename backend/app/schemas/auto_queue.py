@@ -66,6 +66,7 @@ class AutoQueueItemCreate(BaseModel):
     mesh_mode_fast_check: bool = True
     execute_swap_macros: bool = True
     swap_macro_events: list[str] | None = None
+    selected_macro_ids: list[int] | None = None
 
     # Scheduling
     scheduled_time: datetime | None = None
@@ -107,6 +108,7 @@ class AutoQueueItemUpdate(BaseModel):
     mesh_mode_fast_check: bool | None = None
     execute_swap_macros: bool | None = None
     swap_macro_events: list[str] | None = None
+    selected_macro_ids: list[int] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -142,6 +144,7 @@ class AutoQueueItemResponse(BaseModel):
     mesh_mode_fast_check: bool
     execute_swap_macros: bool
     swap_macro_events: list[str] | None = None
+    selected_macro_ids: list[int] | None = None
 
     status: Literal["pending", "assigned", "cancelled"]
     waiting_reason: str | None

@@ -191,6 +191,10 @@ async def add_items_to_printer_queue(
     swap_macro_events_json = (
         json.dumps(data.swap_macro_events) if execute_swap_macros and data.swap_macro_events else None
     )
+    # Encoded even when empty: "the operator ticked nothing" and "no selection
+    # was ever made" are the same to the trigger, but only the caller can tell
+    # them apart, so the caller's answer is stored verbatim.
+    selected_macro_ids_json = json.dumps(data.selected_macro_ids) if data.selected_macro_ids is not None else None
 
     items: list[PrintQueueItem] = []
     for i in range(data.quantity):
@@ -217,6 +221,7 @@ async def add_items_to_printer_queue(
                 mesh_mode_fast_check=data.mesh_mode_fast_check,
                 execute_swap_macros=execute_swap_macros,
                 swap_macro_events=swap_macro_events_json,
+                selected_macro_ids=selected_macro_ids_json,
                 gcode_injection=data.gcode_injection,
                 preheat_override=data.preheat_override,
                 preheat_chamber_target_override=data.preheat_chamber_target_override,

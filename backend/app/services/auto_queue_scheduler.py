@@ -353,6 +353,7 @@ class AutoQueueScheduler:
             gcode_injection=item.gcode_injection,
             execute_swap_macros=item.execute_swap_macros,
             swap_macro_events=item.swap_macro_events,
+            selected_macro_ids=item.selected_macro_ids,
             status="pending",
             batch_id=item.batch_id,
             created_by_id=item.created_by_id,

@@ -43,6 +43,7 @@ class PrintQueueItemCreate(BaseModel):
     mesh_mode_fast_check: bool = True
     execute_swap_macros: bool = True
     swap_macro_events: list[str] | None = None
+    selected_macro_ids: list[int] | None = None
     gcode_injection: bool = False
     # Preheat / heat-soak per-item override (#1468). 'inherit' uses the global
     # preheat_enabled setting; 'on' / 'off' force the decision. The chamber target
@@ -75,6 +76,7 @@ class PrintQueueItemUpdate(BaseModel):
     mesh_mode_fast_check: bool | None = None
     execute_swap_macros: bool | None = None
     swap_macro_events: list[str] | None = None
+    selected_macro_ids: list[int] | None = None
     gcode_injection: bool | None = None
     preheat_override: Literal["inherit", "on", "off"] | None = None
     preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=60)
@@ -112,6 +114,7 @@ class PrintQueueItemResponse(BaseModel):
     mesh_mode_fast_check: bool = True
     execute_swap_macros: bool = True
     swap_macro_events: list[str] | None = None
+    selected_macro_ids: list[int] | None = None
     gcode_injection: bool = False
     preheat_override: Literal["inherit", "on", "off"] = "inherit"
     preheat_chamber_target_override: int | None = None
@@ -213,6 +216,7 @@ class PrintQueueBulkUpdate(BaseModel):
     mesh_mode_fast_check: bool | None = None
     execute_swap_macros: bool | None = None
     swap_macro_events: list[str] | None = None
+    selected_macro_ids: list[int] | None = None
     gcode_injection: bool | None = None
     preheat_override: Literal["inherit", "on", "off"] | None = None
     preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=60)
