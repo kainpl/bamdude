@@ -69,14 +69,40 @@ def test_browsing_internal_follows_bit_17_not_bit_0():
     assert print_only["storages"] == ["external"]
 
 
-def test_the_model_config_answers_before_the_first_push():
-    """No fun2 yet: X2D's mirrored config says support_print_without_sd=true,
-    P1S's says false. ⚠️ The flag lives under the config's ``print`` block, not
-    at its root — reading the root returns None for every model and would make
-    every machine refuse before its first push."""
+def test_printing_without_a_card_needs_the_live_bit_not_just_the_model():
+    """⚠️ In BambuStudio ``SupportPrintWithoutSD()`` only ever REFUSES — all
+    five of its uses read ``if (!flag && NO_SDCARD) refuse``. The grant is the
+    live ``fun2`` bit 0, defaulted to false and set from nowhere else. Treating
+    the config as a grant made us send prints into internal storage on any
+    firmware that never reports that bit, where Studio refuses — most likely on
+    the X1 family, which is exactly where the tunnel is least likely to exist.
+    """
     bare = type("S", (), {"sdcard_state": SDCARD_NONE, "print_option_support": {}})()
-    assert storage_capability_for("X2D", bare)["print_target"] == "internal"
+    assert storage_capability_for("X2D", bare)["print_target"] is None
+    assert storage_capability_for("X2D", bare)["reason"] == "no_card_no_internal"
     assert storage_capability_for("P1S", bare)["print_target"] is None
+
+
+def test_the_model_config_can_still_refuse_a_printer_that_claims_the_bit():
+    """Both conditions, as Studio applies them: a model that cannot print
+    without a card is refused even if its firmware sets the bit."""
+    claims = type(
+        "S",
+        (),
+        {"sdcard_state": SDCARD_NONE, "print_option_support": {"print_with_emmc": True}},
+    )()
+    assert storage_capability_for("A1 mini", claims)["print_target"] is None
+    assert storage_capability_for("X2D", claims)["print_target"] == "internal"
+
+
+def test_browsing_still_falls_back_to_the_model_and_printing_does_not():
+    """⚠️ The asymmetry is the point. Being generous with a listing costs an
+    empty screen and a switch back; being generous with a dispatch costs an
+    upload to a medium nobody confirmed and a print that dies after it."""
+    bare = type("S", (), {"sdcard_state": SDCARD_NONE, "print_option_support": {}})()
+    cap = storage_capability_for("X2D", bare)
+    assert cap["can_browse_internal"] is True
+    assert cap["print_target"] is None
 
 
 def test_an_unknown_model_with_no_report_refuses_rather_than_guesses():

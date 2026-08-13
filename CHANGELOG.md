@@ -22,7 +22,9 @@ All notable changes to BamDude will be documented in this file.
 
     Internal storage is a flat list rather than a folder tree, so the path bar and **Clear SD card** are not offered there; free space isn't shown either, because the printer doesn't report it over that channel. In place of the folder shortcuts there are two buttons — **Models** and **Timelapses** — because on internal storage those are two separate catalogues rather than two directories. The timelapse button appears only on printers that actually keep timelapses internally, which is a separate capability from keeping models.
 
-- **Printers with built-in storage can print without an SD card.** X2D and the H2 family keep files in internal storage, and BamDude could only ever send to a card — with none inserted every dispatch failed, telling you to check a card the machine does not need. Those printers now send to internal storage automatically when no card is present. Nothing changes when a card *is* in: it is still used, over the same transfer as before.
+- **Printers with built-in storage can print without an SD card.** X2D, P2S and the H2 family (H2C, H2D, H2D Pro, H2S) keep files in internal storage, and BamDude could only ever send to a card — with none inserted every dispatch failed, telling you to check a card the machine does not need. Those printers now send to internal storage automatically when no card is present. Nothing changes when a card *is* in: it is still used, over the same transfer as before.
+
+    Whether a printer gets this is decided by what the printer itself reports, not by a list of model names — so a machine that says it can print without a card will, and one that stays quiet is refused rather than being sent to a storage nobody confirmed it has.
 
     A card that is present but unreadable or write-protected still stops the print rather than quietly routing around it — an unreadable card means something is wrong with the machine — and the message now says which of the two situations you are in.
 

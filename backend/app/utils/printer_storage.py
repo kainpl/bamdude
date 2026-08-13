@@ -38,21 +38,25 @@ REASON_NO_CARD_NO_INTERNAL = "no_card_no_internal"
 REASON_CARD_UNUSABLE = "card_unusable"
 
 
-def _model_has_internal_storage(model: str | None) -> bool:
-    """What the mirrored config says, for use when the live bits are absent.
+def _model_allows_printing_without_a_card(model: str | None) -> bool:
+    """What the mirrored config says about this model.
+
+    ⚠️ **In BambuStudio this flag only ever REFUSES.** All five of its uses read
+    ``if (!SupportPrintWithoutSD() && sdcard_state == NO_SDCARD) → refuse``; it
+    never grants anything. Permission to send a print with no card comes from
+    the live ``fun2`` bit 0, which Studio defaults to ``false`` and sets from
+    nowhere else. Using this flag as a grant makes us more permissive than
+    Studio on any firmware that never reports that bit.
 
     ⚠️ The flag lives under the ``print`` block, mirroring BS's
-    ``ParseVal(print_json, "support_print_without_sd", …)`` — reading it off the
-    config root silently answers ``None`` for every model, which reads as "no
-    machine has internal storage".
+    ``ParseVal(print_json, "support_print_without_sd", …)`` — off the config
+    root it answers ``None`` for every model, i.e. "no machine can".
 
-    ⚠️ **One config flag stands in for two different live bits.** Measured
-    across all ten mirrored configs, ``support_print_without_sd`` and
-    ``support_save_remote_print_file_to_storage`` agree exactly: both true for
-    X2D / H2D / H2S / P2S / X1 / X1C, both absent for every P1 and A1. The two
-    live bits they stand in for are genuinely separate questions, but no
-    per-model data distinguishes them, and inventing a distinction the data
-    does not carry would be worse than admitting the fallback is coarse.
+    Measured across all fifteen mirrored configs: true for X2D, P2S, H2C, H2D,
+    H2D Pro, H2S, X1, X1 Carbon and X1E; false for P1P, P1S, A1 mini, A1 and
+    A2L. (``support_save_remote_print_file_to_storage`` tracks it everywhere
+    except X1E, where it is absent — so the two are close but not the same
+    question, and only this one is used here.)
     """
     from backend.app.utils.printer_configs import load_printer_config
 
@@ -60,27 +64,42 @@ def _model_has_internal_storage(model: str | None) -> bool:
     return bool((config.get("print") or {}).get("support_print_without_sd"))
 
 
-def _reported_or_model(sup: dict, key: str, model: str | None) -> bool:
-    """Live report wins; the mirrored model config answers before the first push.
+def _may_browse_internal(sup: dict, model: str | None) -> bool:
+    """Live bit 17 if it has arrived, otherwise what the model is known to be.
 
-    Same precedence as ``timelapse.capability_for``, and it is not a nicety:
-    ``print_option_support`` is rebuilt from scratch on every reconnect, and
-    Bambu sends the full support block once and then sparse deltas. Treating an
-    absent bit as ``False`` made the storage switcher vanish from the file
-    browser every time a printer reconnected — for as long as it took the next
-    full push to arrive.
+    ⚠️ Deliberately the permissive side of the two, and only because the cost of
+    being wrong is a listing that comes back empty and a switch back. The
+    fallback is not a nicety: ``print_option_support`` is rebuilt from scratch
+    on every reconnect and the printer sends its support block once, so treating
+    an absent bit as ``False`` made the storage switcher vanish from the file
+    browser after every reconnect.
     """
-    reported = sup.get(key)
+    reported = sup.get("model_internal_storage")
     if isinstance(reported, bool):
         return reported
-    return _model_has_internal_storage(model)
+    return _model_allows_printing_without_a_card(model)
+
+
+def _may_print_without_a_card(sup: dict, model: str | None) -> bool:
+    """Both conditions, exactly as BambuStudio applies them.
+
+    ⚠️ **No fallback to the config here, unlike browsing.** The live bit is the
+    grant and its absence is a refusal — Studio's own default. A printer that
+    has not yet reported ``fun2``, or whose firmware never does, is refused
+    rather than sent to a medium nobody has confirmed exists. Being generous
+    with a listing costs an empty screen; being generous here costs an upload to
+    a storage that may not be there and a dispatch that dies after it.
+    """
+    if not _model_allows_printing_without_a_card(model):
+        return False
+    return sup.get("print_with_emmc") is True
 
 
 def storage_capability_for(model: str | None, state: object) -> dict:
     """Everything the browser and the dispatcher need, answered once."""
     sup = getattr(state, "print_option_support", None) or {}
     card_state = int(getattr(state, "sdcard_state", SDCARD_NONE) or 0)
-    can_browse_internal = _reported_or_model(sup, "model_internal_storage", model)
+    can_browse_internal = _may_browse_internal(sup, model)
 
     # ⚠️ "Nothing reported" is not "no card". With no live state at all,
     # ``card_state`` is 0 because the printer has never spoken, and reading that
@@ -94,7 +113,7 @@ def storage_capability_for(model: str | None, state: object) -> dict:
         print_target, reason = EXTERNAL, None
     elif card_state in (SDCARD_ABNORMAL, SDCARD_READONLY):
         print_target, reason = None, REASON_CARD_UNUSABLE
-    elif _reported_or_model(sup, "print_with_emmc", model):
+    elif _may_print_without_a_card(sup, model):
         print_target, reason = INTERNAL, None
     else:
         print_target, reason = None, REASON_NO_CARD_NO_INTERNAL
