@@ -78,6 +78,7 @@ from backend.app.services.printer_manager import (
 )
 from backend.app.utils.filament_ids import filament_id_to_setting_id
 from backend.app.utils.http import build_content_disposition
+from backend.app.utils.printer_storage import storage_capability_for
 from backend.app.utils.temperature_limits import is_within, limits_for
 from backend.app.utils.timelapse import capability_for as timelapse_capability_for
 
@@ -612,6 +613,10 @@ async def get_printer_status(
             id=printer_id,
             name=printer.name,
             connected=False,
+            # What the model is known to have, even with nobody home. The helper
+            # answers from the mirrored config here and opens on the card,
+            # because "no card reported" and "no card" are different things.
+            storage_capability=storage_capability_for(printer.model, None),
         )
 
     # Determine cover URL if there's an active print (including paused)
@@ -979,6 +984,7 @@ async def get_printer_status(
         axis_at_home=dict(state.axis_at_home),
         ext_has_filament=dict(state.ext_has_filament),
         timelapse_capability=timelapse_capability_for(printer.model, state),
+        storage_capability=storage_capability_for(printer.model, state),
         firmware_version=state.firmware_version,
         developer_mode=state.developer_mode if state else None,
         ams_auto_switch_filament=state.ams_auto_switch_filament if state else None,
@@ -1444,7 +1450,7 @@ def _resolve_storage(requested: str | None, model: str | None, state) -> str:
     arriving here means one escaped ``TunnelTransport``, and answering it would
     hide the leak.
     """
-    from backend.app.utils.printer_storage import EXTERNAL, INTERNAL, storage_capability_for
+    from backend.app.utils.printer_storage import EXTERNAL, INTERNAL
 
     capability = storage_capability_for(model, state)
     if requested is None:

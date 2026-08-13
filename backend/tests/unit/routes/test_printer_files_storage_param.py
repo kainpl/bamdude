@@ -40,7 +40,12 @@ def test_a_wire_name_is_refused_rather_than_translated():
 
 def test_a_disconnected_printer_still_answers_external():
     """get_status returns None before the first connection; the browser must
-    still open on something rather than fail."""
+    still open on something rather than fail.
+
+    ⚠️ External even on a machine that has internal storage: with no live
+    state, "no card reported" means nothing was reported at all, not that the
+    slot is empty. Opening internal here would be guessing against a printer
+    that may well have a card in it."""
     assert _resolve_storage(None, "X2D", None) == "external"
 
 

@@ -85,6 +85,39 @@ def test_an_unknown_model_with_no_report_refuses_rather_than_guesses():
     assert storage_capability_for(None, bare)["print_target"] is None
 
 
+def test_browsing_survives_a_reconnect_that_empties_the_support_dict():
+    """⚠️ print_option_support is rebuilt from scratch on every reconnect, and
+    the printer sends its support block once and then sparse deltas. Treating
+    an absent bit as False made the storage switcher vanish from the browser
+    every time a printer reconnected, with no way back to internal storage."""
+    fresh = type("S", (), {"sdcard_state": SDCARD_NONE, "print_option_support": {}})()
+    cap = storage_capability_for("X2D", fresh)
+    assert cap["can_browse_internal"] is True
+    assert cap["storages"] == ["external", "internal"]
+    assert cap["default_storage"] == "internal"
+
+    # …and a machine that has no internal storage still gets none.
+    assert storage_capability_for("A1 mini", fresh)["can_browse_internal"] is False
+
+
+def test_no_live_state_at_all_opens_the_medium_every_model_has():
+    """⚠️ Not the same question as "the card was reported missing". With no
+    state, card_state is 0 because nothing was reported — reading that as an
+    empty slot would open internal storage on a machine holding a card."""
+    cap = storage_capability_for("X2D", None)
+    assert cap["can_browse_internal"] is True  # the switcher is still offered
+    assert cap["default_storage"] == "external"  # but this is where it opens
+
+
+def test_a_reported_false_still_beats_the_model_config_for_browsing():
+    reported_off = type(
+        "S",
+        (),
+        {"sdcard_state": SDCARD_NORMAL, "print_option_support": {"model_internal_storage": False}},
+    )()
+    assert storage_capability_for("X2D", reported_off)["can_browse_internal"] is False
+
+
 def test_the_live_report_beats_the_model_config():
     """A firmware that says it cannot print without a card wins over a config
     that says the model can — the report is about this machine, now."""

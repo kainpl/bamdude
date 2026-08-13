@@ -518,6 +518,11 @@ class PrinterStatus(BaseModel):
     # model's: a missing, unreadable or read-only card each refuse it, and
     # internal storage or a timelapse kit each excuse the card entirely.
     timelapse_capability: dict = Field(default_factory=dict)
+    # Which media this printer has, which one the file browser opens, and where
+    # a print may go. ⚠️ Must be passed explicitly by the endpoint below — this
+    # response is hand-built rather than serialised from
+    # ``printer_state_to_dict``, so a field added only there never arrives.
+    storage_capability: dict = Field(default_factory=dict)
     # Firmware version (from info.module[name="ota"].sw_ver)
     firmware_version: str | None = None
     # Developer LAN mode: True = enabled, False = disabled (MQTT encryption), None = unknown
