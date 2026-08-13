@@ -381,6 +381,11 @@ class TestPrinterManager:
             use_ams=True,
             nozzle_offset_cali=False,
             nozzle_mapping=None,
+            # Defaults keep every existing caller on the card and on today's
+            # empty digest; only a dispatch that uploaded to internal storage
+            # passes anything else.
+            storage="external",
+            file_md5="",
         )
         assert result is True
 

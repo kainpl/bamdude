@@ -6141,10 +6141,20 @@ class BambuMQTTClient:
         use_ams: bool = True,
         nozzle_offset_cali: str | bool = False,
         nozzle_mapping: str | None = None,
+        storage: str = "external",
+        file_md5: str = "",
     ):
         """Start a print job on the printer.
 
-        The file should already be uploaded to the printer's root directory via FTP.
+        The file should already be uploaded — to the printer's root directory
+        over FTP, or into its internal storage over the file tunnel.
+
+        Args (this stage):
+            storage: ``"external"`` (the card, via FTP) or ``"internal"`` (eMMC,
+                via the tunnel). Decides the URL scheme, which is **not** one
+                form with the medium substituted — see the command below.
+            file_md5: digest of the uploaded bytes, used only on the internal
+                path. The FTP path has always sent an empty one.
 
         Args:
             filename: Name of the uploaded file
@@ -6364,9 +6374,23 @@ class BambuMQTTClient:
                     "sequence_id": "20000",
                     "command": "project_file",
                     "param": f"Metadata/plate_{plate_id}.gcode",
-                    "url": f"ftp://{filename}",
+                    # ⚠️ The two media use DIFFERENT URL schemes, not one scheme
+                    # with the storage substituted. Internal takes the storage as
+                    # the host and the bare filename with no path at all;
+                    # external stays on ftp://. ``brtc://udisk/…`` does not
+                    # exist — BambuStudio sends file:///media/usb0/cache/… for a
+                    # removable medium, and we never print from one this way.
+                    "url": (f"brtc://emmc/{filename}" if storage == "internal" else f"ftp://{filename}"),
+                    # ⚠️ ``file`` stays the bare name on BOTH media. Changing it
+                    # alongside the url is the natural mistake.
                     "file": filename,
-                    "md5": "",
+                    # ⚠️ UPPERCASE here, while the tunnel's own upload frame
+                    # carries the same digest in lowercase. Empty on the FTP
+                    # path exactly as before — making that non-empty is a
+                    # separate decision with its own note in the vault. The key
+                    # is always sent: older firmware rejects the command when
+                    # one it expects is missing.
+                    "md5": (file_md5.upper() if storage == "internal" else ""),
                     "bed_type": "auto",
                     "timelapse": timelapse,
                     "bed_leveling": bed_leveling_bool,
