@@ -67,6 +67,10 @@ class FakeTunnelServer:
         # Small on purpose: every download of a non-trivial file must span
         # several frames in the tests.
         self.download_chunk_size = 64
+        # What the printer dictates for an upload: fragment size in KB, and the
+        # offset to resume from. 255 KB is what the live X2D asks for.
+        self.upload_chunk_kb = 255
+        self.upload_resume_offset = 0
         self.fail_next_with: int | None = None
         self.auth_rejected = False
         # Uploads, reassembled from their fragments.
@@ -298,7 +302,19 @@ class FakeTunnelServer:
             self._upload_open[sequence] = req["path"]
             self.uploads[req["path"]] = b""
             self.upload_meta[req["path"]] = dict(req)
-            return self._data({"cmdtype": 5, "mtype": MTYPE_FILE, "sequence": sequence, "result": 0, "reply": {}})
+            # ⚠️ CONTINUE, not SUCCESS — the live printer's answer to an open.
+            # It also dictates the fragment size (in KILOBYTES) and where to
+            # resume. A fake answering SUCCESS with an empty reply let a client
+            # that reads CONTINUE as a refusal pass every test.
+            return self._data(
+                {
+                    "cmdtype": 5,
+                    "mtype": MTYPE_FILE,
+                    "sequence": sequence,
+                    "result": 1,
+                    "reply": {"chunk_size": self.upload_chunk_kb, "offset": self.upload_resume_offset},
+                }
+            )
 
         self.upload_frames.append(envelope)
         path = self._upload_open.get(sequence)

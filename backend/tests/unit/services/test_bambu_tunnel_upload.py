@@ -207,6 +207,60 @@ async def test_progress_is_reported_per_fragment(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_the_printer_dictates_the_fragment_size(tmp_path):
+    """⚠️ ``chunk_size`` comes from the printer's answer to the open, in
+    KILOBYTES — 255 there is where the observed 261120 comes from. Hardcoding
+    it works until a machine asks for something else."""
+    server = FakeTunnelServer()
+    server.upload_chunk_kb = 1  # 1 KB fragments
+    host, port = await server.start()
+    try:
+        local, data = _payload(tmp_path, 3000)
+        client = await _connected(server, host, port)
+        await client.upload_file(local, "job.gcode.3mf", WIRE_EMMC)
+        assert [f["req"]["size"] for f in server.upload_frames] == [1024, 1024, 952]
+        assert server.uploads["job.gcode.3mf"] == data
+        await client.close()
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_an_upload_resumes_from_the_offset_the_printer_reports(tmp_path):
+    """The open reply carries an offset; a re-sent file starts there, not at
+    zero. BambuStudio seeks to it and hashes only what it sends."""
+    server = FakeTunnelServer()
+    server.upload_resume_offset = 100
+    host, port = await server.start()
+    try:
+        local, data = _payload(tmp_path, 300)
+        client = await _connected(server, host, port)
+        await client.upload_file(local, "job.gcode.3mf", WIRE_EMMC)
+        assert server.upload_frames[0]["req"]["offset"] == 100
+        assert server.uploads["job.gcode.3mf"] == data[100:]
+        await client.close()
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_an_open_answered_success_means_the_file_is_already_there(tmp_path):
+    """SUCCESS on the open is BambuStudio's "done, show 100%" — sending
+    fragments after it would be pushing a file the printer already has."""
+    server = FakeTunnelServer()
+    server.fail_next_with = 0  # SUCCESS on the open
+    host, port = await server.start()
+    try:
+        local, _ = _payload(tmp_path, 600_000)
+        client = await _connected(server, host, port)
+        await client.upload_file(local, "job.gcode.3mf", WIRE_EMMC)
+        assert server.upload_frames == []
+        await client.close()
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
 async def test_a_refused_open_raises_before_any_bytes_go_out(tmp_path):
     server = FakeTunnelServer()
     server.fail_next_with = 4

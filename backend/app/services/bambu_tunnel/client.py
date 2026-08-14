@@ -62,7 +62,14 @@ DEFAULT_PORT = 6000
 # means "this frame is not the last"; in an upload REQUEST it means "more to
 # come". Same word, both directions — and treating it as an error makes every
 # streamed download fail on its very first frame.
+RESULT_SUCCESS = 0
 RESULT_CONTINUE = 1
+# ⚠️ ``FILE_READ_WRITE_ERR``. This is what a plain path gets from SUB_FILE, and
+# it is the printer saying "I cannot read that as a member", not "no such file".
+RESULT_FILE_READ_WRITE_ERR = 14
+# The file is already there. BambuStudio treats it exactly like CONTINUE and
+# resumes from the offset the printer reports.
+RESULT_FILE_EXIST = 19
 
 # 255 KiB — the fragment size BambuStudio uses on the wire.
 CHUNK_SIZE = 261120
@@ -332,16 +339,38 @@ class BambuTunnelClient:
             ).encode(),
         )
         answer, _body = await self._await_sequence(sequence)
-        if answer.get("result", 0) != 0:
-            raise TunnelError(f"tunnel refused the upload of {remote_name}", answer.get("result", -1))
+        opened = answer.get("result", 0)
+        # ⚠️ The printer answers the open with CONTINUE (1), not SUCCESS.
+        # BambuStudio accepts SUCCESS, CONTINUE and FILE_EXIST here and treats
+        # anything else as an error — reading CONTINUE as a refusal rejects the
+        # normal, expected answer and no upload ever starts.
+        if opened not in (RESULT_SUCCESS, RESULT_CONTINUE, RESULT_FILE_EXIST):
+            raise TunnelError(f"tunnel refused the upload of {remote_name} with result={opened}", opened)
+
+        open_reply = answer.get("reply") or {}
+        if opened == RESULT_SUCCESS:
+            # Already complete on the printer's side; BS shows 100% and stops.
+            if progress_cb is not None:
+                progress_cb(total, total)
+            return
+
+        # ⚠️ **The printer chooses the fragment size**, in KILOBYTES, and tells
+        # us in this reply — 255 there is where the observed 261120 comes from.
+        # It also says where to resume: a re-sent file starts at its ``offset``,
+        # not at zero.
+        chunk_size = int(open_reply.get("chunk_size") or 0) * 1024 or CHUNK_SIZE
+        start_offset = int(open_reply.get("offset") or 0)
 
         digest = hashlib.md5(usedforsecurity=False)  # the printer's choice of digest, not ours
-        sent = 0
+        sent = start_offset
         frag_id = 0
 
         with local_path.open("rb") as handle:
+            # Resume where the printer said, exactly as BambuStudio does — and
+            # like it, the digest covers what we actually send.
+            handle.seek(start_offset)
             while True:
-                chunk = handle.read(CHUNK_SIZE)
+                chunk = handle.read(chunk_size)
                 digest.update(chunk)
                 offset = sent
                 sent += len(chunk)
@@ -394,8 +423,9 @@ class BambuTunnelClient:
         # any, and this log line is what will tell us if one ever does.
         logger.debug("[%s] upload of %s: %d fragment(s) sent, awaiting completion", self._ip, remote_name, frag_id)
         answer, _body = await self._await_sequence(sequence)
-        if answer.get("result", 0) != 0:
-            raise TunnelError(f"tunnel rejected the uploaded {remote_name}", answer.get("result", -1))
+        finished = answer.get("result", 0)
+        if finished not in (RESULT_SUCCESS, RESULT_FILE_EXIST):
+            raise TunnelError(f"tunnel rejected the uploaded {remote_name} with result={finished}", finished)
 
     # -- plumbing -------------------------------------------------------
 
