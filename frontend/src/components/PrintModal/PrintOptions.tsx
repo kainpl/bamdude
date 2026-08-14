@@ -29,7 +29,17 @@ const TOGGLE_OPTIONS_CONFIG = [
 
 /**
  * Print options toggle panel with collapsible UI.
- * Shows bed levelling, flow/vibration calibration, layer inspection, and timelapse options.
+ *
+ * Shows the tri-state calibrations (bed levelling, flow; nozzle offset on
+ * dual-nozzle machines) and the plain toggles above — layer inspection,
+ * timelapse, mesh-mode fast check and gcode injection.
+ *
+ * ⚠️ No vibration calibration here, despite what this said for a long time.
+ * The MQTT command hardcodes `vibration_cali: false` for every print (see
+ * `bambu_mqtt.py::start_print`) — per-print vibration is the standalone
+ * calibration wizard's job — and the toggle that once lived here now drives a
+ * start-gcode patch instead. A docstring promising an option the panel does
+ * not render sends people looking for a control that is not there.
  */
 export function PrintOptionsPanel({
   options,
