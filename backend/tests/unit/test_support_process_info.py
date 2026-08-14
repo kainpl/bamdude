@@ -30,7 +30,19 @@ class TestCollectsSomethingUseful:
         assert info["rss_formatted"].endswith(("B", "KB", "MB", "GB"))
 
     def test_the_heap_census_names_what_the_heap_is_full_of(self):
+        """⚠️ Runs against the real process, so the RSS gate applies to it too.
+
+        Asserting the census unconditionally passed alone and failed in the full
+        suite, where the pytest process is past the 2 GB limit by the time this
+        file is reached — the collector was doing exactly what
+        ``TestHeapCensusGate`` pins, and the assertion did not know about it.
+        Either outcome is correct; what must never happen is the census
+        vanishing without saying so.
+        """
         info = support_routes._collect_process_info()
+        if "gc_census" in info:
+            assert "skipped" in info["gc_census"]
+            return
         assert info["gc_tracked_objects"] > 0
         assert len(info["gc_top_types"]) <= 15
         # Descending, so the top of the list is the thing worth looking at.
