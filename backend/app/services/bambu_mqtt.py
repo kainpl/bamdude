@@ -4004,7 +4004,7 @@ class BambuMQTTClient:
             # Where the finished recording actually went, absolute, named by the
             # printer itself — ``/userdata/media/timelapse/…`` for internal,
             # ``/media/usb0/timelapse/…`` for the card. Measured on X2D
-            # 2026-08-15 across four prints on both media.
+            # 2026-08-14 across four prints on both media.
             #
             # ⚠️ **Cleared to "" the moment a print starts** and filled once the
             # file is closed, so an empty value means "nothing finished yet",

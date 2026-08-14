@@ -136,7 +136,7 @@ def task_cfg(*, timelapse: bool, storage: str | None) -> str:
 
     ``ProjectTask.hpp:226`` names the bit and nothing else in BambuStudio's
     open source sends it; the value is assembled by the closed network plugin.
-    Captured off the wire from Studio on an X2D (2026-08-15): ``"4"`` with
+    Captured off the wire from Studio on an X2D (2026-08-14): ``"4"`` with
     Internal picked, ``"0"`` with External. The printer echoes the same value
     back and its reported target follows — a Studio print carrying ``"4"``
     moved a machine whose previous job recorded externally.

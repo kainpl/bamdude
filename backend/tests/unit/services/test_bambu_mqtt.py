@@ -5401,7 +5401,7 @@ class TestKProfileReplyDoesNotClobberNozzle:
 class TestTimelapseStorageOnTheWire:
     """``cfg`` bit 2 in ``project_file`` — where the recording is written.
 
-    Measured against BambuStudio on a live X2D (2026-08-15): Studio sends
+    Measured against BambuStudio on a live X2D (2026-08-14): Studio sends
     ``"4"`` with Internal picked in its folder popup and ``"0"`` with External,
     and the printer follows the command over whatever its previous job did.
 

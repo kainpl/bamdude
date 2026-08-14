@@ -252,7 +252,7 @@ class TestResolveStorage:
 
 
 class TestTaskCfg:
-    """The wire value, measured off BambuStudio on an X2D (2026-08-15)."""
+    """The wire value, measured off BambuStudio on an X2D (2026-08-14)."""
 
     def test_internal_sets_bit_two(self) -> None:
         assert task_cfg(timelapse=True, storage="internal") == "4"
