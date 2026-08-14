@@ -8,6 +8,17 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-08-14
+
+Image: `ghcr.io/kainpl/bamdude:0.5.3` / `kainpl/bamdude:0.5.3` (`:latest` tracks this).
+
+**The printer's own storage stops being invisible.** X2D, P2S and the H2 family (H2C, H2D, H2D Pro, H2S) keep files in built-in storage as well as on a card, and until now BamDude could only ever see the card — pull the card out and the file browser was empty, prints could not be sent at all, and a timelapse recorded internally was never found. All of that works on both media now: browsing, downloading, plate previews, importing, deleting, sending a print with no card in the machine, recovering the 3MF of a print started from the printer's screen, and finding the recording afterwards. You also choose which medium records the timelapse, per print, the way Bambu Studio lets you. Printers with only a card — every A1 and P1 — look and behave exactly as before.
+
+**Macros became something you pick, not something that happens to you.** The print dialog lists the macros that apply and you tick the ones this job should run, and a macro can now fire at a layer you choose rather than only at the start or the end. Read the note on that change below: a macro no longer fires on every matching print by itself.
+
+Elsewhere: a print that finished while BamDude was down now counts properly, a printer whose dispatch was interrupted hands itself back instead of sitting out for ever, and Obico's ML server can be one that asks for a token.
+
+
 ### Security
 
 - **Addresses that point at a cloud provider's metadata service are refused by name, not only by number.** Every address BamDude will fetch from — Home Assistant, Spoolman, the slicer services, Obico, ntfy, Bark, webhooks, and an SSO provider's issuer and icon — is checked before it is saved. That check already rejected the numeric forms of the metadata endpoints cloud servers expose to anything running on them, which is where an attacker would go looking for credentials. It did not reject the **names** for the same thing, so a URL written as `metadata.google.internal` went through where the equivalent IP did not. It no longer does. An address with no host in it at all — `https:///realms/main` — was likewise accepted as though it named a server, and is now refused.
@@ -23,12 +34,6 @@ All notable changes to BamDude will be documented in this file.
     Fixes a related trap: **Free space**, offered when a printer is nearly out of room for a recording, used to act on internal storage on any machine that had it — even when the recording was headed for the card. It deleted the wrong video and freed nothing where it was needed. It now works on the medium you picked.
 
     A print sent from a slicer to a Virtual Printer keeps this choice too — BambuStudio puts it in the print command, and BamDude was discarding it.
-
-### Changed
-
-- **The right recording is attached to the right print.** After a print with a timelapse, BamDude looks for the new video on the printer and attaches it to the archive. It used to take the first recording that had not been there before the print started — fine when exactly one appeared, a guess when more did. The printer actually reports the full path of the file it has just finished writing, so that file is now taken by name.
-
-    The old check still runs underneath: a named recording is only accepted if it is also new since this print began. Without that, a video recorded from the printer's own screen mid-print — which the printer would honestly report as its most recent — could be attached to somebody else's job.
 
 - **The printer's internal storage is now browsable.** X2D, P2S and the H2 family (H2C, H2D, H2D Pro, H2S) keep files in built-in storage as well as on an SD card, and BamDude could only ever see the card — with no card inserted the file browser was simply empty, whatever was actually on the machine. Those printers now show a **SD card / Internal storage** switch, and everything the browser does works on both: listing, downloading, plate previews, importing into the library, and deleting.
 
@@ -59,6 +64,10 @@ All notable changes to BamDude will be documented in this file.
 - **Macros are now chosen per print.** The print and queue dialogs list the macros that apply to the target printer, and only the ones you tick run for that job — with the choice remembered per printer model, the way swap macros already are. A macro you create later arrives ticked, because what's remembered is what you turned *off*.
 
     **This changes existing behaviour.** A macro no longer fires on every print of a matching model. A print started outside BamDude — from the printer's screen, from Telegram, or through the virtual printer — has no dialog and therefore runs no macros; the same goes for anything already sitting in a queue from before the update. If you rely on a macro for those, tick it in the dialog for the jobs you queue.
+
+- **The right recording is attached to the right print.** After a print with a timelapse, BamDude looks for the new video on the printer and attaches it to the archive. It used to take the first recording that had not been there before the print started — fine when exactly one appeared, a guess when more did. The printer actually reports the full path of the file it has just finished writing, so that file is now taken by name.
+
+    The old check still runs underneath: a named recording is only accepted if it is also new since this print began. Without that, a video recorded from the printer's own screen mid-print — which the printer would honestly report as its most recent — could be attached to somebody else's job.
 
 - **Macro MQTT actions now carry a value.** The two chamber-light actions became one **Chamber light** action with an On/Off setting, and a new **Print speed** action sets Silent, Standard, Sport or Ludicrous. Your existing light macros are converted the first time the new version starts — they keep doing exactly what they did.
 
