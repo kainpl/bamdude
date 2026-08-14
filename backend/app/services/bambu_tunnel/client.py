@@ -197,7 +197,17 @@ class BambuTunnelClient:
                 self._ip,
                 reply.get("start"),
             )
-        return reply.get("file_lists") or []
+        entries = reply.get("file_lists") or []
+
+        # ⚠️ Old firmware answers ANY catalogue request with timelapses.
+        # BambuStudio detects it exactly this way — ``if (type > F_TIMELAPSE &&
+        # path.empty()) return FILE_TYPE_ERR`` in PrinterFileSystem.cpp, with
+        # the comment "Fix old printer that always return timelapses". Without
+        # the check a browser shows timelapse recordings labelled as models.
+        if file_type != "timelapse" and any(not e.get("path") for e in entries):
+            raise TunnelError(f"printer does not serve the {file_type!r} catalogue (it answered with timelapses)")
+
+        return entries
 
     async def read_file(self, path: str, storage: str | None) -> bytes:
         """``cmdtype 2`` — the bytes arrive in the same frame as the envelope."""

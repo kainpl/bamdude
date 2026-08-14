@@ -135,6 +135,26 @@ async def test_a_truncated_listing_warns_instead_of_pretending(caplog):
 
 
 @pytest.mark.asyncio
+async def test_an_old_printer_answering_with_timelapses_is_refused():
+    """⚠️ Old firmware answers ANY catalogue request with timelapses.
+    BambuStudio detects it by the empty ``path`` and errors out — its own
+    comment says "Fix old printer that always return timelapses". Without the
+    check a browser shows recordings labelled as models."""
+    server = FakeTunnelServer()
+    server.files = [{"name": "clip.mp4", "path": "", "size": 10, "time": 1786638756}]
+    host, port = await server.start()
+    try:
+        client = await _connected(server, host, port)
+        with pytest.raises(TunnelError):
+            await client.list_files("internal", file_type="model")
+        # …and the timelapse catalogue itself is still perfectly legal.
+        assert await client.list_files("internal", file_type="timelapse")
+        await client.close()
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
 async def test_reading_a_file_returns_the_body_after_the_envelope():
     server = FakeTunnelServer()
     path = "/userdata/model/history/a.gcode.3mf"
