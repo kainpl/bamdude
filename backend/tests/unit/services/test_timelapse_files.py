@@ -7,6 +7,8 @@ match the tunnel offers and FTP cannot.
 """
 
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -17,6 +19,7 @@ from backend.app.services.timelapse_files import (
     match_by_model_name,
     pick_new_recording,
     read_timelapse_video,
+    remove_recording_after_attach,
 )
 from backend.tests.tunnel_fixtures import FakeTunnelServer
 
@@ -225,3 +228,64 @@ class TestPickingThisPrintsRecording:
         listing path is the FTP directory and not ``/media/usb0/…``."""
         picked = pick_new_recording(self._files("old.mp4", "a.mp4"), {"old.mp4"}, "/media/usb0/timelapse/A.MP4")
         assert picked["name"] == "a.mp4"
+
+
+class TestRemovingTheRecordingFromThePrinter:
+    """Opt-in tidy-up after a recording has been attached to its archive.
+
+    ⚠️ The medium comes from the PATH, exactly as it does for the read. An FTP
+    delete aimed at an internal path succeeds at doing nothing — the same shape
+    of bug that once let the auto-scan find a recording it could not fetch.
+    """
+
+    @pytest.mark.asyncio
+    async def test_it_does_nothing_while_the_setting_is_off(self):
+        printer = SimpleNamespace(id=1, name="X2D", model="X2D")
+        with (
+            patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(return_value=None)),
+            patch("backend.app.services.printer_files.factory.transport_for") as factory,
+        ):
+            removed = await remove_recording_after_attach(printer, "/timelapse/video.mp4")
+
+        assert removed is False
+        factory.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_internal_path_is_deleted_over_the_tunnel(self):
+        printer = SimpleNamespace(id=1, name="X2D", model="X2D")
+        transport = SimpleNamespace(delete=AsyncMock())
+        with (
+            patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(return_value="true")),
+            patch("backend.app.services.printer_files.factory.transport_for", return_value=transport) as factory,
+        ):
+            removed = await remove_recording_after_attach(
+                printer, "/userdata/media/timelapse/video_2026-08-14_20-53-42_4.mp4"
+            )
+
+        assert removed is True
+        assert factory.call_args[0][1] == "internal"
+        transport.delete.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_card_path_is_deleted_over_ftp(self):
+        printer = SimpleNamespace(id=1, name="X2D", model="X2D")
+        transport = SimpleNamespace(delete=AsyncMock())
+        with (
+            patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(return_value="true")),
+            patch("backend.app.services.printer_files.factory.transport_for", return_value=transport) as factory,
+        ):
+            await remove_recording_after_attach(printer, "/timelapse/video.mp4")
+
+        assert factory.call_args[0][1] == "external"
+
+    @pytest.mark.asyncio
+    async def test_a_printer_that_refuses_costs_nobody_their_archive(self):
+        """The archive is already written by the time this runs. Raising here
+        would abandon a completed print over a housekeeping failure."""
+        printer = SimpleNamespace(id=1, name="X2D", model="X2D")
+        transport = SimpleNamespace(delete=AsyncMock(side_effect=OSError("connection reset")))
+        with (
+            patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(return_value="true")),
+            patch("backend.app.services.printer_files.factory.transport_for", return_value=transport),
+        ):
+            assert await remove_recording_after_attach(printer, "/timelapse/video.mp4") is False

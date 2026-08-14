@@ -2195,7 +2195,7 @@ async def scan_timelapse(
     # ⚠️ The medium is decided by the path the listing gave us, not by the
     # printer's state now — a card inserted in between must not turn an
     # internal path into an FTP one.
-    from backend.app.services.timelapse_files import read_timelapse_video
+    from backend.app.services.timelapse_files import read_timelapse_video, remove_recording_after_attach
 
     timelapse_data = await read_timelapse_video(printer, remote_path)
 
@@ -2208,6 +2208,8 @@ async def scan_timelapse(
 
     if not success:
         raise HTTPException(500, "Failed to attach timelapse")
+
+    await remove_recording_after_attach(printer, remote_path)
 
     return {
         "status": "attached",
@@ -2244,7 +2246,11 @@ async def select_timelapse(
 
     # Find the file on the printer — same listing the scan uses, so a manual
     # pick can reach anything the automatic one could see, on either medium.
-    from backend.app.services.timelapse_files import list_timelapse_videos, read_timelapse_video
+    from backend.app.services.timelapse_files import (
+        list_timelapse_videos,
+        read_timelapse_video,
+        remove_recording_after_attach,
+    )
 
     videos, _source = await list_timelapse_videos(printer)
     chosen = next((f for f in videos if f.get("name") == filename), None)
@@ -2265,6 +2271,8 @@ async def select_timelapse(
         success = await ArchiveService(db).attach_timelapse(archive_id, timelapse_data, filename)
     if not success:
         raise HTTPException(500, "Failed to attach timelapse")
+
+    await remove_recording_after_attach(printer, remote_path)
 
     return {
         "status": "attached",

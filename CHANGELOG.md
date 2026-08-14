@@ -8,6 +8,12 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Timelapses can be removed from the printer once BamDude has them.** New switch in **Settings → General**, off by default. With it on, a recording is deleted from the printer as soon as it has been attached to its archive — from the SD card or from built-in storage, whichever it was read from. Only ever after the copy is safely saved; if the attach fails, or the printer cannot be reached, the recording stays where it is.
+
+    Left off by default on purpose: having a copy in BamDude is not the same as nobody needing the file on the machine, where it can still be watched from the printer's screen or carried away on the card.
+
 ### Changed
 
 - **Cleanup after a print now removes the copies the printer made, not just the file BamDude sent.** One upload becomes several files on the machine: BamDude sends `Cube.3mf`, and the printer writes its own `Cube.gcode.3mf` into `/cache` on the card and — if you have "store sent files to storage" switched on — into built-in storage as well. Cleanup only ever looked for the exact name it had uploaded, so it reported "nothing to delete" while both copies stayed behind and the storage filled up with no sign of why.

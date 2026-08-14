@@ -1636,6 +1636,8 @@ export interface LongLivedTokenCreate {
 export interface AppSettings {
   save_thumbnails: boolean;
   capture_finish_photo: boolean;
+  /** Remove a recording from the printer once its archive has a copy. Opt-in. */
+  delete_timelapse_after_attach: boolean;
   archive_3mf_retention_enabled: boolean;
   archive_3mf_retention_days: number;
   default_filament_cost: number;

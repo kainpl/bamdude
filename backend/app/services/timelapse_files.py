@@ -151,6 +151,46 @@ async def read_timelapse_video(printer, remote_path: str) -> bytes | None:
     return await transport_for(printer, storage).read_bytes(remote_path)
 
 
+async def remove_recording_after_attach(printer, remote_path: str) -> bool:
+    """Delete a recording from the printer once BamDude has a copy of it.
+
+    Opt-in, off by default, and asked here rather than at each of the three
+    call sites so the answer cannot differ between the automatic scan after a
+    print and the two buttons.
+
+    ⚠️ **Deleted through the transport that READ it**, chosen from the path for
+    the same reason :func:`read_timelapse_video` chooses it that way. An FTP
+    delete aimed at ``/userdata/media/timelapse/…`` succeeds at doing nothing —
+    the same shape of bug that once let the auto-scan find a recording it could
+    not then fetch.
+
+    ⚠️ **Only called where the attach has already succeeded.** "We have a copy"
+    is the whole justification for removing somebody's video, and it is not the
+    same claim as "we tried to take a copy".
+
+    Never raises: a recording that cannot be removed is a full disk later, and
+    an exception here would abandon the archive that was just completed.
+    """
+    from backend.app.api.routes.settings import get_setting
+    from backend.app.core.database import async_session
+    from backend.app.services.printer_files.factory import transport_for
+
+    try:
+        async with async_session() as db:
+            enabled = (await get_setting(db, "delete_timelapse_after_attach") or "").lower() == "true"
+        if not enabled:
+            return False
+
+        storage = "internal" if remote_path.startswith(INTERNAL_TIMELAPSE_ROOT) else "external"
+        await transport_for(printer, storage).delete(remote_path)
+    except Exception as exc:  # noqa: BLE001 — tidying up must not cost an archive
+        logger.warning("[TIMELAPSE] Could not remove %s from %s: %s", remote_path, printer.name, exc)
+        return False
+
+    logger.info("[TIMELAPSE] Removed %s from %s — BamDude has it now", remote_path, printer.name)
+    return True
+
+
 def match_by_model_name(videos: list[dict], *candidates: str | None) -> dict | None:
     """The exact match, when the medium offers one.
 

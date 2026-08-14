@@ -122,6 +122,7 @@ from backend.app.services.timelapse_files import (
     list_timelapse_videos as _list_timelapse_videos,
     pick_new_recording as _pick_new_recording,
     read_timelapse_video,
+    remove_recording_after_attach,
 )
 from backend.app.utils.filament_remaining import grams_used
 
@@ -4212,6 +4213,9 @@ async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[
                         success = await ArchiveService(db).attach_timelapse(archive_id, timelapse_data, file_name)
                     if success:
                         logger.info("[TIMELAPSE] Successfully attached timelapse to archive %s", archive_id)
+                        # Opt-in tidy-up, and only now: "we have a copy" is the
+                        # entire justification for removing somebody's video.
+                        await remove_recording_after_attach(printer, remote_path)
                         await ws_manager.send_archive_updated({"id": archive_id, "timelapse_attached": True})
                         return
                     else:
@@ -4256,6 +4260,7 @@ async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[
                             success = await ArchiveService(db).attach_timelapse(archive_id, timelapse_data, fname)
                         if success:
                             logger.info("[TIMELAPSE] Name-match fallback attached timelapse to archive %s", archive_id)
+                            await remove_recording_after_attach(printer, remote_path)
                             await ws_manager.send_archive_updated({"id": archive_id, "timelapse_attached": True})
                             return
                     break  # Only try the first name match

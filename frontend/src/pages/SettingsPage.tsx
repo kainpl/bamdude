@@ -1283,6 +1283,7 @@ export function SettingsPage() {
       const settingsToSave: AppSettingsUpdate = {
         save_thumbnails: localSettings.save_thumbnails,
         capture_finish_photo: localSettings.capture_finish_photo,
+        delete_timelapse_after_attach: localSettings.delete_timelapse_after_attach,
         archive_3mf_retention_enabled: localSettings.archive_3mf_retention_enabled,
         archive_3mf_retention_days: localSettings.archive_3mf_retention_days,
         default_filament_cost: localSettings.default_filament_cost,
@@ -2191,6 +2192,28 @@ export function SettingsPage() {
                   </div>
                 </div>
               )}
+
+              {/* Tidy the printer up once BamDude has the recording. Opt-in:
+                  having a copy is not the same as nobody needing it on the
+                  machine, where it can still be watched from the screen or
+                  carried away on the card. */}
+              <div className="flex items-center justify-between">
+                <div className="min-w-0 pr-4">
+                  <p className="text-sm text-white">{t('settings.deleteTimelapseAfterAttach')}</p>
+                  <p className="text-xs text-bambu-gray mt-0.5">
+                    {t('settings.deleteTimelapseAfterAttachDesc')}
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                  <input
+                    type="checkbox"
+                    className="sr-only peer"
+                    checked={localSettings.delete_timelapse_after_attach ?? false}
+                    onChange={(e) => updateSetting('delete_timelapse_after_attach', e.target.checked)}
+                  />
+                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
 
               <ArchiveCleanupSettingsBlock
                 enabled={localSettings.archive_3mf_retention_enabled ?? false}

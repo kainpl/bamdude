@@ -28,6 +28,17 @@ class AppSettings(BaseModel):
             "this print, otherwise it is deleted automatically after the photo is captured."
         ),
     )
+    # ⚠️ Off by default, and it stays off unless somebody chooses it. "BamDude
+    # has a copy" is not the same as "nobody needs it on the machine" — the
+    # recording may be there to watch from the printer's own screen or to carry
+    # away on the card.
+    delete_timelapse_after_attach: bool = Field(
+        default=False,
+        description=(
+            "Delete a timelapse from the printer once it has been attached to its archive. "
+            "Only ever after a successful attach, and through the medium it was read from."
+        ),
+    )
     archive_3mf_retention_enabled: bool = Field(
         default=False,
         description="Auto-delete 3MF files of archive groups whose newest print is older than the retention window",
@@ -536,6 +547,7 @@ class AppSettingsUpdate(BaseModel):
 
     save_thumbnails: bool | None = None
     capture_finish_photo: bool | None = None
+    delete_timelapse_after_attach: bool | None = None
     archive_3mf_retention_enabled: bool | None = None
     archive_3mf_retention_days: int | None = Field(default=None, ge=1)
     log_retention_days: int | None = Field(default=None, ge=1, le=365)
