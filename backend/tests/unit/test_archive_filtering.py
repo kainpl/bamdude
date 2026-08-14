@@ -325,7 +325,12 @@ class TestScanForTimelapseWithRetries:
             patch("backend.app.main.ws_manager") as mock_ws,
             patch("backend.app.main.asyncio.sleep", new_callable=AsyncMock),
             patch("backend.app.main.ArchiveService", return_value=mock_service),
-            patch(f"{_FTP_MODULE}.download_file_bytes_async", new_callable=AsyncMock) as mock_download,
+            # ⚠️ Patch the seam the code actually uses. Stubbing
+            # bambu_ftp.download_file_bytes_async no longer reaches it:
+            # printer_files/ftp.py binds that name at import time, so a
+            # module-attribute patch misses and the test reaches the real
+            # network — which is a hang, not a failure.
+            patch("backend.app.main.read_timelapse_video", new_callable=AsyncMock) as mock_download,
         ):
             mock_ws.send_archive_updated = AsyncMock()
             mock_download.return_value = b"fake video data"
@@ -365,7 +370,12 @@ class TestScanForTimelapseWithRetries:
             patch("backend.app.main.ws_manager") as mock_ws,
             patch("backend.app.main.asyncio.sleep", new_callable=AsyncMock),
             patch("backend.app.main.ArchiveService", return_value=mock_service),
-            patch(f"{_FTP_MODULE}.download_file_bytes_async", new_callable=AsyncMock) as mock_download,
+            # ⚠️ Patch the seam the code actually uses. Stubbing
+            # bambu_ftp.download_file_bytes_async no longer reaches it:
+            # printer_files/ftp.py binds that name at import time, so a
+            # module-attribute patch misses and the test reaches the real
+            # network — which is a hang, not a failure.
+            patch("backend.app.main.read_timelapse_video", new_callable=AsyncMock) as mock_download,
         ):
             mock_ws.send_archive_updated = AsyncMock()
             mock_download.return_value = b"fake video data"
@@ -406,7 +416,12 @@ class TestScanForTimelapseWithRetries:
             patch("backend.app.main.ws_manager") as mock_ws,
             patch("backend.app.main.asyncio.sleep", new_callable=AsyncMock),
             patch("backend.app.main.ArchiveService", return_value=mock_service),
-            patch(f"{_FTP_MODULE}.download_file_bytes_async", new_callable=AsyncMock) as mock_download,
+            # ⚠️ Patch the seam the code actually uses. Stubbing
+            # bambu_ftp.download_file_bytes_async no longer reaches it:
+            # printer_files/ftp.py binds that name at import time, so a
+            # module-attribute patch misses and the test reaches the real
+            # network — which is a hang, not a failure.
+            patch("backend.app.main.read_timelapse_video", new_callable=AsyncMock) as mock_download,
         ):
             mock_ws.send_archive_updated = AsyncMock()
             mock_download.return_value = b"fake video data"
@@ -604,7 +619,12 @@ class TestListTimelapseVideosAvi:
             patch("backend.app.main.ws_manager") as mock_ws,
             patch("backend.app.main.asyncio.sleep", new_callable=AsyncMock),
             patch("backend.app.main.ArchiveService", return_value=mock_service),
-            patch(f"{_FTP_MODULE}.download_file_bytes_async", new_callable=AsyncMock) as mock_download,
+            # ⚠️ Patch the seam the code actually uses. Stubbing
+            # bambu_ftp.download_file_bytes_async no longer reaches it:
+            # printer_files/ftp.py binds that name at import time, so a
+            # module-attribute patch misses and the test reaches the real
+            # network — which is a hang, not a failure.
+            patch("backend.app.main.read_timelapse_video", new_callable=AsyncMock) as mock_download,
         ):
             mock_ws.send_archive_updated = AsyncMock()
             mock_download.return_value = b"fake avi data"

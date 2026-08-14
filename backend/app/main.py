@@ -112,11 +112,14 @@ from backend.app.services.spoolman_tracking import (
 )
 from backend.app.services.stock_forecast_alerts import stock_forecast_alerts
 
-# ⚠️ One home for finding a printer's recordings. There were three copies of
-# "walk these directories over FTP" — here and twice in routes/archives.py —
-# and only one of them would ever have learned about internal storage.
+# ⚠️ One home for finding AND reading a printer's recordings. There were three
+# copies of "walk these directories over FTP" — here and twice in
+# routes/archives.py — and two copies of the download beside them. Consolidating
+# only the listing was worse than useless for a while: the auto-scan found the
+# recording in internal storage and then tried to fetch it over FTP.
 from backend.app.services.timelapse_files import (
     list_timelapse_videos as _list_timelapse_videos,
+    read_timelapse_video,
 )
 from backend.app.utils.filament_remaining import grams_used
 
@@ -4154,7 +4157,6 @@ async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[
 
         try:
             from backend.app.models.printer import Printer
-            from backend.app.services.bambu_ftp import download_file_bytes_async
 
             # Read phase: fetch archive + printer in a short session and release the
             # pooled connection BEFORE the FTP list/download below — holding it
@@ -4202,9 +4204,7 @@ async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[
                     archive_id,
                 )
 
-                timelapse_data = await download_file_bytes_async(
-                    printer.ip_address, printer.access_code, remote_path, printer_model=printer.model
-                )
+                timelapse_data = await read_timelapse_video(printer, remote_path)
                 if timelapse_data:
                     # Write phase: attach in a fresh short-lived session.
                     async with async_session() as db:
@@ -4228,7 +4228,6 @@ async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[
         logger.info("[TIMELAPSE] Retries exhausted, trying name-match fallback for '%s'", base_name)
         try:
             from backend.app.models.printer import Printer
-            from backend.app.services.bambu_ftp import download_file_bytes_async
 
             # Read phase: short session, released before the FTP work (#2572).
             async with async_session() as db:
@@ -4249,9 +4248,7 @@ async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[
                     remote_path = f.get("path") or f"/timelapse/{fname}"
                     logger.info("[TIMELAPSE] Name-match fallback: '%s' matches '%s'", base_name, fname)
 
-                    timelapse_data = await download_file_bytes_async(
-                        printer.ip_address, printer.access_code, remote_path, printer_model=printer.model
-                    )
+                    timelapse_data = await read_timelapse_video(printer, remote_path)
                     if timelapse_data:
                         # Write phase: attach in a fresh short-lived session.
                         async with async_session() as db:
