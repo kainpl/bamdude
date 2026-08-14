@@ -130,6 +130,19 @@ Also here:
 - **G-code macros** — sequences you define, sent over MQTT, with plate-swap macros firing automatically between queued prints.
 - **3MF patching on the way to the printer** — mesh-mode flags and G-code injection are applied to a copy, so the archived file on disk stays the unpatched original.
 
+### The printer's built-in storage, not only the card
+
+X2D, P2S and the H2 family keep files in built-in storage as well as on a card. Both projects talk to those printers over FTP, which only ever sees the card — so with no card inserted the file browser is empty and every print fails, on a machine that needs no card at all.
+
+BamDude speaks the printer's own file channel alongside FTP, and the difference shows up as ordinary behaviour rather than as a feature:
+
+- **The file browser has a SD card / Internal storage switch**, and everything it does works on both — listing, downloading, plate previews, importing into the library, deleting. A printer with no card opens on its internal storage instead of on an empty list. Printers that have only a card show no switch and behave exactly as before.
+- **A print goes to internal storage when there is no card**, over the same dispatch as always. Whether a printer gets this is decided by what the printer reports about itself, not by a list of model names — and a card that is present but unreadable still stops the print rather than being routed around.
+- **A print started from the printer's own screen gets its file into the archive**, pulled back off the machine even when the card that would normally hold it isn't there.
+- **Timelapses are found on whichever medium recorded them.** On internal storage the printer says which print each recording belongs to, so it is matched to the right archive outright instead of being guessed at from timestamps.
+
+The channel exists only on that newer generation, and BamDude decides by asking the printer rather than by model name — an open port proves nothing, since on A1 and P1 the same port belongs to the camera.
+
 ### Smaller, but still ours
 
 - **Ukrainian.** Upstream ships twelve locales and Ukrainian is not among them. BamDude ships English and Ukrainian only, and both are strict: a key missing from either fails CI, and so does a placeholder that drifted between them.
@@ -177,6 +190,7 @@ Also here:
 - External camera support (MJPEG, RTSP, USB)
 - Build plate empty detection
 - Printer control (stop, pause, resume, light, speed)
+- **Printer storage browser on both media** — browse, download, preview plates, import into the library and delete on the SD card *and* on the built-in storage of printers that have it (X2D, P2S, H2C, H2D, H2D Pro, H2S), with a switch between the two and separate model / timelapse catalogues on the internal side
 - **Timelapse pre-flight** — the tick is checked against the printer before it is promised: a machine with no SD card, an unreadable one or a read-only one is named in the print dialog with which of the three it is, and a queue whose printer has run out of room **pauses** instead of quietly dropping the recording. Printers with internal storage or a timelapse kit skip the card question entirely
 - **Motion control** — a round Bambu-Studio-style pad for the toolhead (10 mm / 1 mm rings, Home in the middle), the nozzle-bed gap, manual extrude / retract with the extruder drawn from Studio's own artwork, and release-motors. Reads which axes the printer says are homed, refuses a cold extruder below 170 °C, and speaks the newer `xyz_ctrl` protocol where the machine offers it
 - **Temperature control** — set nozzle, bed and chamber (both nozzles on dual-nozzle machines), with the limits the printer itself reports: an X1 on 220 V mains accepts a *lower* bed temperature, and the chamber ceiling differs per model. Zero always means off
