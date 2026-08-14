@@ -438,7 +438,9 @@ Short version:
 # Backend
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-DEBUG=true uvicorn backend.app.main:app --reload
+# --loop asyncio is not optional, in development either: uvicorn[standard]
+# picks uvloop, whose TLS layer can silently truncate a file transfer.
+DEBUG=true uvicorn backend.app.main:app --reload --loop asyncio
 
 # Frontend (separate terminal)
 cd frontend && npm install && npm run dev
