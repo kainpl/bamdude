@@ -11,6 +11,7 @@ import pytest
 
 from backend.app.services.background_dispatch import (
     _dispatch_refusal_message,
+    _record_outcome_error,
     _upload_failure_message,
     delete_internal_by_name,
     resolve_dispatch_storage,
@@ -174,6 +175,33 @@ async def test_no_names_means_no_listing_at_all():
     assert await delete_internal_by_name(watcher) is False
     assert await delete_internal_by_name(watcher, "", None) is False
     assert watcher.listed is False
+
+
+def test_a_reason_raised_before_the_runners_try_still_reaches_the_outcome():
+    """⚠️ The runner records outcome["error"] only for failures inside its own
+    try. A refusal to dispatch — and "archive not found", and "printer not
+    found" — happen before it, and used to arrive at the queue item and the
+    Telegram message as the useless "Dispatch failed"."""
+    job = type("J", (), {"outcome": {"success": False, "archive_id": None, "error": None, "cancelled": False}})()
+    _record_outcome_error(job, RuntimeError("This printer needs an SD card to accept a print, and none is inserted."))
+    assert "SD card" in job.outcome["error"]
+    assert job.outcome["success"] is False
+
+
+def test_a_reason_the_runner_already_recorded_is_not_overwritten():
+    job = type(
+        "J", (), {"outcome": {"success": False, "archive_id": 7, "error": "the real cause", "cancelled": False}}
+    )()
+    _record_outcome_error(job, RuntimeError("something more generic"))
+    assert job.outcome["error"] == "the real cause"
+
+
+def test_an_exception_with_no_message_still_says_something():
+    """str(exc) is empty for a bare raise — a blank reason is no better than
+    the generic one this replaced."""
+    job = type("J", (), {"outcome": {"success": False, "archive_id": None, "error": None, "cancelled": False}})()
+    _record_outcome_error(job, TimeoutError())
+    assert job.outcome["error"] == "TimeoutError"
 
 
 def test_the_upload_failure_message_only_mentions_a_card_where_one_was_used():

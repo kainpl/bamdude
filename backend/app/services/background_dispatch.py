@@ -67,6 +67,25 @@ def _dispatch_refusal_message(reason: str | None) -> str:
     return _REFUSAL_MESSAGES.get(reason or "", "The printer would not accept the file transfer.")
 
 
+def _record_outcome_error(job, exc: BaseException) -> None:
+    """Make sure the job's outcome carries a reason somebody can read.
+
+    The runner sets ``outcome["error"]`` for anything that fails inside its own
+    ``try``, but several checks run before it — and a refusal to dispatch at all
+    is one of them. Without this the queue item and the Telegram notification
+    both say "Dispatch failed", which tells the operator nothing about a
+    missing card, a missing archive or an unreachable printer.
+
+    Never overwrites a reason the runner already recorded.
+    """
+    outcome = getattr(job, "outcome", None)
+    if not isinstance(outcome, dict):
+        return
+    if not outcome.get("error"):
+        outcome["error"] = str(exc) or exc.__class__.__name__
+    outcome["success"] = False
+
+
 def _file_digest(path: str) -> str:
     """MD5 of the bytes we uploaded, for ``project_file``.
 
@@ -573,9 +592,14 @@ class BackgroundDispatchService:
             await self._process_job(job)
         except DispatchJobCancelled:
             pass  # outcome.cancelled already set by the runner
-        except Exception:
-            # outcome.error already set; logged inside runner
-            pass
+        except Exception as e:
+            # ⚠️ "outcome.error already set by the runner" was true only for
+            # failures INSIDE the runner's own try. Anything raised before it —
+            # a missing archive, a missing printer, a refusal to dispatch at
+            # all — left ``error`` at None, and the scheduler then reported the
+            # useless "Dispatch failed" instead of the reason we wrote. Fill it
+            # in here rather than trusting the assumption.
+            _record_outcome_error(job, e)
         finally:
             async with self._lock:
                 self._active_jobs.pop(job.id, None)
@@ -810,6 +834,7 @@ class BackgroundDispatchService:
             raise
         except Exception as e:
             logger.error("Background dispatch job %s failed: %s", job.id, e, exc_info=True)
+            _record_outcome_error(job, e)
             await self._mark_job_finished(job, failed=True, message=str(e))
         finally:
             self._job_event.set()
