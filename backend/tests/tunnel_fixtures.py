@@ -64,6 +64,9 @@ class FakeTunnelServer:
         # Real captures always showed 0. A non-zero value exists only so the
         # client can be tested for warning about a listing it cannot continue.
         self.report_start = 0
+        # Small on purpose: every download of a non-trivial file must span
+        # several frames in the tests.
+        self.download_chunk_size = 64
         self.fail_next_with: int | None = None
         self.auth_rejected = False
         # Uploads, reassembled from their fragments.
@@ -100,6 +103,43 @@ class FakeTunnelServer:
             await self._server.wait_closed()
             self._server = None
 
+    def _download_frames(self, envelope: dict, sequence: int) -> list[bytes]:
+        """FILE_DOWNLOAD: one request, a run of frames sharing one sequence.
+
+        ⚠️ Deliberately more than one frame whenever the file allows it. A fake
+        that answered a download in a single frame would let a client that
+        keeps only the last reply per sequence look correct while losing the
+        middle of every real file.
+        """
+        path = (envelope.get("req") or {}).get("path", "")
+        data = self.file_bytes.get(path)
+        if data is None:
+            return [self._data({"cmdtype": 4, "mtype": MTYPE_FILE, "sequence": sequence, "result": 14, "reply": {}})]
+
+        total = len(data)
+        frames: list[bytes] = []
+        offset = 0
+        step = max(1, self.download_chunk_size)
+        while offset < total or total == 0:
+            piece = data[offset : offset + step]
+            is_last = offset + len(piece) >= total
+            out = {
+                "cmdtype": 4,
+                "mtype": MTYPE_FILE,
+                "sequence": sequence,
+                # ⚠️ CONTINUE (1) on every frame but the last, mirroring the
+                # live printer. A fake that answered 0 throughout would let a
+                # client treating non-zero as a refusal pass — which is exactly
+                # how every real download failed on its first frame.
+                "result": 0 if is_last else 1,
+                "reply": {"offset": offset, "total": total, "size": len(piece)},
+            }
+            frames.append(pack_frame(_TYPE_DATA_REPLY, sequence, json.dumps(out).encode() + ENVELOPE_SEPARATOR + piece))
+            offset += len(piece)
+            if total == 0:
+                break
+        return frames
+
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         self._writers.add(writer)
         try:
@@ -133,6 +173,12 @@ class FakeTunnelServer:
                     # bytes, no JSON. Its own JSON reply comes later, below.
                     writer.write(pack_frame(_TYPE_CONTROL_REPLY, 0, b"\x00\x00\x00\x00"))
                     await writer.drain()
+
+                if envelope.get("cmdtype") == 4:
+                    for frame in self._download_frames(envelope, envelope.get("sequence", 0)):
+                        writer.write(frame)
+                    await writer.drain()
+                    continue
 
                 reply = self._reply_for(envelope)
                 if reply is None:
@@ -217,7 +263,12 @@ class FakeTunnelServer:
                 }
             )
         if cmdtype == 2:
+            # ⚠️ SUB_FILE reads a MEMBER of a container. The real printer
+            # answers result=14 for a plain path, and a fake that served whole
+            # files here is exactly what let a broken client pass every test.
             path = (envelope.get("req") or {}).get("paths", [""])[0]
+            if "#" not in path:
+                return self._data({"cmdtype": 2, "mtype": MTYPE_FILE, "sequence": sequence, "result": 14, "reply": {}})
             body = self.file_bytes.get(path, b"")
             out = {"cmdtype": 2, "mtype": MTYPE_FILE, "sequence": sequence, "result": 0, "reply": {}}
             # ⚠️ The separator BambuStudio writes between envelope and bytes.

@@ -64,9 +64,20 @@ class TunnelTransport:
         return [self._to_remote(entry) for entry in entries]
 
     async def read_bytes(self, path: str) -> bytes | None:
+        """⚠️ Two different commands, chosen by the shape of the path.
+
+        A whole file is ``FILE_DOWNLOAD`` — one request, many streamed frames.
+        A member of a container (``…gcode.3mf#Metadata/plate_1.png``) is
+        ``SUB_FILE``. They are not interchangeable: handing a plain path to
+        SUB_FILE gets ``result=14`` from the printer, which is how this was
+        found — every whole-file read failed on the first real machine while
+        passing every test, because the fake answered SUB_FILE with the bytes.
+        """
         async with self._client() as client:
             try:
-                return await client.read_file(path, WIRE_INTERNAL)
+                if "#" in path:
+                    return await client.read_sub_file(path, WIRE_INTERNAL)
+                return await client.download_file(path)
             except TunnelError as exc:
                 # None becomes a 404 at the route. Raising here would become a
                 # 500 and blame us for the printer's answer.

@@ -45,13 +45,24 @@ logger = logging.getLogger(__name__)
 MTYPE_SESSION = 12291  # 0x3003
 MTYPE_FILE = 12289  # 0x3001
 
-CMD_LIST = 1
-CMD_READ = 2
-CMD_DELETE = 3
-CMD_UPLOAD = 5
+# ⚠️ Straight from BambuStudio's own enum (PrinterFileSystem.h), and the names
+# matter: ``SUB_FILE`` reads a resource INSIDE a container (a thumbnail via
+# ``…3mf#Metadata/plate_1.png``) and refuses a whole file with ``result=14``.
+# Downloading a file is a different command with a different shape.
+CMD_LIST = 1  # LIST_INFO
+CMD_SUB_FILE = 2  # SUB_FILE — a member of a container, never the container
+CMD_DELETE = 3  # FILE_DEL
+CMD_DOWNLOAD = 4  # FILE_DOWNLOAD — a whole file, streamed
+CMD_UPLOAD = 5  # FILE_UPLOAD
 CMD_HANDSHAKE = 7
 
 DEFAULT_PORT = 6000
+
+# ⚠️ BambuStudio's own ``CONTINUE`` (PrinterFileSystem.h:50). In a REPLY it
+# means "this frame is not the last"; in an upload REQUEST it means "more to
+# come". Same word, both directions — and treating it as an error makes every
+# streamed download fail on its very first frame.
+RESULT_CONTINUE = 1
 
 # 255 KiB — the fragment size BambuStudio uses on the wire.
 CHUNK_SIZE = 261120
@@ -109,7 +120,10 @@ class BambuTunnelClient:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._sequence = 0
-        self._parked: dict[int, tuple[dict, bytes]] = {}
+        # ⚠️ A LIST of frames per sequence, not one. A download answers a single
+        # request with many frames that all carry the same sequence, and a plain
+        # dict would keep only the last — silently dropping the middle of a file.
+        self._parked: dict[int, list[tuple[dict, bytes]]] = {}
 
     async def __aenter__(self) -> BambuTunnelClient:
         await self.connect()
@@ -209,13 +223,70 @@ class BambuTunnelClient:
 
         return entries
 
-    async def read_file(self, path: str, storage: str | None) -> bytes:
-        """``cmdtype 2`` — the bytes arrive in the same frame as the envelope."""
+    async def read_sub_file(self, path: str, storage: str | None) -> bytes:
+        """``SUB_FILE`` — a resource INSIDE a container, addressed with ``#``.
+
+        ⚠️ Not for whole files. The printer answers ``result=14`` when handed a
+        plain path, which is exactly what BambuStudio's naming says: this reads
+        a member (``…gcode.3mf#Metadata/plate_1.png``), never the container.
+        Use :meth:`download_file` for the file itself.
+        """
         request: dict = {"paths": [path], "zip": False}
         if storage is not None:
             request["storage"] = storage
-        _reply, body = await self._command_with_body(CMD_READ, request)
+        _reply, body = await self._command_with_body(CMD_SUB_FILE, request)
         return body
+
+    async def download_file(self, path: str) -> bytes:
+        """``FILE_DOWNLOAD`` — a whole file, streamed across many frames.
+
+        One request, then a run of replies that all carry the SAME sequence,
+        each with ``offset`` / ``total`` / ``size`` in the envelope and a slice
+        of the file as the body. BambuStudio accumulates until
+        ``offset + size >= total`` (``PrinterFileSystem::DownloadNextFile``) and
+        so do we.
+
+        ⚠️ The shared sequence is why ``_parked`` holds a list per sequence: a
+        dict would keep only the last frame and quietly lose the middle of the
+        file.
+        """
+        sequence = self._next_sequence()
+        self._send(
+            TYPE_DATA_REQUEST,
+            sequence,
+            json.dumps(
+                {"mtype": MTYPE_FILE, "cmdtype": CMD_DOWNLOAD, "sequence": sequence, "req": {"path": path}}
+            ).encode(),
+        )
+
+        chunks: list[bytes] = []
+        received = 0
+        total: int | None = None
+
+        while True:
+            envelope, body = await self._await_sequence(sequence)
+            result = envelope.get("result", 0)
+            # ⚠️ ``1`` is CONTINUE, not a refusal. Only something else is.
+            if result not in (0, RESULT_CONTINUE):
+                raise TunnelError(f"tunnel refused the download of {path} with result={result}", result)
+
+            reply = envelope.get("reply") or {}
+            if total is None:
+                total = int(reply.get("total") or 0)
+            chunks.append(body)
+            received += len(body)
+
+            if total and received >= total:
+                break
+            if result != RESULT_CONTINUE:
+                # The printer marked this frame final. Believe it, even if the
+                # totals disagree — the length check below reports the mismatch.
+                break
+
+        data = b"".join(chunks)
+        if total and len(data) != total:
+            raise TunnelError(f"tunnel sent {len(data)} bytes of {path}, expected {total}")
+        return data
 
     async def delete_files(self, paths: list[str]) -> None:
         await self._command(CMD_DELETE, {"paths": paths})
@@ -358,8 +429,9 @@ class BambuTunnelClient:
         has not asked yet, and discarding it would make the next command read a
         stale answer.
         """
-        if sequence in self._parked:
-            return self._parked.pop(sequence)
+        waiting = self._parked.get(sequence)
+        if waiting:
+            return waiting.pop(0)
 
         while True:
             frame = await self._read_frame()
@@ -370,7 +442,7 @@ class BambuTunnelClient:
             if found == sequence:
                 return envelope, body
             if isinstance(found, int):
-                self._parked[found] = (envelope, body)
+                self._parked.setdefault(found, []).append((envelope, body))
 
     async def _read_frame(self) -> tuple[dict, bytes] | None:
         """One frame, or ``None`` when it carried no JSON envelope."""

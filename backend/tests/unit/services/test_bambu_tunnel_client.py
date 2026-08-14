@@ -155,14 +155,51 @@ async def test_an_old_printer_answering_with_timelapses_is_refused():
 
 
 @pytest.mark.asyncio
-async def test_reading_a_file_returns_the_body_after_the_envelope():
+async def test_a_whole_file_is_downloaded_across_many_frames():
+    """⚠️ FILE_DOWNLOAD answers ONE request with a run of frames that all carry
+    the same sequence. Keeping only the last would lose the middle of the file
+    — which is why the parked frames are a list per sequence, not one slot."""
     server = FakeTunnelServer()
     path = "/userdata/model/history/a.gcode.3mf"
-    server.file_bytes[path] = b"PK\x03\x04payload"
+    payload = b"PK\x03\x04" + bytes(range(256)) * 3  # several 64-byte frames
+    server.file_bytes[path] = payload
     host, port = await server.start()
     try:
         client = await _connected(server, host, port)
-        assert await client.read_file(path, "internal") == b"PK\x03\x04payload"
+        assert await client.download_file(path) == payload
+        await client.close()
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_sub_file_reads_a_member_and_refuses_a_container():
+    """⚠️ SUB_FILE is for what is INSIDE a container. Handed a plain path the
+    real printer answers result=14 — this is how the whole-file read was found
+    broken after it had passed every test against a fake that served both."""
+    server = FakeTunnelServer()
+    member = "/userdata/model/history/a.gcode.3mf#Metadata/plate_1.png"
+    server.file_bytes[member] = b"\x89PNG\r\n"
+    host, port = await server.start()
+    try:
+        client = await _connected(server, host, port)
+        assert await client.read_sub_file(member, "internal") == b"\x89PNG\r\n"
+
+        with pytest.raises(TunnelError):
+            await client.read_sub_file("/userdata/model/history/a.gcode.3mf", "internal")
+        await client.close()
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_download_of_a_missing_file_raises():
+    server = FakeTunnelServer()
+    host, port = await server.start()
+    try:
+        client = await _connected(server, host, port)
+        with pytest.raises(TunnelError):
+            await client.download_file("/userdata/model/history/nope.gcode.3mf")
         await client.close()
     finally:
         await server.stop()
