@@ -2052,12 +2052,6 @@ async def scan_timelapse(
     """Scan printer for timelapse matching this archive and attach it."""
     from backend.app.core.database import async_session
     from backend.app.models.printer import Printer
-    from backend.app.services.bambu_ftp import (
-        download_file_bytes_async,
-        get_ftp_retry_settings,
-        list_files_async,
-        with_ftp_retry,
-    )
 
     # Read the archive + printer in a short session and release the pooled DB
     # connection BEFORE the FTP scan/download below — a timelapse pull walks
@@ -2088,33 +2082,35 @@ async def scan_timelapse(
     # match below against `Plate_1.mp4`-shaped timelapse names on the SD card.
     base_name = resolve_display_stem(archive.filename or "")
 
-    # Scan timelapse directory on printer
-    # Different printer models use different paths
-    files = []
-    for timelapse_path in ["/timelapse", "/timelapse/video", "/record", "/recording"]:
-        try:
-            files = await list_files_async(
-                printer.ip_address, printer.access_code, timelapse_path, printer_model=printer.model
-            )
-            if files:
-                break
-        except Exception:
-            continue
-    if not files:
-        raise HTTPException(500, "Failed to connect to printer or no timelapse directory found")
+    # Every recording on the printer, from whichever medium holds them — the
+    # card's directories or, on a machine that records internally, the tunnel's
+    # catalogue. One helper for all three call sites; see services/timelapse_files.
+    from backend.app.services.timelapse_files import (
+        archive_subtask_name,
+        list_timelapse_videos,
+        match_by_model_name,
+    )
 
-    # Look for matching timelapse
-    matching_file = None
-    video_files = [
-        f for f in files if not f.get("is_directory") and f.get("name", "").lower().endswith((".mp4", ".avi"))
-    ]
+    video_files, _source = await list_timelapse_videos(printer)
+    if not video_files:
+        # ⚠️ 404, not 500. "This printer has no recordings" is an ordinary
+        # answer; dressing it as a server fault made a cardless machine look
+        # like a broken BamDude.
+        raise HTTPException(404, "No timelapse recordings found on this printer")
+
+    # Strategy 0: the exact one, where the medium offers it. Over the tunnel a
+    # recording carries the printed model's name, identical to the subtask name
+    # the print command sent — so this is an identity rather than a guess. FTP
+    # listings have no such field and fall through to the heuristics below.
+    matching_file = match_by_model_name(video_files, archive_subtask_name(archive), base_name)
 
     # Strategy 1: Match by print name in filename
-    for f in video_files:
-        fname = f.get("name", "")
-        if base_name.lower() in fname.lower():
-            matching_file = f
-            break
+    if not matching_file:
+        for f in video_files:
+            fname = f.get("name", "")
+            if base_name.lower() in fname.lower():
+                matching_file = f
+                break
 
     # Strategy 2: Match by timestamp proximity against print START time.
     # The Bambu timelapse filename embeds the print start time in the printer's
@@ -2196,32 +2192,15 @@ async def scan_timelapse(
     # Download the timelapse - use the full path from the file listing
     remote_path = matching_file.get("path") or f"/timelapse/{matching_file['name']}"
 
-    # Get FTP retry settings
-    ftp_retry_enabled, ftp_retry_count, ftp_retry_delay, ftp_timeout = await get_ftp_retry_settings()
+    # ⚠️ The medium is decided by the path the listing gave us, not by the
+    # printer's state now — a card inserted in between must not turn an
+    # internal path into an FTP one.
+    from backend.app.services.timelapse_files import read_timelapse_video
 
-    if ftp_retry_enabled:
-        timelapse_data = await with_ftp_retry(
-            download_file_bytes_async,
-            printer.ip_address,
-            printer.access_code,
-            remote_path,
-            socket_timeout=ftp_timeout,
-            printer_model=printer.model,
-            max_retries=ftp_retry_count,
-            retry_delay=ftp_retry_delay,
-            operation_name=f"Download timelapse {matching_file['name']}",
-        )
-    else:
-        timelapse_data = await download_file_bytes_async(
-            printer.ip_address,
-            printer.access_code,
-            remote_path,
-            socket_timeout=ftp_timeout,
-            printer_model=printer.model,
-        )
+    timelapse_data = await read_timelapse_video(printer, remote_path)
 
     if not timelapse_data:
-        raise HTTPException(500, "Failed to download timelapse")
+        raise HTTPException(502, f"Could not read {matching_file['name']} from the printer")
 
     # Attach in a fresh short session (the read session was released before FTP).
     async with async_session() as db:
@@ -2246,12 +2225,6 @@ async def select_timelapse(
     """Manually select a timelapse from the printer to attach."""
     from backend.app.core.database import async_session
     from backend.app.models.printer import Printer
-    from backend.app.services.bambu_ftp import (
-        download_file_bytes_async,
-        get_ftp_retry_settings,
-        list_files_async,
-        with_ftp_retry,
-    )
 
     # Read the archive + printer in a short session and release the pooled DB
     # connection BEFORE the FTP scan/download below (#2572); scalars stay
@@ -2269,52 +2242,23 @@ async def select_timelapse(
         if not printer:
             raise HTTPException(404, "Printer not found")
 
-    # Find the file on the printer
-    files = []
-    remote_path = None
-    for timelapse_dir in ["/timelapse", "/timelapse/video", "/record", "/recording"]:
-        try:
-            files = await list_files_async(
-                printer.ip_address, printer.access_code, timelapse_dir, printer_model=printer.model
-            )
-            for f in files:
-                if f.get("name") == filename:
-                    remote_path = f.get("path") or f"{timelapse_dir}/{filename}"
-                    break
-            if remote_path:
-                break
-        except Exception:
-            continue
+    # Find the file on the printer — same listing the scan uses, so a manual
+    # pick can reach anything the automatic one could see, on either medium.
+    from backend.app.services.timelapse_files import list_timelapse_videos, read_timelapse_video
 
-    if not remote_path:
+    videos, _source = await list_timelapse_videos(printer)
+    chosen = next((f for f in videos if f.get("name") == filename), None)
+    if chosen is None:
         raise HTTPException(404, f"Timelapse '{filename}' not found on printer")
 
-    # Download and attach
-    ftp_retry_enabled, ftp_retry_count, ftp_retry_delay, ftp_timeout = await get_ftp_retry_settings()
+    remote_path = chosen.get("path") or f"/timelapse/{filename}"
 
-    if ftp_retry_enabled:
-        timelapse_data = await with_ftp_retry(
-            download_file_bytes_async,
-            printer.ip_address,
-            printer.access_code,
-            remote_path,
-            socket_timeout=ftp_timeout,
-            printer_model=printer.model,
-            max_retries=ftp_retry_count,
-            retry_delay=ftp_retry_delay,
-            operation_name=f"Download timelapse {filename}",
-        )
-    else:
-        timelapse_data = await download_file_bytes_async(
-            printer.ip_address,
-            printer.access_code,
-            remote_path,
-            socket_timeout=ftp_timeout,
-            printer_model=printer.model,
-        )
+    # Download and attach. ⚠️ The medium comes from the path the listing gave,
+    # not from the printer's state now.
+    timelapse_data = await read_timelapse_video(printer, remote_path)
 
     if not timelapse_data:
-        raise HTTPException(500, "Failed to download timelapse")
+        raise HTTPException(502, f"Could not read {filename} from the printer")
 
     # Attach in a fresh short session (the read session was released before FTP).
     async with async_session() as db:

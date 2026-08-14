@@ -128,4 +128,7 @@ class TunnelTransport:
             size=entry.get("size", 0),
             is_directory=False,
             mtime=datetime.fromtimestamp(raw_time, tz=UTC) if raw_time else None,
+            # Empty in the model catalogue, the printed model's name in the
+            # timelapse one — see RemoteFile.
+            model_name=entry.get("model_name") or None,
         )

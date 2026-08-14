@@ -48,6 +48,12 @@ class RemoteFile:
     size: int
     is_directory: bool = False
     mtime: datetime | None = None
+    # ⚠️ Only the tunnel's timelapse catalogue fills this, and it is worth
+    # carrying: it holds the printed model's name — the same string the print
+    # command sent as ``subtask_name`` — which is an exact key for matching a
+    # recording to its archive. FTP listings have no such field, which is why
+    # the FTP path has to guess from filenames and timestamps.
+    model_name: str | None = None
 
     def as_dict(self) -> dict:
         entry: dict = {
@@ -58,6 +64,8 @@ class RemoteFile:
         }
         if self.mtime is not None:
             entry["mtime"] = self.mtime
+        if self.model_name:
+            entry["model_name"] = self.model_name
         return entry
 
 

@@ -111,6 +111,13 @@ from backend.app.services.spoolman_tracking import (
     store_print_data as _store_spoolman_print_data,
 )
 from backend.app.services.stock_forecast_alerts import stock_forecast_alerts
+
+# ⚠️ One home for finding a printer's recordings. There were three copies of
+# "walk these directories over FTP" — here and twice in routes/archives.py —
+# and only one of them would ever have learned about internal storage.
+from backend.app.services.timelapse_files import (
+    list_timelapse_videos as _list_timelapse_videos,
+)
 from backend.app.utils.filament_remaining import grams_used
 
 
@@ -4043,40 +4050,6 @@ async def on_print_start(printer_id: int, data: dict):
         finally:
             if temp_path and temp_path.exists():
                 temp_path.unlink()
-
-
-_TIMELAPSE_VIDEO_EXTENSIONS = (".mp4", ".avi")
-
-
-async def _list_timelapse_videos(printer) -> tuple[list[dict], str | None]:
-    """List video files from printer's timelapse directory.
-
-    Finds MP4 (X1/A1 series) and AVI (P1 series) timelapse files.
-    Returns (video_files, found_path) where video_files is a list of file dicts
-    and found_path is the directory where they were found, or ([], None).
-    """
-    from backend.app.services.bambu_ftp import list_files_async
-
-    logger = logging.getLogger(__name__)
-
-    for timelapse_path in ["/timelapse", "/timelapse/video", "/record", "/recording"]:
-        try:
-            found_files = await list_files_async(
-                printer.ip_address, printer.access_code, timelapse_path, printer_model=printer.model
-            )
-            if found_files:
-                video_files = [
-                    f
-                    for f in found_files
-                    if not f.get("is_directory") and f.get("name", "").lower().endswith(_TIMELAPSE_VIDEO_EXTENSIONS)
-                ]
-                if video_files:
-                    return video_files, timelapse_path
-        except Exception as e:
-            logger.debug("[TIMELAPSE] Path %s failed: %s", timelapse_path, e)
-            continue
-
-    return [], None
 
 
 async def _capture_timelapse_baseline_at_start(printer, printer_id: int, logger: logging.Logger) -> None:
