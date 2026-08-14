@@ -43,6 +43,7 @@ from backend.app.schemas.printer import (
     PrinterUpdate,
     PrintOptionsResponse,
 )
+from backend.app.schemas.timelapse import TimelapseStorage
 from backend.app.services.bambu_ftp import (
     clear_sdcard_async,
     get_storage_info_async,
@@ -3344,10 +3345,28 @@ async def jog_axis(
     return {"success": True, "axis": axis, "distance": distance}
 
 
+def _timelapse_target(capability: dict, state: object, requested: str | None) -> str:
+    """The medium these two endpoints act on: what was picked, or the default.
+
+    Kept beside them because both must reach the same answer — one asks the
+    printer about free space and the other deletes a file, and pointing those
+    at different media would be worse than pointing both at the wrong one.
+    """
+    from backend.app.utils.timelapse import SDCARD_NONE, resolve_storage
+
+    resolved = resolve_storage(
+        requested=requested,
+        supports_internal_timelapse=bool(capability.get("supports_internal")),
+        sdcard_state=int(getattr(state, "sdcard_state", SDCARD_NONE) or 0),
+    )
+    return resolved or str(capability.get("storage") or "internal")
+
+
 @router.post("/{printer_id}/timelapse/check-storage")
 async def check_timelapse_storage(
     printer_id: int,
     total_layer: int = Query(..., ge=1, description="Layer count of the print about to start"),
+    storage: TimelapseStorage | None = Query(None, description="Medium the operator picked"),
     _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
@@ -3369,16 +3388,18 @@ async def check_timelapse_storage(
         raise HTTPException(400, "Printer not connected")
 
     capability = timelapse_capability_for(printer.model, client.state)
-    if not client.check_timelapse_storage(capability["storage"], total_layer):
+    target = _timelapse_target(capability, client.state, storage)
+    if not client.check_timelapse_storage(target, total_layer):
         raise HTTPException(500, "Failed to ask the printer about timelapse storage")
 
-    return {"success": True, **capability}
+    return {"success": True, **capability, "storage": target}
 
 
 @router.post("/{printer_id}/timelapse/delete-oldest")
 async def delete_oldest_timelapse(
     printer_id: int,
     total_layer: int = Query(..., ge=1, description="Layer count of the print about to start"),
+    storage: TimelapseStorage | None = Query(None, description="Medium the operator picked"),
     _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
@@ -3402,10 +3423,16 @@ async def delete_oldest_timelapse(
     if not capability.get("supports_internal"):
         raise HTTPException(409, "This printer has no internal timelapse storage to manage")
 
-    if not client.delete_oldest_timelapse(capability["storage"], total_layer):
+    # ⚠️ This deletes somebody's recording, so the medium had better be the one
+    # they were told about. Before the picker existed this used the computed
+    # default, which on any machine with internal storage was always
+    # "internal" — so an operator freeing space for a print destined for the
+    # card had the oldest eMMC video dropped instead, and the card stayed full.
+    target = _timelapse_target(capability, client.state, storage)
+    if not client.delete_oldest_timelapse(target, total_layer):
         raise HTTPException(500, "Failed to delete the oldest timelapse")
 
-    return {"success": True, "storage": capability["storage"]}
+    return {"success": True, "storage": target}
 
 
 @router.post("/{printer_id}/disable-steppers")

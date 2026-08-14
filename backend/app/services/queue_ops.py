@@ -209,6 +209,7 @@ def _copy_item_fields(src: PrintQueueItem, new_batch_id: str | None, new_positio
         flow_cali=src.flow_cali,
         layer_inspect=src.layer_inspect,
         timelapse=src.timelapse,
+        timelapse_storage=src.timelapse_storage,
         use_ams=src.use_ams,
         mesh_mode_fast_check=src.mesh_mode_fast_check,
         execute_swap_macros=src.execute_swap_macros,

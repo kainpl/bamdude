@@ -472,6 +472,26 @@ class VirtualPrinterInstance:
             if mqtt_field in data:
                 patch[column] = bool(data[mqtt_field])
 
+        # Where the slicer asked the recording to go — ``cfg`` bit 2, the same
+        # per-print pick BambuStudio offers behind the folder icon beside its
+        # timelapse checkbox. Same reasoning as ``nozzle_mapping`` below: the
+        # operator chose it in the Send dialog, and dropping it silently sends
+        # the print somewhere they did not ask for.
+        #
+        # ⚠️ **Only the set bit is a choice.** A clear bit 2 is NOT "external":
+        # Studio sends ``"0"`` for External, for a timelapse that is off, and
+        # for a machine with no internal storage at all — three different things
+        # wearing one value. Reading zero as a pick would stamp "external" on
+        # every print any slicer ever sent us. Left NULL, it means what it is:
+        # nobody said, so nothing is claimed.
+        _cfg = data.get("cfg")
+        if _cfg is not None:
+            try:
+                if int(str(_cfg), 16) & 0x4:
+                    patch["timelapse_storage"] = "internal"
+            except (TypeError, ValueError):
+                pass
+
         raw = data.get("nozzle_mapping")
         if raw is not None:
             if isinstance(raw, str):
@@ -907,6 +927,12 @@ class VirtualPrinterInstance:
                 # use_ams has no system-preference field (the saved PrintModal
                 # toggles don't carry it) — slicer value or column default only.
                 use_ams = bool(slicer_opts["use_ams"]) if slicer_opts and "use_ams" in slicer_opts else True
+                # Recording medium, captured from the slicer's ``cfg`` bit 2 in
+                # ``on_print_command``. No system fallback and no default: NULL
+                # means nobody chose, and the dispatcher leaves the machine to
+                # its own devices — see the note there on why a clear bit is not
+                # a pick.
+                timelapse_storage = (slicer_opts or {}).get("timelapse_storage")
 
                 # H2C dual-nozzle-rack slicer-pick preservation (#1780).
                 # BambuStudio's project_file MQTT command for rack-swap models
@@ -989,6 +1015,7 @@ class VirtualPrinterInstance:
                         flow_cali=flow_cali,
                         layer_inspect=layer_inspect,
                         timelapse=timelapse,
+                        timelapse_storage=timelapse_storage,
                         use_ams=use_ams,
                         # Stamp the slicer's H2C rack nozzle pick on every plate
                         # of a multi-plate Send All so each plate replays the
@@ -1202,6 +1229,14 @@ class VirtualPrinterInstance:
                     position=next_pos,
                     status="pending",
                     manual_start=not self.auto_dispatch,
+                    # ⚠️ No ``timelapse_storage`` here, and that is not an
+                    # oversight: this path reads no slicer options at all. Unlike
+                    # ``_add_to_print_queue`` it never pops
+                    # ``_slicer_print_options``, so bed levelling, flow cali,
+                    # layer inspect and the timelapse switch itself all come
+                    # from column defaults too. Adding one of the six here would
+                    # need that plumbing and would look like the other five
+                    # already worked.
                     # Per-VP auto-print G-code injection opt-in (#1516). Copied
                     # onto the per-printer print_queue item when the scheduler
                     # promotes this router row. No-op unless snippets exist.

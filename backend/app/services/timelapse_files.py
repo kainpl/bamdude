@@ -89,6 +89,55 @@ async def list_timelapse_videos(printer) -> tuple[list[dict], str | None]:
     return (videos, "internal") if videos else ([], None)
 
 
+def last_recording_path(printer) -> str:
+    """The absolute path the printer says it last finished writing.
+
+    ``device.cam.timelapse_path`` — ``/userdata/media/timelapse/…`` for internal,
+    ``/media/usb0/timelapse/…`` for the card. Cleared to ``""`` when a print
+    starts and filled once the file is closed, so an empty string means "nothing
+    finished", not "no camera".
+
+    ⚠️ **The LAST recording, not THIS print's.** Normally the same file; not on
+    two prints in quick succession, nor after somebody records from the
+    printer's own screen. It is evidence, never an answer on its own — see
+    :func:`pick_new_recording`.
+    """
+    from backend.app.services.printer_manager import printer_manager
+
+    return str(getattr(printer_manager.get_status(printer.id), "timelapse_path", "") or "")
+
+
+def pick_new_recording(video_files: list[dict], baseline_names: set[str], reported_path: str) -> dict | None:
+    """Which of these recordings belongs to the print that just ended.
+
+    Two independent signals, and the weaker one is still the gate:
+
+    * the **baseline** — files that were already there when this print started
+      are not it. This alone is what the picker used to be, and it assumes the
+      one new file is the right one;
+    * the printer's own **reported path**, which names the file outright.
+
+    The named file is taken only when it is ALSO new, so the ambiguity in
+    :func:`last_recording_path` cannot promote a recording from an earlier
+    print. Where they disagree — or where the printer reported nothing — the
+    baseline answer stands, exactly as before.
+    """
+    new_files = [f for f in video_files if f.get("name", "") not in baseline_names]
+    if not new_files:
+        return None
+
+    wanted = reported_path.rsplit("/", 1)[-1].lower()
+    if wanted:
+        named = next((f for f in new_files if f.get("name", "").lower() == wanted), None)
+        if named is not None:
+            return named
+
+    # ⚠️ Still first-of-the-new, not "newest by timestamp". A card carries no
+    # reliable mtime for these and the tunnel catalogue is ordered by the
+    # printer; sorting on either was what made this guess a guess.
+    return new_files[0]
+
+
 async def read_timelapse_video(printer, remote_path: str) -> bytes | None:
     """Read one recording, choosing the medium from the path it came from.
 

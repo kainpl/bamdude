@@ -5540,6 +5540,11 @@ export default {
     timelapseDesc: 'Запис таймлапс-відео',
     timelapseLowSpace: '{{printer}}: майже не лишилось місця під таймлапс',
     timelapseFreeSpace: 'Звільнити',
+    timelapseStorage: 'Писати на',
+    timelapseStorageOption: {
+      internal: 'Внутрішнє сховище',
+      external: 'SD-картку',
+    },
     timelapseBlocked: {
       unsupported: 'цей принтер не вміє записувати таймлапс',
       no_storage: 'немає SD-картки',

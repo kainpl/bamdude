@@ -15,6 +15,7 @@ from backend.app.services.timelapse_files import (
     archive_subtask_name,
     list_timelapse_videos,
     match_by_model_name,
+    pick_new_recording,
     read_timelapse_video,
 )
 from backend.tests.tunnel_fixtures import FakeTunnelServer
@@ -174,3 +175,53 @@ def test_the_subtask_name_is_read_from_where_the_archive_keeps_it():
     assert archive_subtask_name(live) == "From push"
     assert archive_subtask_name(recovered) == "From meta"
     assert archive_subtask_name(empty) is None
+
+
+class TestPickingThisPrintsRecording:
+    """Two signals, and the weaker one is still the gate.
+
+    The printer reports the absolute path of the file it last closed
+    (``device.cam.timelapse_path``), which names the recording outright instead
+    of assuming exactly one new file appeared. But it is the LAST recording,
+    not necessarily THIS print's — two prints in quick succession, or somebody
+    recording from the printer's own screen, break that. So the name is taken
+    only when the baseline already agrees the file is new.
+    """
+
+    def _files(self, *names):
+        return [{"name": n, "path": f"/timelapse/{n}"} for n in names]
+
+    def test_the_named_file_wins_among_several_new_ones(self):
+        picked = pick_new_recording(
+            self._files("old.mp4", "a.mp4", "b.mp4"),
+            {"old.mp4"},
+            "/userdata/media/timelapse/b.mp4",
+        )
+        assert picked["name"] == "b.mp4"
+
+    def test_without_a_report_the_old_answer_stands(self):
+        picked = pick_new_recording(self._files("old.mp4", "a.mp4"), {"old.mp4"}, "")
+        assert picked["name"] == "a.mp4"
+
+    def test_a_reported_file_that_is_not_new_cannot_be_promoted(self):
+        """⚠️ The guard that makes the report safe to use at all.
+
+        A recording made from the printer's screen between our baseline and now
+        is the printer's honest "last file" and somebody else's video.
+        """
+        picked = pick_new_recording(self._files("old.mp4", "a.mp4"), {"old.mp4"}, "/userdata/media/timelapse/old.mp4")
+        assert picked["name"] == "a.mp4"
+
+    def test_a_report_naming_a_file_we_cannot_see_falls_back(self):
+        picked = pick_new_recording(self._files("old.mp4", "a.mp4"), {"old.mp4"}, "/media/usb0/timelapse/gone.mp4")
+        assert picked["name"] == "a.mp4"
+
+    def test_nothing_new_is_nothing_picked(self):
+        assert pick_new_recording(self._files("old.mp4"), {"old.mp4"}, "") is None
+
+    def test_the_medium_in_the_path_does_not_matter(self):
+        """The catalogue entry carries its own path; this only matches names.
+        Comparing the whole path would miss on every card recording, whose
+        listing path is the FTP directory and not ``/media/usb0/…``."""
+        picked = pick_new_recording(self._files("old.mp4", "a.mp4"), {"old.mp4"}, "/media/usb0/timelapse/A.MP4")
+        assert picked["name"] == "a.mp4"

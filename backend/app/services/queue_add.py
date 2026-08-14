@@ -215,6 +215,7 @@ async def add_items_to_printer_queue(
                 flow_cali_mode=data.flow_cali,
                 layer_inspect=data.layer_inspect,
                 timelapse=data.timelapse,
+                timelapse_storage=data.timelapse_storage,
                 use_ams=data.use_ams,
                 nozzle_offset_cali=mode_to_bool(data.nozzle_offset_cali),
                 nozzle_offset_cali_mode=data.nozzle_offset_cali,

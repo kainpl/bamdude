@@ -68,6 +68,11 @@ class AutoQueueItem(Base):
     flow_cali: Mapped[bool] = mapped_column(Boolean, default=True)
     layer_inspect: Mapped[bool] = mapped_column(Boolean, default=False)
     timelapse: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Copied onto the per-printer item by the distributor — see
+    # ``PrintQueueItem.timelapse_storage``. ⚠️ The router row is model-agnostic:
+    # a choice made here may land on a machine with no internal storage at all,
+    # which is why resolving it belongs at dispatch and not here.
+    timelapse_storage: Mapped[str | None] = mapped_column(String(20), nullable=True)
     use_ams: Mapped[bool] = mapped_column(Boolean, default=True)
     mesh_mode_fast_check: Mapped[bool] = mapped_column(Boolean, default=True)
     # Per-VP auto-print G-code injection opt-in (#1516). Copied from the source

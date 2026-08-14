@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 import paho.mqtt.client as mqtt
 
 from backend.app.services.hms_actions import HMSAction, get_actions_for_error_code
+from backend.app.utils.timelapse import task_cfg
 
 logger = logging.getLogger(__name__)
 
@@ -953,6 +954,9 @@ class PrinterState:
     # Absent keys mean the camera never reported, which is NOT the same as zero
     # free: BS only warns on a value it actually has (``free_kb >= 0``).
     timelapse_storage: dict = field(default_factory=dict)
+    # Absolute path of the last finished recording, as the printer reports it
+    # (``device.cam.timelapse_path``). Empty while a print is running.
+    timelapse_path: str = ""
     # Hold-timer: when we publish an AMS setting command we stamp the flag
     # name here; the push parser skips overwriting the corresponding field
     # while ``time.time() - hold < 3.0``. Avoids the toggle visually flipping
@@ -3997,6 +4001,19 @@ class BambuMQTTClient:
             for _key in ("tl_internal_free_kb", "tl_internal_total_kb", "tl_external_free_kb", "tl_external_total_kb"):
                 if isinstance(_cam.get(_key), int) and not isinstance(_cam.get(_key), bool):
                     self.state.timelapse_storage[_key] = _cam[_key]
+            # Where the finished recording actually went, absolute, named by the
+            # printer itself — ``/userdata/media/timelapse/…`` for internal,
+            # ``/media/usb0/timelapse/…`` for the card. Measured on X2D
+            # 2026-08-15 across four prints on both media.
+            #
+            # ⚠️ **Cleared to "" the moment a print starts** and filled once the
+            # file is closed, so an empty value means "nothing finished yet",
+            # not "no camera". Kept verbatim rather than reduced to a medium:
+            # the filename is the half that ends the guessing, since finding a
+            # recording by timestamp is what it replaces.
+            _path = _cam.get("timelapse_path")
+            if isinstance(_path, str):
+                self.state.timelapse_path = _path
 
         # BS ``check_enable_np`` — the print payload carrying all four of ``cfg``,
         # ``fun``, ``aux`` and ``stat``. Gates the per-extruder
@@ -6143,6 +6160,7 @@ class BambuMQTTClient:
         nozzle_mapping: str | None = None,
         storage: str = "external",
         file_md5: str = "",
+        timelapse_storage: str | None = None,
     ):
         """Start a print job on the printer.
 
@@ -6155,6 +6173,11 @@ class BambuMQTTClient:
                 form with the medium substituted — see the command below.
             file_md5: digest of the uploaded bytes, used only on the internal
                 path. The FTP path has always sent an empty one.
+            timelapse_storage: where the recording goes — ``"internal"`` or
+                ``"external"``, already resolved against the card's state by
+                :func:`~backend.app.utils.timelapse.resolve_storage`. ``None``
+                leaves the machine to its own devices, which is what every
+                dispatch did before this parameter existed.
 
         Args:
             filename: Name of the uploaded file
@@ -6404,7 +6427,14 @@ class BambuMQTTClient:
                     "vibration_cali": False,
                     "layer_inspect": layer_inspect,
                     "use_ams": use_ams,
-                    "cfg": "0",
+                    # Bit 2 = "record the timelapse to internal storage".
+                    # ⚠️ This key was here from the first day, pinned to "0"
+                    # because it was copied out of a BambuStudio capture whose
+                    # value happened to be zero — External was picked in it, and
+                    # a field that reads 0 in every sample looks like padding.
+                    # It is not: Studio sends "4" for Internal, and the printer
+                    # obeys it over whatever the previous job did.
+                    "cfg": task_cfg(timelapse=bool(timelapse), storage=timelapse_storage),
                     # extrude_cali_flag gates flow-dynamics calibration:
                     # 1 = run it, 0 = drop the stage from stg entirely.
                     # We previously sent 2 for "off" (#1478), reading 2 as "skip

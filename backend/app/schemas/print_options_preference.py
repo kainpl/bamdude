@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from backend.app.schemas.calibration_mode import CalibrationMode
+from backend.app.schemas.timelapse import TimelapseStorage
 
 
 class PrintOptionsToggles(BaseModel):
@@ -21,6 +22,11 @@ class PrintOptionsToggles(BaseModel):
     flow_cali: CalibrationMode
     layer_inspect: bool
     timelapse: bool
+    # Which medium records it. Defaulted so preferences saved before the picker
+    # existed still parse, and None means "no preference" rather than internal —
+    # remembering a medium nobody chose would move where recordings land on a
+    # machine that has been writing to its card all along.
+    timelapse_storage: TimelapseStorage | None = None
     mesh_mode_fast_check: bool
     gcode_injection: bool
     # Dual-nozzle-only toggle (#1682). Defaulted so preferences saved before it

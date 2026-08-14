@@ -401,6 +401,46 @@ def _timelapse_or_off(printer_id: int, printer, requested: bool) -> bool:
     return False
 
 
+def _timelapse_storage_for(printer_id: int, requested: str | None) -> str | None:
+    """The medium the recording goes to, re-checked against the live machine.
+
+    ⚠️ **Resolved here and not at the dialog**, for the same reason
+    :func:`_timelapse_or_off` is: the choice was made whenever the item was
+    queued, and the card can be pulled out in between. BambuStudio re-applies
+    the same fallback every time it opens its picker; we get one chance, at
+    dispatch.
+
+    ``None`` — no live client, an unsupported machine, or nothing chosen —
+    leaves the field at its old value and the medium to the printer, which is
+    what every dispatch did before the picker existed.
+    """
+    if requested is None:
+        return None
+
+    from backend.app.services.printer_manager import printer_manager as _pm
+    from backend.app.utils.timelapse import SDCARD_NONE, resolve_storage
+
+    client = _pm.get_client(printer_id)
+    if client is None:
+        return None
+
+    state = client.state
+    support = getattr(state, "print_option_support", None) or {}
+    resolved = resolve_storage(
+        requested=requested,
+        supports_internal_timelapse=bool(support.get("internal_timelapse")),
+        sdcard_state=int(getattr(state, "sdcard_state", SDCARD_NONE) or 0),
+    )
+    if resolved != requested:
+        logger.info(
+            "[%s] Timelapse target %r is not available — recording to %s instead",
+            printer_id,
+            requested,
+            resolved or "wherever the printer chooses",
+        )
+    return resolved
+
+
 class DispatchJobCancelled(Exception):
     """Raised when a dispatch job is cancelled by the user."""
 
@@ -1462,6 +1502,10 @@ class BackgroundDispatchService:
                     # here from where it was made rather than re-derived.
                     storage=storage,
                     file_md5=file_md5,
+                    # ⚠️ Unrelated to ``storage`` above, which is where the FILE
+                    # came from. A print read off the card can record to eMMC
+                    # and the other way round.
+                    timelapse_storage=_timelapse_storage_for(job.printer_id, job.options.get("timelapse_storage")),
                 )
 
                 if started:
@@ -2043,6 +2087,10 @@ class BackgroundDispatchService:
                     # here from where it was made rather than re-derived.
                     storage=storage,
                     file_md5=file_md5,
+                    # ⚠️ Unrelated to ``storage`` above, which is where the FILE
+                    # came from. A print read off the card can record to eMMC
+                    # and the other way round.
+                    timelapse_storage=_timelapse_storage_for(job.printer_id, job.options.get("timelapse_storage")),
                 )
 
                 if started:
@@ -2485,6 +2533,7 @@ async def enqueue_calibration_print(
             flow_cali=bool(opts.get("flow_cali", False)),
             layer_inspect=bool(opts.get("layer_inspect", False)),
             timelapse=bool(opts.get("timelapse", False)),
+            timelapse_storage=opts.get("timelapse_storage"),
             mesh_mode_fast_check=bool(opts.get("mesh_mode_fast_check", True)),
             gcode_injection=bool(opts.get("gcode_injection", False)),
             execute_swap_macros=execute_swap,

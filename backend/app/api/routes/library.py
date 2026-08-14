@@ -4507,6 +4507,7 @@ async def print_library_file(
             flow_cali=body.flow_cali,
             layer_inspect=body.layer_inspect,
             timelapse=body.timelapse,
+            timelapse_storage=body.timelapse_storage,
             use_ams=body.use_ams,
             nozzle_offset_cali=body.nozzle_offset_cali,
             mesh_mode_fast_check=body.mesh_mode_fast_check,

@@ -651,6 +651,9 @@ export interface StorageCapability {
   reason: 'no_card_no_internal' | 'card_unusable' | null;
 }
 
+/** Where a timelapse is recorded. Mirrors the backend `TimelapseStorage`. */
+export type TimelapseStorage = 'internal' | 'external';
+
 export interface PrinterStatus {
   id: number;
   name: string;
@@ -795,7 +798,12 @@ export interface PrinterStatus {
   timelapse_capability?: {
     can_enable?: boolean;
     reason?: string | null;
+    /** The default the picker opens on — NOT a reading of the machine. Nothing
+     *  on the printer stores a target; BambuStudio defaults its own dialog the
+     *  same way and sends the pick with the job. */
     storage?: string;
+    /** Both media present, so the operator gets a say. */
+    can_choose_storage?: boolean;
     storage_low?: boolean;
     supports_internal?: boolean;
     free_kb?: number | null;
@@ -2900,6 +2908,8 @@ export interface PrintQueueItem {
   flow_cali: CalibrationMode;
   layer_inspect: boolean;
   timelapse: boolean;
+  /** Which medium records it — `null`/absent leaves it to the printer. */
+  timelapse_storage?: TimelapseStorage | null;
   use_ams: boolean;
   nozzle_offset_cali: CalibrationMode;
   mesh_mode_fast_check: boolean;
@@ -3098,6 +3108,8 @@ export interface AutoQueueItem {
   flow_cali: CalibrationMode;
   layer_inspect: boolean;
   timelapse: boolean;
+  /** Which medium records it — `null`/absent leaves it to the printer. */
+  timelapse_storage?: TimelapseStorage | null;
   use_ams: boolean;
   mesh_mode_fast_check: boolean;
   execute_swap_macros: boolean;
@@ -5291,17 +5303,23 @@ export const api = {
   // Ask the printer whether there is room for this print's timelapse.
   // ⚠️ The answer does NOT come back here — the printer republishes its free
   // space in the next status push, so callers re-read the status after asking.
-  checkTimelapseStorage: (printerId: number, totalLayer: number) =>
+  checkTimelapseStorage: (printerId: number, totalLayer: number, storage?: string | null) =>
     request<{ success: boolean; storage: string; storage_low: boolean; free_kb: number | null }>(
-      `/printers/${printerId}/timelapse/check-storage?total_layer=${totalLayer}`,
+      `/printers/${printerId}/timelapse/check-storage?total_layer=${totalLayer}` +
+        (storage ? `&storage=${storage}` : ''),
       { method: 'POST' },
     ),
 
   // Delete the oldest recording to make room. ⚠️ Destructive, and the printer
   // chooses which file goes. Offered only where it has internal storage.
-  deleteOldestTimelapse: (printerId: number, totalLayer: number) =>
+  // ⚠️ Pass the medium the operator picked. Without it the server falls back to
+  // the computed default, which on a machine with internal storage is always
+  // "internal" — so freeing space for a card-bound recording would delete an
+  // eMMC video and leave the card as full as it was.
+  deleteOldestTimelapse: (printerId: number, totalLayer: number, storage?: string | null) =>
     request<{ success: boolean; storage: string }>(
-      `/printers/${printerId}/timelapse/delete-oldest?total_layer=${totalLayer}`,
+      `/printers/${printerId}/timelapse/delete-oldest?total_layer=${totalLayer}` +
+        (storage ? `&storage=${storage}` : ''),
       { method: 'POST' },
     ),
 

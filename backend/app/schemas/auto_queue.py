@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, PlainSerializer, model_validator
 from backend.app.schemas.calibration_mode import CalibrationMode
 from backend.app.schemas.print_queue import serialize_utc_datetime
 from backend.app.schemas.printer_location import PrinterLocationOut, reject_legacy_key
+from backend.app.schemas.timelapse import TimelapseStorage
 
 UTCDatetime = Annotated[datetime | None, PlainSerializer(serialize_utc_datetime)]
 
@@ -62,6 +63,8 @@ class AutoQueueItemCreate(BaseModel):
     flow_cali: CalibrationMode = "on"
     layer_inspect: bool = False
     timelapse: bool = False
+    # Which medium records it — copied onto the per-printer item at promotion.
+    timelapse_storage: TimelapseStorage | None = None
     use_ams: bool = True
     mesh_mode_fast_check: bool = True
     execute_swap_macros: bool = True
@@ -104,6 +107,7 @@ class AutoQueueItemUpdate(BaseModel):
     flow_cali: CalibrationMode | None = None
     layer_inspect: bool | None = None
     timelapse: bool | None = None
+    timelapse_storage: TimelapseStorage | None = None
     use_ams: bool | None = None
     mesh_mode_fast_check: bool | None = None
     execute_swap_macros: bool | None = None
@@ -140,6 +144,7 @@ class AutoQueueItemResponse(BaseModel):
     flow_cali: CalibrationMode
     layer_inspect: bool
     timelapse: bool
+    timelapse_storage: TimelapseStorage | None = None
     use_ams: bool
     mesh_mode_fast_check: bool
     execute_swap_macros: bool

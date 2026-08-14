@@ -5396,3 +5396,59 @@ class TestKProfileReplyDoesNotClobberNozzle:
             )
 
         assert mqtt_client.state.nozzles[0].nozzle_diameter == "0.4"
+
+
+class TestTimelapseStorageOnTheWire:
+    """``cfg`` bit 2 in ``project_file`` — where the recording is written.
+
+    Measured against BambuStudio on a live X2D (2026-08-15): Studio sends
+    ``"4"`` with Internal picked in its folder popup and ``"0"`` with External,
+    and the printer follows the command over whatever its previous job did.
+
+    ⚠️ BamDude sent a hardcoded ``"0"`` here from the first day — copied out of
+    a Studio capture that happened to have External selected. The field looked
+    like padding because it read zero in every sample, which is what a field
+    looks like when nobody varies the input.
+    """
+
+    @pytest.fixture
+    def mqtt_client(self):
+        from unittest.mock import MagicMock
+
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        client = BambuMQTTClient(ip_address="192.168.1.100", serial_number="TEST123", access_code="12345678")
+        client._client = MagicMock()
+        client.state.connected = True
+        client.state.raw_data["ams"] = {"ams": [{"id": "0"}]}
+        return client
+
+    def _cfg(self, client) -> str:
+        return json.loads(client._client.publish.call_args[0][1])["print"]["cfg"]
+
+    def test_internal_asks_for_internal(self, mqtt_client):
+        mqtt_client.start_print("test.3mf", timelapse=True, timelapse_storage="internal")
+        assert self._cfg(mqtt_client) == "4"
+
+    def test_external_sends_studios_zero(self, mqtt_client):
+        mqtt_client.start_print("test.3mf", timelapse=True, timelapse_storage="external")
+        assert self._cfg(mqtt_client) == "0"
+
+    def test_no_choice_keeps_the_field_exactly_as_it_always_was(self, mqtt_client):
+        """The compatibility guarantee: every caller that does not pass the new
+        argument produces the byte-identical command it produced before."""
+        mqtt_client.start_print("test.3mf", timelapse=True)
+        assert self._cfg(mqtt_client) == "0"
+
+    def test_a_print_with_no_timelapse_claims_no_medium(self, mqtt_client):
+        mqtt_client.start_print("test.3mf", timelapse=False, timelapse_storage="internal")
+        assert self._cfg(mqtt_client) == "0"
+
+    def test_the_recording_medium_is_not_the_file_medium(self, mqtt_client):
+        """Two different questions about two different storages, and the pair
+        that is easiest to conflate: a file read off the card can record to
+        eMMC, so ``storage`` must not leak into ``cfg``."""
+        mqtt_client.start_print("test.3mf", timelapse=True, storage="external", timelapse_storage="internal")
+        cmd = json.loads(mqtt_client._client.publish.call_args[0][1])["print"]
+        assert cmd["cfg"] == "4"
+        assert cmd["url"] == "ftp://test.3mf"

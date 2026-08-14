@@ -2196,6 +2196,10 @@ class PrintScheduler:
             # profiles. Finish-photo capture is now driven by the stg_cur=22
             # transition in bambu_mqtt.py, not by forcing a timelapse video.
             "timelapse": item.timelapse,
+            # Which medium records it. Passed through raw — the dispatcher
+            # re-checks it against the card, which may have left the machine
+            # since this item was queued.
+            "timelapse_storage": item.timelapse_storage,
             "use_ams": item.use_ams,
             "nozzle_offset_cali": derive_mode(item.nozzle_offset_cali_mode, item.nozzle_offset_cali),
             # H2C rack-swap nozzle pick (#1780) — opaque JSON string captured

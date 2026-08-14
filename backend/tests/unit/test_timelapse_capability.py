@@ -40,6 +40,8 @@ from backend.app.utils.timelapse import (
     capability_for,
     default_storage,
     is_storage_low,
+    resolve_storage,
+    task_cfg,
 )
 
 
@@ -158,6 +160,8 @@ class TestTheComposedAnswer:
             "can_enable": False,
             "reason": REASON_NO_STORAGE,
             "storage": "internal",
+            # No internal storage and no card — nothing to choose between.
+            "can_choose_storage": False,
             "storage_low": False,
             "supports_internal": False,
             "free_kb": None,
@@ -180,3 +184,130 @@ class TestTheComposedAnswer:
     def test_a_model_we_ship_no_config_for_and_that_says_nothing_refuses(self) -> None:
         """Honest rather than optimistic: nothing here knows the machine can."""
         assert capability_for("Nonexistent 9000", _state())["can_enable"] is False
+
+
+class TestTheOperatorGetsASayOnlyWhenThereIsOne:
+    """BS shows its picker on internal support and greys External without a card.
+
+    We hide the whole control in that case rather than render one usable radio,
+    so the question this answers is "are BOTH media there", not "does the
+    machine have eMMC".
+    """
+
+    def test_both_media_present_offers_the_choice(self) -> None:
+        cap = capability_for(
+            "X2D",
+            _state(print_option_support={"internal_timelapse": True}, sdcard_state=SDCARD_NORMAL),
+        )
+        assert cap["can_choose_storage"] is True
+
+    def test_internal_only_takes_the_fallback_silently(self) -> None:
+        cap = capability_for(
+            "X2D",
+            _state(print_option_support={"internal_timelapse": True}, sdcard_state=SDCARD_NONE),
+        )
+        assert cap["can_choose_storage"] is False
+        assert cap["can_enable"] is True  # it can still record, just not elsewhere
+
+    def test_a_card_the_printer_cannot_read_is_not_a_second_medium(self) -> None:
+        # The trap this guards: "has a card" is four states, and two of them are
+        # a card that is present and unusable.
+        for bad in (SDCARD_ABNORMAL, SDCARD_READONLY):
+            cap = capability_for(
+                "X2D",
+                _state(print_option_support={"internal_timelapse": True}, sdcard_state=bad),
+            )
+            assert cap["can_choose_storage"] is False, bad
+
+
+class TestResolveStorage:
+    def test_what_was_asked_for_is_what_is_used(self) -> None:
+        assert (
+            resolve_storage(requested="external", supports_internal_timelapse=True, sdcard_state=SDCARD_NORMAL)
+            == "external"
+        )
+
+    def test_external_without_a_working_card_falls_back_rather_than_fails(self) -> None:
+        """BS rewrites the selection instead of refusing the print — so do we.
+
+        Losing the choice of medium is not a reason to lose the print, and the
+        machine still has somewhere to put the video.
+        """
+        for bad in (SDCARD_NONE, SDCARD_ABNORMAL, SDCARD_READONLY):
+            assert (
+                resolve_storage(requested="external", supports_internal_timelapse=True, sdcard_state=bad) == "internal"
+            ), bad
+
+    def test_a_machine_without_internal_storage_has_no_question_to_answer(self) -> None:
+        # None, not "external": there is no field to send, and saying "external"
+        # would invite a caller to set bit 2's absence as if it were a choice.
+        assert (
+            resolve_storage(requested="internal", supports_internal_timelapse=False, sdcard_state=SDCARD_NORMAL) is None
+        )
+
+    def test_choosing_nothing_still_resolves_to_the_default(self) -> None:
+        assert (
+            resolve_storage(requested=None, supports_internal_timelapse=True, sdcard_state=SDCARD_NORMAL) == "internal"
+        )
+
+
+class TestTaskCfg:
+    """The wire value, measured off BambuStudio on an X2D (2026-08-15)."""
+
+    def test_internal_sets_bit_two(self) -> None:
+        assert task_cfg(timelapse=True, storage="internal") == "4"
+
+    def test_external_sends_the_zero_studio_sends(self) -> None:
+        assert task_cfg(timelapse=True, storage="external") == "0"
+
+    def test_a_print_without_a_timelapse_never_claims_a_medium(self) -> None:
+        """BS guards the whole assignment on ``timelapse_option``.
+
+        Sending bit 2 with the recording off would be a claim about a file that
+        is never created — harmless today, and exactly the kind of stray flag
+        that a later firmware decides to act on.
+        """
+        assert task_cfg(timelapse=False, storage="internal") == "0"
+
+    def test_an_unresolved_medium_is_not_internal(self) -> None:
+        assert task_cfg(timelapse=True, storage=None) == "0"
+
+
+class TestTheSlicersPickSurvivesTheVirtualPrinter:
+    """``cfg`` bit 2 off a slicer's ``project_file``, the #1780 pattern.
+
+    A Studio user who picks Internal in the Send dialog and sends to a Virtual
+    Printer made a real choice; dropping it puts the recording somewhere they
+    did not ask for. Tested through the capture helper rather than the manager
+    so the rule itself is pinned, not one call site of it.
+    """
+
+    def _patch(self, data: dict) -> dict:
+        """Mirror of the capture in ``virtual_printer/manager.py``."""
+        patch: dict = {}
+        raw = data.get("cfg")
+        if raw is not None:
+            try:
+                if int(str(raw), 16) & 0x4:
+                    patch["timelapse_storage"] = "internal"
+            except (TypeError, ValueError):
+                pass
+        return patch
+
+    def test_bit_two_is_taken_as_internal(self) -> None:
+        assert self._patch({"cfg": "4"}) == {"timelapse_storage": "internal"}
+
+    def test_a_clear_bit_claims_nothing(self) -> None:
+        """⚠️ The whole point. Studio sends "0" for External, for a timelapse
+        that is off, and for a machine with no internal storage — three
+        different things wearing one value. Reading it as "external" would
+        stamp a pick on every print any slicer ever sent."""
+        assert self._patch({"cfg": "0"}) == {}
+
+    def test_a_slicer_that_sends_no_cfg_claims_nothing(self) -> None:
+        assert self._patch({"timelapse": True}) == {}
+
+    def test_a_cfg_that_is_not_a_number_is_ignored_rather_than_fatal(self) -> None:
+        # Intake from a third-party slicer. A malformed field must not take the
+        # whole print command down with it.
+        assert self._patch({"cfg": "not-hex"}) == {}

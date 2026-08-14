@@ -118,7 +118,9 @@ from backend.app.services.stock_forecast_alerts import stock_forecast_alerts
 # only the listing was worse than useless for a while: the auto-scan found the
 # recording in internal storage and then tried to fetch it over FTP.
 from backend.app.services.timelapse_files import (
+    last_recording_path as _last_recording_path,
     list_timelapse_videos as _list_timelapse_videos,
+    pick_new_recording as _pick_new_recording,
     read_timelapse_video,
 )
 from backend.app.utils.filament_remaining import grams_used
@@ -4189,12 +4191,11 @@ async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[
             for f in video_files[:5]:
                 logger.info("[TIMELAPSE]   - %s", f.get("name"))
 
-            # Find files that are NEW (not in baseline snapshot)
-            new_files = [f for f in video_files if f.get("name", "") not in baseline_names]
+            # Which of them is ours: new since this print started, and — when
+            # the printer named the file it just closed — that one specifically.
+            target = _pick_new_recording(video_files, baseline_names, _last_recording_path(printer))
 
-            if new_files:
-                # Pick the first new file (there should typically be exactly one)
-                target = new_files[0]
+            if target is not None:
                 file_name = target.get("name")
                 remote_path = target.get("path") or f"/timelapse/{file_name}"
                 logger.info(

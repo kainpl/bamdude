@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, model_validator
 
 from backend.app.schemas.calibration_mode import CalibrationMode
+from backend.app.schemas.timelapse import TimelapseStorage
 
 
 class ArchiveBase(BaseModel):
@@ -307,6 +308,8 @@ class ReprintRequest(BaseModel):
     flow_cali: CalibrationMode = "off"
     layer_inspect: bool = False
     timelapse: bool = False
+    # Which medium records it — only offered when the machine has both.
+    timelapse_storage: TimelapseStorage | None = None
     use_ams: bool = True  # Not exposed in UI, but needed for API
     nozzle_offset_cali: CalibrationMode = "on"  # Dual-nozzle printers only — MQTT-gated (#1682)
     mesh_mode_fast_check: bool = True

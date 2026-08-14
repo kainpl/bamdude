@@ -16,6 +16,20 @@ All notable changes to BamDude will be documented in this file.
 
 ### Added
 
+- **You choose where the timelapse is recorded.** On a printer that has both built-in storage and an SD card, the print dialog now offers **Record to: Internal storage / SD card** beside the timelapse switch, the same choice BambuStudio offers behind the small folder icon. Machines with only one of the two are unchanged and show nothing extra — there is nothing to choose between.
+
+    Until now BamDude never said anything about this, so the recording went wherever the printer felt like putting it, which is why the same farm could end up with videos scattered across both media. The choice is made per print and travels with the queue item, so a job queued for later records where you said it would; if the card has left the machine by the time it starts, the recording falls back to internal storage rather than the print failing.
+
+    Fixes a related trap: **Free space**, offered when a printer is nearly out of room for a recording, used to act on internal storage on any machine that had it — even when the recording was headed for the card. It deleted the wrong video and freed nothing where it was needed. It now works on the medium you picked.
+
+    A print sent from a slicer to a Virtual Printer keeps this choice too — BambuStudio puts it in the print command, and BamDude was discarding it.
+
+### Changed
+
+- **The right recording is attached to the right print.** After a print with a timelapse, BamDude looks for the new video on the printer and attaches it to the archive. It used to take the first recording that had not been there before the print started — fine when exactly one appeared, a guess when more did. The printer actually reports the full path of the file it has just finished writing, so that file is now taken by name.
+
+    The old check still runs underneath: a named recording is only accepted if it is also new since this print began. Without that, a video recorded from the printer's own screen mid-print — which the printer would honestly report as its most recent — could be attached to somebody else's job.
+
 - **The printer's internal storage is now browsable.** X2D, P2S and the H2 family (H2C, H2D, H2D Pro, H2S) keep files in built-in storage as well as on an SD card, and BamDude could only ever see the card — with no card inserted the file browser was simply empty, whatever was actually on the machine. Those printers now show a **SD card / Internal storage** switch, and everything the browser does works on both: listing, downloading, plate previews, importing into the library, and deleting.
 
     A printer with no card inserted opens on its internal storage rather than on an empty list. Printers with only a card — every A1 and P1 — look and behave exactly as before, with no switch shown.

@@ -1062,12 +1062,15 @@ class PrinterManager:
         nozzle_mapping: str | None = None,
         storage: str = "external",
         file_md5: str = "",
+        timelapse_storage: str | None = None,
     ) -> bool:
         """Start a print on a connected printer.
 
         ``storage`` says which medium the file was uploaded to and therefore
         which URL scheme the command carries; ``file_md5`` is the digest of the
-        uploaded bytes, used only on the internal path.
+        uploaded bytes, used only on the internal path. ``timelapse_storage``
+        is a different question about a different medium — where the RECORDING
+        goes — and the two are independent.
 
         ``nozzle_mapping`` is an opaque JSON string captured from BambuStudio's
         project_file MQTT command (H2C rack-swap slicer pick preservation,
@@ -1097,6 +1100,7 @@ class PrinterManager:
                 nozzle_mapping=nozzle_mapping,
                 storage=storage,
                 file_md5=file_md5,
+                timelapse_storage=timelapse_storage,
             )
         return False
 

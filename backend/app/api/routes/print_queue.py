@@ -192,6 +192,7 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         "flow_cali": derive_mode(item.flow_cali_mode, item.flow_cali),
         "layer_inspect": item.layer_inspect,
         "timelapse": item.timelapse,
+        "timelapse_storage": item.timelapse_storage,
         "use_ams": item.use_ams,
         "nozzle_offset_cali": derive_mode(item.nozzle_offset_cali_mode, item.nozzle_offset_cali),
         "mesh_mode_fast_check": item.mesh_mode_fast_check,

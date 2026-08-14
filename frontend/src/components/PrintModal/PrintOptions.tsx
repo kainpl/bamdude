@@ -50,6 +50,7 @@ export function PrintOptionsPanel({
   timelapseBlockers = [],
   selectedPrinterCount = 0,
   timelapseLowSpace = [],
+  canChooseTimelapseStorage = false,
   onFreeTimelapseSpace,
   freeingTimelapseSpace = false,
 }: PrintOptionsProps) {
@@ -158,6 +159,34 @@ export function PrintOptionsPanel({
                       .map((b) => `${b.name} — ${t(`printModal.timelapseBlocked.${b.reason}`)}`)
                       .join('; ')}
                   </p>
+                )}
+                {key === 'timelapse' && options.timelapse && canChooseTimelapseStorage && (
+                  /* BambuStudio's folder popup beside its own timelapse
+                     checkbox. Rendered only where both media exist — with one
+                     medium there is no question, and the backend takes the
+                     fallback without asking. */
+                  <div className="flex items-center gap-2 mt-2">
+                    <span className="text-[11px] text-bambu-gray">
+                      {t('printModal.timelapseStorage')}
+                    </span>
+                    {(['internal', 'external'] as const).map((target) => {
+                      const active = (options.timelapse_storage ?? 'internal') === target;
+                      return (
+                        <button
+                          key={target}
+                          type="button"
+                          onClick={() => onChange({ ...options, timelapse_storage: target })}
+                          className={`px-2 h-6 rounded text-[10px] transition-colors ${
+                            active
+                              ? 'bg-bambu-green text-white'
+                              : 'bg-bambu-dark-tertiary text-bambu-gray hover:text-white'
+                          }`}
+                        >
+                          {t(`printModal.timelapseStorageOption.${target}`)}
+                        </button>
+                      );
+                    })}
+                  </div>
                 )}
                 {key === 'timelapse' &&
                   options.timelapse &&

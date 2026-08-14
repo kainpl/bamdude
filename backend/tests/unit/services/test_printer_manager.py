@@ -386,6 +386,11 @@ class TestPrinterManager:
             # passes anything else.
             storage="external",
             file_md5="",
+            # ⚠️ A different medium answering a different question: where the
+            # RECORDING goes, not where the file came from. None means nobody
+            # chose, which leaves the printer doing exactly what it did before
+            # the picker existed.
+            timelapse_storage=None,
         )
         assert result is True
 

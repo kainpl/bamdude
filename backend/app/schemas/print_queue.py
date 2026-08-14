@@ -4,6 +4,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field, PlainSerializer, model_validator
 
 from backend.app.schemas.calibration_mode import CalibrationMode
+from backend.app.schemas.timelapse import TimelapseStorage
 
 
 # Custom serializer to ensure UTC datetimes have Z suffix
@@ -36,6 +37,8 @@ class PrintQueueItemCreate(BaseModel):
     flow_cali: CalibrationMode = "on"
     layer_inspect: bool = False
     timelapse: bool = False
+    # Which medium records it — only offered when the machine has both.
+    timelapse_storage: TimelapseStorage | None = None
     use_ams: bool = True
     # Nozzle offset calibration — dual-nozzle printers only (#1682). Default 'on'
     # matches BambuStudio; the MQTT layer forces "skip" on single-nozzle printers.
@@ -71,6 +74,7 @@ class PrintQueueItemUpdate(BaseModel):
     flow_cali: CalibrationMode | None = None
     layer_inspect: bool | None = None
     timelapse: bool | None = None
+    timelapse_storage: TimelapseStorage | None = None
     use_ams: bool | None = None
     nozzle_offset_cali: CalibrationMode | None = None
     mesh_mode_fast_check: bool | None = None
@@ -107,6 +111,8 @@ class PrintQueueItemResponse(BaseModel):
     flow_cali: CalibrationMode = "on"
     layer_inspect: bool = False
     timelapse: bool = False
+    # Which medium records it — only offered when the machine has both.
+    timelapse_storage: TimelapseStorage | None = None
     use_ams: bool = True
     # Nozzle offset calibration — dual-nozzle printers only (#1682). Default 'on'
     # matches BambuStudio; the MQTT layer forces "skip" on single-nozzle printers.
@@ -211,6 +217,7 @@ class PrintQueueBulkUpdate(BaseModel):
     flow_cali: CalibrationMode | None = None
     layer_inspect: bool | None = None
     timelapse: bool | None = None
+    timelapse_storage: TimelapseStorage | None = None
     use_ams: bool | None = None
     nozzle_offset_cali: CalibrationMode | None = None
     mesh_mode_fast_check: bool | None = None

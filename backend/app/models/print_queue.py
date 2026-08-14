@@ -60,6 +60,11 @@ class PrintQueueItem(Base):
     flow_cali: Mapped[bool] = mapped_column(Boolean, default=True)
     layer_inspect: Mapped[bool] = mapped_column(Boolean, default=False)
     timelapse: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Which medium records it — 'internal' / 'external', NULL = whatever the
+    # machine defaults to. Only meaningful with ``timelapse`` on and only on
+    # machines that have internal storage; re-checked against the card at
+    # dispatch, because the card can leave between queueing and printing.
+    timelapse_storage: Mapped[str | None] = mapped_column(String(20), nullable=True)
     use_ams: Mapped[bool] = mapped_column(Boolean, default=True)
     # Nozzle offset calibration before print — dual-nozzle printers only
     # (H2D/H2D Pro/H2C/X2D). Encoded as 1 (run) / 2 (skip) in the project_file

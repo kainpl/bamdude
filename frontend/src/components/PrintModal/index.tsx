@@ -121,6 +121,10 @@ export function PrintModal({
         flow_cali: queueItem.flow_cali ?? DEFAULT_PRINT_OPTIONS.flow_cali,
         layer_inspect: queueItem.layer_inspect ?? DEFAULT_PRINT_OPTIONS.layer_inspect,
         timelapse: queueItem.timelapse ?? DEFAULT_PRINT_OPTIONS.timelapse,
+        // ⚠️ `??` and not `||`: null is the meaningful value here ("nobody
+        // chose"), so it must survive re-opening the dialog rather than being
+        // replaced by a default the operator never picked.
+        timelapse_storage: queueItem.timelapse_storage ?? DEFAULT_PRINT_OPTIONS.timelapse_storage,
         mesh_mode_fast_check: queueItem.mesh_mode_fast_check ?? DEFAULT_PRINT_OPTIONS.mesh_mode_fast_check,
         gcode_injection: queueItem.gcode_injection ?? DEFAULT_PRINT_OPTIONS.gcode_injection,
         nozzle_offset_cali: queueItem.nozzle_offset_cali ?? DEFAULT_PRINT_OPTIONS.nozzle_offset_cali,
@@ -307,6 +311,17 @@ export function PrintModal({
       return [{ printerId: id, name }];
     });
   }, [isAutoMode, selectedPrinters, timelapseStatuses, printers]);
+
+  // Whether the picker is offered at all: BambuStudio shows it per machine, we
+  // have a selection. Any printer that can choose is enough — the ones that
+  // cannot ignore the field (their resolve returns "no question to answer"),
+  // and an external pick lands internally on a machine whose card is missing.
+  const canChooseTimelapseStorage = useMemo(() => {
+    if (isAutoMode) return false;
+    return selectedPrinters.some(
+      (_id, i) => timelapseStatuses[i]?.data?.timelapse_capability?.can_choose_storage === true
+    );
+  }, [isAutoMode, selectedPrinters, timelapseStatuses]);
 
   const freeTimelapseSpace = useMutation({
     mutationFn: (printerId: number) =>
@@ -1400,7 +1415,7 @@ export function PrintModal({
 
             {/* Print options */}
             {(mode === 'reprint' || effectivePrinterCount > 0 || isAutoMode) && (
-              <PrintOptionsPanel options={printOptions} onChange={setPrintOptions} defaultExpanded={!!initialSelectedPrinterIds?.length} showDualNozzleOptions={showDualNozzleOptions} autoCaps={autoCaps} timelapseBlockers={timelapseBlockers} selectedPrinterCount={selectedPrinters.length} timelapseLowSpace={timelapseLowSpace} onFreeTimelapseSpace={(id) => freeTimelapseSpace.mutate(id)} freeingTimelapseSpace={freeTimelapseSpace.isPending} />
+              <PrintOptionsPanel options={printOptions} onChange={setPrintOptions} defaultExpanded={!!initialSelectedPrinterIds?.length} showDualNozzleOptions={showDualNozzleOptions} autoCaps={autoCaps} timelapseBlockers={timelapseBlockers} selectedPrinterCount={selectedPrinters.length} timelapseLowSpace={timelapseLowSpace} canChooseTimelapseStorage={canChooseTimelapseStorage} onFreeTimelapseSpace={(id) => freeTimelapseSpace.mutate(id)} freeingTimelapseSpace={freeTimelapseSpace.isPending} />
             )}
 
             {/* Swap-mode macros — only relevant when at least one selected

@@ -348,6 +348,7 @@ class AutoQueueScheduler:
             flow_cali=item.flow_cali,
             layer_inspect=item.layer_inspect,
             timelapse=item.timelapse,
+            timelapse_storage=item.timelapse_storage,
             use_ams=item.use_ams,
             mesh_mode_fast_check=item.mesh_mode_fast_check,
             gcode_injection=item.gcode_injection,

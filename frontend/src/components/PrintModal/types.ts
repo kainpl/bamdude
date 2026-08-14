@@ -64,6 +64,9 @@ export type PreheatOverride = 'inherit' | 'on' | 'off';
 /**
  * Print options that can be configured for a print job.
  */
+/** Where a timelapse is recorded. Mirrors the backend `TimelapseStorage`. */
+export type TimelapseStorage = 'internal' | 'external';
+
 export interface PrintOptions {
   // Tri-state calibration (off/auto/on). 'auto' is only offered on models whose
   // firmware supports it (see utils/printerCapabilities); saved 'auto' on a
@@ -72,6 +75,13 @@ export interface PrintOptions {
   flow_cali: CalibrationMode;
   layer_inspect: boolean;
   timelapse: boolean;
+  /** Which medium records it, exactly like BambuStudio's folder popup — offered
+   *  only when the machine has BOTH an internal store and a healthy card.
+   *  `null` means nobody chose, and the printer keeps doing what it did. The
+   *  backend re-checks the pick against the card at dispatch, so an external
+   *  choice made before somebody pulled the card records internally rather
+   *  than failing. */
+  timelapse_storage: TimelapseStorage | null;
   mesh_mode_fast_check: boolean;
   /** Inject operator-defined G-code snippets at MACHINE_START_GCODE_END / EOF (#422). */
   gcode_injection: boolean;
@@ -94,6 +104,7 @@ export const DEFAULT_PRINT_OPTIONS: PrintOptions = {
   flow_cali: 'on',
   layer_inspect: false,
   timelapse: false,
+  timelapse_storage: null,
   mesh_mode_fast_check: true,
   gcode_injection: false,
   nozzle_offset_cali: 'on',
@@ -286,6 +297,10 @@ export interface PrintOptionsProps {
    *  the blockers because this one is FIXABLE from here — the printer can drop
    *  its oldest recording — whereas a missing card cannot. */
   timelapseLowSpace?: { printerId: number; name: string }[];
+  /** Whether any selected printer offers both media. False hides the picker
+   *  entirely rather than showing one usable option — BambuStudio greys the
+   *  dead radio out, which in a farm view is a control that only ever says no. */
+  canChooseTimelapseStorage?: boolean;
   onFreeTimelapseSpace?: (printerId: number) => void;
   freeingTimelapseSpace?: boolean;
   options: PrintOptions;

@@ -5530,6 +5530,11 @@ export default {
     timelapseDesc: 'Record timelapse video',
     timelapseLowSpace: '{{printer}}: almost no room left for a timelapse',
     timelapseFreeSpace: 'Free space',
+    timelapseStorage: 'Record to',
+    timelapseStorageOption: {
+      internal: 'Internal storage',
+      external: 'SD card',
+    },
     timelapseBlocked: {
       unsupported: 'this printer cannot record a timelapse',
       no_storage: 'no SD card',

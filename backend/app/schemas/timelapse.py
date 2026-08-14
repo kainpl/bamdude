@@ -1,6 +1,16 @@
 """Schemas for timelapse video processing."""
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+# Which medium records the timelapse, chosen per print like BambuStudio's own
+# picker. ``None`` means nobody chose and the printer keeps doing what it did —
+# distinct from either value, and the default for every job queued before the
+# picker existed. Validated as an enum rather than a free string so a typo
+# ("sdcard", "usb") fails at the API edge instead of silently resolving to
+# internal three layers down.
+TimelapseStorage = Literal["internal", "external"]
 
 
 class TimelapseInfoResponse(BaseModel):
