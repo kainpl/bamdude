@@ -12,7 +12,7 @@ import pytest
 from backend.app.services.background_dispatch import (
     _dispatch_refusal_message,
     _upload_failure_message,
-    clear_same_named_on_internal,
+    delete_internal_by_name,
     resolve_dispatch_storage,
 )
 from backend.app.utils.timelapse import (
@@ -89,7 +89,7 @@ async def test_the_same_named_file_is_found_by_listing_on_internal_storage():
 
         printer = type("P", (), {"ip_address": "127.0.0.1", "access_code": "12345678", "model": "X2D"})()
         transport = TunnelTransport(printer, port=port, connector=connector)
-        await clear_same_named_on_internal(transport, "job.gcode.3mf")
+        await delete_internal_by_name(transport, "job.gcode.3mf")
         assert server.deleted == ["/userdata/model/history/job.gcode.3mf"]
     finally:
         await server.stop()
@@ -110,7 +110,7 @@ async def test_nothing_is_deleted_when_no_file_of_that_name_is_there():
 
         printer = type("P", (), {"ip_address": "127.0.0.1", "access_code": "12345678", "model": "X2D"})()
         transport = TunnelTransport(printer, port=port, connector=connector)
-        await clear_same_named_on_internal(transport, "job.gcode.3mf")
+        await delete_internal_by_name(transport, "job.gcode.3mf")
         assert server.deleted == []
     finally:
         await server.stop()
@@ -128,7 +128,52 @@ async def test_a_failing_cleanup_never_stops_a_dispatch():
         async def delete(self, _path):
             raise OSError("boom")
 
-    await clear_same_named_on_internal(_Exploding(), "job.gcode.3mf")
+    assert await delete_internal_by_name(_Exploding(), "job.gcode.3mf") is False
+
+
+@pytest.mark.asyncio
+async def test_several_candidate_names_are_tried_and_the_first_hit_wins():
+    """Post-print cleanup knows the file by more than one name — the derived
+    upload name and the subtask fallback. One listing answers for all of them."""
+    from backend.app.services.printer_files.tunnel import TunnelTransport
+    from backend.tests.tunnel_fixtures import FakeTunnelServer, listing_entry
+
+    server = FakeTunnelServer()
+    server.files = [listing_entry("real-name.gcode.3mf")]
+    host, port = await server.start()
+    try:
+
+        async def connector():
+            return await asyncio.open_connection(host, port)
+
+        printer = type("P", (), {"ip_address": "127.0.0.1", "access_code": "12345678", "model": "X2D"})()
+        transport = TunnelTransport(printer, port=port, connector=connector)
+        removed = await delete_internal_by_name(transport, "guess.gcode.3mf", "real-name.gcode.3mf")
+        assert removed is True
+        assert server.deleted == ["/userdata/model/history/real-name.gcode.3mf"]
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_no_names_means_no_listing_at_all():
+    """Cleanup with nothing to look for must not open a connection."""
+
+    class _Watching:
+        def __init__(self):
+            self.listed = False
+
+        async def list_files(self, _path, file_type="model"):
+            self.listed = True
+            return []
+
+        async def delete(self, _path):
+            raise AssertionError("must not delete")
+
+    watcher = _Watching()
+    assert await delete_internal_by_name(watcher) is False
+    assert await delete_internal_by_name(watcher, "", None) is False
+    assert watcher.listed is False
 
 
 def test_the_upload_failure_message_only_mentions_a_card_where_one_was_used():

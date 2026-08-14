@@ -116,6 +116,30 @@ async def test_only_the_last_fragment_carries_the_md5(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_every_fragment_frame_carries_the_separator(tmp_path):
+    """⚠️ ``\\n\\n`` between the envelope and the bytes, as BambuStudio writes it
+    (PrinterFileSystem::UploadFileTask). The fake reassembles from what it
+    parses, so a missing separator would show up as corrupted bytes — this
+    pins the wire shape itself rather than the result."""
+    from backend.app.services.bambu_tunnel.codec import ENVELOPE_SEPARATOR
+
+    assert ENVELOPE_SEPARATOR == b"\n\n"
+
+    server = FakeTunnelServer()
+    host, port = await server.start()
+    try:
+        local, data = _payload(tmp_path, 300_000)
+        client = await _connected(server, host, port)
+        await client.upload_file(local, "job.gcode.3mf", WIRE_EMMC)
+        # Reassembled through split_envelope, which drops exactly one
+        # separator — the bytes must come back byte-for-byte.
+        assert server.uploads["job.gcode.3mf"] == data
+        await client.close()
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
 async def test_the_open_frame_names_the_storage_and_the_total(tmp_path):
     server = FakeTunnelServer()
     host, port = await server.start()

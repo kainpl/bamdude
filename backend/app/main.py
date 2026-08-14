@@ -86,7 +86,7 @@ from backend.app.core.websocket import ws_manager
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.auto_queue_scheduler import auto_queue_scheduler
-from backend.app.services.background_dispatch import background_dispatch
+from backend.app.services.background_dispatch import background_dispatch, delete_internal_by_name
 from backend.app.services.bambu_mqtt import HMS_SEVERITY_NOTIFY_THRESHOLD, PrinterState
 from backend.app.services.git_backup import git_backup_service
 from backend.app.services.local_backup import local_backup_service
@@ -4847,6 +4847,20 @@ async def on_print_complete(printer_id: int, data: dict):
 
                 should_delete = getattr(printer, "cleanup_after_print", True)
 
+                # ⚠️ Where the file actually is decides how (and whether) to
+                # clean it up. Everything below this point — the /cache sweep,
+                # the .bbl patch, the delete, the move — is FTP on the card.
+                # A print that went to internal storage has none of that: no
+                # /cache directory, no rename in the protocol, and the file
+                # lives at a path only the tunnel's own listing knows.
+                from backend.app.services.printer_files.factory import transport_for
+                from backend.app.utils.printer_storage import INTERNAL, storage_capability_for
+
+                printed_to_internal = (
+                    storage_capability_for(printer.model, printer_manager.get_status(printer_id))["print_target"]
+                    == INTERNAL
+                )
+
                 # .3mf candidate paths, primary first: the exact path the
                 # dispatcher uploaded to (derived from archive.filename via the
                 # same rule as upload). Without it, a library row that ended up
@@ -4956,7 +4970,29 @@ async def on_print_complete(printer_id: int, data: dict):
 
                 # Handle .3mf - delete or move to /cache/. Try each candidate
                 # (derived-first, subtask fallback) until one hits a real file.
-                if should_delete:
+                if printed_to_internal:
+                    # ⚠️ Only the delete half exists here, and that is not an
+                    # omission. "Keep the file" on the card means moving it OUT
+                    # of the root, because printers auto-start whatever sits
+                    # there on a power cycle (#374, ghost prints). Internal
+                    # storage is the printer's own history folder — nothing
+                    # auto-starts from it — so keeping the file means leaving it
+                    # exactly where it is. There is no /cache to move it to and
+                    # no rename in the tunnel protocol at all.
+                    if should_delete:
+                        names = [p.split("/")[-1] for p in threemf_candidates]
+                        removed = await delete_internal_by_name(transport_for(printer, INTERNAL), *names)
+                        logger.info(
+                            "Internal-storage cleanup on %s: %s",
+                            printer.name,
+                            "deleted" if removed else "nothing matched",
+                        )
+                    else:
+                        logger.debug(
+                            "Internal-storage print on %s: file left in place (nothing auto-starts from it)",
+                            printer.name,
+                        )
+                elif should_delete:
                     # Track outcomes across all candidates so the final log line
                     # reflects what actually happened. A1 / A1 Mini firmware
                     # auto-cleans the SD card before our cleanup runs, so every

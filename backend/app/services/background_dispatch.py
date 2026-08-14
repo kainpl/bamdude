@@ -109,28 +109,34 @@ def resolve_dispatch_storage(model: str | None, state) -> tuple[str | None, str 
     return capability["print_target"], capability["reason"]
 
 
-async def clear_same_named_on_internal(transport, remote_filename: str) -> None:
-    """Remove an existing file of this name from internal storage.
+async def delete_internal_by_name(transport, *names: str) -> bool:
+    """Delete the first file matching any of ``names`` from internal storage.
 
-    ⚠️ **Internal-only, because only internal storage has this problem.** Over
-    FTP the printer's root is the card, so the name *is* the path and the
-    dispatcher deletes it directly — with the configured socket timeout, which
-    matters on the slower A1 controllers. Here the tunnel deletes by the
-    absolute path its own listing reports (``/userdata/model/history/<name>``),
-    which cannot be guessed: deleting by bare name silently does nothing and
-    leaves the old file in place, making the whole delete-then-upload decision
-    inert on the very medium it was written for.
+    ⚠️ **Internal-only, because only internal storage needs a lookup.** Over FTP
+    the printer's root is the card, so the name *is* the path and callers delete
+    it directly — with the configured socket timeout, which matters on the
+    slower A1 controllers. Here the tunnel deletes by the absolute path its own
+    listing reports (``/userdata/model/history/<name>``), which cannot be
+    guessed: deleting by bare name silently does nothing and leaves the file in
+    place.
 
-    Best-effort: a missing file is the normal case, and an unreachable printer
-    fails at the upload with a message of its own.
+    Used both before an upload (clear a same-named file) and after a print (the
+    operator asked for cleanup) — one lookup, one meaning.
+
+    Best-effort and never raises: a missing file is the normal case, and every
+    caller has its own failure path for a printer that cannot be reached.
     """
+    wanted = {n for n in names if n}
+    if not wanted:
+        return False
     try:
         for entry in await transport.list_files("/"):
-            if entry.name == remote_filename:
+            if entry.name in wanted:
                 await transport.delete(entry.path)
-                return
-    except Exception as exc:  # noqa: BLE001 — cleanup must never fail a dispatch
-        logger.debug("Pre-upload cleanup of %s on internal storage skipped: %s", remote_filename, exc)
+                return True
+    except Exception as exc:  # noqa: BLE001 — cleanup must never fail its caller
+        logger.debug("Internal-storage delete of %s skipped: %s", ", ".join(sorted(wanted)), exc)
+    return False
 
 
 class PrintCommandRejectedError(RuntimeError):
@@ -1220,7 +1226,7 @@ class BackgroundDispatchService:
                     printer_model=printer_model,
                 )
             else:
-                await clear_same_named_on_internal(transport, remote_filename)
+                await delete_internal_by_name(transport, remote_filename)
 
             # Clean up /cache/ - delete stale .3mf and .bbl files from previous
             # prints. ⚠️ External only: /cache is a directory on the card, and
@@ -1801,7 +1807,7 @@ class BackgroundDispatchService:
                     printer_model=printer_model,
                 )
             else:
-                await clear_same_named_on_internal(transport, remote_filename)
+                await delete_internal_by_name(transport, remote_filename)
 
             # Clean up /cache/ - delete stale .3mf and .bbl files from previous
             # prints. ⚠️ External only: /cache is a directory on the card, and

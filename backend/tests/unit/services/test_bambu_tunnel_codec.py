@@ -55,12 +55,40 @@ def test_a_foreign_magic_is_rejected():
 
 
 def test_envelope_and_body_share_one_frame():
-    """The file bytes begin immediately after the closing brace — there is no
+    """The file bytes ride in the same frame as the envelope — there is no
     separate data frame, and the body is arbitrary binary."""
     envelope = {"cmdtype": 5, "frag_id": 0, "req": {"offset": 0, "size": 4}, "result": 1, "sequence": 3}
-    payload = json.dumps(envelope).encode() + b"PK\x03\x04"
+    payload = json.dumps(envelope).encode() + b"\n\n" + b"PK\x03\x04"
     parsed, body = split_envelope(payload)
     assert parsed["frag_id"] == 0
+    assert body == b"PK\x03\x04"
+
+
+def test_the_separator_is_framing_and_never_payload():
+    """⚠️ BambuStudio writes ``oss << root; oss << "\\n\\n"; oss << buffer``
+    (PrinterFileSystem::UploadFileTask), which is also the two bytes seen
+    between `}` and the ZIP magic in every captured upload frame. Keeping them
+    puts two stray bytes at the head of every file read back from the printer —
+    a corruption that survives download, import and thumbnailing, and surfaces
+    only when something finally opens the archive."""
+    payload = json.dumps({"sequence": 1}).encode() + b"\n\n" + b"PK\x03\x04body"
+    _parsed, body = split_envelope(payload)
+    assert body == b"PK\x03\x04body"
+    assert not body.startswith(b"\n")
+
+
+def test_only_one_separator_is_eaten():
+    """A body that genuinely begins with a newline keeps it — exactly one
+    separator belongs to the framing."""
+    payload = json.dumps({"sequence": 1}).encode() + b"\n\n" + b"\ntext"
+    _parsed, body = split_envelope(payload)
+    assert body == b"\ntext"
+
+
+def test_a_body_with_no_separator_is_still_read():
+    """Not every frame carries one; the split must not depend on it."""
+    payload = json.dumps({"sequence": 1}).encode() + b"PK\x03\x04"
+    _parsed, body = split_envelope(payload)
     assert body == b"PK\x03\x04"
 
 

@@ -13,10 +13,16 @@ carry ``0x01`` and replies ``0x00``, but ``0xaa`` and ``0xb1`` were both
 observed on ordinary listing replies. Classify on the kind byte and ignore the
 rest, or valid replies get dropped.
 
-⚠️ **The JSON envelope and the file bytes share one frame.** The body starts
-immediately after the closing brace of the envelope, so the split is done by
-scanning for the balanced brace — the body is arbitrary binary and may not be
-valid UTF-8, which rules out decoding the payload as text first.
+⚠️ **The JSON envelope and the file bytes share one frame**, separated by
+``\\n\\n``. The split is done by scanning for the balanced brace — the body is
+arbitrary binary and may not be valid UTF-8, which rules out decoding the
+payload as text first — and then stepping over the separator.
+
+The separator is not a guess: BambuStudio's own open-source
+``PrinterFileSystem::UploadFileTask`` writes ``oss << root; oss << "\\n\\n";
+oss << buffer``, and it accounts for the two bytes seen between ``}`` and the
+ZIP magic in every captured upload frame. Treating it as payload puts two
+stray bytes at the front of every file read back from the printer.
 """
 
 from __future__ import annotations
@@ -40,6 +46,11 @@ _QUOTE = 0x22
 _BACKSLASH = 0x5C
 _OPEN_BRACE = 0x7B
 _CLOSE_BRACE = 0x7D
+
+# What separates the envelope from the bytes riding with it. BambuStudio writes
+# it literally (``oss << "\n\n"``), so it belongs to the framing and never to
+# the payload.
+ENVELOPE_SEPARATOR = b"\n\n"
 
 
 def pack_frame(type_word: int, sequence: int, body: bytes) -> bytes:
@@ -67,6 +78,11 @@ def split_envelope(payload: bytes) -> tuple[dict, bytes]:
 
     Scans bytes rather than decoding, because the tail is arbitrary binary and
     is routinely not valid UTF-8 (it is usually the head of a ZIP).
+
+    ⚠️ A single ``\\n\\n`` after the envelope is framing and is dropped. Keeping
+    it would put two stray bytes at the front of every file read back from the
+    printer — a corruption that survives a download, an import and a thumbnail,
+    and only shows up when something finally tries to open the archive.
     """
     depth = 0
     in_string = False
@@ -95,4 +111,8 @@ def split_envelope(payload: bytes) -> tuple[dict, bytes]:
     if end < 0:
         raise ValueError("tunnel payload has no complete JSON envelope")
 
-    return json.loads(payload[:end].decode("utf-8")), payload[end:]
+    body = payload[end:]
+    if body.startswith(ENVELOPE_SEPARATOR):
+        body = body[len(ENVELOPE_SEPARATOR) :]
+
+    return json.loads(payload[:end].decode("utf-8")), body

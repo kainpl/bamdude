@@ -31,6 +31,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from backend.app.services.bambu_tunnel.codec import (
+    ENVELOPE_SEPARATOR,
     HEADER_SIZE,
     TYPE_CONTROL_REQUEST,
     TYPE_DATA_REQUEST,
@@ -283,9 +284,14 @@ class BambuTunnelClient:
                             "sequence": sequence,
                             "frag_id": frag_id,
                             "req": req,
+                            # ⚠️ ``1`` is BambuStudio's own ``CONTINUE``
+                            # (PrinterFileSystem.h), not a guess from the wire.
                             "result": 0 if is_last else 1,
                         }
                     ).encode()
+                    # ⚠️ Framing, not padding: BS writes ``oss << "\n\n"``
+                    # between the envelope and the bytes.
+                    + ENVELOPE_SEPARATOR
                     + chunk,
                 )
                 if self._writer is not None:

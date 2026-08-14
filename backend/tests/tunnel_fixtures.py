@@ -23,6 +23,7 @@ import asyncio
 import json
 
 from backend.app.services.bambu_tunnel.codec import (
+    ENVELOPE_SEPARATOR,
     HEADER_SIZE,
     pack_frame,
     parse_header,
@@ -219,7 +220,14 @@ class FakeTunnelServer:
             path = (envelope.get("req") or {}).get("paths", [""])[0]
             body = self.file_bytes.get(path, b"")
             out = {"cmdtype": 2, "mtype": MTYPE_FILE, "sequence": sequence, "result": 0, "reply": {}}
-            return pack_frame(_TYPE_DATA_REPLY, sequence, json.dumps(out).encode() + body)
+            # ⚠️ The separator BambuStudio writes between envelope and bytes.
+            # A fake that omitted it would let a client which treats those two
+            # bytes as payload pass every test and corrupt every real file.
+            return pack_frame(
+                _TYPE_DATA_REPLY,
+                sequence,
+                json.dumps(out).encode() + ENVELOPE_SEPARATOR + body,
+            )
         if cmdtype == 3:
             self.deleted.extend((envelope.get("req") or {}).get("paths", []))
             return self._data({"cmdtype": 3, "mtype": MTYPE_FILE, "sequence": sequence, "result": 0, "reply": {}})
