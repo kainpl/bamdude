@@ -8,6 +8,16 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Cleanup after a print now removes the copies the printer made, not just the file BamDude sent.** One upload becomes several files on the machine: BamDude sends `Cube.3mf`, and the printer writes its own `Cube.gcode.3mf` into `/cache` on the card and — if you have "store sent files to storage" switched on — into built-in storage as well. Cleanup only ever looked for the exact name it had uploaded, so it reported "nothing to delete" while both copies stayed behind and the storage filled up with no sign of why.
+
+    It now clears them from both media, and **checks the contents before deleting**: a file is removed only once its bytes match the print it belongs to. That matters because `Cube.gcode.3mf` is also exactly what a print sent straight from Bambu Studio leaves behind — same name, someone else's file. A file that does not match is left alone and says so in the log.
+
+    Prints BamDude did not send are cleaned up too, as long as it recorded them — one started from the printer's screen or sent from a slicer counts. Where such a print's 3MF was never recovered there is no digest to check against, and the file is then removed on its name alone, which the log states plainly.
+
+- **New printers clean up after themselves by default.** The setting has defaulted to on for printers added through the interface for a long time, while the database column said off — so a printer created any other way behaved differently for no reason anyone could see. They now agree. **Printers you already have are not touched**: whatever each one is set to today stays exactly as it is.
+
 ## [0.5.3] - 2026-08-14
 
 Image: `ghcr.io/kainpl/bamdude:0.5.3` / `kainpl/bamdude:0.5.3` (`:latest` tracks this).

@@ -35,7 +35,17 @@ class Printer(Base):
     archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     auto_archive: Mapped[bool] = mapped_column(Boolean, default=True)
-    cleanup_after_print: Mapped[bool] = mapped_column(Boolean, default=False)  # Delete files from SD after print
+    # Remove the print's files from the printer once it finishes — ours and the
+    # copies the printer derives from them, on the card and in internal storage.
+    #
+    # ⚠️ **Default ON, and deliberately NOT backfilled.** The column default
+    # applies to printers added from now on; every existing row keeps whatever
+    # it has. A migration that flipped stored values would start deleting files
+    # on farms that had chosen to keep them, silently, on the next print — the
+    # one change here that cannot be undone. The API schema has defaulted this
+    # to True for far longer than the column has, so printers added through the
+    # UI already behave this way; this only makes the two agree.
+    cleanup_after_print: Mapped[bool] = mapped_column(Boolean, default=True)
     # How long an MQTT connection is considered valid (seconds); 0 = disabled,
     # and disabled is the default. Above zero, ``ensure_fresh_connection``
     # discards the printer's client once the link is that old and builds a new
