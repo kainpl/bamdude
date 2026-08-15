@@ -30,6 +30,10 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **"Any printer of model X" in the Telegram bot now works.** Adding a job from the bot offers a specific printer or any printer of a given model. The second one has never worked: the buttons were drawn, and pressing one always answered "failed". It now creates an auto-queue job, which is what that target means — the distributor places it on whichever machine of that model can take it.
+
+    The job is built the same way the browser builds it, filament requirements read out of the 3MF included, so the same file queued from either place routes the same. A file BamDude cannot read still queues and is routed on its model alone.
+
 - **The position the Telegram bot reports for a queued job is now its position in that queue.** It was counted across every queue at once, so the bot would tell you a job had been added at position 40 when its own queue held three — and the number kept climbing as unrelated printers were used. Where the job actually went is unchanged: still the back of the queue you picked.
 
 - **A job added from the Telegram bot could land on another printer's queue.** The bot assumed a printer's queue is identified by the printer's own number. It usually is — but only on a farm where the queues happened to be created in printer order and none was ever deleted, which nothing guarantees. Everywhere outside the bot the queue is looked up properly; now the bot does too, and a printer with no queue at all is refused with a message instead of the job silently going somewhere else.

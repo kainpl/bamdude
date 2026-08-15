@@ -255,6 +255,96 @@ async def _show_confirm(callback: CallbackQuery, state: FSMContext, lang: str) -
     )
 
 
+async def _add_to_auto_queue(
+    callback: CallbackQuery,
+    lang: str,
+    file_id: int | None,
+    target_model: str,
+    tg_chat: TelegramChat | None,
+) -> None:
+    """Put the job on the auto-queue, for the distributor to place.
+
+    Built the same way the web route builds it, and deliberately so: routing
+    requirements are read out of the 3MF itself rather than left empty, or an
+    item queued from the bot would be matched on its model alone while the same
+    file queued from the browser also matches on filament. Two tiers with two
+    behaviours for one action is exactly the drift this tier exists to avoid.
+
+    ⚠️ The extractor never raises — a corrupted or truncated 3MF yields empty
+    fields — so a file we cannot read still queues, just with model-only
+    routing. Refusing there would be worse: the operator picked a target that
+    is perfectly valid.
+    """
+    import json
+
+    from sqlalchemy import func, select
+
+    from backend.app.core.database import async_session
+    from backend.app.models.auto_queue import AutoQueueItem
+    from backend.app.models.library import LibraryFile
+
+    if not file_id:
+        await callback.answer(t(lang, NS, "queue_add.failed"), show_alert=True)
+        return
+
+    try:
+        async with async_session() as db:
+            lib_file = (await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))).scalar_one_or_none()
+            if not lib_file:
+                await callback.answer(t(lang, NS, "queue_add.failed"), show_alert=True)
+                return
+
+            required_types_json = None
+            try:
+                from pathlib import Path
+
+                from backend.app.core.config import settings as app_settings
+                from backend.app.services.auto_queue_threemf import extract_auto_queue_requirements
+
+                if lib_file.file_path:
+                    path = Path(lib_file.file_path)
+                    if not path.is_absolute():
+                        path = app_settings.base_dir / lib_file.file_path
+                    reqs = extract_auto_queue_requirements(path)
+                    if reqs.required_filament_types:
+                        required_types_json = json.dumps(reqs.required_filament_types)
+            except Exception:  # noqa: BLE001 — routing on the model alone is still a valid item
+                pass
+
+            # ⚠️ One global ordering, unlike the per-printer queues: the
+            # auto-queue is a single list the distributor walks.
+            max_pos = int(
+                (
+                    await db.execute(
+                        select(func.coalesce(func.max(AutoQueueItem.position), 0)).where(
+                            AutoQueueItem.status == "pending"
+                        )
+                    )
+                ).scalar()
+                or 0
+            )
+
+            item = AutoQueueItem(
+                library_file_id=file_id,
+                target_model=target_model,
+                required_filament_types=required_types_json,
+                status="pending",
+                position=max_pos + 1,
+                created_by_id=tg_chat.user_id if tg_chat else None,
+            )
+            db.add(item)
+            await db.commit()
+            pos = item.position
+
+        await callback.answer(f"✅ {t(lang, NS, 'queue_add.added', pos=pos)}")
+    except Exception:
+        await callback.answer(t(lang, NS, "queue_add.failed"), show_alert=True)
+
+    from backend.app.services.telegram_handlers.queue import render_queue
+
+    await render_queue(callback, tg_chat)
+
+
 @router.callback_query(F.data == "qadd:confirm")
 async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: TelegramChat | None = None) -> None:
     """Confirm - create queue item."""
@@ -263,11 +353,21 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
     data = await state.get_data()
     file_id = data.get("file_id")
     printer_id = data.get("printer_id")
+    target_model = data.get("target_model")
 
     await state.clear()
 
     from backend.app.core.database import async_session
     from backend.app.models.print_queue import PrintQueueItem
+
+    # "Any printer of model X" is the AUTO-QUEUE, the tier that routes a job to
+    # whichever machine can take it. It is a different table and a different
+    # question from a per-printer queue, and until now the bot drew the buttons
+    # for it and then refused every one of them at this line: the target sets
+    # printer_id=None, and the check below read that as "nothing chosen".
+    if not printer_id and target_model:
+        await _add_to_auto_queue(callback, lang, file_id, target_model, tg_chat)
+        return
 
     try:
         async with async_session() as db:
