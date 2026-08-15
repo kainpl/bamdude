@@ -473,6 +473,32 @@ class BambuFTPClient:
 
         return results
 
+    def _uploaded_size_verdict(self, remote_path: str, expected: int) -> tuple[str, int | None]:
+        """Ask the printer how big the file it just took actually is.
+
+        Returns the verdict and the size behind it: ``"ok"``, ``"truncated"``,
+        or ``"unknown"`` — three answers, not two, because a printer whose FTP
+        has no ``SIZE`` must not be read as a failed upload. ``unknown`` leaves
+        the caller exactly where it was before the probe existed.
+
+        The size comes back with the verdict so no caller has to ask twice; one
+        of them wants it for its log line, and a second round-trip to this
+        daemon is exactly what this method is careful about.
+
+        ⚠️ Runs on the session that did the upload. A fresh connection for the
+        check would be serialised behind ``@_ftp_serialized`` per IP and is how
+        the printer's FTP daemon was wedged during the tunnel investigation —
+        one extra command in an open session is the whole budget here.
+
+        ⚠️ Size, not a hash. The printer's FTP exposes no digest of what it
+        stored, so bit-rot is out of reach; a transfer that stopped early is
+        not, and that is the failure this codebase has actually had.
+        """
+        server_size = self.get_file_size(remote_path)
+        if server_size is None:
+            return "unknown", None
+        return ("ok" if server_size == expected else "truncated"), server_size
+
     def upload_file(
         self,
         local_path: Path,
@@ -567,8 +593,8 @@ class BambuFTPClient:
                 # Disambiguate with a server-side SIZE probe. Match → noise,
                 # mismatch / probe-fails → real truncation. Upstream Bambuddy
                 # #1417 / commit 1fac0276 + #1417-followup / commit 9c934c90.
-                server_size = self.get_file_size(remote_path)
-                if server_size is not None and server_size == file_size:
+                verdict, server_size = self._uploaded_size_verdict(remote_path, file_size)
+                if verdict == "ok":
                     logger.warning(
                         "FTP STOR returned %s for %s but SIZE confirms %d bytes "
                         "on disk — treating as transient %s (file intact)",
@@ -593,9 +619,26 @@ class BambuFTPClient:
                 # on our side and the printer may still have written the file.
                 # H2D can take 30+ seconds to send 226 after the data channel
                 # closes, so we proceed with a warning rather than failing here.
+                # ⚠️ This branch used to proceed on hope alone: "the data was
+                # sent on our side and the printer may still have written the
+                # file". The probe answers exactly that, and this is the path
+                # where being wrong is worst — no 226 means nothing confirmed
+                # the write, so a truncated file here reaches start_print and
+                # fails a plate in.
+                verdict, _ = self._uploaded_size_verdict(remote_path, file_size)
+                if verdict == "truncated":
+                    logger.error(
+                        "FTP STOR unconfirmed for %s (%s) AND the printer's copy is the wrong size "
+                        "(expected %d) — not sending a print command for it",
+                        remote_path,
+                        type(e).__name__,
+                        file_size,
+                    )
+                    return False
                 logger.warning(
-                    "FTP STOR confirmation not received for %s (proceeding): %s (%s)",
+                    "FTP STOR confirmation not received for %s (proceeding, size %s): %s (%s)",
                     remote_path,
+                    verdict,
                     e,
                     type(e).__name__,
                 )
@@ -616,6 +659,21 @@ class BambuFTPClient:
                 raise RuntimeError(
                     f"Upload cancelled but failed to remove partial file {remote_path} from printer"
                 ) from callback_exception
+
+            # ⚠️ A 226 says the printer finished reading the stream, not that
+            # what it stored is what we sent. Nothing verified the outgoing file
+            # until here — while the two paths where a file ARRIVES both got a
+            # ZIP check after uvloop silently truncated 3MFs (see
+            # inv-vp-ftp-asyncio-loop). This is the same class of failure on the
+            # way out, and it costs one command in a session already open.
+            if self._uploaded_size_verdict(remote_path, file_size)[0] == "truncated":
+                logger.error(
+                    "FTP upload of %s was acknowledged but the printer's copy is the wrong size "
+                    "(expected %d) — not sending a print command for it",
+                    remote_path,
+                    file_size,
+                )
+                return False
 
             elapsed = time.monotonic() - t0
             speed_kbs = (file_size / 1024) / elapsed if elapsed > 0 else 0
