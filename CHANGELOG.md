@@ -22,6 +22,8 @@
 
 - **New printers clean up after themselves by default.** The setting has defaulted to on for printers added through the interface for a long time, while the database column said off — so a printer created any other way behaved differently for no reason anyone could see. They now agree. **Printers you already have are not touched**: whatever each one is set to today stays exactly as it is.
 
+- **Filament hover cards are no longer clipped at the edges of the page.** The card that appears over an AMS slot is now drawn above the whole page instead of inside the scrolling area, so the leftmost and topmost slots show it in full. Enter animations that had quietly never worked — the card and three dialogs were asking for one — now play.
+
 ### Fixed
 
 - **A print that is still heating up is no longer written off as lost.** When preheating is enabled, BamDude holds the printer at temperature before starting — up to twenty minutes by default. Recovery treated anything older than three minutes as a print that never started, so on a reconnect during that hold it could close the record of a print that was about to begin. It now allows for the preheat time, and only for prints that actually have it.

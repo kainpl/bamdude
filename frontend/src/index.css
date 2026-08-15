@@ -1,4 +1,10 @@
 @import "tailwindcss";
+/* Enter/exit animation utilities — `animate-in`, `fade-in-0`, `zoom-in-95`.
+   ⚠️ `tw-animate-css`, not `tailwindcss-animate`: the latter is a Tailwind 3
+   plugin and this project is on 4, where plugins are imported from CSS
+   rather than listed in a JS config. Those classes were already scattered
+   across three components doing nothing at all until this import. */
+@import "tw-animate-css";
 
 /* Inter, self-hosted (#1460).  BamDude is a local-first, offline-capable PWA;
    pulling the font from fonts.googleapis.com at runtime broke the install on

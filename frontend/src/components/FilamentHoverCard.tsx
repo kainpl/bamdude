@@ -1,8 +1,91 @@
-import { useState, useRef, useEffect, type ReactNode } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Droplets, Copy, Check, Settings2, Package, Unlink } from 'lucide-react';
 import { isLightColor } from '../utils/colors';
+
+type CardPlacement = { top: number; left: number; side: 'top' | 'bottom'; arrowLeft: number };
+
+/** Where a hover card goes, in viewport coordinates.
+ *
+ * ⚠️ The card is portalled to `document.body` and positioned `fixed`. That is
+ * the whole point: as a child of the trigger it was `absolute` inside `<main>`,
+ * which has `overflow-auto` and clipped it. The horizontal clamp that used to
+ * work around that clipping is still here — it also keeps the card off the
+ * fixed sidebar — but it is now the card's actual `left` rather than a
+ * `marginLeft` correction layered on top of `-translate-x-1/2`.
+ *
+ * ⚠️ `useLayoutEffect`, not `useEffect`. Measuring needs the card in the DOM,
+ * and with `fixed` an unmeasured first frame paints at the viewport origin —
+ * a flash in the top-left corner that `absolute` positioning never had, since
+ * there the un-corrected position was already nearly right. Running before
+ * paint is what keeps the port invisible.
+ *
+ * ⚠️ Recomputed on scroll and resize. `absolute` moved with the content for
+ * free; `fixed` does not, so a card left open while the page scrolls would
+ * drift off its trigger.
+ */
+function useCardPlacement(
+  isVisible: boolean,
+  triggerRef: React.RefObject<HTMLDivElement | null>,
+  cardRef: React.RefObject<HTMLDivElement | null>,
+  { flip = true }: { flip?: boolean } = {},
+): CardPlacement | null {
+  const [placement, setPlacement] = useState<CardPlacement | null>(null);
+
+  useLayoutEffect(() => {
+    if (!isVisible) {
+      setPlacement(null);
+      return;
+    }
+    const measure = () => {
+      const trigger = triggerRef.current;
+      const card = cardRef.current;
+      if (!trigger || !card) return;
+
+      const rect = trigger.getBoundingClientRect();
+      const cardWidth = card.offsetWidth;
+      const cardHeight = card.offsetHeight;
+      // The app header is fixed at 56px; space above the trigger excludes it.
+      const headerHeight = 56;
+      const gap = 8;
+      const safeMargin = 8;
+
+      const spaceAbove = rect.top - headerHeight;
+      const spaceBelow = window.innerHeight - rect.bottom;
+      const side: 'top' | 'bottom' =
+        flip && spaceAbove < cardHeight + 12 && spaceBelow > spaceAbove ? 'bottom' : 'top';
+
+      // Anchor the safe-left edge on `<main>` so the threshold tracks the
+      // sidebar's expanded / collapsed / hidden state on its own.
+      const main = document.querySelector('main');
+      const triggerCenterX = rect.left + rect.width / 2;
+      const minLeft = (main ? main.getBoundingClientRect().left : 0) + safeMargin;
+      const maxLeft = window.innerWidth - cardWidth - safeMargin;
+      const left = Math.max(minLeft, Math.min(triggerCenterX - cardWidth / 2, maxLeft));
+
+      setPlacement({
+        top: side === 'top' ? rect.top - cardHeight - gap : rect.bottom + gap,
+        left,
+        side,
+        // Arrow keeps pointing at the trigger after the card was clamped.
+        arrowLeft: triggerCenterX - left,
+      });
+    };
+
+    measure();
+    // Capture phase: the scroll that matters happens on `<main>`, not `window`.
+    window.addEventListener('scroll', measure, true);
+    window.addEventListener('resize', measure);
+    return () => {
+      window.removeEventListener('scroll', measure, true);
+      window.removeEventListener('resize', measure);
+    };
+  }, [isVisible, flip, triggerRef, cardRef]);
+
+  return placement;
+}
 
 interface FilamentData {
   vendor: 'Bambu Lab' | 'Generic';
@@ -69,13 +152,13 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [isVisible, setIsVisible] = useState(false);
-  const [position, setPosition] = useState<'top' | 'bottom'>('top');
-  const [horizontalShift, setHorizontalShift] = useState(0);
+
   const [copied, setCopied] = useState(false);
   const [showUnlinkConfirm, setShowUnlinkConfirm] = useState(false);
   const triggerRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const placement = useCardPlacement(isVisible, triggerRef, cardRef);
 
   const handleCopyUuid = () => {
     const uuid = data.trayUuid;
@@ -112,41 +195,6 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
     document.body.removeChild(textarea);
   };
 
-  // Calculate position when showing
-  useEffect(() => {
-    if (isVisible && triggerRef.current && cardRef.current) {
-      const triggerRect = triggerRef.current.getBoundingClientRect();
-      const cardHeight = cardRef.current.offsetHeight;
-      const cardWidth = cardRef.current.offsetWidth;
-      // Account for fixed header (56px) - space above should exclude header area
-      const headerHeight = 56;
-      const spaceAbove = triggerRect.top - headerHeight;
-      const spaceBelow = window.innerHeight - triggerRect.bottom;
-
-      // Prefer top, but flip to bottom if not enough space (accounting for header)
-      if (spaceAbove < cardHeight + 12 && spaceBelow > spaceAbove) {
-        setPosition('bottom');
-      } else {
-        setPosition('top');
-      }
-
-      // Horizontal clamp — keep the card inside the visible content area so the
-      // top-left slot of the leftmost printer doesn't push it under the sidebar
-      // (sidebar is `position: fixed` with z-30; card is z-60 so it would draw
-      // *over* the sidebar, but `<main>` has `overflow-auto` which clips the
-      // out-of-bounds portion). We anchor the safe-left edge on the actual
-      // `<main>` element's bounding rect — that way the threshold tracks the
-      // sidebar's expanded/collapsed/hidden state automatically.
-      const triggerCenterX = triggerRect.left + triggerRect.width / 2;
-      const desiredCardLeft = triggerCenterX - cardWidth / 2;
-      const main = document.querySelector('main');
-      const safeMargin = 8;
-      const minLeft = (main ? main.getBoundingClientRect().left : 0) + safeMargin;
-      const maxLeft = window.innerWidth - cardWidth - safeMargin;
-      const clampedLeft = Math.max(minLeft, Math.min(desiredCardLeft, maxLeft));
-      setHorizontalShift(clampedLeft - desiredCardLeft);
-    }
-  }, [isVisible]);
 
   const handleMouseEnter = () => {
     if (disabled) return;
@@ -201,21 +249,36 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
     >
       {children}
 
-      {/* Hover Card */}
-      {isVisible && (
+      {/* Hover Card — portalled out of the trigger, see useCardPlacement. */}
+      {isVisible && createPortal(
         <div
           ref={cardRef}
-          className={`
-            absolute left-1/2 -translate-x-1/2 z-[60]
-            ${position === 'top' ? 'bottom-full mb-2' : 'top-full mt-2'}
-            animate-in fade-in-0 zoom-in-95 duration-150
-          `}
+          // ⚠️ The card carries the SAME handlers as the trigger. As a child of
+          // the trigger it stayed open while the pointer was on it, for free;
+          // portalled to <body> it is no longer in that subtree, so leaving the
+          // trigger fires mouseleave and the 100 ms timer would close the card
+          // the moment you reached for Configure or Assign spool. Entering the
+          // card cancels that timer — which is the only reason its buttons are
+          // still clickable.
+          onMouseEnter={handleMouseEnter}
+          onMouseLeave={handleMouseLeave}
+          data-testid="filament-hover-card"
+          className="fixed z-[60] animate-in fade-in-0 zoom-in-95"
           style={{
-            // Ensure card doesn't go off-screen horizontally
+            // ⚠️ Never transition the position. A bare `duration-*` class sets
+            // `transition-duration` while `transition-property` stays at its
+            // initial `all`, so `top`/`left` animated from the viewport origin
+            // and the card visibly flew in from the top-left corner. Harmless
+            // while the position came from static classes; not harmless now
+            // that it is measured and assigned. The enter animation is a
+            // keyframe (`animate-in`), which is unaffected.
+            transition: 'none',
+            top: placement?.top ?? 0,
+            left: placement?.left ?? 0,
+            // Hidden until measured: fixed positioning has no sensible default,
+            // and an unmeasured frame paints in the corner.
+            visibility: placement ? 'visible' : 'hidden',
             maxWidth: 'calc(100vw - 24px)',
-            // Viewport-clamp offset (see useEffect). Applied via marginLeft so
-            // the existing -translate-x-1/2 + zoom-in-95 transforms stay intact.
-            marginLeft: `${horizontalShift}px`,
           }}
         >
           {/* Card container */}
@@ -463,20 +526,22 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
             </div>
           </div>
 
-          {/* Arrow pointer — kept centred on the trigger even when the card
-              itself was viewport-clamped sideways (compensate by `-shift`). */}
+          {/* Arrow pointer — still aimed at the trigger after the card was
+              clamped sideways; the hook hands us the offset directly now
+              instead of us undoing a marginLeft. */}
           <div
             className={`
-              absolute left-1/2 -translate-x-1/2 w-0 h-0
+              absolute -translate-x-1/2 w-0 h-0
               border-l-[6px] border-l-transparent
               border-r-[6px] border-r-transparent
-              ${position === 'top'
-                ? 'top-full border-t-[6px] border-t-bambu-dark-tertiary'
-                : 'bottom-full border-b-[6px] border-b-bambu-dark-tertiary'}
+              ${placement?.side === 'bottom'
+                ? 'bottom-full border-b-[6px] border-b-bambu-dark-tertiary'
+                : 'top-full border-t-[6px] border-t-bambu-dark-tertiary'}
             `}
-            style={{ marginLeft: `${-horizontalShift}px` }}
+            style={{ left: `${placement?.arrowLeft ?? 0}px` }}
           />
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* Unlink Confirmation Dialog */}
@@ -534,10 +599,11 @@ interface EmptySlotHoverCardProps {
 export function EmptySlotHoverCard({ children, className = '', configureSlot, onAssignSpool, emptyKind }: EmptySlotHoverCardProps) {
   const { t } = useTranslation();
   const [isVisible, setIsVisible] = useState(false);
-  const [horizontalShift, setHorizontalShift] = useState(0);
   const triggerRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // No flip: this one is a one-line tooltip that always sits above its slot.
+  const placement = useCardPlacement(isVisible, triggerRef, cardRef, { flip: false });
 
   const handleMouseEnter = () => {
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
@@ -562,23 +628,6 @@ export function EmptySlotHoverCard({ children, className = '', configureSlot, on
     };
   }, []);
 
-  // Same horizontal clamp as FilamentHoverCard so the empty-slot tooltip on
-  // the leftmost printer doesn't slide under the sidebar either.
-  useEffect(() => {
-    if (isVisible && triggerRef.current && cardRef.current) {
-      const triggerRect = triggerRef.current.getBoundingClientRect();
-      const cardWidth = cardRef.current.offsetWidth;
-      const triggerCenterX = triggerRect.left + triggerRect.width / 2;
-      const desiredCardLeft = triggerCenterX - cardWidth / 2;
-      const main = document.querySelector('main');
-      const safeMargin = 8;
-      const minLeft = (main ? main.getBoundingClientRect().left : 0) + safeMargin;
-      const maxLeft = window.innerWidth - cardWidth - safeMargin;
-      const clampedLeft = Math.max(minLeft, Math.min(desiredCardLeft, maxLeft));
-      setHorizontalShift(clampedLeft - desiredCardLeft);
-    }
-  }, [isVisible]);
-
   return (
     <div
       ref={triggerRef}
@@ -588,14 +637,27 @@ export function EmptySlotHoverCard({ children, className = '', configureSlot, on
     >
       {children}
 
-      {isVisible && (
+      {isVisible && createPortal(
         <div
           ref={cardRef}
-          className="
-            absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-[60]
-            animate-in fade-in-0 zoom-in-95 duration-150
-          "
-          style={{ marginLeft: `${horizontalShift}px` }}
+          // Same handlers as the trigger — see FilamentHoverCard's card for why
+          // a portalled card that does not carry them loses its own buttons.
+          onMouseEnter={handleMouseEnter}
+          onMouseLeave={handleMouseLeave}
+          className="fixed z-[60] animate-in fade-in-0 zoom-in-95"
+          style={{
+            // ⚠️ Never transition the position. A bare `duration-*` class sets
+            // `transition-duration` while `transition-property` stays at its
+            // initial `all`, so `top`/`left` animated from the viewport origin
+            // and the card visibly flew in from the top-left corner. Harmless
+            // while the position came from static classes; not harmless now
+            // that it is measured and assigned. The enter animation is a
+            // keyframe (`animate-in`), which is unaffected.
+            transition: 'none',
+            top: placement?.top ?? 0,
+            left: placement?.left ?? 0,
+            visibility: placement ? 'visible' : 'hidden',
+          }}
         >
           <div className="
             bg-bambu-dark-secondary border border-bambu-dark-tertiary
@@ -639,14 +701,15 @@ export function EmptySlotHoverCard({ children, className = '', configureSlot, on
           </div>
           <div
             className="
-              absolute left-1/2 -translate-x-1/2 top-full w-0 h-0
+              absolute -translate-x-1/2 top-full w-0 h-0
               border-l-[5px] border-l-transparent
               border-r-[5px] border-r-transparent
               border-t-[5px] border-t-bambu-dark-tertiary
             "
-            style={{ marginLeft: `${-horizontalShift}px` }}
+            style={{ left: `${placement?.arrowLeft ?? 0}px` }}
           />
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

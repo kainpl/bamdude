@@ -166,6 +166,67 @@ describe('FilamentHoverCard', () => {
     });
   });
 
+  // The card is portalled to <body> and positioned `fixed`. As an `absolute`
+  // child of the trigger it was clipped by `<main>`'s `overflow-auto` — which
+  // is what the old viewport-clamp existed to work around — but leaving the
+  // trigger's subtree costs something the clamp never did.
+  describe('portalled out of the trigger', () => {
+    it('renders outside the trigger element', async () => {
+      const { container } = renderWithHover(
+        <FilamentHoverCard data={baseFilamentData}>
+          <div>trigger</div>
+        </FilamentHoverCard>
+      );
+
+      vi.advanceTimersByTime(100);
+
+      await waitFor(() => expect(screen.getByText('PLA Basic')).toBeInTheDocument());
+      expect(container.contains(screen.getByText('PLA Basic'))).toBe(false);
+    });
+
+    it('stays open while the pointer is on the card itself', async () => {
+      // ⚠️ The whole reason the card carries the trigger's handlers. Inside the
+      // trigger's subtree this was free: hovering the card WAS hovering the
+      // trigger. Portalled, leaving the trigger starts the 100 ms close timer,
+      // and reaching for Configure or Assign spool crosses that gap — so
+      // without this the card closes under the cursor on its way to a button.
+      const { container } = renderWithHover(
+        <FilamentHoverCard data={baseFilamentData}>
+          <div>trigger</div>
+        </FilamentHoverCard>
+      );
+      vi.advanceTimersByTime(100);
+      await waitFor(() => expect(screen.getByText('PLA Basic')).toBeInTheDocument());
+
+      // ⚠️ The portal ROOT, by test id. Reaching for it with `closest('div[style]')`
+      // finds an inner wrapper instead, and `mouseenter` does not bubble — so
+      // that version of this test passed with the handlers deleted, which is
+      // worse than not having it.
+      fireEvent.mouseLeave(container.firstElementChild as HTMLElement);
+      fireEvent.mouseEnter(screen.getByTestId('filament-hover-card'));
+      vi.advanceTimersByTime(500);
+
+      expect(screen.getByText('PLA Basic')).toBeInTheDocument();
+    });
+
+    it('closes once the pointer leaves the card too', async () => {
+      renderWithHover(
+        <FilamentHoverCard data={baseFilamentData}>
+          <div>trigger</div>
+        </FilamentHoverCard>
+      );
+      vi.advanceTimersByTime(100);
+      await waitFor(() => expect(screen.getByText('PLA Basic')).toBeInTheDocument());
+
+      const card = screen.getByTestId('filament-hover-card');
+      fireEvent.mouseEnter(card);
+      fireEvent.mouseLeave(card);
+      vi.advanceTimersByTime(500);
+
+      await waitFor(() => expect(screen.queryByText('PLA Basic')).not.toBeInTheDocument());
+    });
+  });
+
   // upstream #2631 — the card sits at z-[60] (so it can escape sibling printer
   // cards' stacking contexts), which puts it above the z-50 dialogs its own
   // buttons open. Nothing dismissed it, and a touch device never sends the
