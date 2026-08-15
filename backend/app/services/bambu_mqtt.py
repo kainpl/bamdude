@@ -6474,12 +6474,15 @@ class BambuMQTTClient:
                     # alongside the url is the natural mistake.
                     "file": filename,
                     # ⚠️ UPPERCASE here, while the tunnel's own upload frame
-                    # carries the same digest in lowercase. Empty on the FTP
-                    # path exactly as before — making that non-empty is a
-                    # separate decision with its own note in the vault. The key
-                    # is always sent: older firmware rejects the command when
-                    # one it expects is missing.
-                    "md5": (file_md5.upper() if storage == "internal" else ""),
+                    # carries the same digest in lowercase. Sent on BOTH media
+                    # now: the FTP path was empty because Bambu's own capture
+                    # puts a "from_sd_card" sentinel there for removable media,
+                    # but Orca sends a real digest on exactly this command and
+                    # this url scheme (captured off a P1S, 2026-08-16). Empty
+                    # when the caller has no digest — the key is always sent,
+                    # because older firmware rejects a command missing one it
+                    # expects.
+                    "md5": (file_md5 or "").upper(),
                     "bed_type": "auto",
                     "timelapse": timelapse,
                     "bed_leveling": bed_leveling_bool,

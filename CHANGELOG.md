@@ -10,6 +10,10 @@
 
 ### Changed
 
+- **The print command now carries a checksum of the file on every printer, not just those with built-in storage.** Orca sends one on the same command and the same transfer BamDude was leaving blank, so BamDude does too.
+
+
+
 - **Cleanup after a print now removes the copies the printer made, not just the file BamDude sent.** One upload becomes several files on the machine: BamDude sends `Cube.3mf`, and the printer writes its own `Cube.gcode.3mf` into `/cache` on the card and — if you have "store sent files to storage" switched on — into built-in storage as well. Cleanup only ever looked for the exact name it had uploaded, so it reported "nothing to delete" while both copies stayed behind and the storage filled up with no sign of why.
 
     It now clears them from both media, and **checks the contents before deleting**: a file is removed only once its bytes match the print it belongs to. That matters because `Cube.gcode.3mf` is also exactly what a print sent straight from Bambu Studio leaves behind — same name, someone else's file. A file that does not match is left alone and says so in the log.

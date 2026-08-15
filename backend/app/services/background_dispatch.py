@@ -1441,9 +1441,20 @@ class BackgroundDispatchService:
                 if not uploaded:
                     raise RuntimeError(_upload_failure_message(storage))
 
-                # Only the internal path needs a digest; the FTP command has
-                # always sent an empty one and still does.
-                file_md5 = _file_digest(upload_file_path) if storage != "external" else ""
+                # ⚠️ Both media get a real digest. The FTP path sent an empty
+                # one for as long as this code existed, reasoning that Bambu's
+                # own capture puts the literal "from_sd_card" there for
+                # removable media — so there was nothing to copy and no
+                # evidence the field was read.
+                #
+                # Orca disproves it. Captured off a P1S on 2026-08-16, its
+                # project_file for an `ftp://` print carries a real digest
+                # ("B80E980FC407C0D09B69C81B01D5100E") of the file it had just
+                # uploaded — same medium, same command, same field we sent
+                # empty. Whatever the firmware does with it, a slicer in the
+                # field supplies it, and matching costs one hash of bytes
+                # already on disk.
+                file_md5 = _file_digest(upload_file_path)
 
                 # Preheat / heat-soak (#1468) — bring the bed (and chamber, on supported
                 # models) up to temperature on the now-idle printer before start_print.
@@ -2031,9 +2042,20 @@ class BackgroundDispatchService:
                     await db.rollback()
                     raise RuntimeError(_upload_failure_message(storage))
 
-                # Only the internal path needs a digest; the FTP command has
-                # always sent an empty one and still does.
-                file_md5 = _file_digest(upload_file_path) if storage != "external" else ""
+                # ⚠️ Both media get a real digest. The FTP path sent an empty
+                # one for as long as this code existed, reasoning that Bambu's
+                # own capture puts the literal "from_sd_card" there for
+                # removable media — so there was nothing to copy and no
+                # evidence the field was read.
+                #
+                # Orca disproves it. Captured off a P1S on 2026-08-16, its
+                # project_file for an `ftp://` print carries a real digest
+                # ("B80E980FC407C0D09B69C81B01D5100E") of the file it had just
+                # uploaded — same medium, same command, same field we sent
+                # empty. Whatever the firmware does with it, a slicer in the
+                # field supplies it, and matching costs one hash of bytes
+                # already on disk.
+                file_md5 = _file_digest(upload_file_path)
 
                 # Preheat / heat-soak (#1468) — same idle-window stage as the reprint
                 # path: bed (and chamber, on supported models) up to temperature before
