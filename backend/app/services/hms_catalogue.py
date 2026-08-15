@@ -78,6 +78,19 @@ def device_of(printer_id: int) -> str:
     return (getattr(info, "serial_number", "") or "")[:3].upper()
 
 
+def shipped_devices(lang: str = "en") -> list[str]:
+    """Model prefixes we actually ship a catalogue for, read off the directory.
+
+    ⚠️ Not a hardcoded list: BambuStudio decides how many files exist, and a
+    re-sync can add one. Sorted so a consensus answer never depends on
+    filesystem order.
+    """
+    directory = _DATA_DIR / lang if lang != "en" else _DATA_DIR
+    if not directory.is_dir():
+        return []
+    return sorted(p.stem for p in directory.glob("*.json"))
+
+
 def describe(device: str, full_code: str | None, short_code: str | None, lang: str = "en") -> str | None:
     """The description for one error on one model, or ``None``.
 
@@ -93,9 +106,45 @@ def describe(device: str, full_code: str | None, short_code: str | None, lang: s
     for code in (full_code, short_code):
         if code and code in catalogue:
             return catalogue[code]
+
+    # ⚠️ BambuStudio ships seven catalogues and they do NOT cover the fleet by
+    # serial prefix. Ours reports 01P (P1S), 030 (A1 mini) and 20P (X2D); only
+    # the last has a file, so every P1S and A1 mini error resolved to nothing
+    # and the operator got a bare "12FF_0001" twice over — while the text was
+    # sitting in six catalogues, identical in all of them:
+    # "Filament at the spool holder has run out; please insert a new filament."
+    #
+    # So: when the model's own catalogue cannot answer, ask the others and
+    # accept the answer ONLY if they all agree. That is not the merge this
+    # subsystem forbids — the ban exists because 879 codes describe different
+    # mechanisms on different machines, and unanimity is exactly the test for
+    # whether this code is one of them. Where they disagree we still say
+    # nothing rather than guess a model.
+    consensus = _consensus(lang, full_code, short_code, exclude=device)
+    if consensus is not None:
+        return consensus
+
     if lang != "en":
         return describe(device, full_code, short_code, "en")
     return None
+
+
+def _consensus(lang: str, full_code: str | None, short_code: str | None, exclude: str) -> str | None:
+    """One description agreed on by every catalogue that knows the code.
+
+    ``None`` when nobody knows it, or when two models describe it differently —
+    the case the per-model split exists for.
+    """
+    answers: set[str] = set()
+    for prefix in shipped_devices(lang):
+        if prefix == exclude:
+            continue
+        catalogue = _load(lang, prefix)
+        for code in (full_code, short_code):
+            if code and code in catalogue:
+                answers.add(catalogue[code])
+                break
+    return answers.pop() if len(answers) == 1 else None
 
 
 def descriptions_for(device: str, lang: str = "en") -> dict[str, str]:

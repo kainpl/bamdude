@@ -35,6 +35,8 @@
 
 
 
+- **Printer errors are described on every printer, not only the newest ones.** Bambu Studio ships error descriptions for seven printer types, and a P1S, X1 Carbon, A1 or A1 mini is not among them — so on those machines a fault arrived as a bare code, in the app and in Telegram alike. Where every catalogue Bambu ships agrees on what a code means, that description is now used for any printer; where they disagree, the code is still shown alone rather than guessing at another machine's meaning. An error with no description at all now links to Bambu's reference instead of repeating its own code.
+
 - **Prints sliced by BamDude's own slicer were missing the printer's real start G-code.** Every one of the 56 Bambu machine profiles got a 577-character generic stub instead — the part that loads filament from the AMS and announces the print to the printer. A print sliced that way heats the bed, moves the toolhead and extrudes nothing, without ever showing a preparation stage. Bambu keeps that G-code in a separate file that the profile itself does not reference, and the sidecar's resolver only followed references. Anything sliced through the built-in slicer should be re-sliced; files sent from Bambu Studio or Orca were never affected. The sidecar also moves to BambuStudio 02.08.02.60 and OrcaSlicer 2.4.2, and refuses an oversized upload with a clear error instead of failing mid-slice.
 
 

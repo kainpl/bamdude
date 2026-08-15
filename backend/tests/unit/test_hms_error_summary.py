@@ -35,13 +35,22 @@ def test_formats_unknown_code_as_bare_short_code():
     assert summary == "[9999_9999]"
 
 
-def test_without_a_model_the_code_still_reaches_the_operator():
-    """A failure reason of "[0500_4038]" is poor; a blank one is useless. The
-    code alone is the floor, not the target."""
+def test_without_a_model_the_description_still_arrives():
+    """The code alone was the floor, and the floor moved up.
+
+    ⚠️ This used to assert the bare "[0500_4038]", because an unknown model
+    meant no catalogue and no text. It now answers from the consensus of the
+    catalogues we do ship — a code every model describes identically cannot be
+    one whose meaning depends on the model. Half the printers Bambu sells have
+    no catalogue of their own (00M, 01P, 030, 039, …), so this is the common
+    case rather than an edge one.
+    """
     from backend.app.main import _format_hms_error_summary
 
     summary = _format_hms_error_summary([{"code": "0x4038", "attr": 0x05000000, "module": 0x5, "severity": 1}])
-    assert summary == "[0500_4038]"
+    assert summary is not None
+    assert "0500_4038" in summary
+    assert "nozzle diameter" in summary.lower()
 
 
 def test_joins_multiple_errors_with_semicolons():

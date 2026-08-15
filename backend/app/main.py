@@ -1731,7 +1731,20 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                             hms_device, getattr(error, "full_code", None), short_code.replace("_", "")
                         )
                         error_type = short_code
-                        error_detail = description or short_code
+                        # ⚠️ Not `description or short_code`. The title already
+                        # carries the code, so falling back to it printed the
+                        # same eight characters twice with the printer name
+                        # between them and told the operator nothing:
+                        #
+                        #     Помилка принтера: 12FF_0001
+                        #     3DP-030-102
+                        #     12FF_0001
+                        #
+                        # An uncatalogued code gets a place to look it up
+                        # instead. It is rare now that a code missing from the
+                        # model's own catalogue falls through to the consensus
+                        # of the others.
+                        error_detail = description or "https://wiki.bambulab.com/en/hms/home"
 
                         await notification_service.on_printer_error(
                             printer_id, printer_name, error_type, db, error_detail, image_data=error_image_data
