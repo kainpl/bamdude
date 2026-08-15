@@ -10,7 +10,13 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from backend.app.i18n import escape_md, get_language, t
-from backend.app.services.telegram_handlers.common import NS, get_printers_data, has_perm, resolve_queue_id
+from backend.app.services.telegram_handlers.common import (
+    NS,
+    get_printers_data,
+    has_perm,
+    next_queue_position,
+    resolve_queue_id,
+)
 from backend.app.services.telegram_handlers.pagination import build_page_nav
 
 if TYPE_CHECKING:
@@ -260,15 +266,11 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
 
     await state.clear()
 
-    from sqlalchemy import func, select
-
     from backend.app.core.database import async_session
     from backend.app.models.print_queue import PrintQueueItem
 
     try:
         async with async_session() as db:
-            max_pos = (await db.execute(select(func.max(PrintQueueItem.position)))).scalar() or 0
-
             if not printer_id:
                 await callback.answer(t(lang, NS, "queue_add.failed"), show_alert=True)
                 return
@@ -282,7 +284,7 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
                 queue_id=queue_id,
                 library_file_id=file_id,
                 status="pending",
-                position=max_pos + 1,
+                position=await next_queue_position(db, queue_id),
                 created_by_id=tg_chat.user_id if tg_chat else None,
             )
             db.add(item)

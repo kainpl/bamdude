@@ -30,6 +30,8 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **The position the Telegram bot reports for a queued job is now its position in that queue.** It was counted across every queue at once, so the bot would tell you a job had been added at position 40 when its own queue held three — and the number kept climbing as unrelated printers were used. Where the job actually went is unchanged: still the back of the queue you picked.
+
 - **A job added from the Telegram bot could land on another printer's queue.** The bot assumed a printer's queue is identified by the printer's own number. It usually is — but only on a farm where the queues happened to be created in printer order and none was ever deleted, which nothing guarantees. Everywhere outside the bot the queue is looked up properly; now the bot does too, and a printer with no queue at all is refused with a message instead of the job silently going somewhere else.
 
 - **A finished print is no longer held up while the printer is tidied.** Clearing the print's files off the printer used to run before BamDude closed the print, so on a machine whose FTP had stopped responding everything waited on it: the queue did not move, the archive stayed open, and the "print finished" message arrived nearly four minutes late. Measured at **222 seconds** on a live printer; the same step now takes the print out of the way in well under a second and does the tidying afterwards.

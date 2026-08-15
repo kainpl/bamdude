@@ -92,3 +92,39 @@ def test_the_bot_scenes_no_longer_carry_the_assumption():
         source = (handlers / name).read_text(encoding="utf-8")
         assert "queue_id=printer_id" not in source, name
         assert "queue_id=queue_id" in source, name
+
+
+@pytest.mark.asyncio
+async def test_the_position_is_the_back_of_that_queue_only(db_session, session_factory):
+    """Both scenes used to take max(position) across the WHOLE table.
+
+    The item still went to the back — the value is monotonic — but the number
+    reported to the operator was the size of every queue put together, and did
+    not match what the same queue shows in the browser.
+    """
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.services.telegram_handlers.common import next_queue_position
+
+    mine = PrinterQueue(printer_id=(await _printer(db_session, "mine")).id)
+    other = PrinterQueue(printer_id=(await _printer(db_session, "other")).id)
+    db_session.add_all([mine, other])
+    await db_session.flush()
+
+    db_session.add(PrintQueueItem(queue_id=mine.id, status="pending", position=2))
+    # A crowded neighbour, and a finished item of our own — neither may count.
+    db_session.add(PrintQueueItem(queue_id=other.id, status="pending", position=97))
+    db_session.add(PrintQueueItem(queue_id=mine.id, status="completed", position=50))
+    await db_session.commit()
+
+    assert await next_queue_position(db_session, mine.id) == 3
+
+
+@pytest.mark.asyncio
+async def test_the_first_item_in_an_empty_queue_is_position_one(db_session, session_factory):
+    from backend.app.services.telegram_handlers.common import next_queue_position
+
+    queue = PrinterQueue(printer_id=(await _printer(db_session, "empty")).id)
+    db_session.add(queue)
+    await db_session.commit()
+
+    assert await next_queue_position(db_session, queue.id) == 1

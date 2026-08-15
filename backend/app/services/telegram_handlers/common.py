@@ -160,3 +160,26 @@ async def resolve_queue_id(printer_id: int) -> int | None:
     async with async_session() as db:
         result = await db.execute(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))
         return result.scalar_one_or_none()
+
+
+async def next_queue_position(db, queue_id: int) -> int:
+    """The position a new item should take at the back of ``queue_id``.
+
+    ⚠️ **Scoped to the queue AND to pending items**, matching the web path
+    (``services/queue_add.py``). Both bot scenes used to take
+    ``max(position)`` across the WHOLE table, so the number they reported —
+    "added at position N" — was the size of every queue put together and grew
+    forever. The item still went to the back, because the value is monotonic,
+    but the position shown to the operator meant nothing and did not match what
+    the same queue shows in the browser.
+    """
+    from sqlalchemy import func, select
+
+    from backend.app.models.print_queue import PrintQueueItem
+
+    result = await db.execute(
+        select(func.max(PrintQueueItem.position))
+        .where(PrintQueueItem.queue_id == queue_id)
+        .where(PrintQueueItem.status == "pending")
+    )
+    return (result.scalar() or 0) + 1
