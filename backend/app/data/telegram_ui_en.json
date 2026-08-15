@@ -3,7 +3,8 @@
     "start": "Main menu",
     "status": "Printer status",
     "camera": "Camera snapshot",
-    "help": "Help & commands"
+    "help": "Help & commands",
+    "cancel": "Cancel the current step"
   },
   "start": {
     "welcome": "Bambu Lab 3D printer management.\n\nChoose an action:",
@@ -11,20 +12,22 @@
     "btn_queue": "Queue",
     "btn_library": "Library",
     "btn_stats": "Stats",
-    "btn_help": "Help"
+    "btn_help": "Help",
+    "cancelled": "Cancelled. You are back at the main menu.",
+    "nothing_to_cancel": "Nothing to cancel."
   },
   "reply_kb": {
-    "printers": "\ud83d\udda8 Printers",
-    "queue": "\ud83d\udccb Queue",
-    "library": "\ud83d\udcc2 Library",
-    "stats": "\ud83d\udcca Stats",
-    "help": "\u2139\ufe0f Help"
+    "printers": "🖨 Printers",
+    "queue": "📋 Queue",
+    "library": "📂 Library",
+    "stats": "📊 Stats",
+    "help": "ℹ️ Help"
   },
   "help": {
     "title": "Commands",
-    "cmd_start": "/start \u2014 main menu",
-    "cmd_status": "/status \u2014 printer status",
-    "cmd_help": "/help \u2014 this help",
+    "cmd_start": "/start — main menu",
+    "cmd_status": "/status — printer status",
+    "cmd_help": "/help — this help",
     "printers_title": "Printers",
     "printers_desc": "Tap a printer for details and controls.",
     "queue_title": "Queue",

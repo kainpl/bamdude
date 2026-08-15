@@ -150,6 +150,7 @@ async def _register_commands() -> None:
         BotCommand(command="start", description=t(lang, NS, "commands.start")),
         BotCommand(command="status", description=t(lang, NS, "commands.status")),
         BotCommand(command="camera", description=t(lang, NS, "commands.camera")),
+        BotCommand(command="cancel", description=t(lang, NS, "commands.cancel")),
         BotCommand(command="help", description=t(lang, NS, "commands.help")),
     ]
 

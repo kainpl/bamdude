@@ -2,6 +2,7 @@
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
+from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardMarkup
 
 from backend.app.i18n import escape_md, get_language, t
@@ -32,9 +33,27 @@ def _reply_keyboard(lang: str) -> ReplyKeyboardMarkup:
     )
 
 
+async def _leave_any_scene(state: FSMContext | None) -> None:
+    """End whatever wizard the chat was in before showing it a menu.
+
+    ⚠️ **Leaving a scene and cancelling it were different things.** ``start.py``
+    is the FIRST router registered (``telegram_bot.py``), so its reply-keyboard
+    and ``/start`` handlers win over the message handler a scene has open on its
+    own state. The menu appeared, the state stayed set, and the next unrelated
+    thing the operator typed was swallowed as scene input — an IP address for a
+    printer they were no longer adding.
+
+    Called from every entry back into a menu. Takes ``None`` because scenes call
+    these handlers directly once they have already cleared their own state.
+    """
+    if state is not None:
+        await state.clear()
+
+
 @router.message(CommandStart())
-async def cmd_start(message: Message) -> None:
+async def cmd_start(message: Message, state: FSMContext | None = None) -> None:
     """Handle /start command - welcome message with main menu."""
+    await _leave_any_scene(state)
     lang = await get_language()
 
     inline_keyboard = InlineKeyboardMarkup(
@@ -66,6 +85,27 @@ async def cmd_start(message: Message) -> None:
         escape_md(t(lang, NS, "start.welcome")),
         reply_markup=inline_keyboard,
     )
+
+
+@router.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext | None = None) -> None:
+    """Leave whatever wizard is open, from anywhere.
+
+    ⚠️ Registered on ``start.py``'s router, which ``telegram_bot.py`` includes
+    FIRST — so this wins over the message handler a scene has open on its own
+    state. That ordering is exactly what made the wizards inescapable: a scene
+    waiting for text swallows anything the operator types, and until now nothing
+    outranked it except a menu button that left the state behind.
+
+    Answers even when there was nothing to cancel: silence would read as the bot
+    being stuck, which is the very thing this exists to fix.
+    """
+    lang = await get_language()
+    had_scene = state is not None and await state.get_state() is not None
+    if state is not None:
+        await state.clear()
+    key = "start.cancelled" if had_scene else "start.nothing_to_cancel"
+    await message.answer(escape_md(t(lang, NS, key)))
 
 
 @router.message(Command("help"))
@@ -170,24 +210,27 @@ async def cmd_camera(message: Message, tg_chat=None) -> None:
 
 
 @router.message(F.text.func(lambda text: _matches_reply_button(text, "printers")))
-async def reply_printers(message: Message, tg_chat=None) -> None:
+async def reply_printers(message: Message, state: FSMContext | None = None, tg_chat=None) -> None:
     """Handle reply keyboard: Printers button."""
+    await _leave_any_scene(state)
     from backend.app.services.telegram_handlers.printers import show_printer_list
 
     await show_printer_list(message, tg_chat)
 
 
 @router.message(F.text.func(lambda text: _matches_reply_button(text, "queue")))
-async def reply_queue(message: Message, tg_chat=None) -> None:
+async def reply_queue(message: Message, state: FSMContext | None = None, tg_chat=None) -> None:
     """Handle reply keyboard: Queue button."""
+    await _leave_any_scene(state)
     from backend.app.services.telegram_handlers.queue import render_queue
 
     await render_queue(message, tg_chat)
 
 
 @router.message(F.text.func(lambda text: _matches_reply_button(text, "library")))
-async def reply_library(message: Message, tg_chat=None) -> None:
+async def reply_library(message: Message, state: FSMContext | None = None, tg_chat=None) -> None:
     """Handle reply keyboard: Library button."""
+    await _leave_any_scene(state)
     lang = await get_language()
     from backend.app.services.telegram_handlers.common import has_perm
 
@@ -218,14 +261,16 @@ async def reply_library(message: Message, tg_chat=None) -> None:
 
 
 @router.message(F.text.func(lambda text: _matches_reply_button(text, "stats")))
-async def reply_stats(message: Message, tg_chat=None) -> None:
+async def reply_stats(message: Message, state: FSMContext | None = None, tg_chat=None) -> None:
     """Handle reply keyboard: Stats button."""
+    await _leave_any_scene(state)
     from backend.app.services.telegram_handlers.stats import render_stats
 
     await render_stats(message, tg_chat)
 
 
 @router.message(F.text.func(lambda text: _matches_reply_button(text, "help")))
-async def reply_help(message: Message, **kwargs) -> None:
+async def reply_help(message: Message, state: FSMContext | None = None, **kwargs) -> None:
     """Handle reply keyboard: Help button."""
+    await _leave_any_scene(state)
     await cmd_help(message)

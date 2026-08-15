@@ -30,6 +30,10 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **Leaving a step-by-step flow in the Telegram bot now actually ends it.** Adding a printer, printing from the library and adding to the queue all ask you a series of questions. Pressing one of the keyboard buttons took you to that menu — but the bot stayed in the middle of the flow, so the next thing you typed was read as an answer to a question you had walked away from. An IP address for a printer you were no longer adding, for instance.
+
+    There is also a **/cancel** command now, in the bot's command menu. It works from anywhere and from any step, which the Cancel buttons could not: they live inside the flow's own message, which is exactly what you no longer have once you have navigated away.
+
 - **A print started outside the queue now tells you when it fails.** Reprinting from an archive, printing from the library and starting a print from the Telegram bot all hand the job to the dispatcher and answer straight away. If the upload or the start then failed, the only place that said so was the dispatch panel — so unless you happened to be watching it at that moment, the print simply never happened and nothing told you. Those failures now raise the same notification a queued job does, through whichever channels you have set up.
 
     Queued jobs are unaffected and are still reported once, not twice. Cancelling a print is not reported: you already know.
