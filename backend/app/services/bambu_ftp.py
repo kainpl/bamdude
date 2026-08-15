@@ -972,8 +972,11 @@ async def download_file_async(
     # The event is set in ``_download``'s finally block so the post-timeout
     # path can wait for genuine thread completion instead of a fixed sleep.
 
-    def _download(force_prot_c: bool, completion: dict, done: threading.Event) -> bool:
+    def _download(force_prot_c: bool, completion: dict, done: threading.Event, started: threading.Event) -> bool:
         mode_str = "prot_c" if force_prot_c else "prot_p"
+        # Set as soon as this body runs: an executor slot was granted, and
+        # everything the caller's cap is for happened before this line.
+        started.set()
         try:
             client = BambuFTPClient(
                 ip_address,
@@ -996,40 +999,30 @@ async def download_file_async(
             done.set()
 
     async def _run(force_prot_c: bool) -> bool:
+        # ⚠️ ``timeout`` bounds how long we wait for a worker SLOT, not the
+        # download. The two used to share one number (``ftp_timeout``, 30 s by
+        # default), which made it a ceiling on file size: a 21.6 MB 3MF off a
+        # P1S needs 96 s at 231 KB/s and could never finish inside it.
+        #
+        # A stalled transfer is still caught — by ``socket_timeout`` on every
+        # recv, which is what a stall actually is. BambuStudio draws the line
+        # in the same place (`Http.cpp`: CONNECTTIMEOUT 10, TIMEOUT 0 = never).
+        #
+        # This also retires the #1014 zombie-salvage dance below: there is no
+        # longer a window where we stop waiting while the thread keeps writing,
+        # so there is nothing to salvage and nothing to race.
         completion = {"success": False}
         done = threading.Event()
-        try:
-            return await asyncio.wait_for(
-                loop.run_in_executor(None, _download, force_prot_c, completion, done), timeout=timeout
-            )
-        except TimeoutError:
-            # Slow WiFi links commonly overshoot ftp_timeout by 10–30 s without
-            # actually being stuck, so starting attempt 2 now would just contend
-            # with the still-progressing RETR on attempt 1 and produce the
-            # zombie-write race reported in #1014 (file landed on disk minutes
-            # after the retry loop had already given up). Wait for the worker
-            # thread to genuinely finish — capped at 30 s so a truly stuck
-            # connection can't stall a whole attempt indefinitely, with a 0.5 s
-            # floor so artificially small test timeouts still give zombies a
-            # realistic window to finish.
-            grace = max(min(timeout, 30.0), 0.5)
-            await loop.run_in_executor(None, done.wait, grace)
-            if completion["success"] and local_path.exists() and local_path.stat().st_size > 0:
-                logger.info(
-                    "FTP download wait_for timed out after %ss for %s, but thread completed within %ss grace (%s bytes) — salvaging",
-                    timeout,
-                    remote_path,
-                    grace,
-                    local_path.stat().st_size,
-                )
-                return True
+        started = threading.Event()
+        future = loop.run_in_executor(None, _download, force_prot_c, completion, done, started)
+        if not await loop.run_in_executor(None, started.wait, timeout):
             logger.warning(
-                "FTP download timed out after %ss (plus %ss grace) for %s",
+                "FTP download waited %ss for a worker slot for %s and never got one",
                 timeout,
-                grace,
                 remote_path,
             )
             return False
+        return await future
 
     # Check if we have a cached mode for this printer
     cached_mode = BambuFTPClient._mode_cache.get(ip_address)
@@ -1075,7 +1068,12 @@ async def download_file_try_paths_async(
     """
     loop = asyncio.get_event_loop()
 
+    started = threading.Event()
+
     def _download():
+        # Set the moment this body runs — i.e. the moment an executor slot was
+        # granted. Everything the cap below is for happens BEFORE this line.
+        started.set()
         client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
         if not client.connect():
             return False
@@ -1094,11 +1092,27 @@ async def download_file_try_paths_async(
         finally:
             client.disconnect()
 
-    try:
-        return await asyncio.wait_for(loop.run_in_executor(None, _download), timeout=timeout)
-    except TimeoutError:
-        logger.warning("FTP download_try_paths exceeded its %ss cap for %s (#2572)", timeout, ip_address)
+    # ⚠️ The cap bounds the wait for a free executor slot — NOT the transfer.
+    # Those are different waits and only one of them is unbounded by accident:
+    # #2572 is about a caller holding a DB connection while every worker is
+    # busy on dead connects, which is resolved the instant this task starts.
+    # Applying the same number to the transfer made it a file-size limit —
+    # a 21.6 MB 3MF off a P1S measures 96 s at 231 KB/s, so it never finished
+    # inside 90 s and the print got a "no 3MF available" archive instead.
+    #
+    # BambuStudio draws the same line: `Http.cpp` sets CURLOPT_CONNECTTIMEOUT
+    # to 10 and CURLOPT_TIMEOUT to 0, and 0 means "never". A stalled transfer
+    # is caught by ``socket_timeout`` on each recv, which is what a stall
+    # actually looks like.
+    future = loop.run_in_executor(None, _download)
+    if not await loop.run_in_executor(None, started.wait, timeout):
+        logger.warning(
+            "FTP download_try_paths waited %ss for a worker slot for %s and never got one (#2572)",
+            timeout,
+            ip_address,
+        )
         return False
+    return await future
 
 
 @_ftp_serialized

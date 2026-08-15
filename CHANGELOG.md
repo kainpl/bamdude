@@ -27,6 +27,10 @@
 
 ### Fixed
 
+- **Large files can be fetched back from a printer again.** BamDude gave a print sliced in Orca or Bambu Studio a "no 3MF available" archive whenever the file took longer to download than the FTP timeout allowed — which made that setting a limit on file size rather than a guard against a stalled connection. Measured on a P1S, a 21.6 MB file needs 96 seconds; the limit was 90, and the default is 30. The timeout now bounds what it was meant to bound, and a transfer that keeps arriving is left to finish.
+
+
+
 - **Prints sliced by BamDude's own slicer were missing the printer's real start G-code.** Every one of the 56 Bambu machine profiles got a 577-character generic stub instead — the part that loads filament from the AMS and announces the print to the printer. A print sliced that way heats the bed, moves the toolhead and extrudes nothing, without ever showing a preparation stage. Bambu keeps that G-code in a separate file that the profile itself does not reference, and the sidecar's resolver only followed references. Anything sliced through the built-in slicer should be re-sliced; files sent from Bambu Studio or Orca were never affected. The sidecar also moves to BambuStudio 02.08.02.60 and OrcaSlicer 2.4.2, and refuses an oversized upload with a clear error instead of failing mid-slice.
 
 
