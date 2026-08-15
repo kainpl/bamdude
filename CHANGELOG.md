@@ -34,6 +34,8 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **"Device is busy" no longer wakes you about a printer that is printing.** Some printers report this refusal seconds after an MQTT reconnect, mid-print, with nothing having asked them to start anything. It is now hidden while a print is running — no badge, no dialog, no notification — and cleared off the printer, which matters because on some models an uncleared one cancels the running job. While the printer is idle the same message still appears, because there it means a print you just started was refused.
+
 - **A printer error is no longer filed under the wrong part of the printer.** The notification title named the failing module from a table of five guesses; checked against Bambu's own catalogue, four of the five were wrong and two of the largest modules were missing. That is how "Device is busy" arrived titled "Nozzle/Extruder Error" and sent an operator to look at a nozzle. The title now carries the error code, which is exact, and the description underneath names its own subsystem.
 
 

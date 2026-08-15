@@ -546,6 +546,27 @@ _HMS_USER_ACTION_CODES: frozenset[str] = frozenset(
     }
 )
 
+# "Device is busy and cannot start new task." The firmware's refusal of a
+# start-print it will not accept — see _ACTIVE_PRINT_STATES above, which exists
+# because of this very code. It is a rejected request, not a fault of the
+# machine, and while a print is RUNNING it is doubly harmless: nothing of ours
+# is asking (the scheduler refuses a busy printer first), so it is an echo of
+# something the cloud, Handy or a stray reconnect asked for.
+#
+# ⚠️ NOT added to _HMS_USER_ACTION_CODES, which drops codes unconditionally.
+# This one is dropped ONLY mid-print. Idle, the same code means a start-print
+# was refused and the operator has every reason to see it.
+#
+# ⚠️ Left on the printer it is not merely noise: on some models (A1 mini
+# reported) an uncleared 0500_4004 cancels the RUNNING job, which is why the
+# guard also clears it rather than only hiding it.
+_DEVICE_BUSY_CODE = "0500_4004"
+
+# The printer repeats print_error in every push_status until it is cleared, so
+# an unacknowledged clean_print_error would be re-sent about once a second.
+_DEVICE_BUSY_CLEAR_INTERVAL = 30.0
+
+
 # "MQTT command verification failed" — the printer's authorization check
 # refusing a control command it could not verify (firmware >= 01.08.03.00beta /
 # 01.08.05.00). Queries (get_version, extrusion_cali_get, pushall) still answer,
@@ -1518,6 +1539,9 @@ class BambuMQTTClient:
         self._client: mqtt.Client | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._previous_gcode_state: str | None = None
+        # Last time "device is busy" was cleared off this printer (see
+        # _clear_device_busy). Per client, so a reconnect starts fresh.
+        self._device_busy_cleared_at: float = 0.0
         self._previous_gcode_file: str | None = None
         self._was_running: bool = False  # Track if we've seen RUNNING state for current print
         self._completion_triggered: bool = False  # Prevent duplicate completion triggers
@@ -4974,6 +4998,8 @@ class BambuMQTTClient:
                     # printer card.
                     if short_code in _HMS_USER_ACTION_CODES:
                         pass  # cancel echo — silently drop
+                    elif short_code == _DEVICE_BUSY_CODE and self.state.state in _ACTIVE_PRINT_STATES:
+                        self._clear_device_busy(print_error)
                     else:
                         # Only add if not already in HMS errors (avoid duplicates)
                         existing_short_codes = {e.short_code for e in self.state.hms_errors}
@@ -7724,6 +7750,41 @@ class BambuMQTTClient:
         self._client.publish(self.topic_publish, json.dumps(command), qos=1)
         logger.info("[%s] Sent resume print command", self.serial_number)
         return True
+
+    def _clear_device_busy(self, print_error: int) -> None:
+        """Take "device is busy" off a printer that is busy printing.
+
+        Not shown, not counted, not notified — the caller skips the append, so
+        this fault never enters ``state.hms_errors`` and every reader downstream
+        is fed by that one list.
+
+        ⚠️ **The log line is the investigation.** Suppressing this was held back
+        precisely because the notification was the only signal by which the code
+        was ever noticed (vault: "Device busy прилітає після реконекту"). It
+        moves here rather than disappearing, at WARNING, with the payload
+        logging beside it — a signal in a log the operator does not have to be
+        woken by.
+
+        ⚠️ Publishes directly rather than calling ``clear_hms_errors``: that one
+        also empties ``state.hms_errors``, which would take a real, unrelated
+        fault down with it.
+        """
+        now = time.time()
+        if now - self._device_busy_cleared_at < _DEVICE_BUSY_CLEAR_INTERVAL:
+            return
+        self._device_busy_cleared_at = now
+
+        logger.warning(
+            "[%s] %s while printing (state=%s, print_error=0x%08X) — suppressed and cleared on the printer",
+            self.serial_number,
+            _DEVICE_BUSY_CODE,
+            self.state.state,
+            print_error,
+        )
+        if not self._client or not self.state.connected:
+            return
+        command = {"print": {"command": "clean_print_error", "sequence_id": "0"}}
+        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
 
     def clear_hms_errors(self) -> bool:
         """Clear HMS/print errors on the printer and locally."""
