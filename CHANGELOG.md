@@ -27,6 +27,10 @@
 
 ### Fixed
 
+- **Prints sliced by BamDude's own slicer were missing the printer's real start G-code.** Every one of the 56 Bambu machine profiles got a 577-character generic stub instead — the part that loads filament from the AMS and announces the print to the printer. A print sliced that way heats the bed, moves the toolhead and extrudes nothing, without ever showing a preparation stage. Bambu keeps that G-code in a separate file that the profile itself does not reference, and the sidecar's resolver only followed references. Anything sliced through the built-in slicer should be re-sliced; files sent from Bambu Studio or Orca were never affected. The sidecar also moves to BambuStudio 02.08.02.60 and OrcaSlicer 2.4.2, and refuses an oversized upload with a clear error instead of failing mid-slice.
+
+
+
 - **A print that is still heating up is no longer written off as lost.** When preheating is enabled, BamDude holds the printer at temperature before starting — up to twenty minutes by default. Recovery treated anything older than three minutes as a print that never started, so on a reconnect during that hold it could close the record of a print that was about to begin. It now allows for the preheat time, and only for prints that actually have it.
 
 - **Automatic filament calibration is offered on every printer that has it.** The X2D, P2S, A2L, H2C and H2S support automatic Flow Dynamics and Flow Rate calibration and BamDude showed the options to none of them, because it decided from a list of model names written before those machines existed. Availability now comes from Bambu Studio's own per-model data, so a printer released later is covered without a code change. The X2D and H2C are also correctly recognised as two-nozzle machines in the calibration wizard, which had been offering them a single extruder.
