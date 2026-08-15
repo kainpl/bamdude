@@ -431,6 +431,39 @@ def _hms_severity_from_code(code: int) -> int:
     return HMS_LEVEL_SERIOUS
 
 
+_SECRET_KEYS = frozenset({"password", "passwd", "access_code", "token", "bind_code", "secret", "key"})
+
+
+def _loggable(payload: dict, _limit: int = 2000) -> str:
+    """A command payload as text, with anything credential-shaped masked.
+
+    ⚠️ A printer payload is not automatically safe to write down. ``url`` carries
+    userinfo on some transfer commands, and an operator pasting a debug log into
+    an issue would be handing over their printer with it. Masked by key name
+    rather than by value shape: a heuristic that decides what *looks* like a
+    secret fails silently on the one that does not.
+
+    Truncated, because a single ``pushall`` response is tens of kilobytes and
+    would bury the thing the log is being read for.
+    """
+
+    def clean(value: object) -> object:
+        if isinstance(value, dict):
+            return {k: ("***" if k.lower() in _SECRET_KEYS else clean(v)) for k, v in value.items()}
+        if isinstance(value, list):
+            return [clean(v) for v in value]
+        if isinstance(value, str) and "://" in value and "@" in value:
+            scheme, _, rest = value.partition("://")
+            return f"{scheme}://***@{rest.rpartition('@')[2]}"
+        return value
+
+    try:
+        text = json.dumps(clean(payload), ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        text = repr(payload)
+    return text if len(text) <= _limit else f"{text[:_limit]}… ({len(text)} chars)"
+
+
 def _print_error_severity(error: int) -> int:
     """Rank a ``print_error`` from the top nibble of its low half.
 
@@ -2396,6 +2429,13 @@ class BambuMQTTClient:
             if "command" in print_data:
                 cmd = print_data.get("command")
                 logger.debug("[%s] Received command response: %s", self.serial_number, cmd)
+                # ⚠️ The name alone cannot answer the question this logging exists
+                # for: whether a command we are watching is fresh or a replay of
+                # one already answered. ``sequence_id`` is what separates them,
+                # and it lives in the payload — so at DEBUG the whole thing goes
+                # to the log, credentials masked (see _loggable).
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug("[%s]   payload: %s", self.serial_number, _loggable(print_data))
                 # One router for every command's verdict, ahead of the per-command
                 # branches below. BS runs the same check once for all commands
                 # (DeviceManager.cpp, guarded by is_studio_cmd/is_cloud_cmd)
