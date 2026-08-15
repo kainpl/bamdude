@@ -35,13 +35,23 @@ UK_DIR = EN_DIR / "uk"
 # temp/ is gitignored: the work file is scaffolding, only the result is kept.
 WORK_FILE = REPO_ROOT / "temp" / "hms-translation" / "untranslated.json"
 
-PREFIXES = ["093", "094", "20P", "22E", "239", "26A", "31B"]
+
+def shipped_prefixes() -> list[str]:
+    """Every model we ship an English catalogue for, read off the directory.
+
+    ⚠️ Not a list written here. It was one — the seven BambuStudio packages —
+    and when the importer started fetching the other seven device types from
+    Bambu (00M, 01P, 030, …) this script kept reporting "0 still to translate"
+    while 18 000 new descriptions sat beside it untranslated. A hardcoded set
+    does not fail, it under-reports.
+    """
+    return sorted(p.stem for p in EN_DIR.glob("*.json"))
 
 
 def load_english() -> dict[str, dict[str, str]]:
     """Every model's English catalogue, keyed by prefix."""
     out: dict[str, dict[str, str]] = {}
-    for prefix in PREFIXES:
+    for prefix in shipped_prefixes():
         path = EN_DIR / f"{prefix}.json"
         if path.exists():
             out[prefix] = json.loads(path.read_text(encoding="utf-8"))
