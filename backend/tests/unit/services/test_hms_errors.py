@@ -1,83 +1,19 @@
-"""Tests for HMS error code translations."""
+"""Why a print is paused.
+
+⚠️ The description tests that used to live here went with the table they
+covered. ``HMS_ERROR_DESCRIPTIONS`` was 853 entries from ha-bambulab, the same
+for every printer model, and disagreeing with Bambu's own catalogue in 159
+places. Descriptions now come from ``hms_catalogue`` and are per model —
+covered by ``test_hms_catalogue.py`` (lookup) and
+``test_hms_catalogue_import.py`` (the data itself), including the shape and
+non-emptiness checks that were here.
+"""
 
 from backend.app.services.hms_errors import (
-    HMS_ERROR_DESCRIPTIONS,
     PAUSE_REASON_CODES,
     PAUSE_REASON_LABELS,
     classify_pause_reason,
-    get_error_description,
 )
-
-
-class TestHMSErrorDescriptions:
-    """Tests for the HMS error descriptions dictionary."""
-
-    def test_dictionary_is_not_empty(self):
-        """Verify the error descriptions dictionary has entries."""
-        assert len(HMS_ERROR_DESCRIPTIONS) > 0
-
-    def test_dictionary_has_expected_count(self):
-        """Verify we have the expected number of error codes."""
-        # Should have 853 error codes from the frontend
-        assert len(HMS_ERROR_DESCRIPTIONS) == 853
-
-    def test_all_keys_are_valid_format(self):
-        """Verify all keys follow the XXXX_YYYY format."""
-        import re
-
-        pattern = re.compile(r"^[0-9A-F]{4}_[0-9A-F]{4}$")
-        for code in HMS_ERROR_DESCRIPTIONS:
-            assert pattern.match(code), f"Invalid error code format: {code}"
-
-    def test_all_values_are_non_empty_strings(self):
-        """Verify all descriptions are non-empty strings."""
-        for code, description in HMS_ERROR_DESCRIPTIONS.items():
-            assert isinstance(description, str), f"Description for {code} is not a string"
-            assert len(description) > 0, f"Description for {code} is empty"
-
-
-class TestGetErrorDescription:
-    """Tests for the get_error_description function."""
-
-    def test_returns_description_for_known_code(self):
-        """Verify known error codes return their descriptions."""
-        # 0300_400C = "The task was canceled."
-        result = get_error_description("0300_400C")
-        assert result == "The task was canceled."
-
-    def test_returns_description_for_ams_error(self):
-        """Verify AMS error codes return their descriptions."""
-        # 0700_8010 = AMS assist motor overloaded
-        result = get_error_description("0700_8010")
-        assert "AMS assist motor" in result
-
-    def test_returns_none_for_unknown_code(self):
-        """Verify unknown error codes return None."""
-        result = get_error_description("XXXX_YYYY")
-        assert result is None
-
-    def test_handles_lowercase_input(self):
-        """Verify function handles lowercase input."""
-        result = get_error_description("0300_400c")
-        assert result == "The task was canceled."
-
-    def test_handles_mixed_case_input(self):
-        """Verify function handles mixed case input."""
-        result = get_error_description("0300_400C")
-        assert result == "The task was canceled."
-
-    def test_common_error_codes_have_descriptions(self):
-        """Verify common error codes have descriptions."""
-        common_codes = [
-            "0300_4000",  # Z axis homing failed
-            "0300_4006",  # Nozzle clogged
-            "0300_8004",  # Filament ran out
-            "0500_4001",  # Failed to connect to Bambu Cloud
-            "0700_8010",  # AMS assist motor overloaded
-        ]
-        for code in common_codes:
-            result = get_error_description(code)
-            assert result is not None, f"Missing description for common code: {code}"
 
 
 class TestClassifyPauseReason:
@@ -131,12 +67,13 @@ class TestClassifyPauseReason:
         assert hms == "0300_8001"
 
     def test_hms_user_pause(self):
-        code, label, hms = classify_pause_reason(["0300_8001"], None)
+        # Precise HMS description wins over the generic label — the point being
+        # that an operator reads "the user paused the print", not "Paused".
+        code, label, hms = classify_pause_reason(["0300_8001"], None, "20P")
         assert code == "user"
         assert hms == "0300_8001"
-        # Precise HMS description wins over generic label.
         assert "user" in label.lower()
-        assert label == HMS_ERROR_DESCRIPTIONS["0300_8001"]
+        assert label != PAUSE_REASON_LABELS["user"]
 
     def test_hms_filament_runout_variants(self):
         # All four filament-runout codes collapse into one normalised key.
@@ -180,19 +117,26 @@ class TestClassifyPauseReason:
         assert hms == "0500_8089"
 
     def test_unknown_hms_falls_back_to_hms_other(self):
-        # Unknown HMS code that exists in HMS_ERROR_DESCRIPTIONS but isn't
-        # in PAUSE_REASON_CODES → "hms_other" + the description so operators
-        # see what the printer reported.
-        code, label, hms = classify_pause_reason(["0300_4000"], None)
+        # A code with a description but no pause meaning → "hms_other" plus
+        # that description, so operators see what the printer reported.
+        #
+        # ⚠️ Needs the model now: the description is per machine. Without one
+        # the classifier still answers, with its generic label — covered below.
+        code, label, hms = classify_pause_reason(["0300_4000"], None, "20P")
         assert code == "hms_other"
         assert hms == "0300_4000"
-        assert label == HMS_ERROR_DESCRIPTIONS["0300_4000"]
+        assert label and label != PAUSE_REASON_LABELS["hms_other"]
+
+    def test_without_a_model_it_still_classifies_on_the_generic_label(self):
+        # A pause can be classified before we know which machine it came from.
+        code, label, hms = classify_pause_reason(["0300_4000"], None)
+        assert code == "hms_other"
+        assert label == PAUSE_REASON_LABELS["hms_other"]
 
     def test_completely_unknown_hms_uses_generic_label(self):
-        # Code not in HMS_ERROR_DESCRIPTIONS at all → still "hms_other"
-        # but with the generic PAUSE_REASON_LABELS fallback so we don't
-        # crash on null description.
-        code, label, hms = classify_pause_reason(["FFFF_FFFF"], None)
+        # A code in no catalogue at all → still "hms_other", with the generic
+        # label rather than a null description.
+        code, label, hms = classify_pause_reason(["FFFF_FFFF"], None, "20P")
         assert code == "hms_other"
         assert hms == "FFFF_FFFF"
         assert label == PAUSE_REASON_LABELS["hms_other"]

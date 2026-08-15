@@ -63,6 +63,21 @@ def _load(lang: str, device: str) -> dict[str, str]:
     return _CATALOGUES[key]
 
 
+def device_of(printer_id: int) -> str:
+    """The catalogue key for a connected printer — its serial's first three
+    characters.
+
+    Returns ``""`` for a printer we have no info for, which ``describe`` then
+    answers ``None`` to. ⚠️ Never guess a model here: 879 codes describe
+    different mechanisms on different machines, so the wrong model is worse than
+    no description at all.
+    """
+    from backend.app.services.printer_manager import printer_manager
+
+    info = printer_manager.get_printer(printer_id)
+    return (getattr(info, "serial_number", "") or "")[:3].upper()
+
+
 def describe(device: str, full_code: str | None, short_code: str | None, lang: str = "en") -> str | None:
     """The description for one error on one model, or ``None``.
 

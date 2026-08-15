@@ -90,6 +90,7 @@ from backend.app.services.auto_queue_scheduler import auto_queue_scheduler
 from backend.app.services.background_dispatch import background_dispatch, delete_internal_by_name
 from backend.app.services.bambu_mqtt import HMS_SEVERITY_NOTIFY_THRESHOLD, PrinterState
 from backend.app.services.git_backup import git_backup_service
+from backend.app.services.hms_catalogue import device_of as hms_device_of
 from backend.app.services.local_backup import local_backup_service
 from backend.app.services.mqtt_relay import mqtt_relay
 from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
@@ -1170,7 +1171,7 @@ async def _bump_library_file_usage(db, library_file_id: int | None) -> None:
     lib_file.last_printed_at = datetime.now(timezone.utc)
 
 
-def _format_hms_error_summary(hms_errors: list[dict]) -> str | None:
+def _format_hms_error_summary(hms_errors: list[dict], device: str = "") -> str | None:
     """Build a human-readable failure reason from MQTT hms_errors for
     PrintQueueItem.error_message (#1111).
 
@@ -1182,7 +1183,7 @@ def _format_hms_error_summary(hms_errors: list[dict]) -> str | None:
     """
     if not hms_errors:
         return None
-    from backend.app.services.hms_errors import get_error_description
+    from backend.app.services.hms_catalogue import describe
 
     parts: list[str] = []
     for err in hms_errors:
@@ -1193,7 +1194,9 @@ def _format_hms_error_summary(hms_errors: list[dict]) -> str | None:
             short_code = f"{module_num:04X}_{error_num:04X}"
         except (TypeError, ValueError):
             continue
-        description = get_error_description(short_code)
+        # ⚠️ The short code goes in WITHOUT its separator: that is how both
+        # halves of Bambu's catalogue are keyed, and how hms_actions is called.
+        description = describe(device, str(err.get("full_code") or "") or None, short_code.replace("_", ""))
         parts.append(f"[{short_code}] {description}" if description else f"[{short_code}]")
     return "; ".join(parts) if parts else None
 
@@ -1294,7 +1297,7 @@ async def _handle_pause_edge(printer_id: int, state: PrinterState):
         # nothing, which is the second half of the same bug.
         hms_codes = [e.short_code for e in (state.hms_errors or []) if getattr(e, "code", None)]
         expected = _expected_pause_reasons.pop(printer_id, None)
-        reason_code, reason_label, hms_code = classify_pause_reason(hms_codes, expected)
+        reason_code, reason_label, hms_code = classify_pause_reason(hms_codes, expected, hms_device_of(printer_id))
 
         # Stash on state so frontend snapshot consumers can render the cause
         # inline without re-querying the HMS table.
@@ -1687,7 +1690,9 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                     0x12: "Chamber",
                 }
 
-                from backend.app.services.hms_errors import get_error_description
+                from backend.app.services.hms_catalogue import describe
+
+                hms_device = hms_device_of(printer_id)
 
                 # Capture camera snapshot once for all error notifications (no DB held).
                 error_image_data = await _capture_snapshot_for_notification(
@@ -1706,14 +1711,22 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                         error_code_masked = error_code_int & 0xFFFF
                         short_code = f"{(error.attr >> 16) & 0xFFFF:04X}_{error_code_masked:04X}"
 
-                        # Only notify for errors with known descriptions - printers
-                        # send many undocumented/phantom codes that aren't real errors.
-                        description = get_error_description(short_code)
-                        if not description or short_code in _HMS_NOTIFICATION_SUPPRESS:
+                        # ⚠️ Severity decides whether to notify, and it already
+                        # did — ``new_errors`` above is filtered on
+                        # HMS_SEVERITY_NOTIFY_THRESHOLD. The second gate here
+                        # was "do we have a description", which is the same
+                        # mistake the printer card made: "we have text" is not
+                        # "this is real". A fatal fault fully documented by
+                        # Bambu stayed silent because our smaller table had
+                        # never heard of it.
+                        if short_code in _HMS_NOTIFICATION_SUPPRESS:
                             continue
 
+                        description = describe(
+                            hms_device, getattr(error, "full_code", None), short_code.replace("_", "")
+                        )
                         error_type = f"{module_name} Error"
-                        error_detail = description
+                        error_detail = description or short_code
 
                         await notification_service.on_printer_error(
                             printer_id, printer_name, error_type, db, error_detail, image_data=error_image_data
@@ -5379,7 +5392,9 @@ async def on_print_complete(printer_id: int, data: dict):
                 # consistent with the current nozzle setting" instead of a
                 # blank reason.
                 if queue_status == "failed" and not queue_item.error_message:
-                    queue_item.error_message = _format_hms_error_summary(data.get("hms_errors") or [])
+                    queue_item.error_message = _format_hms_error_summary(
+                        data.get("hms_errors") or [], hms_device_of(printer_id)
+                    )
 
                 # Bump usage counters on the source library file so admins can
                 # sort by "last printed" and (eventually) auto-purge stale

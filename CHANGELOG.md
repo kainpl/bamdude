@@ -30,6 +30,10 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **Error messages now say what your printer says, and match the machine that reported it.** BamDude's error text came from a community list of 853 codes that was the same for every model. Bambu's own text differs per printer, and disagreed with ours in 159 places — ours said "The hotend is not installed" where Bambu's text for a two-nozzle machine says "The **right** hotend is not installed". Notifications, pause reasons and the reason a queued print failed now all read from Bambu's catalogue for that model.
+
+    A fault also no longer has to be one BamDude recognises before it will notify you. Whether to send is decided by how serious the printer says the fault is, which is how it was already decided — the extra "do we have text for this" condition on top of it meant a fatal, fully documented fault could pass unmentioned because our smaller list had never heard of it.
+
 - **An error your printer reports is no longer hidden just because BamDude has no description for it.** Errors that BamDude could not name, and that the printer offered no buttons for, were dropped entirely — the card stayed green while the machine was reporting a fault. A printer refusing to record a timelapse because its card was full said exactly that, and BamDude showed nothing anywhere. Every reported error is now shown, unrecognised ones with their code and a link to Bambu's reference.
 
     The transient status messages a printer emits while cancelling a print are still filtered — by name, where they arrive, which is where that has always actually happened.
