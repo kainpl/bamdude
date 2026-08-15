@@ -959,13 +959,24 @@ export function renderableActions(actions: string[] | undefined): string[] {
   return (actions ?? []).filter((a) => !HMS_DIALOG_MODIFIER_ACTIONS.has(a));
 }
 
+/**
+ * Every error the printer reports is shown.
+ *
+ * ⚠️ This used to keep an error only if the catalogue described it OR the
+ * firmware supplied actions. The intent was to suppress transient noise after a
+ * cancelled print; the effect was that any fault we could not name disappeared
+ * and the printer card stayed green. Measured on a live X2D: the machine
+ * refused to record a timelapse because the card was full, reported it over
+ * MQTT, BambuStudio showed it on its Assistant tab, and BamDude showed nothing
+ * anywhere.
+ *
+ * Kept as a function rather than deleted — nine call sites pass through it, and
+ * a suppression rule, if one is ever justified, belongs in one place instead of
+ * scattered across them. Any such rule must name a specific known-transient
+ * code. "We have no text for this one" is not a reason to hide a fault.
+ */
 export function filterKnownHMSErrors(errors: HMSError[]): HMSError[] {
-  return errors.filter((error) => {
-    const codeNum = parseInt(error.code.replace('0x', ''), 16) || 0;
-    const shortCode = getShortCode(error.attr, codeNum);
-    if (lookupDescription(error.full_code, shortCode) !== undefined) return true;
-    return (error.actions?.length ?? 0) > 0;
-  });
+  return errors;
 }
 
 function getHMSHomeUrl(): string {

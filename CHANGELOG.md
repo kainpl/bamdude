@@ -30,6 +30,10 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **An error your printer reports is no longer hidden just because BamDude has no description for it.** Errors that BamDude could not name, and that the printer offered no buttons for, were dropped entirely — the card stayed green while the machine was reporting a fault. A printer refusing to record a timelapse because its card was full said exactly that, and BamDude showed nothing anywhere. Every reported error is now shown, unrecognised ones with their code and a link to Bambu's reference.
+
+    The transient status messages a printer emits while cancelling a print are still filtered — by name, where they arrive, which is where that has always actually happened.
+
 - **An interrupted step-by-step flow in the Telegram bot now says so.** Restarting BamDude ends whatever flows were open in the bot — but their messages stay on your screen with their buttons. Pressing one used to answer "failed", which reads as the print being refused rather than never attempted; typing into one produced nothing at all, which is indistinguishable from the bot being down. Both now tell you the step is no longer valid and to start again.
 
     Anything else the bot cannot make sense of gets an answer too, instead of silence.

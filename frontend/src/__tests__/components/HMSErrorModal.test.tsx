@@ -27,6 +27,34 @@ const unknownError: HMSError = {
   severity: 1,
 };
 
+describe('filterKnownHMSErrors', () => {
+  // ⚠️ The filter used to keep an error only if the catalogue described it or
+  // the firmware offered actions. Anything else vanished — and the printer card
+  // stayed green while the machine was reporting a fault. A live X2D refused to
+  // record a timelapse because the card was full, said so over MQTT, and
+  // BamDude showed nothing anywhere.
+  const uncatalogued: HMSError = {
+    attr: 0x05000100,
+    code: '0x00030004',
+    module: 0,
+    severity: 2,
+    full_code: '0500010000030004',
+    actions: [],
+  };
+
+  it('keeps an error that has neither a description nor actions', () => {
+    expect(filterKnownHMSErrors([uncatalogued])).toHaveLength(1);
+  });
+
+  it('still keeps the ones that do have actions', () => {
+    expect(filterKnownHMSErrors([{ ...uncatalogued, actions: ['STOP_PRINTING'] }])).toHaveLength(1);
+  });
+
+  it('keeps every error it is given', () => {
+    expect(filterKnownHMSErrors([uncatalogued, knownError, unknownError])).toHaveLength(3);
+  });
+});
+
 describe('HMSErrorModal', () => {
   const defaultProps = {
     printerName: 'Test Printer',
@@ -52,9 +80,15 @@ describe('HMSErrorModal', () => {
       expect(screen.getByText('The task was canceled.')).toBeInTheDocument();
     });
 
-    it('shows no errors message when all errors are unknown', () => {
+    it('shows an unknown error rather than the empty state', () => {
+      // The empty state now means what it says: nothing was reported. It used
+      // to also mean "everything reported was unrecognised", which is the
+      // opposite of empty and is exactly how a real fault went unnoticed.
       render(<HMSErrorModal {...defaultProps} errors={[unknownError]} />);
-      expect(screen.getByText('No errors')).toBeInTheDocument();
+      expect(screen.queryByText('No errors')).not.toBeInTheDocument();
+      expect(
+        screen.getByText('Unknown HMS code — see the Bambu Lab wiki for details.')
+      ).toBeInTheDocument();
     });
 
     it('shows no errors message when errors array is empty', () => {
@@ -137,9 +171,12 @@ describe('HMSErrorModal', () => {
       expect(screen.queryByText('Clear Errors')).not.toBeInTheDocument();
     });
 
-    it('hides clear button when all errors are unknown codes', () => {
+    it('offers Clear for an unknown code too', () => {
+      // ⚠️ Clearing is how an operator dismisses a fault they have dealt with.
+      // Withholding it from precisely the faults BamDude cannot name left them
+      // stuck on the card with no way to acknowledge them.
       render(<HMSErrorModal {...defaultProps} errors={[unknownError]} />);
-      expect(screen.queryByText('Clear Errors')).not.toBeInTheDocument();
+      expect(screen.getByText('Clear Errors')).toBeInTheDocument();
     });
 
     it('disables clear button when user lacks permission', () => {
@@ -212,9 +249,17 @@ describe('HMSErrorModal', () => {
       expect(screen.getByText('Ignore this and Resume')).toBeInTheDocument();
     });
 
-    it('still drops an uncataloged fault that carries no actions (junk-echo noise)', () => {
+    it('surfaces an uncataloged fault even with no actions', () => {
+      // ⚠️ This asserted the opposite until 2026-08-15, to keep "junk-echo
+      // noise" off the card. That noise is real — but it is filtered at the
+      // SOURCE and always was: bambu_mqtt drops anything below 0x4000 as a
+      // status indicator, and drops the named cancel echoes (_HMS_USER_ACTION_
+      // CODES: 0300_400C, 0500_400E) at parse time, so they never reach state
+      // at all. The frontend rule was a second, blunter net over a precise one,
+      // and it also caught real faults: a live X2D refused to record a
+      // timelapse because the card was full and BamDude showed nothing.
       render(<HMSErrorModal {...defaultProps} errors={[unknownError]} />);
-      expect(screen.getByText('No errors')).toBeInTheDocument();
+      expect(screen.queryByText('No errors')).not.toBeInTheDocument();
     });
   });
 
@@ -261,11 +306,18 @@ describe('HMSErrorModal', () => {
       expect(filterKnownHMSErrors([verifyFailed])).toHaveLength(1);
     });
 
-    it('the short code alone still matches nothing', () => {
+    it('the short code alone still matches no description', () => {
       // Guards the reason this needed a full-code lookup at all: if someone
       // "simplifies" it back to the short form, this is what they get.
+      //
+      // ⚠️ Asserted through what the operator sees, not through the filter.
+      // The filter used to drop this error entirely, and that is exactly what
+      // it must no longer do — but the lookup still has to miss, or the
+      // full-code path was pointless.
       const shortOnly: HMSError = { ...verifyFailed, full_code: undefined };
-      expect(filterKnownHMSErrors([shortOnly])).toHaveLength(0);
+      render(<HMSErrorModal {...defaultProps} errors={[shortOnly]} />);
+
+      expect(screen.queryByText(/could not verify it/i)).not.toBeInTheDocument();
     });
 
     it('shows the explanation and our own remedy, not Bambu\'s', () => {
