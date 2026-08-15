@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from scripts.import_hms_catalogue import PREFIXES, build_catalogue
+from scripts.import_hms_catalogue import build_catalogue, known_device_types
 
 _DATA_DIR = Path(__file__).resolve().parents[2] / "app" / "data" / "hms"
 
@@ -73,14 +73,20 @@ class TestTheGeneratedFiles:
     silently wrote ``{}`` would pass every test above."""
 
     def test_every_model_has_a_file_with_a_plausible_number_of_entries(self) -> None:
-        for prefix in PREFIXES:
+        for prefix in known_device_types():
             path = _DATA_DIR / f"{prefix}.json"
             assert path.exists(), f"{prefix}.json missing — run scripts/import_hms_catalogue.py"
             entries = json.loads(path.read_text(encoding="utf-8"))
-            assert len(entries) > 4000, f"{prefix}.json has only {len(entries)} entries"
+            # ⚠️ One floor for two populations. The seven BambuStudio packages
+            # carry ~5 000 codes each; the ones fetched from Bambu for the
+            # older machines (00M, 01P, 030, …) carry ~2 500, because those
+            # printers have fewer things to report. The threshold is here to
+            # catch an import that produced a stub or nothing at all, not to
+            # assert they are the same size.
+            assert len(entries) > 1500, f"{prefix}.json has only {len(entries)} entries"
 
     def test_no_entry_is_blank(self) -> None:
-        for prefix in PREFIXES:
+        for prefix in known_device_types():
             entries = json.loads((_DATA_DIR / f"{prefix}.json").read_text(encoding="utf-8"))
             blank = [code for code, text in entries.items() if not text.strip()]
             assert not blank, f"{prefix}.json has blank descriptions: {blank[:5]}"

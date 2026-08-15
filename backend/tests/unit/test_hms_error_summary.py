@@ -35,22 +35,20 @@ def test_formats_unknown_code_as_bare_short_code():
     assert summary == "[9999_9999]"
 
 
-def test_without_a_model_the_description_still_arrives():
-    """The code alone was the floor, and the floor moved up.
+def test_without_a_model_the_code_still_reaches_the_operator():
+    """A failure reason of "[0500_4038]" is poor; a blank one is useless. The
+    code alone is the floor, not the target.
 
-    ⚠️ This used to assert the bare "[0500_4038]", because an unknown model
-    meant no catalogue and no text. It now answers from the consensus of the
-    catalogues we do ship — a code every model describes identically cannot be
-    one whose meaning depends on the model. Half the printers Bambu sells have
-    no catalogue of their own (00M, 01P, 030, 039, …), so this is the common
-    case rather than an edge one.
+    ⚠️ No model means no catalogue, and never another machine's. BambuStudio
+    does the same — `_query_hms_msg` logs "there are no hms info for the
+    device" and returns empty. The fix for a model we could not describe was to
+    fetch ITS catalogue (`query.php?d=<type>`, which the importer now does for
+    every device type Bambu names), not to answer out of someone else's file.
     """
     from backend.app.main import _format_hms_error_summary
 
     summary = _format_hms_error_summary([{"code": "0x4038", "attr": 0x05000000, "module": 0x5, "severity": 1}])
-    assert summary is not None
-    assert "0500_4038" in summary
-    assert "nozzle diameter" in summary.lower()
+    assert summary == "[0500_4038]"
 
 
 def test_joins_multiple_errors_with_semicolons():

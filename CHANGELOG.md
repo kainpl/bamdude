@@ -12,8 +12,6 @@
 
 - **The print command now carries a checksum of the file on every printer, not just those with built-in storage.** Orca sends one on the same command and the same transfer BamDude was leaving blank, so BamDude does too.
 
-
-
 - **Cleanup after a print now removes the copies the printer made, not just the file BamDude sent.** One upload becomes several files on the machine: BamDude sends `Cube.3mf`, and the printer writes its own `Cube.gcode.3mf` into `/cache` on the card and — if you have "store sent files to storage" switched on — into built-in storage as well. Cleanup only ever looked for the exact name it had uploaded, so it reported "nothing to delete" while both copies stayed behind and the storage filled up with no sign of why.
 
     It now clears them from both media, and **checks the contents before deleting**: a file is removed only once its bytes match the print it belongs to. That matters because `Cube.gcode.3mf` is also exactly what a print sent straight from Bambu Studio leaves behind — same name, someone else's file. A file that does not match is left alone and says so in the log.
@@ -33,13 +31,9 @@
 
 - **Large files can be fetched back from a printer again.** BamDude gave a print sliced in Orca or Bambu Studio a "no 3MF available" archive whenever the file took longer to download than the FTP timeout allowed — which made that setting a limit on file size rather than a guard against a stalled connection. Measured on a P1S, a 21.6 MB file needs 96 seconds; the limit was 90, and the default is 30. The timeout now bounds what it was meant to bound, and a transfer that keeps arriving is left to finish.
 
-
-
-- **Printer errors are described on every printer, not only the newest ones.** Bambu Studio ships error descriptions for seven printer types, and a P1S, X1 Carbon, A1 or A1 mini is not among them — so on those machines a fault arrived as a bare code, in the app and in Telegram alike. Where every catalogue Bambu ships agrees on what a code means, that description is now used for any printer; where they disagree, the code is still shown alone rather than guessing at another machine's meaning. An error with no description at all now links to Bambu's reference instead of repeating its own code.
+- **Printer errors are described on every printer, not only the newest ones.** Bambu Studio ships descriptions for seven printer types and a P1S, X1 Carbon, A1 or A1 mini is not among them, so on those machines a fault arrived as a bare code — in the app and in Telegram alike. BamDude now carries a catalogue for every printer type Bambu publishes one for, fetched the same way Bambu Studio fetches the ones it does not ship: fourteen catalogues, 54 600 descriptions. Each printer is still described only from its own — the same code can mean different things on different machines. An error with no description at all links to Bambu's reference instead of repeating its own code.
 
 - **Prints sliced by BamDude's own slicer were missing the printer's real start G-code.** Every one of the 56 Bambu machine profiles got a 577-character generic stub instead — the part that loads filament from the AMS and announces the print to the printer. A print sliced that way heats the bed, moves the toolhead and extrudes nothing, without ever showing a preparation stage. Bambu keeps that G-code in a separate file that the profile itself does not reference, and the sidecar's resolver only followed references. Anything sliced through the built-in slicer should be re-sliced; files sent from Bambu Studio or Orca were never affected. The sidecar also moves to BambuStudio 02.08.02.60 and OrcaSlicer 2.4.2, and refuses an oversized upload with a clear error instead of failing mid-slice.
-
-
 
 - **A print that is still heating up is no longer written off as lost.** When preheating is enabled, BamDude holds the printer at temperature before starting — up to twenty minutes by default. Recovery treated anything older than three minutes as a print that never started, so on a reconnect during that hold it could close the record of a print that was about to begin. It now allows for the preheat time, and only for prints that actually have it.
 
