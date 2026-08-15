@@ -57,16 +57,27 @@ async def list_timelapse_videos(printer) -> tuple[list[dict], str | None]:
     came from, or ``"internal"`` for the tunnel catalogue. ``([], None)`` when
     there are none — which is an ordinary answer, not a failure.
     """
-    from backend.app.services.bambu_ftp import list_files_async
+    from backend.app.services.bambu_ftp import list_files_checked_async
 
     for directory in FTP_TIMELAPSE_DIRS:
         try:
-            found = await list_files_async(
+            found, answered = await list_files_checked_async(
                 printer.ip_address, printer.access_code, directory, printer_model=printer.model
             )
         except Exception as exc:  # noqa: BLE001 — a missing directory is normal
             logger.debug("[TIMELAPSE] %s failed on %s: %s", directory, printer.name, exc)
             continue
+        if not answered:
+            # ⚠️ Stop the whole FTP leg, not just this directory. The printer's
+            # FTP daemon can wedge — a live X2D did, and stayed unreachable
+            # until it was restarted — and every remaining directory then costs
+            # another full timeout for the same answer. Four of them delayed a
+            # recording that was sitting in internal storage by five minutes.
+            logger.info(
+                "[TIMELAPSE] %s is not answering on FTP — not trying the rest of the card",
+                printer.name,
+            )
+            break
         videos = _videos_only(found)
         if videos:
             return videos, directory

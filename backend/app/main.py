@@ -458,6 +458,14 @@ _notified_hms_errors: dict[int, set[str]] = {}
 _hms_last_seen: dict[int, float] = {}
 _HMS_CLEAR_GRACE_SECONDS = 30.0
 
+# How long post-print housekeeping on the printer may take before it is
+# abandoned. Generous enough for a slow A1 over FTP, short enough that a
+# machine which stops answering cannot leave the sweep running into the next
+# print on the same printer — where the names it deletes by would belong to
+# that job. Deleting nothing is a file left behind; deleting late is a file
+# taken from somebody else's print.
+_POST_PRINT_CLEANUP_BUDGET = 120.0
+
 # Track timelapse file baselines at print start: {printer_id: set of video filenames}
 # Used for snapshot-diff detection at print completion
 _timelapse_baselines: dict[int, set[str]] = {}
@@ -4792,359 +4800,406 @@ async def on_print_complete(printer_id: int, data: dict):
         except Exception as e:
             logger.warning("[LAST-CHANCE] Download attempt failed non-fatally: %s", e)
 
-    # Post-print SD card cleanup (Issue #374)
-    # Printers auto-start files from root on power cycle (ghost prints).
-    # cleanup_after_print=True (default): delete 3MF from root
-    # cleanup_after_print=False: move 3MF from root to /cache/ (keeps file, prevents ghost prints)
-    # Always: delete .gcode from root and from /cache/
-    try:
-        if subtask_name:
-            archive_filename: str | None = None
-            async with async_session() as db:
-                from backend.app.models.archive import PrintArchive
-                from backend.app.models.printer import Printer
+    # Post-print housekeeping on the printer — the file we sent, and the copies
+    # the printer derived from it, on the card and in internal storage.
+    #
+    # ⚠️ **Scheduled, not awaited.** Nothing downstream needs it: the archive is
+    # already written, the last-chance 3MF download has already run, and the
+    # queue, the notifications and the timelapse scan care about none of it. Run
+    # inline it once held a completed print for **222 seconds** on a machine
+    # whose FTP daemon had wedged — 30 s per listing, three retries per
+    # candidate — and the operator's "print finished" message arrived nearly
+    # four minutes late. Housekeeping must never be what makes a print look
+    # unfinished.
+    #
+    # ⚠️ Bounded as well as detached, so a printer that never answers cannot
+    # leave this running into the NEXT print on the same machine, where the
+    # names it deletes by would belong to that job instead.
+    async def _post_print_printer_cleanup() -> None:
+        try:
+            await asyncio.wait_for(_cleanup_printer_after_print(), timeout=_POST_PRINT_CLEANUP_BUDGET)
+        except TimeoutError:
+            logger.warning(
+                "Post-print cleanup on printer %s gave up after %ss — files may linger",
+                printer_id,
+                _POST_PRINT_CLEANUP_BUDGET,
+            )
 
-                result = await db.execute(select(Printer).where(Printer.id == printer_id))
-                printer = result.scalar_one_or_none()
-                # ⚠️ The digests come out in the SAME read as the filename.
-                # They are what proves the printer's own derived copies are
-                # ours before any of them is deleted — see services/
-                # printer_cleanup.py. Columns named individually rather than
-                # selecting the entity, so this keeps working through later
-                # migrations (the seed-column discipline).
-                expected_hashes: set[str] = set()
-                if archive_id:
-                    archive_row = await db.execute(
-                        select(
-                            PrintArchive.filename,
-                            PrintArchive.source_content_hash,
-                            PrintArchive.content_hash,
-                        ).where(PrintArchive.id == archive_id)
+    async def _cleanup_printer_after_print() -> None:
+        try:
+            if subtask_name:
+                archive_filename: str | None = None
+                from types import SimpleNamespace
+
+                from backend.app.services.printer_cleanup import archive_hashes
+
+                async with async_session() as db:
+                    from backend.app.models.archive import PrintArchive
+                    from backend.app.models.printer import Printer
+
+                    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+                    printer = result.scalar_one_or_none()
+                    # ⚠️ The digests come out in the SAME read as the filename.
+                    # They are what proves the printer's own derived copies are
+                    # ours before any of them is deleted — see services/
+                    # printer_cleanup.py. Columns named individually rather than
+                    # selecting the entity, so this keeps working through later
+                    # migrations (the seed-column discipline).
+                    expected_hashes: set[str] = set()
+                    if archive_id:
+                        archive_row = await db.execute(
+                            select(
+                                PrintArchive.filename,
+                                PrintArchive.source_content_hash,
+                                PrintArchive.content_hash,
+                            ).where(PrintArchive.id == archive_id)
+                        )
+                        row = archive_row.first()
+                        if row is not None:
+                            archive_filename = row[0]
+                            expected_hashes = archive_hashes(
+                                SimpleNamespace(source_content_hash=row[1], content_hash=row[2])
+                            )
+
+                if printer:
+                    from backend.app.services.bambu_ftp import (
+                        DeleteResult,
+                        delete_file_async,
+                        download_file_bytes_async,
+                        list_files_async,
+                        rename_file_async,
+                        upload_bytes_async,
                     )
-                    row = archive_row.first()
-                    if row is not None:
-                        archive_filename = row[0]
-                        expected_hashes = {h.strip().lower() for h in row[1:] if isinstance(h, str) and h.strip()}
-
-            if printer:
-                from backend.app.services.bambu_ftp import (
-                    DeleteResult,
-                    delete_file_async,
-                    download_file_bytes_async,
-                    list_files_async,
-                    rename_file_async,
-                    upload_bytes_async,
-                )
-                from backend.app.services.printer_cleanup import (
-                    derived_copy_names,
-                    remove_verified_copies,
-                )
-                from backend.app.utils.filename import derive_remote_filename
-
-                should_delete = getattr(printer, "cleanup_after_print", True)
-
-                # ⚠️ Where the file actually is decides how (and whether) to
-                # clean it up. Everything below this point — the /cache sweep,
-                # the .bbl patch, the delete, the move — is FTP on the card.
-                # A print that went to internal storage has none of that: no
-                # /cache directory, no rename in the protocol, and the file
-                # lives at a path only the tunnel's own listing knows.
-                from backend.app.services.printer_files.factory import transport_for
-                from backend.app.utils.printer_storage import INTERNAL, storage_capability_for
-
-                printed_to_internal = (
-                    storage_capability_for(printer.model, printer_manager.get_status(printer_id))["print_target"]
-                    == INTERNAL
-                )
-
-                # .3mf candidate paths, primary first: the exact path the
-                # dispatcher uploaded to (derived from archive.filename via the
-                # same rule as upload). Without it, a library row that ended up
-                # with a doubled .gcode.3mf (#1542) leaves the real file behind
-                # because the subtask_name fallback doesn't match what's on the
-                # SD card. The subtask_name fallback stays for archive-less
-                # prints and older naming variants.
-                threemf_candidates: list[str] = []
-                if archive_filename:
-                    threemf_candidates.append(f"/{derive_remote_filename(archive_filename)}")
-                subtask_3mf = f"/{subtask_name}.3mf"
-                if subtask_3mf not in threemf_candidates:
-                    threemf_candidates.append(subtask_3mf)
-
-                # What the printer makes for itself out of each of those — one
-                # upload, several files on the machine. Names only; whether any
-                # of them is actually ours is decided by their bytes.
-                derived_copy_names_wanted: set[str] = set()
-                for candidate in threemf_candidates:
-                    derived_copy_names_wanted.update(derived_copy_names(candidate))
-
-                # Process /cache/ files: delete .gcode, patch .bbl (disable auto_recovery)
-                try:
-                    cache_files = await list_files_async(
-                        printer.ip_address,
-                        printer.access_code,
-                        "/cache",
-                        printer_model=printer.model,
+                    from backend.app.services.printer_cleanup import (
+                        derived_copy_names,
+                        remove_verified_copies,
                     )
-                    sanitized_base = subtask_name.replace(" ", "_")
-                    for f in cache_files:
-                        fname = f.get("name", "")
-                        # ⚠️ ``is_directory``, not ``is_dir`` — the key the FTP
-                        # listing actually emits (bambu_ftp.list_files, pinned by
-                        # test_bambu_ftp). This guard read the wrong name and so
-                        # never fired: a directory in /cache went on to be passed
-                        # to DELE, which cannot delete one.
-                        if f.get("is_directory"):
-                            continue
-                        fname_lower = fname.lower()
+                    from backend.app.utils.filename import derive_remote_filename
 
-                        # Match .gcode and .bbl by base name
-                        is_matching_gcode = fname_lower.endswith(".gcode")
-                        is_matching_bbl = fname_lower.endswith(".bbl") and f"_{sanitized_base}" in fname
+                    should_delete = getattr(printer, "cleanup_after_print", True)
 
-                        # cleanup_after_print=True: delete .gcode and .bbl from /cache/
-                        if (
-                            should_delete
-                            and (is_matching_gcode or is_matching_bbl)
-                            or not should_delete
-                            and is_matching_gcode
-                        ):
-                            try:
-                                await delete_file_async(
-                                    printer.ip_address,
-                                    printer.access_code,
-                                    f"/cache/{fname}",
-                                    printer_model=printer.model,
-                                )
-                                logger.info("Deleted /cache/%s from printer %s", fname, printer.name)
-                            except Exception:
-                                pass
+                    # ⚠️ Where the file actually is decides how (and whether) to
+                    # clean it up. Everything below this point — the /cache sweep,
+                    # the .bbl patch, the delete, the move — is FTP on the card.
+                    # A print that went to internal storage has none of that: no
+                    # /cache directory, no rename in the protocol, and the file
+                    # lives at a path only the tunnel's own listing knows.
+                    from backend.app.services.printer_files.factory import transport_for
+                    from backend.app.utils.printer_storage import INTERNAL, storage_capability_for
 
-                        # Patch .bbl: set auto_recovery=false, fix file path if 3MF moved to /cache/
-                        # .bbl name pattern: {plate_id}_{base_name}.bbl or {plate_id}_{base_name}_{model}.bbl
-                        elif not should_delete and is_matching_bbl:
-                            try:
-                                bbl_path = f"/cache/{fname}"
-                                bbl_data = await download_file_bytes_async(
-                                    printer.ip_address,
-                                    printer.access_code,
-                                    bbl_path,
-                                    printer_model=printer.model,
-                                )
-                                if bbl_data:
-                                    import json as _json
+                    printed_to_internal = (
+                        storage_capability_for(printer.model, printer_manager.get_status(printer_id))["print_target"]
+                        == INTERNAL
+                    )
 
-                                    bbl_text = bbl_data.decode("utf-8", errors="replace")
-                                    bbl_json = _json.loads(bbl_text)
-                                    modified = False
+                    # .3mf candidate paths, primary first: the exact path the
+                    # dispatcher uploaded to (derived from archive.filename via the
+                    # same rule as upload). Without it, a library row that ended up
+                    # with a doubled .gcode.3mf (#1542) leaves the real file behind
+                    # because the subtask_name fallback doesn't match what's on the
+                    # SD card. The subtask_name fallback stays for archive-less
+                    # prints and older naming variants.
+                    threemf_candidates: list[str] = []
+                    if archive_filename:
+                        threemf_candidates.append(f"/{derive_remote_filename(archive_filename)}")
+                    subtask_3mf = f"/{subtask_name}.3mf"
+                    if subtask_3mf not in threemf_candidates:
+                        threemf_candidates.append(subtask_3mf)
 
-                                    # Disable auto_recovery
-                                    if bbl_json.get("auto_recovery") is not False:
-                                        bbl_json["auto_recovery"] = False
-                                        modified = True
+                    # What the printer makes for itself out of each of those — one
+                    # upload, several files on the machine. Names only; whether any
+                    # of them is actually ours is decided by their bytes.
+                    derived_copy_names_wanted: set[str] = set()
+                    for candidate in threemf_candidates:
+                        derived_copy_names_wanted.update(derived_copy_names(candidate))
 
-                                    # Fix file path if 3MF was moved to /cache/
-                                    file_path_val = bbl_json.get("file path", "")
-                                    if not should_delete and "/cache/" not in file_path_val and file_path_val:
-                                        # e.g. "/sdcard/Voron.3mf" → "/sdcard/cache/Voron.3mf"
-                                        bbl_json["file path"] = file_path_val.replace("/sdcard/", "/sdcard/cache/", 1)
-                                        modified = True
+                    # ⚠️ **The card only.** /cache is a directory on the SD card:
+                    # the printer's own working copy of the job plus the .bbl
+                    # that records the print's parameters. A machine printing
+                    # from internal storage has no such directory, so every line
+                    # below is FTP work whose best outcome is finding nothing —
+                    # and on a machine with no card in it, that is a 30-second
+                    # timeout before the sweep can get to the medium that does
+                    # hold something.
+                    #
+                    # The move-instead-of-delete branch further down is skipped
+                    # for the same reason and already says so: keeping a file on
+                    # internal storage means leaving it where it is, because
+                    # nothing auto-starts from there.
+                    if not printed_to_internal:
+                        # Process /cache/ files: delete .gcode, patch .bbl (disable auto_recovery)
+                        try:
+                            cache_files = await list_files_async(
+                                printer.ip_address,
+                                printer.access_code,
+                                "/cache",
+                                printer_model=printer.model,
+                            )
+                            sanitized_base = subtask_name.replace(" ", "_")
+                            for f in cache_files:
+                                fname = f.get("name", "")
+                                # ⚠️ ``is_directory``, not ``is_dir`` — the key the FTP
+                                # listing actually emits (bambu_ftp.list_files, pinned by
+                                # test_bambu_ftp). This guard read the wrong name and so
+                                # never fired: a directory in /cache went on to be passed
+                                # to DELE, which cannot delete one.
+                                if f.get("is_directory"):
+                                    continue
+                                fname_lower = fname.lower()
 
-                                    if modified:
-                                        # Preserve original formatting (4-space indent)
-                                        patched = _json.dumps(bbl_json, indent=4).encode("utf-8")
-                                        await upload_bytes_async(
+                                # Match .gcode and .bbl by base name
+                                is_matching_gcode = fname_lower.endswith(".gcode")
+                                is_matching_bbl = fname_lower.endswith(".bbl") and f"_{sanitized_base}" in fname
+
+                                # cleanup_after_print=True: delete .gcode and .bbl from /cache/
+                                if (
+                                    should_delete
+                                    and (is_matching_gcode or is_matching_bbl)
+                                    or not should_delete
+                                    and is_matching_gcode
+                                ):
+                                    try:
+                                        await delete_file_async(
                                             printer.ip_address,
                                             printer.access_code,
-                                            patched,
+                                            f"/cache/{fname}",
+                                            printer_model=printer.model,
+                                        )
+                                        logger.info("Deleted /cache/%s from printer %s", fname, printer.name)
+                                    except Exception:
+                                        pass
+
+                                # Patch .bbl: set auto_recovery=false, fix file path if 3MF moved to /cache/
+                                # .bbl name pattern: {plate_id}_{base_name}.bbl or {plate_id}_{base_name}_{model}.bbl
+                                elif not should_delete and is_matching_bbl:
+                                    try:
+                                        bbl_path = f"/cache/{fname}"
+                                        bbl_data = await download_file_bytes_async(
+                                            printer.ip_address,
+                                            printer.access_code,
                                             bbl_path,
                                             printer_model=printer.model,
                                         )
-                                        logger.info(
-                                            "Patched .bbl /cache/%s on printer %s (auto_recovery=false%s)",
-                                            fname,
-                                            printer.name,
-                                            ", file path updated" if "/cache/" in bbl_json.get("file path", "") else "",
-                                        )
-                            except Exception as e:
-                                logger.debug("Failed to patch .bbl /cache/%s: %s", fname, e)
+                                        if bbl_data:
+                                            import json as _json
 
-                    # The copy the PRINTER made. We upload ``Cube.3mf`` and it
-                    # writes ``Cube.gcode.3mf`` into /cache — a `.3mf`, so the
-                    # `.gcode` sweep above never matched it and cleanup honestly
-                    # reported "nothing to delete" while the file sat there.
-                    #
-                    # ⚠️ Proven by content wherever there is a digest to prove
-                    # it with — the same name is what a print sent from
-                    # BambuStudio leaves behind. The exception is a print we
-                    # only picked up (slicer or printer screen) whose 3MF was
-                    # never recovered: no digest exists, and the name is bound
-                    # to the job that has just finished on this machine.
-                    if should_delete and derived_copy_names_wanted:
-                        await remove_verified_copies(
-                            entries=[
-                                {
-                                    "name": f.get("name", ""),
-                                    "path": f"/cache/{f.get('name', '')}",
-                                    "is_directory": f.get("is_directory"),
-                                }
-                                for f in cache_files
-                            ],
-                            wanted=derived_copy_names_wanted,
-                            expected_hashes=expected_hashes,
-                            read_bytes=lambda p: download_file_bytes_async(
-                                printer.ip_address, printer.access_code, p, printer_model=printer.model
-                            ),
-                            delete=lambda p: delete_file_async(
-                                printer.ip_address, printer.access_code, p, printer_model=printer.model
-                            ),
-                            label=f"{printer.name} /cache",
-                            allow_unverified=archive_id is not None,
-                        )
-                except Exception:
-                    pass  # best-effort
+                                            bbl_text = bbl_data.decode("utf-8", errors="replace")
+                                            bbl_json = _json.loads(bbl_text)
+                                            modified = False
 
-                # Handle .3mf - delete or move to /cache/. Try each candidate
-                # (derived-first, subtask fallback) until one hits a real file.
-                if printed_to_internal:
-                    # ⚠️ Only the delete half exists here, and that is not an
-                    # omission. "Keep the file" on the card means moving it OUT
-                    # of the root, because printers auto-start whatever sits
-                    # there on a power cycle (#374, ghost prints). Internal
-                    # storage is the printer's own history folder — nothing
-                    # auto-starts from it — so keeping the file means leaving it
-                    # exactly where it is. There is no /cache to move it to and
-                    # no rename in the tunnel protocol at all.
-                    if should_delete:
-                        names = [p.split("/")[-1] for p in threemf_candidates]
-                        transport = transport_for(printer, INTERNAL)
-                        removed = await delete_internal_by_name(transport, *names)
-                        logger.info(
-                            "Internal-storage cleanup on %s: %s",
-                            printer.name,
-                            "deleted" if removed else "nothing matched",
-                        )
-                    else:
-                        logger.debug(
-                            "Internal-storage print on %s: file left in place (nothing auto-starts from it)",
-                            printer.name,
-                        )
-                elif should_delete:
-                    # Track outcomes across all candidates so the final log line
-                    # reflects what actually happened. A1 / A1 Mini firmware
-                    # auto-cleans the SD card before our cleanup runs, so every
-                    # candidate FTP-DELE returns 550 (NOT_FOUND) — the old code
-                    # burned 3 retries × 2 s per candidate and then WARNed on a
-                    # perfectly successful print (#1721). NOT_FOUND advances to
-                    # the next candidate immediately without a warning; only a
-                    # real network/auth/transient FAILED still warrants WARNING.
-                    any_deleted = False
-                    any_real_failure = False
-                    any_not_found = False
-                    for remote_3mf in threemf_candidates:
-                        deleted = False
-                        for attempt in range(1, 4):
-                            try:
-                                r = await delete_file_async(
-                                    printer.ip_address,
-                                    printer.access_code,
-                                    remote_3mf,
-                                    printer_model=printer.model,
+                                            # Disable auto_recovery
+                                            if bbl_json.get("auto_recovery") is not False:
+                                                bbl_json["auto_recovery"] = False
+                                                modified = True
+
+                                            # Fix file path if 3MF was moved to /cache/
+                                            file_path_val = bbl_json.get("file path", "")
+                                            if not should_delete and "/cache/" not in file_path_val and file_path_val:
+                                                # e.g. "/sdcard/Voron.3mf" → "/sdcard/cache/Voron.3mf"
+                                                bbl_json["file path"] = file_path_val.replace(
+                                                    "/sdcard/", "/sdcard/cache/", 1
+                                                )
+                                                modified = True
+
+                                            if modified:
+                                                # Preserve original formatting (4-space indent)
+                                                patched = _json.dumps(bbl_json, indent=4).encode("utf-8")
+                                                await upload_bytes_async(
+                                                    printer.ip_address,
+                                                    printer.access_code,
+                                                    patched,
+                                                    bbl_path,
+                                                    printer_model=printer.model,
+                                                )
+                                                logger.info(
+                                                    "Patched .bbl /cache/%s on printer %s (auto_recovery=false%s)",
+                                                    fname,
+                                                    printer.name,
+                                                    ", file path updated"
+                                                    if "/cache/" in bbl_json.get("file path", "")
+                                                    else "",
+                                                )
+                                    except Exception as e:
+                                        logger.debug("Failed to patch .bbl /cache/%s: %s", fname, e)
+
+                            # The copy the PRINTER made. We upload ``Cube.3mf`` and it
+                            # writes ``Cube.gcode.3mf`` into /cache — a `.3mf`, so the
+                            # `.gcode` sweep above never matched it and cleanup honestly
+                            # reported "nothing to delete" while the file sat there.
+                            #
+                            # ⚠️ Proven by content wherever there is a digest to prove
+                            # it with — the same name is what a print sent from
+                            # BambuStudio leaves behind. The exception is a print we
+                            # only picked up (slicer or printer screen) whose 3MF was
+                            # never recovered: no digest exists, and the name is bound
+                            # to the job that has just finished on this machine.
+                            if should_delete and derived_copy_names_wanted:
+                                await remove_verified_copies(
+                                    entries=[
+                                        {
+                                            "name": f.get("name", ""),
+                                            "path": f"/cache/{f.get('name', '')}",
+                                            "is_directory": f.get("is_directory"),
+                                        }
+                                        for f in cache_files
+                                    ],
+                                    wanted=derived_copy_names_wanted,
+                                    expected_hashes=expected_hashes,
+                                    read_bytes=lambda p: download_file_bytes_async(
+                                        printer.ip_address, printer.access_code, p, printer_model=printer.model
+                                    ),
+                                    delete=lambda p: delete_file_async(
+                                        printer.ip_address, printer.access_code, p, printer_model=printer.model
+                                    ),
+                                    label=f"{printer.name} /cache",
+                                    allow_unverified=archive_id is not None,
                                 )
-                            except Exception as e:
-                                r = DeleteResult.FAILED
-                                logger.warning("SD cleanup attempt %d/3 for %s: %s", attempt, remote_3mf, e)
+                        except Exception:
+                            pass  # best-effort
 
-                            if r == DeleteResult.DELETED:
-                                any_deleted = True
-                                logger.info("Deleted %s from printer %s SD card", remote_3mf, printer.name)
-                                deleted = True
-                                break
-                            if r == DeleteResult.NOT_FOUND:
-                                any_not_found = True
-                                break  # 550 will not recover; try next candidate
-                            # FAILED: real error — retry with backoff, then give up
-                            if attempt < 3:
-                                await asyncio.sleep(2)
-                            else:
-                                any_real_failure = True
-                                logger.warning(
-                                    "SD cleanup failed after 3 attempts for %s "
-                                    "(network/auth/transient error — file may linger on SD card)",
-                                    remote_3mf,
-                                )
-                        if deleted:
-                            break  # real file found + removed; don't probe fallbacks
-
-                    if not any_deleted and not any_real_failure and any_not_found:
-                        # Every candidate said "not here." The printer firmware
-                        # swept the SD card itself (common on A1) or nothing was
-                        # written — nothing to clean up, no warning.
-                        logger.debug(
-                            "SD card cleanup: nothing to delete on %s — every candidate returned 550 "
-                            "(printer likely self-cleaned)",
-                            printer.name,
-                        )
-                else:
-                    # Move .3mf to /cache/
-                    for remote_3mf in threemf_candidates:
-                        cache_3mf = f"/cache/{remote_3mf.lstrip('/')}"
-                        moved = False
-                        for attempt in range(1, 4):
-                            try:
-                                r = await rename_file_async(
-                                    printer.ip_address,
-                                    printer.access_code,
-                                    remote_3mf,
-                                    cache_3mf,
-                                    printer_model=printer.model,
-                                )
-                                if r:
-                                    logger.info("Moved %s to %s on printer %s", remote_3mf, cache_3mf, printer.name)
-                                    moved = True
-                                    break
-                                if r is None:
-                                    break  # file not found, try next candidate
-                            except Exception as e:
-                                logger.debug("SD move attempt %d/3 for %s: %s", attempt, remote_3mf, e)
-                            if attempt < 3:
-                                await asyncio.sleep(2)
-                        if moved:
-                            break
-
-                # The printer's own copy in INTERNAL storage — and this runs
-                # whichever medium the print was read from.
-                #
-                # ⚠️ **Not part of the branch above, deliberately.** That one
-                # asks "where did this print come from"; this one asks "where
-                # did the printer keep a copy". With "store sent files to
-                # storage" on (``cfg`` bit 19 — the operator's setting, not our
-                # doing) a job read off the CARD still leaves ``X.gcode.3mf``
-                # in internal storage. Cleaning only the medium we printed from
-                # left the other one filling up with no sign of it anywhere.
-                #
-                # Not an attempt to stop the copies appearing: that is what the
-                # operator asked the printer to do. This is tidying up after
-                # ourselves once the print is over.
-                if should_delete and derived_copy_names_wanted:
-                    capability = storage_capability_for(printer.model, printer_manager.get_status(printer_id))
-                    if capability["can_browse_internal"]:
-                        try:
-                            internal = transport_for(printer, INTERNAL)
-                            await remove_verified_copies(
-                                entries=[e.as_dict() for e in await internal.list_files("/")],
-                                wanted=derived_copy_names_wanted,
-                                expected_hashes=expected_hashes,
-                                read_bytes=internal.read_bytes,
-                                delete=internal.delete,
-                                label=f"{printer.name} internal",
-                                allow_unverified=archive_id is not None,
+                    # Handle .3mf - delete or move to /cache/. Try each candidate
+                    # (derived-first, subtask fallback) until one hits a real file.
+                    if printed_to_internal:
+                        # ⚠️ Only the delete half exists here, and that is not an
+                        # omission. "Keep the file" on the card means moving it OUT
+                        # of the root, because printers auto-start whatever sits
+                        # there on a power cycle (#374, ghost prints). Internal
+                        # storage is the printer's own history folder — nothing
+                        # auto-starts from it — so keeping the file means leaving it
+                        # exactly where it is. There is no /cache to move it to and
+                        # no rename in the tunnel protocol at all.
+                        if should_delete:
+                            names = [p.split("/")[-1] for p in threemf_candidates]
+                            transport = transport_for(printer, INTERNAL)
+                            removed = await delete_internal_by_name(transport, *names)
+                            logger.info(
+                                "Internal-storage cleanup on %s: %s",
+                                printer.name,
+                                "deleted" if removed else "nothing matched",
                             )
-                        except Exception as exc:  # noqa: BLE001 — best-effort, like every branch here
-                            logger.debug("Internal-storage copy cleanup on %s failed: %s", printer.name, exc)
+                        else:
+                            logger.debug(
+                                "Internal-storage print on %s: file left in place (nothing auto-starts from it)",
+                                printer.name,
+                            )
+                    elif should_delete:
+                        # Track outcomes across all candidates so the final log line
+                        # reflects what actually happened. A1 / A1 Mini firmware
+                        # auto-cleans the SD card before our cleanup runs, so every
+                        # candidate FTP-DELE returns 550 (NOT_FOUND) — the old code
+                        # burned 3 retries × 2 s per candidate and then WARNed on a
+                        # perfectly successful print (#1721). NOT_FOUND advances to
+                        # the next candidate immediately without a warning; only a
+                        # real network/auth/transient FAILED still warrants WARNING.
+                        any_deleted = False
+                        any_real_failure = False
+                        any_not_found = False
+                        for remote_3mf in threemf_candidates:
+                            deleted = False
+                            for attempt in range(1, 4):
+                                try:
+                                    r = await delete_file_async(
+                                        printer.ip_address,
+                                        printer.access_code,
+                                        remote_3mf,
+                                        printer_model=printer.model,
+                                    )
+                                except Exception as e:
+                                    r = DeleteResult.FAILED
+                                    logger.warning("SD cleanup attempt %d/3 for %s: %s", attempt, remote_3mf, e)
 
-    except Exception as e:
-        logger.warning("SD card file cleanup failed for printer %s: %s", printer_id, e)
+                                if r == DeleteResult.DELETED:
+                                    any_deleted = True
+                                    logger.info("Deleted %s from printer %s SD card", remote_3mf, printer.name)
+                                    deleted = True
+                                    break
+                                if r == DeleteResult.NOT_FOUND:
+                                    any_not_found = True
+                                    break  # 550 will not recover; try next candidate
+                                # FAILED: real error — retry with backoff, then give up
+                                if attempt < 3:
+                                    await asyncio.sleep(2)
+                                else:
+                                    any_real_failure = True
+                                    logger.warning(
+                                        "SD cleanup failed after 3 attempts for %s "
+                                        "(network/auth/transient error — file may linger on SD card)",
+                                        remote_3mf,
+                                    )
+                            if deleted:
+                                break  # real file found + removed; don't probe fallbacks
+
+                        if not any_deleted and not any_real_failure and any_not_found:
+                            # Every candidate said "not here." The printer firmware
+                            # swept the SD card itself (common on A1) or nothing was
+                            # written — nothing to clean up, no warning.
+                            logger.debug(
+                                "SD card cleanup: nothing to delete on %s — every candidate returned 550 "
+                                "(printer likely self-cleaned)",
+                                printer.name,
+                            )
+                    else:
+                        # Move .3mf to /cache/
+                        for remote_3mf in threemf_candidates:
+                            cache_3mf = f"/cache/{remote_3mf.lstrip('/')}"
+                            moved = False
+                            for attempt in range(1, 4):
+                                try:
+                                    r = await rename_file_async(
+                                        printer.ip_address,
+                                        printer.access_code,
+                                        remote_3mf,
+                                        cache_3mf,
+                                        printer_model=printer.model,
+                                    )
+                                    if r:
+                                        logger.info("Moved %s to %s on printer %s", remote_3mf, cache_3mf, printer.name)
+                                        moved = True
+                                        break
+                                    if r is None:
+                                        break  # file not found, try next candidate
+                                except Exception as e:
+                                    logger.debug("SD move attempt %d/3 for %s: %s", attempt, remote_3mf, e)
+                                if attempt < 3:
+                                    await asyncio.sleep(2)
+                            if moved:
+                                break
+
+                    # The printer's own copy in INTERNAL storage — and this runs
+                    # whichever medium the print was read from.
+                    #
+                    # ⚠️ **Not part of the branch above, deliberately.** That one
+                    # asks "where did this print come from"; this one asks "where
+                    # did the printer keep a copy". With "store sent files to
+                    # storage" on (``cfg`` bit 19 — the operator's setting, not our
+                    # doing) a job read off the CARD still leaves ``X.gcode.3mf``
+                    # in internal storage. Cleaning only the medium we printed from
+                    # left the other one filling up with no sign of it anywhere.
+                    #
+                    # Not an attempt to stop the copies appearing: that is what the
+                    # operator asked the printer to do. This is tidying up after
+                    # ourselves once the print is over.
+                    if should_delete and derived_copy_names_wanted:
+                        capability = storage_capability_for(printer.model, printer_manager.get_status(printer_id))
+                        if capability["can_browse_internal"]:
+                            try:
+                                internal = transport_for(printer, INTERNAL)
+                                await remove_verified_copies(
+                                    entries=[e.as_dict() for e in await internal.list_files("/")],
+                                    wanted=derived_copy_names_wanted,
+                                    expected_hashes=expected_hashes,
+                                    read_bytes=internal.read_bytes,
+                                    delete=internal.delete,
+                                    label=f"{printer.name} internal",
+                                    allow_unverified=archive_id is not None,
+                                )
+                            except Exception as exc:  # noqa: BLE001 — best-effort, like every branch here
+                                logger.debug("Internal-storage copy cleanup on %s failed: %s", printer.name, exc)
+
+        except Exception as e:
+            logger.warning("SD card file cleanup failed for printer %s: %s", printer_id, e)
+
+    spawn_background_task(_post_print_printer_cleanup(), name=f"post-print-cleanup-{printer_id}")
 
     log_timing("SD card cleanup")
 
@@ -6383,6 +6438,11 @@ async def on_print_complete(printer_id: int, data: dict):
     # Auto Off power cycle can't let the queue bypass the confirmation (#961).
     if archive_id and not _plate_auto_cleared_by_swap:
         try:
+            # ⚠️ Imported here rather than relied on from further up: the name
+            # used to leak out of the cleanup block, which now runs in a task of
+            # its own and no longer puts anything in this scope.
+            from backend.app.models.printer import Printer
+
             async with async_session() as db:
                 _r = await db.execute(select(Printer.require_plate_clear).where(Printer.id == printer_id))
                 _require = _r.scalar_one_or_none()

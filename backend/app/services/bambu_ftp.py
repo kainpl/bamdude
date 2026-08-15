@@ -1165,6 +1165,48 @@ async def upload_file_async(
 
 
 @_ftp_serialized
+async def list_files_checked_async(
+    ip_address: str,
+    access_code: str,
+    path: str = "/",
+    timeout: float = 30.0,
+    socket_timeout: float | None = None,
+    printer_model: str | None = None,
+) -> tuple[list[dict], bool]:
+    """List a directory, and say whether the printer answered at all.
+
+    Returns ``(entries, answered)``.
+
+    ⚠️ **The pair exists because the list alone is ambiguous.** An empty list
+    means "this directory holds nothing" *and* "the printer never replied", and
+    a caller that walks several directories cannot tell the two apart — so a
+    printer whose FTP daemon has wedged costs the full timeout once per
+    directory, in series. Measured on a live X2D: four timelapse directories,
+    30 s each, before the code ever looked at internal storage where the
+    recording actually was.
+
+    ``answered=False`` means the connection itself failed — refused, or the TLS
+    handshake never completed. Nothing about the next directory will be
+    different, so a caller walking a list should stop rather than pay again.
+    """
+    loop = asyncio.get_event_loop()
+
+    def _list() -> tuple[list[dict], bool]:
+        client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
+        if not client.connect():
+            return [], False
+        try:
+            return client.list_files(path), True
+        finally:
+            client.disconnect()
+
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(None, _list), timeout=timeout)
+    except TimeoutError:
+        logger.warning("FTP list_files timed out after %ss for %s", timeout, path)
+        return [], False
+
+
 async def list_files_async(
     ip_address: str,
     access_code: str,
@@ -1175,26 +1217,23 @@ async def list_files_async(
 ) -> list[dict]:
     """Async wrapper for listing files with timeout.
 
+    Keeps the plain-list shape every existing caller expects. Where the
+    difference between "empty" and "unreachable" matters — anything that walks
+    more than one directory — use :func:`list_files_checked_async` instead.
+
     Args:
         socket_timeout: FTP socket timeout for slow connections (e.g., A1 printers)
         printer_model: Printer model for A1-specific workarounds
     """
-    loop = asyncio.get_event_loop()
-
-    def _list():
-        client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
-        if client.connect():
-            try:
-                return client.list_files(path)
-            finally:
-                client.disconnect()
-        return []
-
-    try:
-        return await asyncio.wait_for(loop.run_in_executor(None, _list), timeout=timeout)
-    except TimeoutError:
-        logger.warning("FTP list_files timed out after %ss for %s", timeout, path)
-        return []
+    entries, _answered = await list_files_checked_async(
+        ip_address,
+        access_code,
+        path,
+        timeout=timeout,
+        socket_timeout=socket_timeout,
+        printer_model=printer_model,
+    )
+    return entries
 
 
 @_ftp_serialized

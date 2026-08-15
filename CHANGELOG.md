@@ -22,7 +22,19 @@ All notable changes to BamDude will be documented in this file.
 
     Prints BamDude did not send are cleaned up too, as long as it recorded them — one started from the printer's screen or sent from a slicer counts. Where such a print's 3MF was never recovered there is no digest to check against, and the file is then removed on its name alone, which the log states plainly.
 
+- **On a printer printing from its built-in storage, "keep the files" now means exactly that.** When cleanup after a print is switched off, BamDude protects you from ghost prints on the SD card by moving the finished job out of the card's root into its `cache` folder and rewriting the saved print-parameters file to match — because a printer will happily re-start whatever is sitting in the root of its card after a power cut.
+
+    None of that applies to built-in storage: nothing auto-starts from there, there is no `cache` folder to move anything into, and there is no parameters file to rewrite. BamDude was doing the whole dance anyway on machines with no card in them — asking the card for a folder it does not have, and waiting thirty seconds for the answer. It now leaves the file where the printer put it, which is what "keep" meant all along.
+
 - **New printers clean up after themselves by default.** The setting has defaulted to on for printers added through the interface for a long time, while the database column said off — so a printer created any other way behaved differently for no reason anyone could see. They now agree. **Printers you already have are not touched**: whatever each one is set to today stays exactly as it is.
+
+### Fixed
+
+- **A finished print is no longer held up while the printer is tidied.** Clearing the print's files off the printer used to run before BamDude closed the print, so on a machine whose FTP had stopped responding everything waited on it: the queue did not move, the archive stayed open, and the "print finished" message arrived nearly four minutes late. Measured at **222 seconds** on a live printer; the same step now takes the print out of the way in well under a second and does the tidying afterwards.
+
+    The cleanup itself is unchanged, still does both media, and now gives up after two minutes rather than running on into whatever the printer does next.
+
+- **A printer that stops answering on FTP no longer delays the timelapse by minutes.** Looking for a recording walks four directories on the SD card before checking built-in storage, and the code could not tell "this directory is empty" from "the printer never replied" — so an unresponsive machine cost a full 30-second wait per directory, four times over, on every attempt. It now stops after the first silence and goes straight to internal storage, where on such machines the recording usually is. A recording that took five and a half minutes to attach now takes ten seconds.
 
 ## [0.5.3] - 2026-08-14
 

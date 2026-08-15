@@ -52,13 +52,27 @@ class TestWhatThePrinterMakesOfOurUpload:
         assert derived_copy_names("CUBE.3MF") == ["CUBE.gcode.3mf"]
 
 
-class TestWhichDigestsIdentifyThisPrint:
-    def test_both_are_taken(self) -> None:
-        """They differ exactly when a 3MF patch was applied, and the printer's
-        copy is a copy of the bytes it RECEIVED — so which one matches depends
-        on whether this print was patched."""
-        archive = SimpleNamespace(source_content_hash="AAA", content_hash="bbb")
-        assert archive_hashes(archive) == {"aaa", "bbb"}
+class TestWhichDigestIdentifiesThisPrint:
+    def test_the_dispatched_bytes_are_the_answer(self) -> None:
+        """``content_hash`` is the SHA256 of what FTP actually sent, post-patch,
+        and the printer's copy is a copy of what it received. Patched or not,
+        that is the whole answer."""
+        archive = SimpleNamespace(source_content_hash="AAA", content_hash="BBB")
+        assert archive_hashes(archive) == {"bbb"}
+
+    def test_the_unpatched_original_never_widens_it(self) -> None:
+        """⚠️ Taking both would mean that on a print we patched, a stranger's
+        copy of the UNPATCHED file matches and gets deleted. The extra digest
+        buys nothing and costs exactly the guarantee this module is for."""
+        archive = SimpleNamespace(source_content_hash="AAA", content_hash="BBB")
+        assert "aaa" not in archive_hashes(archive)
+
+    def test_it_falls_back_only_where_nothing_was_dispatched(self) -> None:
+        # Older rows and paths that never recorded the dispatched digest. Equal
+        # to it whenever no patch ran; a patched print simply fails to match and
+        # keeps its file, which is the safe direction.
+        archive = SimpleNamespace(source_content_hash="AAA", content_hash=None)
+        assert archive_hashes(archive) == {"aaa"}
 
     def test_missing_and_empty_are_not_digests(self) -> None:
         archive = SimpleNamespace(source_content_hash=None, content_hash="   ")

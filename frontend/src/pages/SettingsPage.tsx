@@ -1186,6 +1186,12 @@ export function SettingsPage() {
     const hasChanges =
       baseline.save_thumbnails !== localSettings.save_thumbnails ||
       baseline.capture_finish_photo !== localSettings.capture_finish_photo ||
+      // ⚠️ Every setting must be listed here or it silently never saves: this
+      // is a hand-maintained comparison, and a field missing from it leaves the
+      // toggle moving on screen while the debounced save is never triggered.
+      // Adding a setting means touching THREE places — the schema, the save
+      // payload below, and this list.
+      (baseline.delete_timelapse_after_attach ?? false) !== (localSettings.delete_timelapse_after_attach ?? false) ||
       (baseline.archive_3mf_retention_enabled ?? false) !== (localSettings.archive_3mf_retention_enabled ?? false) ||
       (baseline.archive_3mf_retention_days ?? 30) !== (localSettings.archive_3mf_retention_days ?? 30) ||
       baseline.default_filament_cost !== localSettings.default_filament_cost ||

@@ -47,9 +47,13 @@ def _patch(monkeypatch, host: str, port: int, *, ftp: list[dict] | None = None, 
     from backend.app.services.printer_files.tunnel import TunnelTransport
 
     async def _ftp_listing(*_args, **_kwargs):
-        return list(ftp or [])
+        # ⚠️ answered=True: these fixtures model a printer that REPLIES, whose
+        # directories happen to be empty. An unreachable one answers False and
+        # ends the card leg after a single call — pinned separately in
+        # TestFtpThatStopsAnswering.
+        return list(ftp or []), True
 
-    monkeypatch.setattr("backend.app.services.bambu_ftp.list_files_async", _ftp_listing)
+    monkeypatch.setattr("backend.app.services.bambu_ftp.list_files_checked_async", _ftp_listing)
     monkeypatch.setattr(
         "backend.app.services.printer_manager.printer_manager.get_status",
         lambda _pid: type("S", (), {"print_option_support": {"internal_timelapse": internal}})(),
@@ -289,3 +293,83 @@ class TestRemovingTheRecordingFromThePrinter:
             patch("backend.app.services.printer_files.factory.transport_for", return_value=transport),
         ):
             assert await remove_recording_after_attach(printer, "/timelapse/video.mp4") is False
+
+
+class TestFtpThatStopsAnswering:
+    """A wedged FTP daemon must cost one timeout, not four.
+
+    Observed on a live X2D: the printer's FTP stopped completing its TLS
+    handshake and stayed that way until it was restarted. The recording was in
+    internal storage the whole time, but the walk asked the card for four
+    directories first — 30 s each — so the attach was five minutes late and the
+    completed print looked stuck.
+
+    The listing alone could not tell anyone: it returns an empty list both for
+    "this directory holds nothing" and for "the printer never replied".
+    """
+
+    @pytest.mark.asyncio
+    async def test_one_unanswered_directory_ends_the_whole_card_leg(self):
+        printer = SimpleNamespace(id=1, name="X2D", model="X2D", ip_address="1.2.3.4", access_code="x")
+        asked: list[str] = []
+
+        async def _never_answers(ip, code, path, printer_model=None):
+            asked.append(path)
+            return [], False
+
+        with (
+            patch("backend.app.services.bambu_ftp.list_files_checked_async", new=_never_answers),
+            patch("backend.app.services.timelapse_files._supports_internal_timelapse", return_value=False),
+        ):
+            videos, source = await list_timelapse_videos(printer)
+
+        assert videos == []
+        assert source is None
+        assert len(asked) == 1, f"kept walking a printer that is not replying: {asked}"
+
+    @pytest.mark.asyncio
+    async def test_an_empty_directory_is_not_a_dead_printer(self):
+        """The distinction the pair exists for. An empty /timelapse on a healthy
+        machine must still fall through to /record, where older P1 firmware
+        keeps them."""
+        printer = SimpleNamespace(id=1, name="P1S", model="P1S", ip_address="1.2.3.4", access_code="x")
+        asked: list[str] = []
+
+        async def _answers(ip, code, path, printer_model=None):
+            asked.append(path)
+            if path == "/record":
+                return [{"name": "clip.mp4", "is_directory": False, "path": "/record/clip.mp4"}], True
+            return [], True
+
+        with patch("backend.app.services.bambu_ftp.list_files_checked_async", new=_answers):
+            videos, source = await list_timelapse_videos(printer)
+
+        assert [v["name"] for v in videos] == ["clip.mp4"]
+        assert source == "/record"
+        assert len(asked) == 3  # /timelapse, /timelapse/video, /record
+
+    @pytest.mark.asyncio
+    async def test_a_dead_card_still_reaches_internal_storage(self):
+        """The case that actually bit: the recording was internal all along."""
+        printer = SimpleNamespace(id=1, name="X2D", model="X2D", ip_address="1.2.3.4", access_code="x")
+        entry = SimpleNamespace(
+            as_dict=lambda: {
+                "name": "video_1.mp4",
+                "is_directory": False,
+                "path": "/userdata/media/timelapse/video_1.mp4",
+            }
+        )
+        transport = SimpleNamespace(list_files=AsyncMock(return_value=[entry]))
+
+        async def _never_answers(ip, code, path, printer_model=None):
+            return [], False
+
+        with (
+            patch("backend.app.services.bambu_ftp.list_files_checked_async", new=_never_answers),
+            patch("backend.app.services.timelapse_files._supports_internal_timelapse", return_value=True),
+            patch("backend.app.services.printer_files.factory.transport_for", return_value=transport),
+        ):
+            videos, source = await list_timelapse_videos(printer)
+
+        assert source == "internal"
+        assert [v["name"] for v in videos] == ["video_1.mp4"]

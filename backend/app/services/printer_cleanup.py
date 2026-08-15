@@ -60,21 +60,30 @@ def derived_copy_names(uploaded_name: str) -> list[str]:
 
 
 def archive_hashes(archive: object) -> set[str]:
-    """Every digest that identifies this print's bytes.
+    """The digest the printer's copy must have — ``content_hash``, alone.
 
-    Both, and not one: ``source_content_hash`` is the unpatched original and
-    ``content_hash`` is what actually went up the wire. They differ exactly when
-    a 3MF patch was applied, and the printer's copy is a copy of the bytes it
-    received — so which of the two matches depends on whether this print was
-    patched, and asking for the wrong one would spare the file for the wrong
-    reason.
+    ``content_hash`` is the SHA256 of the **dispatched** bytes, post-patch:
+    literally what FTP sent to the machine. The printer's copy is a copy of
+    what it received, so this is the whole answer, patched or not.
+    ``on_print_start``'s restart-recovery already makes exactly this
+    comparison against exactly this column.
+
+    ⚠️ **``source_content_hash`` is NOT an acceptable alternative.** It is the
+    unpatched original, and adding it would widen what counts as ours: on a
+    print we patched, a stranger's copy of the *unpatched* file would match it
+    and be deleted. It is used here only as a fallback when ``content_hash``
+    was never recorded, where it is the closest thing available and is equal to
+    it whenever no patch ran — and where a patched print simply fails to match
+    and keeps its file, which is the safe direction.
     """
-    found: set[str] = set()
-    for attr in ("source_content_hash", "content_hash"):
-        value = getattr(archive, attr, None)
-        if isinstance(value, str) and value.strip():
-            found.add(value.strip().lower())
-    return found
+    dispatched = getattr(archive, "content_hash", None)
+    if isinstance(dispatched, str) and dispatched.strip():
+        return {dispatched.strip().lower()}
+
+    original = getattr(archive, "source_content_hash", None)
+    if isinstance(original, str) and original.strip():
+        return {original.strip().lower()}
+    return set()
 
 
 async def remove_verified_copies(
