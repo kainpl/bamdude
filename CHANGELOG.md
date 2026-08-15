@@ -1,11 +1,3 @@
-# Changelog
-
-All notable changes to BamDude will be documented in this file.
-
-> BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) by maziggy. Forked from v0.2.2.2 (2026-03-27).
-
----
-
 ## [Unreleased]
 
 ### Added
@@ -13,6 +5,8 @@ All notable changes to BamDude will be documented in this file.
 - **Timelapses can be removed from the printer once BamDude has them.** New switch in **Settings → General**, off by default. With it on, a recording is deleted from the printer as soon as it has been attached to its archive — from the SD card or from built-in storage, whichever it was read from. Only ever after the copy is safely saved; if the attach fails, or the printer cannot be reached, the recording stays where it is.
 
     Left off by default on purpose: having a copy in BamDude is not the same as nobody needing the file on the machine, where it can still be watched from the printer's screen or carried away on the card.
+
+- **Printer errors now speak Ukrainian.** Bambu ships sixteen languages and Ukrainian is not one of them, so the whole catalogue — every code on every model — was translated for BamDude: around 36 500 descriptions. Terminology follows the rest of the interface, so a nozzle is a nozzle in the error dialog and in the settings page alike. A code added by a future firmware appears in English until it is translated, never blank.
 
 ### Changed
 
@@ -28,20 +22,13 @@ All notable changes to BamDude will be documented in this file.
 
 - **New printers clean up after themselves by default.** The setting has defaulted to on for printers added through the interface for a long time, while the database column said off — so a printer created any other way behaved differently for no reason anyone could see. They now agree. **Printers you already have are not touched**: whatever each one is set to today stays exactly as it is.
 
-### Added
-
-- **Printer errors now speak Ukrainian.** Bambu ships sixteen languages and Ukrainian is not one of them, so the whole catalogue — every code on every model — was translated for BamDude: around 36 500 descriptions. Terminology follows the rest of the interface, so a nozzle is a nozzle in the error dialog and in the settings page alike.
-- **Printer errors are described in full, and for the machine that reported them.** BamDude carried a few hundred descriptions taken from the smaller half of Bambu's catalogue, identical for every model. It now carries the whole thing — around 5 000 codes per printer model — and looks each error up against the machine it came from, because the same code can mean two different things on two printers. Ukrainian is ours: Bambu ships no Ukrainian at all, so descriptions are being translated, and anything not yet translated is shown in English rather than left blank.
-
 ### Fixed
 
 - **"Device is busy" no longer wakes you about a printer that is printing.** Some printers report this refusal seconds after an MQTT reconnect, mid-print, with nothing having asked them to start anything. It is now hidden while a print is running — no badge, no dialog, no notification — and cleared off the printer, which matters because on some models an uncleared one cancels the running job. While the printer is idle the same message still appears, because there it means a print you just started was refused.
 
 - **A printer error is no longer filed under the wrong part of the printer.** The notification title named the failing module from a table of five guesses; checked against Bambu's own catalogue, four of the five were wrong and two of the largest modules were missing. That is how "Device is busy" arrived titled "Nozzle/Extruder Error" and sent an operator to look at a nozzle. The title now carries the error code, which is exact, and the description underneath names its own subsystem.
 
-
-
-- **Error messages now say what your printer says, and match the machine that reported it.** BamDude's error text came from a community list of 853 codes that was the same for every model. Bambu's own text differs per printer, and disagreed with ours in 159 places — ours said "The hotend is not installed" where Bambu's text for a two-nozzle machine says "The **right** hotend is not installed". Notifications, pause reasons and the reason a queued print failed now all read from Bambu's catalogue for that model.
+- **Error messages now say what your printer says, and match the machine that reported it.** BamDude's error text came from a community list of 853 codes that was the same for every model. It now carries Bambu's own catalogue in full — about 5 000 codes per printer model — and looks each error up against the machine that raised it, because the same code can describe two different mechanisms on two machines. Bambu's text disagreed with ours in 159 places: ours said "The hotend is not installed" where Bambu's text for a two-nozzle machine says "The **right** hotend is not installed". The error dialog, notifications, pause reasons and the reason a queued print failed all read from it.
 
     A fault also no longer has to be one BamDude recognises before it will notify you. Whether to send is decided by how serious the printer says the fault is, which is how it was already decided — the extra "do we have text for this" condition on top of it meant a fatal, fully documented fault could pass unmentioned because our smaller list had never heard of it.
 
