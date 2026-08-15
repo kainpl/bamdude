@@ -30,6 +30,7 @@ All notable changes to BamDude will be documented in this file.
 
 ### Added
 
+- **Printer errors now speak Ukrainian.** Bambu ships sixteen languages and Ukrainian is not one of them, so the whole catalogue — every code on every model — was translated for BamDude: around 36 500 descriptions. Terminology follows the rest of the interface, so a nozzle is a nozzle in the error dialog and in the settings page alike.
 - **Printer errors are described in full, and for the machine that reported them.** BamDude carried a few hundred descriptions taken from the smaller half of Bambu's catalogue, identical for every model. It now carries the whole thing — around 5 000 codes per printer model — and looks each error up against the machine it came from, because the same code can mean two different things on two printers. Ukrainian is ours: Bambu ships no Ukrainian at all, so descriptions are being translated, and anything not yet translated is shown in English rather than left blank.
 
 ### Fixed
