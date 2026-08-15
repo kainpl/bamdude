@@ -475,6 +475,33 @@ def device_calibration_availability(model: str | None, firmware_version: str | N
     }
 
 
+def filament_calibration_availability(model: str | None, firmware_version: str | None = None) -> dict[str, bool]:
+    """Per-model base for the two *automatic* filament calibrations, from the
+    mirrored BambuStudio config.
+
+    ⚠️ **Two different mechanisms answer the same question.** The X1 family runs
+    auto PA and auto flow off the lidar (``support_lidar_calibration``); the
+    H2 / X2D / P2S / A2L generation has no lidar at all and does it with
+    ``support_auto_flow_calibration``. Neither flag alone describes the fleet —
+    the X1C has the first and not the second, the X2D the second and not the
+    first — so the base is their union.
+
+    Reading it from the config rather than a list of model names is the point:
+    the list this replaced said lidar meant ``{X1, X1C, X1E, H2D, H2DPRO}``,
+    which was wrong in both directions at once. It claimed lidar on the H2D
+    (BS's own config says false — the H2D uses the newer path) and it had never
+    heard of the X2D, P2S, A2L, H2C or H2S, so five models that support these
+    calibrations were offered neither.
+
+    The live ``support_*`` push flags still decide: this is the offline base a
+    caller ANDs with them, and it is where a model released after this code was
+    written arrives on its own.
+    """
+    f = get_device_support_flags(model, firmware_version)
+    auto = bool(f.get("support_lidar_calibration")) or bool(f.get("support_auto_flow_calibration"))
+    return {"pa_auto": auto, "flow_auto": auto}
+
+
 def resolve_device_calibrations(
     model: str | None, live_support: dict | None = None, firmware_version: str | None = None
 ) -> dict[str, bool]:

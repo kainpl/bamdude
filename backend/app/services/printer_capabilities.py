@@ -16,6 +16,7 @@ from backend.app.services.bambu_mqtt import PrinterState
 from backend.app.services.calibration_mode_registry import mode_state_map
 from backend.app.utils.printer_configs import (
     air_print_detection_position,
+    filament_calibration_availability,
     get_device_support_flags,
     supports_safety_options,
 )
@@ -166,12 +167,20 @@ def compute_printer_supports(state: PrinterState, printer_model: str | None) -> 
 
 # ---------- Filament Calibration capabilities (m062 / Plan 1) ----------
 
-_LIDAR_MODELS = frozenset({"X1", "X1C", "X1E", "H2D", "H2DPRO"})
-_DUAL_EXTRUDER_MODELS = frozenset({"H2D", "H2DPRO"})
+# ⚠️ The lidar list that used to live here is gone — the answer comes from the
+# mirrored BS config now (``filament_calibration_availability``). It had the H2D
+# down as a lidar machine, which BS's own config denies, and it predated the
+# X2D, P2S, A2L, H2C and H2S, so those five were offered no automatic
+# calibration at all.
+# ⚠️ No second list of dual-nozzle models here. ``is_dual_nozzle_model`` is the
+# one this file already imports, and the copy that used to sit on this line —
+# ``{H2D, H2DPRO}`` — disagreed with it: no X2D, no H2C, and none of the
+# internal codes. The wizard showed one extruder on a two-nozzle machine, and
+# auto PA line picked the single-extruder asset for it.
 
 
-def _list_extruders(model_norm: str) -> list[dict]:
-    if model_norm in _DUAL_EXTRUDER_MODELS:
+def _list_extruders(model: str | None) -> list[dict]:
+    if is_dual_nozzle_model(model):
         return [{"id": 0, "name": "Right"}, {"id": 1, "name": "Left"}]
     return [{"id": 0, "name": "Main"}]
 
@@ -208,8 +217,12 @@ def compute_calibration_supports(state: PrinterState, printer_model: str | None)
     frontend ANDs them with ``mode_state`` to decide whether the row is
     interactive.
     """
-    m = _norm(printer_model)
-    has_lidar = m in _LIDAR_MODELS
+    # Per-model base ∧ what this printer actually reported. The AND is
+    # deliberate: the push flags carry BS's two series clamps for firmware that
+    # advertises a capability it does not have (grep
+    # ``_apply_series_calibration_clamps``), and a base that overrode them would
+    # re-enable exactly what Bambu refuses to believe.
+    auto_base = filament_calibration_availability(printer_model, getattr(state, "firmware_version", None))
 
     return {
         # Manual paths
@@ -219,12 +232,12 @@ def compute_calibration_supports(state: PrinterState, printer_model: str | None)
         "vol_speed_tower": True,
         "vfa_tower": True,
         "retraction_tower": True,
-        # Auto paths (lidar + push flag) — printer-side, no asset / slice needed
-        "pa_auto": has_lidar and bool(getattr(state, "is_support_pa_calibration", False)),
-        "flow_auto": has_lidar and bool(getattr(state, "is_support_auto_flow_calibration", False)),
+        # Auto paths (model base + push flag) — printer-side, no asset / slice needed
+        "pa_auto": auto_base["pa_auto"] and bool(getattr(state, "is_support_pa_calibration", False)),
+        "flow_auto": auto_base["flow_auto"] and bool(getattr(state, "is_support_auto_flow_calibration", False)),
         # Layout
-        "dual_extruder": m in _DUAL_EXTRUDER_MODELS,
-        "extruders": _list_extruders(m),
+        "dual_extruder": is_dual_nozzle_model(printer_model),
+        "extruders": _list_extruders(printer_model),
         # ⚠️ These read ``nozzle_diameter`` / ``nozzle_type`` / ``nozzle_flow``,
         # which is what ``NozzleInfo`` actually carries. They used to ask for
         # ``diameter`` / ``type`` / ``flow_type`` — attributes that do not exist
