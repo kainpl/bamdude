@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { LineChart, Loader2, Thermometer, WifiOff } from 'lucide-react';
@@ -13,6 +13,9 @@ import { ZigbeeStatusBadge } from './ZigbeeStatusBadge';
 
 interface Props {
   onClose: () => void;
+  /** Held true while a chart is open — the wrapper's delayed close would
+   *  otherwise unmount this popover and take the chart down with it. */
+  onPinnedChange?: (pinned: boolean) => void;
 }
 
 /**
@@ -27,9 +30,15 @@ interface Props {
  * and adoption is already the deliberate act. A flag would be a second answer
  * to a question that has one.
  */
-export function SensorsPopover({ onClose }: Props) {
+export function SensorsPopover({ onClose, onPinnedChange }: Props) {
   const { t } = useTranslation();
   const [charting, setCharting] = useState<ZigbeeSensor | null>(null);
+
+  // The chart lives outside this box, so moving the pointer to it reads as
+  // leaving — both here and on the wrapper above.
+  useEffect(() => {
+    onPinnedChange?.(charting !== null);
+  }, [charting, onPinnedChange]);
 
   const { data, isLoading } = useQuery({
     queryKey: ['zigbee-sensors'],
@@ -44,7 +53,7 @@ export function SensorsPopover({ onClose }: Props) {
   return (
     <>
       <div
-        className="absolute bottom-full left-0 mb-2 w-72 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-xl z-50"
+        className="absolute bottom-full left-0 mb-2 w-72 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-xl z-50 origin-bottom-left animate-in fade-in-0 zoom-in-95 slide-in-from-bottom-1"
         // Kept open while a chart is up: the modal renders outside this box, so
         // moving the pointer to it would otherwise close the thing that owns it.
         onMouseLeave={() => charting === null && onClose()}

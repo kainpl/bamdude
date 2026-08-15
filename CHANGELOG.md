@@ -22,6 +22,7 @@
 
 - **New printers clean up after themselves by default.** The setting has defaulted to on for printers added through the interface for a long time, while the database column said off — so a printer created any other way behaved differently for no reason anyone could see. They now agree. **Printers you already have are not touched**: whatever each one is set to today stays exactly as it is.
 
+- **The sensor and smart-plug popovers in the sidebar now close when you move away from them.** They opened when the pointer reached their icon but only closed on leaving the popover itself, so glancing at the icon and moving on left one on screen for good. Moving between the icon and the popover no longer closes it either, and a chart or confirmation opened from inside one keeps it alive.
 - **Filament hover cards are no longer clipped at the edges of the page.** The card that appears over an AMS slot is now drawn above the whole page instead of inside the scrolling area, so the leftmost and topmost slots show it in full. Enter animations that had quietly never worked — the card and three dialogs were asking for one — now play.
 
 ### Fixed

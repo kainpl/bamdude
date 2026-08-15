@@ -3,6 +3,7 @@ import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { Printer, Archive, Calendar, BarChart3, Cloud, Settings, Sun, Moon, Monitor, ChevronLeft, ChevronRight, Keyboard, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, BookOpen, Cpu, Thermometer, type LucideIcon } from 'lucide-react';
 import { GitHubIcon, TelegramIcon, MakerWorldIcon } from './BrandIcons';
 import { useTranslation } from 'react-i18next';
+import { useHoverIntent } from '../hooks/useHoverIntent';
 import { useTheme } from '../contexts/ThemeContext';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { InstallAppButton } from './InstallAppButton';
@@ -176,6 +177,10 @@ export function Layout() {
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showSwitchbar, setShowSwitchbar] = useState(false);
   const [showSensors, setShowSensors] = useState(false);
+  // Hover intent for the two sidebar popovers — see useHoverIntent for why the
+  // close is delayed and why it belongs above the popover rather than inside it.
+  const sensorsHover = useHoverIntent(setShowSensors);
+  const switchbarHover = useHoverIntent(setShowSwitchbar);
   const canInstall = useInstallPrompt() !== null;
   const [sidebarOrder, setSidebarOrder] = useState<string[]>(getSidebarOrder);
   const [draggedId, setDraggedId] = useState<string | null>(null);
@@ -695,9 +700,12 @@ export function Layout() {
     'p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white';
   const footerIcons: React.ReactNode[] = [
     maySeeSensors && hasSensors ? (
-      <div className="relative" key="sensors">
+      // ⚠️ Open AND close live on the wrapper. The popover used to own its own
+      // close, so hovering the icon and walking away left it up for good — the
+      // only way to dismiss one was to move onto it and then off it again.
+      <div className="relative" key="sensors" onMouseEnter={sensorsHover.enter} onMouseLeave={sensorsHover.leave}>
         <button
-          onMouseEnter={() => setShowSensors(true)}
+          onMouseEnter={sensorsHover.enter}
           className={`p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors ${
             showSensors ? 'text-bambu-green' : 'text-bambu-gray-light hover:text-white'
           }`}
@@ -705,13 +713,15 @@ export function Layout() {
         >
           <Thermometer className="w-5 h-5" />
         </button>
-        {showSensors && <SensorsPopover onClose={() => setShowSensors(false)} />}
+        {showSensors && (
+          <SensorsPopover onClose={() => setShowSensors(false)} onPinnedChange={sensorsHover.setPinned} />
+        )}
       </div>
     ) : null,
     hasSwitchbarPlugs ? (
-      <div className="relative" key="switchbar">
+      <div className="relative" key="switchbar" onMouseEnter={switchbarHover.enter} onMouseLeave={switchbarHover.leave}>
         <button
-          onMouseEnter={() => setShowSwitchbar(true)}
+          onMouseEnter={switchbarHover.enter}
           className={`p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors ${
             showSwitchbar ? 'text-bambu-green' : 'text-bambu-gray-light hover:text-white'
           }`}
@@ -719,7 +729,9 @@ export function Layout() {
         >
           <Plug className="w-5 h-5" />
         </button>
-        {showSwitchbar && <SwitchbarPopover onClose={() => setShowSwitchbar(false)} />}
+        {showSwitchbar && (
+          <SwitchbarPopover onClose={() => setShowSwitchbar(false)} onPinnedChange={switchbarHover.setPinned} />
+        )}
       </div>
     ) : null,
     <button key="shortcuts" onClick={() => setShowShortcuts(true)} className={iconClass} title={t('nav.keyboardShortcuts')}>
@@ -1112,9 +1124,9 @@ export function Layout() {
                 </button>
               )}
               {maySeeSensors && hasSensors && (
-                <div className="relative">
+                <div className="relative" onMouseEnter={sensorsHover.enter} onMouseLeave={sensorsHover.leave}>
                   <button
-                    onMouseEnter={() => setShowSensors(true)}
+                    onMouseEnter={sensorsHover.enter}
                     className={`p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors ${
                       showSensors ? 'text-bambu-green' : 'text-bambu-gray-light hover:text-white'
                     }`}
@@ -1122,13 +1134,15 @@ export function Layout() {
                   >
                     <Thermometer className="w-5 h-5" />
                   </button>
-                  {showSensors && <SensorsPopover onClose={() => setShowSensors(false)} />}
+                  {showSensors && (
+          <SensorsPopover onClose={() => setShowSensors(false)} onPinnedChange={sensorsHover.setPinned} />
+        )}
                 </div>
               )}
               {hasSwitchbarPlugs && (
-                <div className="relative">
+                <div className="relative" onMouseEnter={switchbarHover.enter} onMouseLeave={switchbarHover.leave}>
                   <button
-                    onMouseEnter={() => setShowSwitchbar(true)}
+                    onMouseEnter={switchbarHover.enter}
                     className={`p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors ${
                       showSwitchbar ? 'text-bambu-green' : 'text-bambu-gray-light hover:text-white'
                     }`}
@@ -1137,7 +1151,7 @@ export function Layout() {
                     <Plug className="w-5 h-5" />
                   </button>
                   {showSwitchbar && (
-                    <SwitchbarPopover onClose={() => setShowSwitchbar(false)} />
+                    <SwitchbarPopover onClose={() => setShowSwitchbar(false)} onPinnedChange={switchbarHover.setPinned} />
                   )}
                 </div>
               )}

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Plug, Power, PowerOff, Loader2, Wifi, WifiOff, Zap, Radio, Eye } from 'lucide-react';
@@ -9,11 +9,21 @@ import { ZigbeeStatusBadge } from './zigbee/ZigbeeStatusBadge';
 
 interface SwitchbarPopoverProps {
   onClose: () => void;
+  /** Held true while a confirmation is up. The dialog is rendered from inside
+   *  this popover, so a close would unmount the very thing being confirmed —
+   *  and moving the pointer onto the dialog reads as leaving. */
+  onPinnedChange?: (pinned: boolean) => void;
 }
 
-function SwitchItem({ plug }: { plug: SmartPlug }) {
+function SwitchItem({ plug, onPinnedChange }: { plug: SmartPlug; onPinnedChange?: (pinned: boolean) => void }) {
   const queryClient = useQueryClient();
   const [confirmAction, setConfirmAction] = useState<'on' | 'off' | null>(null);
+
+  // Only one confirmation can be open at a time — the dialog covers the screen —
+  // so reporting per item needs no counting above.
+  useEffect(() => {
+    onPinnedChange?.(confirmAction !== null);
+  }, [confirmAction, onPinnedChange]);
 
   // Fetch current status
   const { data: status, isLoading: statusLoading } = useQuery({
@@ -147,7 +157,7 @@ function SwitchItem({ plug }: { plug: SmartPlug }) {
   );
 }
 
-export function SwitchbarPopover({ onClose }: SwitchbarPopoverProps) {
+export function SwitchbarPopover({ onClose, onPinnedChange }: SwitchbarPopoverProps) {
   const { t } = useTranslation();
   // Fetch all smart plugs
   const { data: plugs, isLoading } = useQuery({
@@ -160,7 +170,7 @@ export function SwitchbarPopover({ onClose }: SwitchbarPopoverProps) {
 
   return (
     <div
-      className="absolute bottom-full left-0 mb-2 w-72 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-xl z-50"
+      className="absolute bottom-full left-0 mb-2 w-72 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-xl z-50 origin-bottom-left animate-in fade-in-0 zoom-in-95 slide-in-from-bottom-1"
       onMouseLeave={onClose}
     >
       {/* Header */}
@@ -191,7 +201,7 @@ export function SwitchbarPopover({ onClose }: SwitchbarPopoverProps) {
         ) : (
           <div className="space-y-1">
             {switchbarPlugs.map(plug => (
-              <SwitchItem key={plug.id} plug={plug} />
+              <SwitchItem key={plug.id} plug={plug} onPinnedChange={onPinnedChange} />
             ))}
           </div>
         )}
