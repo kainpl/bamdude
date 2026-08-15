@@ -175,4 +175,24 @@ async def test_archive_print_dispatched_file_dedup_shares_on_disk_copy(
 
     assert a1.content_hash == a2.content_hash
     # Cross-printer dedup: both archives point at the SAME file_path.
-    assert a1.file_path == a2.file_path
+    #
+    # ⚠️ This assertion has failed once inside a full run and never in
+    # isolation (25 consecutive green), on code byte-identical to a run that
+    # passed. Rather than leave the next occurrence as another "flaky", the
+    # message below splits the search space with what the paths already say:
+    #
+    #   * a2 in a directory suffixed ``_2``  → the dedup lookup returned None
+    #     and a2 built a fresh directory next to a1's, colliding on the name.
+    #   * a2 somewhere unrelated             → the lookup returned a DIFFERENT
+    #     row, which points at ``ORDER BY created_at ASC`` over a column with
+    #     one-second resolution.
+    #
+    # One of those two is what happened; they need different fixes, and
+    # guessing which without a live failure is how the last attempt stalled.
+    assert a1.file_path == a2.file_path, (
+        "cross-printer dedup did not share the on-disk copy\n"
+        f"  a1: {a1.file_path}\n"
+        f"  a2: {a2.file_path}\n"
+        "  a2 sits in its own directory (so the lookup returned nothing): "
+        f"{Path(a2.file_path or '').parent != Path(a1.file_path or '').parent}"
+    )
