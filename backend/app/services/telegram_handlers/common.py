@@ -137,3 +137,26 @@ async def get_maintenance_counts(printer_id: int) -> tuple[int, int]:
     except Exception:
         pass
     return 0, 0
+
+
+async def resolve_queue_id(printer_id: int) -> int | None:
+    """The ``printer_queues`` row id for a printer, or ``None`` if it has none.
+
+    ⚠️ **``queue_id`` is not ``printer_id``.** Both bot scenes used to assume it
+    was, with a comment saying so. ``PrinterQueue.id`` is its own autoincrement
+    key and ``printer_id`` is a separate unique column, so the two agree only
+    while the queues were created in the same order as the printers and none was
+    ever deleted — true on a farm that has never removed a machine, and
+    guaranteed by nothing. Everything outside the bot already looks the row up
+    (see ``background_dispatch.enqueue_calibration_print``).
+
+    Getting it wrong is silent and lands the job on **another printer's queue**.
+    """
+    from sqlalchemy import select
+
+    from backend.app.core.database import async_session
+    from backend.app.models.printer_queue import PrinterQueue
+
+    async with async_session() as db:
+        result = await db.execute(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))
+        return result.scalar_one_or_none()

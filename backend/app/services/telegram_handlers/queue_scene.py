@@ -10,7 +10,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from backend.app.i18n import escape_md, get_language, t
-from backend.app.services.telegram_handlers.common import NS, get_printers_data, has_perm
+from backend.app.services.telegram_handlers.common import NS, get_printers_data, has_perm, resolve_queue_id
 from backend.app.services.telegram_handlers.pagination import build_page_nav
 
 if TYPE_CHECKING:
@@ -273,8 +273,13 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
                 await callback.answer(t(lang, NS, "queue_add.failed"), show_alert=True)
                 return
 
+            queue_id = await resolve_queue_id(printer_id)
+            if queue_id is None:
+                await callback.answer(t(lang, NS, "queue_add.failed"), show_alert=True)
+                return
+
             item = PrintQueueItem(
-                queue_id=printer_id,  # queue_id == printer_id
+                queue_id=queue_id,
                 library_file_id=file_id,
                 status="pending",
                 position=max_pos + 1,

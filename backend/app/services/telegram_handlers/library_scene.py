@@ -10,7 +10,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from backend.app.i18n import escape_md, get_language, t
-from backend.app.services.telegram_handlers.common import NS, get_printers_data, has_perm
+from backend.app.services.telegram_handlers.common import NS, get_printers_data, has_perm, resolve_queue_id
 from backend.app.services.telegram_handlers.pagination import build_page_nav
 
 if TYPE_CHECKING:
@@ -319,11 +319,16 @@ async def cb_library_add_queue(callback: CallbackQuery, state: FSMContext, tg_ch
     from backend.app.core.database import async_session
     from backend.app.models.print_queue import PrintQueueItem
 
+    queue_id = await resolve_queue_id(printer_id)
+    if queue_id is None:
+        await callback.answer(t(lang, NS, "library.failed"), show_alert=True)
+        return
+
     try:
         async with async_session() as db:
             max_pos = (await db.execute(select(func.max(PrintQueueItem.position)))).scalar() or 0
             item = PrintQueueItem(
-                queue_id=printer_id,  # queue_id == printer_id
+                queue_id=queue_id,
                 library_file_id=file_id,
                 status="pending",
                 position=max_pos + 1,
