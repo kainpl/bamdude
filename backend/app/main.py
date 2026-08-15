@@ -1680,16 +1680,22 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
 
                 printer_name = printer.name if printer else f"Printer {printer_id}"
 
-                # Format error details for notification
-                # Module 0x07 = AMS/Filament, 0x05 = Nozzle, 0x0C = Motion Controller, etc.
-                module_names = {
-                    0x03: "Print/Task",
-                    0x05: "Nozzle/Extruder",
-                    0x07: "AMS/Filament",
-                    0x0C: "Motion Controller",
-                    0x12: "Chamber",
-                }
-
+                # ⚠️ The notification title used to name the module — a table of
+                # five guesses. Measured against Bambu's catalogue, four were
+                # wrong: 0x03 is bed and heating (not Print/Task), 0x05 is media,
+                # camera, USB and cloud (not Nozzle/Extruder), 0x0C is the
+                # toolhead camera (not the motion controller), 0x12 is AMS slot
+                # motors (not the chamber). Only 0x07 was right, and two modules
+                # bigger than most of the table were absent — AMS-HT and the X2D
+                # hotend rack. That is how "Device is busy" reached an operator
+                # titled "Nozzle/Extruder Error" and sent them to look at a
+                # nozzle.
+                #
+                # Renaming the five would fix today's list and break on the next
+                # model, because the table guesses what the catalogue KNOWS. The
+                # title now carries the code, which is exact and searchable, and
+                # the body carries the catalogue's own description — which
+                # already names its subsystem ("Toolhead Camera is offline").
                 from backend.app.services.hms_catalogue import describe
 
                 hms_device = hms_device_of(printer_id)
@@ -1704,7 +1710,6 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                 async with async_session() as db:
                     sent_count = 0
                     for error in new_errors:
-                        module_name = module_names.get(error.module, f"Module 0x{error.module:02X}")
                         # Build short code like "0700_8010"
                         # Mask to 16 bits to handle printers that send larger values
                         error_code_int = int(error.code.replace("0x", ""), 16) if error.code else 0
@@ -1725,7 +1730,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                         description = describe(
                             hms_device, getattr(error, "full_code", None), short_code.replace("_", "")
                         )
-                        error_type = f"{module_name} Error"
+                        error_type = short_code
                         error_detail = description or short_code
 
                         await notification_service.on_printer_error(

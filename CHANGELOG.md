@@ -34,6 +34,10 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **A printer error is no longer filed under the wrong part of the printer.** The notification title named the failing module from a table of five guesses; checked against Bambu's own catalogue, four of the five were wrong and two of the largest modules were missing. That is how "Device is busy" arrived titled "Nozzle/Extruder Error" and sent an operator to look at a nozzle. The title now carries the error code, which is exact, and the description underneath names its own subsystem.
+
+
+
 - **Error messages now say what your printer says, and match the machine that reported it.** BamDude's error text came from a community list of 853 codes that was the same for every model. Bambu's own text differs per printer, and disagreed with ours in 159 places — ours said "The hotend is not installed" where Bambu's text for a two-nozzle machine says "The **right** hotend is not installed". Notifications, pause reasons and the reason a queued print failed now all read from Bambu's catalogue for that model.
 
     A fault also no longer has to be one BamDude recognises before it will notify you. Whether to send is decided by how serious the printer says the fault is, which is how it was already decided — the extra "do we have text for this" condition on top of it meant a fatal, fully documented fault could pass unmentioned because our smaller list had never heard of it.
