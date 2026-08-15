@@ -4,7 +4,7 @@
 per printer model. They are the data-driven source of truth for **per-model
 device capabilities** — so this knowledge lives in data, not hardcoded Python.
 
-- **Source:** BambuStudio `resources/printers/` @ tag **`v02.08.01.55`**
+- **Source:** BambuStudio `resources/printers/` @ tag **`v02.08.02.60`**
   (commit `ba049f6a`, 2026-07-14).
 - **Consumed by:** `backend/app/utils/printer_configs.py` (loader + the
   device-calibration availability resolver).
