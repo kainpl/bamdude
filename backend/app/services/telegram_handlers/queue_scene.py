@@ -16,6 +16,7 @@ from backend.app.services.telegram_handlers.common import (
     has_perm,
     next_queue_position,
     resolve_queue_id,
+    scene_expired,
 )
 from backend.app.services.telegram_handlers.pagination import build_page_nav
 
@@ -367,6 +368,12 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
     # printer_id=None, and the check below read that as "nothing chosen".
     if not printer_id and target_model:
         await _add_to_auto_queue(callback, lang, file_id, target_model, tg_chat)
+        return
+
+    # Neither a printer nor a model: nothing was ever chosen here, which after a
+    # restart is what an intact keyboard over a dead wizard looks like.
+    if not printer_id and not target_model:
+        await scene_expired(callback, lang)
         return
 
     try:

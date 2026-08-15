@@ -84,6 +84,7 @@ async def start_telegram_bot() -> None:
     from backend.app.services.telegram_handlers.actions import router as actions_router
     from backend.app.services.telegram_handlers.auth_middleware import TelegramAuthMiddleware
     from backend.app.services.telegram_handlers.calibration import router as calibration_router
+    from backend.app.services.telegram_handlers.fallback import router as fallback_router
     from backend.app.services.telegram_handlers.library_scene import router as library_router
     from backend.app.services.telegram_handlers.maintenance_handlers import router as maintenance_router
     from backend.app.services.telegram_handlers.printer_add_scene import router as printer_add_router
@@ -106,6 +107,9 @@ async def start_telegram_bot() -> None:
     _dispatcher.include_router(library_router)
     _dispatcher.include_router(queue_scene_router)
     _dispatcher.include_router(printer_add_router)
+    # ⚠️ LAST, and it must stay last: it answers any message no handler above
+    # it claimed. Anywhere earlier and it swallows the bot.
+    _dispatcher.include_router(fallback_router)
 
     _bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2))
 

@@ -30,6 +30,10 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **An interrupted step-by-step flow in the Telegram bot now says so.** Restarting BamDude ends whatever flows were open in the bot — but their messages stay on your screen with their buttons. Pressing one used to answer "failed", which reads as the print being refused rather than never attempted; typing into one produced nothing at all, which is indistinguishable from the bot being down. Both now tell you the step is no longer valid and to start again.
+
+    Anything else the bot cannot make sense of gets an answer too, instead of silence.
+
 - **Leaving a step-by-step flow in the Telegram bot now actually ends it.** Adding a printer, printing from the library and adding to the queue all ask you a series of questions. Pressing one of the keyboard buttons took you to that menu — but the bot stayed in the middle of the flow, so the next thing you typed was read as an answer to a question you had walked away from. An IP address for a printer you were no longer adding, for instance.
 
     There is also a **/cancel** command now, in the bot's command menu. It works from anywhere and from any step, which the Cancel buttons could not: they live inside the flow's own message, which is exactly what you no longer have once you have navigated away.

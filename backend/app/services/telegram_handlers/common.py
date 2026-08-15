@@ -183,3 +183,26 @@ async def next_queue_position(db, queue_id: int) -> int:
         .where(PrintQueueItem.status == "pending")
     )
     return (result.scalar() or 0) + 1
+
+
+async def scene_expired(callback, lang: str) -> None:
+    """Answer a scene step whose wizard is no longer running.
+
+    FSM state lives in aiogram's in-memory storage, so every restart of the
+    backend wipes whatever wizards were open. The messages stay on the
+    operator's screen with their buttons intact, and pressing one used to read
+    the missing data as a bad request and answer "failed" — which says the
+    action was refused, not that it was never attempted.
+
+    ⚠️ **Not a fix for losing the state**, deliberately. A wizard is a few
+    seconds of interaction and restarts are rare; persisting it would buy little
+    and cost a table, a migration and an expiry policy. What was worth fixing is
+    that the loss was indistinguishable from a failure.
+    """
+    from backend.app.i18n import escape_md, t
+
+    await callback.answer(t(lang, NS, "start.scene_expired"), show_alert=True)
+    try:
+        await callback.message.edit_text(escape_md(t(lang, NS, "start.scene_expired")))
+    except Exception:  # noqa: BLE001 — the message may be too old to edit; the alert already landed
+        pass

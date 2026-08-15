@@ -16,6 +16,7 @@ from backend.app.services.telegram_handlers.common import (
     has_perm,
     next_queue_position,
     resolve_queue_id,
+    scene_expired,
 )
 from backend.app.services.telegram_handlers.pagination import build_page_nav
 
@@ -279,8 +280,11 @@ async def cb_library_print_now(callback: CallbackQuery, state: FSMContext, tg_ch
 
     await state.clear()
 
+    # ⚠️ Missing state here is not a refusal — it is a wizard that stopped
+    # existing while its buttons stayed on screen (a backend restart). Saying
+    # "failed" claimed the print was rejected.
     if not file_id or not printer_id:
-        await callback.answer(t(lang, NS, "library.failed"), show_alert=True)
+        await scene_expired(callback, lang)
         return
 
     try:
@@ -316,8 +320,11 @@ async def cb_library_add_queue(callback: CallbackQuery, state: FSMContext, tg_ch
 
     await state.clear()
 
+    # ⚠️ Missing state here is not a refusal — it is a wizard that stopped
+    # existing while its buttons stayed on screen (a backend restart). Saying
+    # "failed" claimed the print was rejected.
     if not file_id or not printer_id:
-        await callback.answer(t(lang, NS, "library.failed"), show_alert=True)
+        await scene_expired(callback, lang)
         return
 
     from backend.app.core.database import async_session

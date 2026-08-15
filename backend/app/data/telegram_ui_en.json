@@ -14,7 +14,9 @@
     "btn_stats": "Stats",
     "btn_help": "Help",
     "cancelled": "Cancelled. You are back at the main menu.",
-    "nothing_to_cancel": "Nothing to cancel."
+    "nothing_to_cancel": "Nothing to cancel.",
+    "scene_expired": "That step is no longer valid — the wizard was interrupted. Please start again.",
+    "not_understood": "I did not understand that. Press /start for the menu, or /cancel to leave the current step."
   },
   "reply_kb": {
     "printers": "🖨 Printers",
