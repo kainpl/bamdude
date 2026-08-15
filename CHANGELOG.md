@@ -30,6 +30,10 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **A print started outside the queue now tells you when it fails.** Reprinting from an archive, printing from the library and starting a print from the Telegram bot all hand the job to the dispatcher and answer straight away. If the upload or the start then failed, the only place that said so was the dispatch panel — so unless you happened to be watching it at that moment, the print simply never happened and nothing told you. Those failures now raise the same notification a queued job does, through whichever channels you have set up.
+
+    Queued jobs are unaffected and are still reported once, not twice. Cancelling a print is not reported: you already know.
+
 - **"Any printer of model X" in the Telegram bot now works.** Adding a job from the bot offers a specific printer or any printer of a given model. The second one has never worked: the buttons were drawn, and pressing one always answered "failed". It now creates an auto-queue job, which is what that target means — the distributor places it on whichever machine of that model can take it.
 
     The job is built the same way the browser builds it, filament requirements read out of the 3MF included, so the same file queued from either place routes the same. A file BamDude cannot read still queues and is routed on its model alone.

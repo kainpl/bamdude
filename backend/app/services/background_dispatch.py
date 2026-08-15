@@ -475,6 +475,51 @@ class PrintDispatchJob:
     outcome: dict[str, Any] = field(default_factory=dict)
 
 
+async def report_failure_if_unwatched(job: PrintDispatchJob) -> None:
+    """Tell the operator a direct print failed, because nobody else will.
+
+    ``notification_service.on_queue_job_failed`` is reached from exactly two
+    places, both in ``print_scheduler`` — so only a **queue** job that fails to
+    start is ever announced. A print started from the archive's Reprint button,
+    from the library, or from the Telegram bot enqueues a dispatch job and the
+    HTTP call returns ``dispatched`` immediately; if the upload or the start
+    then fails, the failure goes to the dispatch panel over the websocket and
+    nowhere else. Whoever pressed the button learns nothing, unless they happen
+    to be looking at that panel at that moment.
+
+    ⚠️ **Gated on ``queue_item_id is None``** — that is the whole discriminator.
+    A job dispatched for a queue item is already awaited and reported by the
+    scheduler, and announcing it here would notify twice for one failure.
+
+    ⚠️ Cancellations are not failures. The operator who pressed Cancel does not
+    need to be told what they just did.
+
+    Never raises: this runs on the way out of a dispatch that has already gone
+    wrong, and a notification provider being unreachable must not replace the
+    real error with its own.
+    """
+    if job.queue_item_id is not None:
+        return
+    outcome = job.outcome or {}
+    if outcome.get("success") or outcome.get("cancelled"):
+        return
+
+    try:
+        from backend.app.core.database import async_session
+        from backend.app.services.notification_service import notification_service
+
+        async with async_session() as db:
+            await notification_service.on_queue_job_failed(
+                job_name=job.source_name,
+                printer_id=job.printer_id,
+                printer_name=job.printer_name,
+                reason=str(outcome.get("error") or "Dispatch failed"),
+                db=db,
+            )
+    except Exception as exc:  # noqa: BLE001 — reporting a failure must not raise a second one
+        logger.warning("Could not announce the failed dispatch of %s: %s", job.source_name, exc)
+
+
 @dataclass(slots=True)
 class ActiveDispatchState:
     job: PrintDispatchJob
@@ -1622,6 +1667,10 @@ class BackgroundDispatchService:
 
                     shutil.rmtree(_patch_cleanup_dir, ignore_errors=True)
                     _patch_cleanup_dir = None
+                # ⚠️ Before the event, not after: a caller that awaits the
+                # event may act on the outcome immediately, and this is the one
+                # place every exit path of the runner passes through.
+                await report_failure_if_unwatched(job)
                 job.completion_event.set()
 
     async def _run_swap_macro_if_needed(
@@ -2238,6 +2287,10 @@ class BackgroundDispatchService:
 
                     shutil.rmtree(_patch_cleanup_dir_lib, ignore_errors=True)
                     _patch_cleanup_dir_lib = None
+                # ⚠️ Before the event, not after: a caller that awaits the
+                # event may act on the outcome immediately, and this is the one
+                # place every exit path of the runner passes through.
+                await report_failure_if_unwatched(job)
                 job.completion_event.set()
 
     @staticmethod
