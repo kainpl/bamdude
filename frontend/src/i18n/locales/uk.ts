@@ -2851,6 +2851,8 @@ export default {
     noErrors: 'Немає помилок',
     viewOnWiki: 'Переглянути на Bambu Lab Wiki',
     unknownCode: 'Невідомий код HMS — деталі дивіться у вікі Bambu Lab.',
+    mqttVerifyFailedDescription:
+      'Принтер відхилив команду, бо не зміг її перевірити. Друки, зміни температури й завантаження філаменту з BamDude ігноруватимуться, доки це не виправлено.',
     mqttVerifyFailedRemedy:
       'Як полагодити: увімкніть на принтері режим розробника (LAN Mode) і перезавантажте принтер. Порада самої Bambu Lab для цього коду — оновити Bambu Studio чи Handy — не стосується друку, надісланого з BamDude.',
     clearInstructions: 'Очистіть помилки на принтері, щоб прибрати їх тут.',

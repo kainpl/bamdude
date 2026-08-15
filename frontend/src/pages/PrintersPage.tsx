@@ -6321,6 +6321,7 @@ function PrinterCard({
           errors={status?.hms_errors || []}
           onClose={() => setShowHMSModal(false)}
           printerId={printer.id}
+          serialNumber={printer.serial_number}
           hasPermission={hasPermission}
           runoutGuidance={runoutGuidance}
         />

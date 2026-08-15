@@ -28,6 +28,10 @@ All notable changes to BamDude will be documented in this file.
 
 - **New printers clean up after themselves by default.** The setting has defaulted to on for printers added through the interface for a long time, while the database column said off — so a printer created any other way behaved differently for no reason anyone could see. They now agree. **Printers you already have are not touched**: whatever each one is set to today stays exactly as it is.
 
+### Added
+
+- **Printer errors are described in full, and for the machine that reported them.** BamDude carried a few hundred descriptions taken from the smaller half of Bambu's catalogue, identical for every model. It now carries the whole thing — around 5 000 codes per printer model — and looks each error up against the machine it came from, because the same code can mean two different things on two printers. Ukrainian is ours: Bambu ships no Ukrainian at all, so descriptions are being translated, and anything not yet translated is shown in English rather than left blank.
+
 ### Fixed
 
 - **Error messages now say what your printer says, and match the machine that reported it.** BamDude's error text came from a community list of 853 codes that was the same for every model. Bambu's own text differs per printer, and disagreed with ours in 159 places — ours said "The hotend is not installed" where Bambu's text for a two-nozzle machine says "The **right** hotend is not installed". Notifications, pause reasons and the reason a queued print failed now all read from Bambu's catalogue for that model.

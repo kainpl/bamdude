@@ -2,11 +2,11 @@
  * Tests for the HMSErrorModal component.
  */
 
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
-import { HMSErrorModal, filterKnownHMSErrors } from '../../components/HMSErrorModal';
+import { HMSErrorModal, filterKnownHMSErrors, HMS_MQTT_VERIFY_FAILED } from '../../components/HMSErrorModal';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
 import type { HMSError, Permission } from '../../api/client';
@@ -26,6 +26,24 @@ const unknownError: HMSError = {
   module: 0,
   severity: 1,
 };
+
+describe('the catalogue is no longer in the bundle', () => {
+  // ⚠️ A source check, because nothing else would fail if it came back. The
+  // constant was 118 KB for 853 entries — the full catalogue in that shape is
+  // megabytes shipped to every browser, for data that changes when Bambu ships
+  // a firmware and not when we deploy.
+  it('HMSErrorModal.tsx carries no ERROR_DESCRIPTIONS', async () => {
+    const fs = await import('fs');
+    const source = fs.readFileSync('src/components/HMSErrorModal.tsx', 'utf8');
+    expect(source).not.toContain('const ERROR_DESCRIPTIONS');
+  });
+
+  it('still exports the one code it explains in its own words', () => {
+    // BamDude's advice for a verification failure is "enable Developer Mode",
+    // which is ours and not Bambu's — it must survive the catalogue move.
+    expect(HMS_MQTT_VERIFY_FAILED).toBe('0500050000010007');
+  });
+});
 
 describe('filterKnownHMSErrors', () => {
   // ⚠️ The filter used to keep an error only if the catalogue described it or
@@ -61,8 +79,29 @@ describe('HMSErrorModal', () => {
     errors: [knownError],
     onClose: vi.fn(),
     printerId: 1,
+    // ⚠️ 20P is an X2D. The descriptions are per model now, so a modal with no
+    // serial has no catalogue to describe anything with — which is exactly what
+    // the "unrecognised code" fallback is for, and is asserted separately.
+    serialNumber: '20P6BJ640901852',
     hasPermission: vi.fn().mockReturnValue(true) as unknown as (permission: Permission) => boolean,
   };
+
+  beforeEach(() => {
+    // The catalogue the modal fetches for that model. Only the codes these
+    // tests exercise — the real file has 5 372.
+    server.use(
+      http.get('/api/v1/hms/descriptions', () =>
+        HttpResponse.json({
+          device: '20P',
+          lang: 'en',
+          descriptions: {
+            '0300400C': 'The task was canceled.',
+            '07008011': 'AMS filament ran out. Please insert a new filament into the same AMS slot.',
+          },
+        })
+      )
+    );
+  });
 
   afterEach(() => {
     cleanup();
@@ -75,9 +114,12 @@ describe('HMSErrorModal', () => {
       expect(screen.getByText('Errors - Test Printer')).toBeInTheDocument();
     });
 
-    it('shows error description for known error codes', () => {
+    it('shows error description for known error codes', async () => {
+      // ⚠️ Awaited now: the catalogue is fetched per model rather than bundled,
+      // so the text lands a moment after the modal does. Cached from then on —
+      // only the first open for a given model and language pays for it.
       render(<HMSErrorModal {...defaultProps} />);
-      expect(screen.getByText('The task was canceled.')).toBeInTheDocument();
+      expect(await screen.findByText('The task was canceled.')).toBeInTheDocument();
     });
 
     it('shows an unknown error rather than the empty state', () => {
@@ -109,9 +151,9 @@ describe('HMSErrorModal', () => {
     };
     const genericRunoutText = 'AMS filament ran out. Please insert a new filament into the same AMS slot.';
 
-    it('keeps the generic firmware text when no guidance is supplied', () => {
+    it('keeps the generic firmware text when no guidance is supplied', async () => {
       render(<HMSErrorModal {...defaultProps} errors={[runoutError]} />);
-      expect(screen.getByText(genericRunoutText)).toBeInTheDocument();
+      expect(await screen.findByText(genericRunoutText)).toBeInTheDocument();
     });
 
     it('names both the expected and the ran-out slot when both resolve', () => {
@@ -149,14 +191,14 @@ describe('HMSErrorModal', () => {
       expect(screen.getByText(/could not determine which slot the printer now expects/)).toBeInTheDocument();
     });
 
-    it('leaves non-runout error codes untouched', () => {
+    it('leaves non-runout error codes untouched', async () => {
       render(
         <HMSErrorModal
           {...defaultProps}
           runoutGuidance={{ expectedSlotLabel: 'AMS-A · Slot 3', ranOutSlotLabel: 'AMS-A · Slot 2' }}
         />
       );
-      expect(screen.getByText('The task was canceled.')).toBeInTheDocument();
+      expect(await screen.findByText('The task was canceled.')).toBeInTheDocument();
     });
   });
 
@@ -329,10 +371,10 @@ describe('HMSErrorModal', () => {
       expect(screen.getByText(/Developer Mode/i)).toBeInTheDocument();
     });
 
-    it('shows the four-group code the printer itself displays', () => {
+    it('shows the four-group code the printer itself displays', async () => {
       render(<HMSErrorModal {...defaultProps} errors={[verifyFailed]} />);
 
-      expect(screen.getByText('[0500-0500-0001-0007]')).toBeInTheDocument();
+      expect(await screen.findByText('[0500-0500-0001-0007]')).toBeInTheDocument();
     });
 
     it('leaves ordinary short-coded errors on their short form', () => {

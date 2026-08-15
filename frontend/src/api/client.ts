@@ -5302,6 +5302,21 @@ export const api = {
       { method: 'POST' },
     ),
 
+  // Every HMS description BamDude knows for one printer model.
+  //
+  // ⚠️ Served, not bundled. The catalogue is ~4 MB of English across seven
+  // models and used to be a 118 KB constant inside a React component. It also
+  // changes when Bambu ships a firmware, not when we deploy.
+  //
+  // ⚠️ `device` is the serial number's first three characters — the same key
+  // the backend uses for HMS actions. An unknown one answers an empty map
+  // rather than another model's text: the same code describes different
+  // mechanisms on different machines.
+  getHMSDescriptions: (device: string, lang: string) =>
+    request<{ device: string; lang: string; descriptions: Record<string, string> }>(
+      `/hms/descriptions?device=${encodeURIComponent(device)}&lang=${encodeURIComponent(lang)}`,
+    ),
+
   // Ask the printer whether there is room for this print's timelapse.
   // ⚠️ The answer does NOT come back here — the printer republishes its free
   // space in the next status push, so callers re-read the status after asking.

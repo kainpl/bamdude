@@ -2835,6 +2835,8 @@ export default {
     noErrors: 'No errors',
     viewOnWiki: 'View on Bambu Lab Wiki',
     unknownCode: 'Unknown HMS code — see the Bambu Lab wiki for details.',
+    mqttVerifyFailedDescription:
+      'The printer rejected a command because it could not verify it. Prints, temperature changes and filament loads sent from BamDude will be ignored until this is fixed.',
     mqttVerifyFailedRemedy:
       'To fix: enable Developer Mode (LAN Mode) on the printer, then restart the printer. Bambu Lab\'s own advice for this code — update Bambu Studio or Handy — does not apply to a print sent from BamDude.',
     clearInstructions: 'Clear errors on the printer to dismiss them here.',
