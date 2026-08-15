@@ -52,7 +52,43 @@ _ACTIVE_STATES = frozenset({"RUNNING", "PAUSE"})
 # pipeline plus the printer's own run-up: on a swap farm the gap between the
 # archive being created and the print actually starting was measured at ~1m50s
 # (plate change, then heat-up). Matches ``PrintScheduler._dispatch_max_hold``.
+#
+# ⚠️ This is the floor, not the whole window. With the preheat stage enabled the
+# dispatcher holds the printer at temperature between the upload and
+# ``start_print`` — by default up to 20 minutes, and up to 90 at the settings'
+# limits — so a fixed 180 would call a job that is heating an orphan and close
+# it. ``_grace_seconds`` adds the stage's own worst case when it applies.
 _JUST_DISPATCHED_SECONDS = 180
+
+
+async def _grace_seconds(db: AsyncSession, archive: PrintArchive) -> int:
+    """The window for THIS archive: the base, plus a preheat stage if it has one.
+
+    ⚠️ Asked per archive, not once per printer, because preheat is decided per
+    print: ``PrintQueueItem.preheat_override`` can force the stage on while the
+    global setting is off, and off while it is on. The queue item is reachable
+    because the dispatcher wires ``archive_id`` in the same transaction that
+    creates the row.
+
+    A print with no queue item — external, or started from the printer's screen —
+    has no override to read and falls through to the global setting. That is the
+    right answer for the wrong-looking reason: BamDude does not preheat for a
+    print it did not dispatch, but it also cannot be mid-dispatch on one, so the
+    extra grace costs nothing.
+
+    Best-effort: any failure here returns the base window rather than raising.
+    Getting this number wrong delays a cleanup; raising would abandon the sweep.
+    """
+    from backend.app.services.preheat import planned_stage_seconds
+
+    try:
+        override = await db.scalar(
+            select(PrintQueueItem.preheat_override).where(PrintQueueItem.archive_id == archive.id)
+        )
+        return _JUST_DISPATCHED_SECONDS + await planned_stage_seconds(db, override=override or "inherit")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("reconcile: could not size the dispatch window for archive %d (%s)", archive.id, exc)
+        return _JUST_DISPATCHED_SECONDS
 
 
 def _file_matches(archive_filename: str, live_file: str) -> bool:
@@ -419,13 +455,15 @@ async def _reconcile(
         created = archive.created_at
         if created is not None:
             created = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
-            if (now - created).total_seconds() < _JUST_DISPATCHED_SECONDS:
+            grace = await _grace_seconds(db, archive)
+            if (now - created).total_seconds() < grace:
                 logger.info(
-                    "reconcile: archive %d on printer %d was created %.0fs ago — a job that has not "
-                    "started yet is not an orphan, leaving it alone",
+                    "reconcile: archive %d on printer %d was created %.0fs ago (window %ds) — a job that "
+                    "has not started yet is not an orphan, leaving it alone",
                     archive.id,
                     printer_id,
                     (now - created).total_seconds(),
+                    grace,
                 )
                 continue
 

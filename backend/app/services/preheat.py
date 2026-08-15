@@ -176,6 +176,33 @@ def _derive_chamber_target(printer: Printer, targets: dict[str, int]) -> int:
     return best
 
 
+async def planned_stage_seconds(db: AsyncSession, *, override: str = "inherit") -> int:
+    """Worst case wall-clock this stage puts between the archive row and ``start_print``.
+
+    Lives here rather than at the caller because it is the same two settings the
+    stage itself reads, and a third phase added later must not have to be
+    remembered in two files.
+
+    ⚠️ **Both halves, not just the soak.** ``preheat_max_wait_seconds`` (900)
+    dwarfs ``preheat_soak_seconds`` (300), and it is not an error path: on a
+    printer with a chamber sensor but no heater (X1C, P2S) the chamber is warmed
+    radiantly by the bed, which the docstring above measures at 15–30 minutes, so
+    the wait routinely runs to its limit. Sizing anything off the soak alone
+    would be off by the larger term.
+
+    Returns 0 when the stage will not run — the caller can add this
+    unconditionally.
+    """
+    override = (override or "inherit").lower()
+    if override == "off":
+        return 0
+    if override != "on" and not await _get_bool_setting(db, "preheat_enabled", default=False):
+        return 0
+    return await _get_int_setting(db, "preheat_max_wait_seconds", default=900) + await _get_int_setting(
+        db, "preheat_soak_seconds", default=300
+    )
+
+
 async def preheat_and_soak(
     db: AsyncSession,
     printer: Printer,
