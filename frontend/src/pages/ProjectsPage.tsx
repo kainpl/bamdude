@@ -30,6 +30,7 @@ import { api } from '../api/client';
 import type { ProjectListItem, ProjectCreate, ProjectUpdate, ProjectImport, Permission } from '../api/client';
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
+import { DuplicateProjectModal } from '../components/DuplicateProjectModal';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { getCurrencySymbol } from '../utils/currency';
@@ -527,12 +528,13 @@ interface ProjectCardProps {
   project: ProjectListItem;
   onClick: () => void;
   onEdit: () => void;
+  onDuplicate: () => void;
   onDelete: () => void;
   hasPermission: (permission: Permission) => boolean;
   t: TFunction;
 }
 
-function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: ProjectCardProps) {
+function ProjectCard({ project, onClick, onEdit, onDuplicate, onDelete, hasPermission, t }: ProjectCardProps) {
   // Plates progress: archive_count / target_count
   const platesProgressPercent = project.target_count
     ? Math.round((project.archive_count / project.target_count) * 100)
@@ -737,6 +739,17 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
                   >
                     <Edit3 className="w-4 h-4" />
                     {t('common.edit')}
+                  </button>
+                  <button
+                    className={`w-full px-3 py-2 text-left text-sm flex items-center gap-2 ${
+                      hasPermission('projects:create') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                    }`}
+                    onClick={() => { if (hasPermission('projects:create')) { onDuplicate(); setShowActions(false); } }}
+                    disabled={!hasPermission('projects:create')}
+                    title={!hasPermission('projects:create') ? t('projects.noCreatePermission') : undefined}
+                  >
+                    <Copy className="w-4 h-4" />
+                    {t('projects.duplicate.action')}
                   </button>
                   <button
                     className={`w-full px-3 py-2 text-left text-sm flex items-center gap-2 ${
@@ -982,6 +995,7 @@ export function ProjectsPage() {
   const [editingProject, setEditingProject] = useState<ProjectListItem | undefined>();
   const [statusFilter, setStatusFilter] = useState<string>('active');
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
+  const [duplicateTarget, setDuplicateTarget] = useState<ProjectListItem | null>(null);
 
   const { data: settings } = useQuery({
     queryKey: ['settings'],
@@ -1345,12 +1359,21 @@ export function ProjectsPage() {
               project={project}
               onClick={() => handleClick(project)}
               onEdit={() => handleEdit(project)}
+              onDuplicate={() => setDuplicateTarget(project)}
               onDelete={() => handleDeleteClick(project.id)}
               hasPermission={hasPermission}
               t={t}
             />
           ))}
         </div>
+      )}
+
+      {duplicateTarget && (
+        <DuplicateProjectModal
+          projectId={duplicateTarget.id}
+          projectName={duplicateTarget.name}
+          onClose={() => setDuplicateTarget(null)}
+        />
       )}
 
       {/* Delete Confirmation Modal */}

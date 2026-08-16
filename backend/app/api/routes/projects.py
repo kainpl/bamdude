@@ -1,7 +1,10 @@
+import asyncio
+import copy as copy_module
 import io
 import json
 import logging
 import os
+import shutil
 import uuid
 import zipfile
 from datetime import datetime
@@ -21,6 +24,7 @@ from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile, LibraryFolder
+from backend.app.models.library_project_links import library_file_projects, library_folder_projects
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.project import Project
 from backend.app.models.project_bom import ProjectBOMItem
@@ -39,6 +43,7 @@ from backend.app.schemas.project import (
     PrintPlanResponse,
     ProjectChildPreview,
     ProjectCreate,
+    ProjectDuplicate,
     ProjectImport,
     ProjectListResponse,
     ProjectResponse,
@@ -1480,6 +1485,252 @@ async def create_template_from_project(
         children=[],
         created_at=template.created_at,
         updated_at=template.updated_at,
+        stats=stats,
+    )
+
+
+# ============ Duplicate an existing project ============
+#
+# The split users care about: **setup is copied, history is not.** Copied —
+# every descriptive column, the BOM, the attached library files and folders,
+# the print plan (per-file copies + order) and the uploaded attachments on
+# disk. Not copied — archives and queue items, i.e. everything that records
+# what this project has actually done, plus BOM ``quantity_acquired``, which
+# is procurement progress rather than a part list.
+#
+# ⚠️ It is a COPY, never a move: the source keeps every link it had. The
+# library pivots are many-to-many precisely so a file can sit in both.
+
+
+def _duplicate_name(base: str, taken: set[str]) -> str:
+    """``"X" -> "X (Copy)"``, then ``"X (Copy 2)"`` and so on.
+
+    Project names carry no unique constraint, so this is politeness rather
+    than correctness — three rows all called "Voron (Copy)" are legal and
+    unusable.
+    """
+    candidate = f"{base} (Copy)"
+    if candidate not in taken:
+        return candidate
+    n = 2
+    while f"{base} (Copy {n})" in taken:
+        n += 1
+    return f"{base} (Copy {n})"
+
+
+async def _copy_attachment_files(source_id: int, new_id: int) -> bool:
+    """Copy ``projects/<id>/attachments`` across. True when the copy stands.
+
+    ``attachments`` and ``cover_image_filename`` name files inside a
+    per-project directory, so copying the columns alone would give the new
+    project a file list and a cover that resolve to nothing — and would tie
+    its images to the source's lifetime, where deleting the source takes them.
+    """
+    src = get_project_attachments_dir(source_id)
+    if not src.is_dir():
+        return True  # nothing to carry; the columns will be empty anyway
+    try:
+        await asyncio.to_thread(shutil.copytree, src, get_project_attachments_dir(new_id), dirs_exist_ok=True)
+        return True
+    except OSError as e:
+        logger.warning("Project %s: attachments could not be copied from %s: %s", new_id, source_id, e)
+        return False
+
+
+async def _duplicate_project_tree(
+    db: AsyncSession,
+    source: Project,
+    *,
+    name: str,
+    parent_id: int | None,
+    include_children: bool,
+    seen: set[int],
+) -> Project:
+    """Copy one project — and, when asked, everything under it."""
+    seen.add(source.id)
+
+    copy = Project(
+        name=name,
+        description=source.description,
+        color=source.color,
+        # ⚠️ Never inherited. A duplicate of a completed or archived project is
+        # new work about to start, which is the whole reason to duplicate one.
+        status="active",
+        target_count=source.target_count,
+        target_parts_count=source.target_parts_count,
+        notes=source.notes,
+        attachments=copy_module.deepcopy(source.attachments),
+        tags=source.tags,
+        due_date=source.due_date,
+        priority=source.priority,
+        budget=source.budget,
+        # Duplicating a template yields another template — the flag describes
+        # what the project IS, not what has happened to it.
+        is_template=source.is_template,
+        template_source_id=source.template_source_id,
+        parent_id=parent_id,
+        url=source.url,
+        cover_image_filename=source.cover_image_filename,
+    )
+    db.add(copy)
+    await db.flush()
+
+    if (source.attachments or source.cover_image_filename) and not await _copy_attachment_files(source.id, copy.id):
+        # Better an honest empty gallery than rows pointing at files that are
+        # not there. The names would render as broken images with no clue why.
+        copy.attachments = None
+        copy.cover_image_filename = None
+
+    bom_items = (await db.execute(select(ProjectBOMItem).where(ProjectBOMItem.project_id == source.id))).scalars().all()
+    for item in bom_items:
+        db.add(
+            ProjectBOMItem(
+                project_id=copy.id,
+                name=item.name,
+                quantity_needed=item.quantity_needed,
+                quantity_acquired=0,  # progress, not part list
+                unit_price=item.unit_price,
+                sourcing_url=item.sourcing_url,
+                stl_filename=item.stl_filename,
+                remarks=item.remarks,
+                sort_order=item.sort_order,
+            )
+        )
+
+    plan_items = (
+        (await db.execute(select(ProjectPrintPlanItem).where(ProjectPrintPlanItem.project_id == source.id)))
+        .scalars()
+        .all()
+    )
+    for item in plan_items:
+        db.add(
+            ProjectPrintPlanItem(
+                project_id=copy.id,
+                library_file_id=item.library_file_id,
+                copies=item.copies,
+                order_index=item.order_index,
+            )
+        )
+
+    # Library links. Written as pivot inserts rather than through the M2M
+    # relationship so the source's collection is never loaded and therefore
+    # never at risk of being reassigned instead of read.
+    file_ids = (
+        (
+            await db.execute(
+                select(library_file_projects.c.file_id).where(library_file_projects.c.project_id == source.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if file_ids:
+        await db.execute(
+            library_file_projects.insert(),
+            [{"file_id": fid, "project_id": copy.id} for fid in file_ids],
+        )
+    folder_ids = (
+        (
+            await db.execute(
+                select(library_folder_projects.c.folder_id).where(library_folder_projects.c.project_id == source.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if folder_ids:
+        await db.execute(
+            library_folder_projects.insert(),
+            [{"folder_id": fid, "project_id": copy.id} for fid in folder_ids],
+        )
+
+    if include_children:
+        children = (
+            (await db.execute(select(Project).where(Project.parent_id == source.id).order_by(Project.id)))
+            .scalars()
+            .all()
+        )
+        for child in children:
+            # ``seen`` guards a parent_id cycle. Nothing should be able to
+            # create one, but a loop here would recurse until the process dies
+            # rather than return an error.
+            if child.id in seen:
+                logger.warning("Project duplicate: skipping %s, already visited (parent cycle)", child.id)
+                continue
+            # Children keep their own names: they are already distinguished by
+            # sitting under the copied parent, and "Frame (Copy)" inside
+            # "Voron (Copy)" is noise.
+            await _duplicate_project_tree(
+                db,
+                child,
+                name=child.name,
+                parent_id=copy.id,
+                include_children=True,
+                seen=seen,
+            )
+
+    return copy
+
+
+@router.post("/{project_id}/duplicate", response_model=ProjectResponse)
+async def duplicate_project(
+    project_id: int,
+    data: ProjectDuplicate = ProjectDuplicate(),  # noqa: B008 — Pydantic body default, not a Depends()
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_CREATE),
+):
+    """Copy a project's setup into a new active project, without its history."""
+    source = (await db.execute(select(Project).where(Project.id == project_id))).scalar_one_or_none()
+    if not source:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    taken = set((await db.execute(select(Project.name))).scalars().all())
+    name = (data.name or "").strip() or _duplicate_name(source.name, taken)
+
+    copy = await _duplicate_project_tree(
+        db,
+        source,
+        name=name,
+        parent_id=source.parent_id,  # the copy is a sibling of its source
+        include_children=data.include_children,
+        seen=set(),
+    )
+
+    await db.commit()
+    await db.refresh(copy)
+
+    parent_name = None
+    if copy.parent_id:
+        parent_name = (await db.execute(select(Project.name).where(Project.id == copy.parent_id))).scalar_one_or_none()
+
+    children = (
+        (await db.execute(select(Project).where(Project.parent_id == copy.id).order_by(Project.name))).scalars().all()
+    )
+    stats = await compute_project_stats(db, copy.id, copy.target_count, copy.target_parts_count)
+
+    return ProjectResponse(
+        id=copy.id,
+        name=copy.name,
+        description=copy.description,
+        color=copy.color,
+        status=copy.status,
+        target_count=copy.target_count,
+        target_parts_count=copy.target_parts_count,
+        notes=copy.notes,
+        attachments=copy.attachments,
+        url=copy.url,
+        cover_image_filename=copy.cover_image_filename,
+        tags=copy.tags,
+        due_date=copy.due_date,
+        priority=copy.priority,
+        budget=copy.budget,
+        is_template=copy.is_template,
+        template_source_id=copy.template_source_id,
+        parent_id=copy.parent_id,
+        parent_name=parent_name,
+        children=[ProjectChildPreview(id=c.id, name=c.name, status=c.status, color=c.color) for c in children],
+        created_at=copy.created_at,
+        updated_at=copy.updated_at,
         stats=stats,
     )
 

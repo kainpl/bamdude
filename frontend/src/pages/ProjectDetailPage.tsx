@@ -51,6 +51,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { RichTextEditor } from '../components/RichTextEditor';
 import { ConfirmModal } from '../components/ConfirmModal';
+import { DuplicateProjectModal } from '../components/DuplicateProjectModal';
 import { PrintModal } from '../components/PrintModal';
 
 // Project edit modal (reused from ProjectsPage)
@@ -218,6 +219,7 @@ export function ProjectDetailPage() {
   const { showToast } = useToast();
   const { hasPermission } = useAuth();
   const [showEditModal, setShowEditModal] = useState(false);
+  const [showDuplicateModal, setShowDuplicateModal] = useState(false);
   // The timeline arrives whole; the card shows a readable slice until asked.
   const [timelineExpanded, setTimelineExpanded] = useState(false);
   const [editingNotes, setEditingNotes] = useState(false);
@@ -691,6 +693,15 @@ export function ProjectDetailPage() {
           >
             <Download className="w-4 h-4 mr-2" />
             {t('projectDetail.export')}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => setShowDuplicateModal(true)}
+            disabled={!hasPermission('projects:create')}
+            title={!hasPermission('projects:create') ? t('projects.noCreatePermission') : undefined}
+          >
+            <Copy className="w-4 h-4 mr-2" />
+            {t('projects.duplicate.action')}
           </Button>
           <Button
             onClick={() => setShowEditModal(true)}
@@ -1808,6 +1819,15 @@ export function ProjectDetailPage() {
           <ArchiveGrid archives={archives || []} t={t} />
         )}
       </div>
+
+      {showDuplicateModal && (
+        <DuplicateProjectModal
+          projectId={project.id}
+          projectName={project.name}
+          onClose={() => setShowDuplicateModal(false)}
+          onDuplicated={(newId) => navigate(`/projects/${newId}`)}
+        />
+      )}
 
       {/* Edit Modal */}
       {showEditModal && (

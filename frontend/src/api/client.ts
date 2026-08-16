@@ -7677,6 +7677,12 @@ export const api = {
     }),
   deleteProject: (id: number) =>
     request<{ message: string }>(`/projects/${id}`, { method: 'DELETE' }),
+  /** Copy a project's setup into a new active one. Never moves: the source keeps everything. */
+  duplicateProject: (id: number, data: { name?: string; include_children?: boolean } = {}) =>
+    request<Project>(`/projects/${id}/duplicate`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   getProjectArchives: (id: number, limit = 100, offset = 0) =>
     request<Archive[]>(`/projects/${id}/archives?limit=${limit}&offset=${offset}`),
   addArchivesToProject: (projectId: number, archiveIds: number[]) =>

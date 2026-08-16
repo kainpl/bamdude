@@ -4312,11 +4312,24 @@ export default {
     noCreatePermission: 'You do not have permission to create projects',
     noImportPermission: 'You do not have permission to import projects',
     noExportPermission: 'You do not have permission to export projects',
+    // Duplicate
+    duplicate: {
+      action: 'Duplicate',
+      title: 'Duplicate project',
+      nameLabel: 'Name of the copy',
+      copies: 'Copies the settings, part list, linked files and print plan.',
+      excludes: 'Print history and queued jobs stay with the original. Purchased quantities start at zero.',
+      includeChildren_one: 'Also duplicate the sub-project',
+      includeChildren_other: 'Also duplicate the {{count}} sub-projects',
+      submit: 'Duplicate',
+      failed: 'Could not duplicate the project',
+    },
     // Toast
     toast: {
       created: 'Project created',
       updated: 'Project updated',
       deleted: 'Project deleted',
+      duplicated: 'Project duplicated',
       imported: 'Project imported',
       multipleImported: '{{count}} projects imported',
       importFailed: 'Import failed',

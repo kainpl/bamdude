@@ -4327,11 +4327,26 @@ export default {
     noCreatePermission: 'У вас немає дозволу створювати проєкти',
     noImportPermission: 'У вас немає дозволу імпортувати проєкти',
     noExportPermission: 'У вас немає дозволу експортувати проєкти',
+    // Duplicate
+    duplicate: {
+      action: 'Дублювати',
+      title: 'Дублювати проєкт',
+      nameLabel: 'Назва копії',
+      copies: 'Копіюються налаштування, список деталей, привʼязані файли та план друку.',
+      excludes: 'Історія друку і черга лишаються в оригіналі. Закуплена кількість починається з нуля.',
+      includeChildren_one: 'Дублювати також підпроєкт',
+      includeChildren_few: 'Дублювати також {{count}} підпроєкти',
+      includeChildren_many: 'Дублювати також {{count}} підпроєктів',
+      includeChildren_other: 'Дублювати також {{count}} підпроєкта',
+      submit: 'Дублювати',
+      failed: 'Не вдалося дублювати проєкт',
+    },
     // Toast
     toast: {
       created: 'Проєкт створено',
       updated: 'Проєкт оновлено',
       deleted: 'Проєкт видалено',
+      duplicated: 'Проєкт продубльовано',
       imported: 'Проєкт імпортовано',
       multipleImported: '{{count}} проєктів імпортовано',
       importFailed: 'Помилка імпорту',

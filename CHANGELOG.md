@@ -2,6 +2,12 @@
 
 ### Added
 
+- **A project can be duplicated.** Asked for by users who run the same build again — a second Voron, another batch for another customer. **Duplicate** sits in the project card's menu and on the project page, and copies the setup while leaving the past behind: description, colour, targets, notes, tags, priority, budget, link and cover come across, along with the part list, the linked library files and folders, and the print plan with each file's copy count and order. The uploaded attachments are copied as real files, so the new project owns them and deleting the original cannot take its pictures away.
+
+    What does not come across is everything that records what the original has *done*: its print history and its queued jobs stay where they are, and purchased quantities in the part list start again at zero. The copy opens as **active** whatever the original's status was, because a duplicate is work about to start.
+
+    It is a copy in both directions — the original keeps every file and folder it had; nothing is moved off it. A project with sub-projects asks whether to bring them too, and the dialog says plainly what will and will not be carried, so the answer is not something you have to find out afterwards.
+
 - **Timelapses can be removed from the printer once BamDude has them.** New switch in **Settings → General**, off by default. With it on, a recording is deleted from the printer as soon as it has been attached to its archive — from the SD card or from built-in storage, whichever it was read from. Only ever after the copy is safely saved; if the attach fails, or the printer cannot be reached, the recording stays where it is.
 
     Left off by default on purpose: having a copy in BamDude is not the same as nobody needing the file on the machine, where it can still be watched from the printer's screen or carried away on the card.

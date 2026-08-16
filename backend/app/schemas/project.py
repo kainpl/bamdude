@@ -63,6 +63,18 @@ class ProjectUpdate(BaseModel):
         return _validate_project_url(v)
 
 
+class ProjectDuplicate(BaseModel):
+    """Options for copying an existing project into a new one.
+
+    Everything that describes *how the project is set up* is copied; nothing
+    that records *what has happened to it* is. See the route for the exact
+    split — it is the part users ask about.
+    """
+
+    name: str | None = None  # defaults to "<source> (Copy)", de-duplicated
+    include_children: bool = False  # duplicate the whole sub-project tree
+
+
 class ProjectStats(BaseModel):
     """Statistics for a project."""
 
