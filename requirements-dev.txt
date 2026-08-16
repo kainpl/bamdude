@@ -10,9 +10,18 @@ httpx>=0.27.0
 # installs so local and CI enforce identical rules and `format --check` agrees.
 ruff==0.15.15
 
-# Documentation lives in a separate repo (kainpl/docs.bamdude.top) — no
-# mkdocs build deps here. Install them in that repo's venv if you need to
-# preview docs locally.
+# Documentation lives in a separate repo (kainpl/docs.bamdude.top) and is built
+# by that repo's own CI, so its deps are not pinned here — nothing in this
+# project imports mkdocs.
+#
+# To preview or validate the docs locally, install them into THIS venv:
+#
+#     pip install -r ../docs.bamdude.top/requirements.txt
+#     cd ../docs.bamdude.top && mkdocs build --strict
+#
+# (The docs repo has no venv of its own, and mkdocs shares no dependency with
+# the backend, so it lands here without disturbing anything.) `--strict` is what
+# the docs CI runs, and since 2026-08-16 it fails on a missing anchor too.
 
 # Security scanning
 bandit[sarif]>=1.7.0
