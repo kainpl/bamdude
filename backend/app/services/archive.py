@@ -2531,6 +2531,19 @@ class ArchiveService:
             parser = ThreeMFParser(dest_file, plate_number=archive.plate_index)
             metadata = parser.parse()
 
+            # A row can legitimately arrive here without a plate index: nothing
+            # in ``Metadata/plate_N.gcode`` to parse for a single-plate export.
+            # ``archive_print`` resolves that same case from the parser's own
+            # slice_info fallback, and every plate-scoped reader downstream
+            # (cover, gcode tab, skip-objects, Spoolman) keys off this column —
+            # so leaving it NULL for ever is not neutral, it silently sends
+            # them all back to "whatever plate 1 happens to be".
+            # ⚠️ Backfill only. A value already on the row came from the live
+            # MQTT state — what the printer is actually running — and the
+            # container, which holds several plates, cannot overrule that.
+            if archive.plate_index is None and parser.plate_number is not None:
+                archive.plate_index = parser.plate_number
+
             # Per-plate cache populated alongside the rest of the metadata.
             try:
                 with zipfile.ZipFile(dest_file, "r") as _zfh:
@@ -2569,6 +2582,11 @@ class ArchiveService:
             merged_extra.pop("no_3mf_available", None)
             merged_extra.pop("download_retry_count", None)
             merged_extra.pop("download_next_retry", None)
+            # Mirror of the column, for the legacy reader in ``queue_virtual.py``
+            # — ``archive_print`` writes it, so a row filled in through this
+            # path has to as well or VP-recreate loses the plate.
+            if archive.plate_index is not None:
+                merged_extra["plate_id"] = archive.plate_index
 
             archive.filename = original_filename or source_file.name
             archive.file_path = str(dest_file.relative_to(settings.base_dir))
@@ -2584,6 +2602,7 @@ class ArchiveService:
             archive.total_layers = metadata.get("total_layers")
             archive.nozzle_diameter = metadata.get("nozzle_diameter")
             archive.bed_temperature = metadata.get("bed_temperature")
+            archive.bed_type = metadata.get("bed_type")
             archive.nozzle_temperature = metadata.get("nozzle_temperature")
             archive.sliced_for_model = metadata.get("sliced_for_model")
             archive.makerworld_url = metadata.get("makerworld_url")

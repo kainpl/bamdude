@@ -1,11 +1,15 @@
-"""On-demand 3MF download retry for fallback archives.
+"""On-demand 3MF download retry for archives that have no file yet.
 
-When ``on_print_start`` can't pull the 3MF file from the printer (FTP
-hiccup, path mismatch, slow SD, transient disconnect) a fallback
-archive is created with ``file_path=""``.  This service offers three
-one-shot retry triggers — there is intentionally **no** background
-periodic loop, because many prints are shorter than any reasonable
-periodic cycle:
+``on_print_start`` creates the archive row when the print starts and only
+then goes looking for the 3MF, so a row with ``file_path=""`` means one of
+two things: the download is still running, or it failed (FTP hiccup, path
+mismatch, slow SD, transient disconnect) and left
+``extra_data["no_3mf_available"]``.  Both look identical to a query, which
+is why the handler holds :meth:`claim` for the length of its own download.
+
+This service offers three one-shot retry triggers — there is intentionally
+**no** background periodic loop, because many prints are shorter than any
+reasonable periodic cycle:
 
 1. **Startup sweep** — on BamDude startup, try every ``status='printing'``
    fallback archive once (useful after a backend restart).
@@ -23,6 +27,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -58,6 +64,39 @@ class ArchiveDownloadRetryService:
         # duplicate FTP session.
         self._in_progress: set[int] = set()
         self._lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def claim(self, archive_id: int) -> AsyncIterator[None]:
+        """Hold the in-progress guard for a download this service isn't running.
+
+        ``on_print_start`` creates the archive row before it fetches the 3MF,
+        so for the whole length of that fetch the row is indistinguishable
+        from one waiting to be filled: ``status='printing'``, empty
+        ``file_path``. That is exactly what both automatic triggers select on,
+        and a printer reconnect mid-download is not an edge case — the
+        dispatcher causes reconnects itself.
+
+        Without this claim the reconnect hook opens a second FTP session for a
+        file already coming down, and it cannot notice: it reads ``file_path``
+        *before* its own download, so the early-return has long since passed
+        by the time the handler attaches. It would then attach on top, cutting
+        a second archive directory and orphaning the first on disk.
+
+        Deliberately in-memory. A crash mid-download leaves nothing behind,
+        which is the correct state — the startup sweep should pick that row up.
+        """
+        async with self._lock:
+            mine = archive_id not in self._in_progress
+            if mine:
+                self._in_progress.add(archive_id)
+        try:
+            yield
+        finally:
+            # Only release what we took: releasing on behalf of whoever really
+            # holds it would reopen the very window this guard closes.
+            if mine:
+                async with self._lock:
+                    self._in_progress.discard(archive_id)
 
     async def start(self):
         """Startup sweep: retry every ``status='printing'`` fallback archive once.
