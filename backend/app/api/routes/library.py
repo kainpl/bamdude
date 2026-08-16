@@ -3440,6 +3440,23 @@ async def store_library_upload(
     await db.commit()
     await db.refresh(library_file)
 
+    # Tell open browsers the library changed. ``library_file_added`` was
+    # already handled on the frontend and already sent by the virtual printer
+    # — but the VP has its own ``_save_to_library`` and was the ONLY caller, so
+    # every other way a file arrives (browser upload, Telegram, an API client)
+    # left every open tab stale until someone hit refresh. This is the shared
+    # helper behind those paths, which makes it the one place that covers them
+    # all without double-notifying the VP.
+    #
+    # Best-effort by design: a socket problem must never fail an upload that
+    # already committed.
+    try:
+        from backend.app.core.websocket import ws_manager
+
+        await ws_manager.send_library_file_added({"id": library_file.id, "filename": library_file.filename})
+    except Exception:
+        logger.debug("library_file_added broadcast failed", exc_info=True)
+
     return library_file, duplicate_of
 
 
