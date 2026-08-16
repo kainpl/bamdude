@@ -1113,6 +1113,13 @@ def build_plate_objects_payload(data: bytes, plate_idx: int) -> dict:
     # dict order here is discovery order, which differs per tier.
     items.sort(key=lambda o: o["id"])
 
+    # ⚠️ Sorted BEFORE the markers are computed: the grid fallback places by
+    # index, so laying out first and sorting second would scramble it.
+    from backend.app.services.plate_markers import marker_position
+
+    for index, item in enumerate(items):
+        item["marker"] = marker_position(item, index, len(items), bbox_all)
+
     return {
         "plate_index": plate_idx,
         "objects": items,

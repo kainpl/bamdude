@@ -4033,12 +4033,27 @@ async def get_printable_objects(
             }
         objects.append(obj_entry)
 
+    # Marker placement is computed HERE, once, and both consumers read it: the
+    # web overlay and the image the Telegram bot draws. It used to live in
+    # TypeScript, which was fine while the browser was the only consumer.
+    #
+    # ⚠️ Two copies were rejected deliberately. A marker that drifts from the
+    # plate points confidently at the wrong part, and what the operator does
+    # next — skip it — cannot be undone.
+    from backend.app.services.plate_markers import marker_position
+
+    bbox_all = getattr(client.state, "printable_objects_bbox_all", None)
+    for index, entry in enumerate(objects):
+        entry["marker"] = marker_position(entry, index, len(objects), bbox_all)
+
     return {
         "objects": objects,
         "total": len(objects),
         "skipped_count": len(client.state.skipped_objects),
         "is_printing": client.state.state in ("RUNNING", "PAUSE"),
-        "bbox_all": getattr(client.state, "printable_objects_bbox_all", None),
+        # Still served: the frontend uses it for the plate outline, and it is
+        # the input the markers above were derived from.
+        "bbox_all": bbox_all,
         # True when not one object could be located in the pick PNG, so every
         # marker the dialog draws came from the grid fallback rather than the
         # plate. Lets the UI say so instead of implying precision it lacks.

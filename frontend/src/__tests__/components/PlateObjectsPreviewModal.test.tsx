@@ -27,8 +27,8 @@ vi.mock('../../api/client', () => ({
 const payload = (over = {}) => ({
   plate_index: 1,
   objects: [
-    { id: 941, name: 'bracket', x: 0.25, y: 0.25, norm: true },
-    { id: 942, name: 'bracket', x: 0.75, y: 0.75, norm: true },
+    { id: 941, name: 'bracket', x: 0.25, y: 0.25, norm: true, marker: { x: 25, y: 25 } },
+    { id: 942, name: 'bracket', x: 0.75, y: 0.75, norm: true, marker: { x: 75, y: 75 } },
   ],
   bbox_all: null,
   positions_approximate: false,

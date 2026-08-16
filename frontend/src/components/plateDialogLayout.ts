@@ -91,52 +91,12 @@ export type PlateObject = {
   y: number | null;
   norm?: boolean;
   skipped: boolean;
+  /** Where the marker goes, as percentages of the image box.
+   *
+   * ⚠️ Computed on the SERVER (``services/plate_markers.py``) and read here.
+   * It used to be computed in this file, until the Telegram bot needed the
+   * same numbers to draw the picture it sends. Two implementations that agree
+   * today disagree later, and a drifting marker points confidently at the
+   * wrong part — which the operator then skips, irreversibly. */
+  marker: { x: number; y: number };
 };
-
-/** Where a marker sits on the plate image, as percentages of the image box.
- *
- * Four sources in descending order of trust; the first that has usable data
- * wins. Kept as a plain function so the inline preview and the enlarged
- * lightbox cannot drift apart — they used to carry two verbatim copies of this.
- */
-export function markerPosition(
-  obj: PlateObject,
-  idx: number,
-  total: number,
-  bboxAll: number[] | null | undefined,
-): { x: number; y: number } {
-  // 1. Normalised pick-PNG centroid — matches what the printer's own screen shows.
-  if (obj.norm && obj.x != null && obj.y != null) {
-    return {
-      x: Math.max(2, Math.min(98, obj.x * 100)),
-      y: Math.max(2, Math.min(98, obj.y * 100)),
-    };
-  }
-  // 2. Millimetre coords mapped through the bbox the top view was rendered from.
-  if (obj.x != null && obj.y != null && bboxAll) {
-    const [xMin, yMin, xMax, yMax] = bboxAll;
-    const padding = 8; // the top_N.png render leaves roughly this much margin
-    const contentArea = 100 - padding * 2;
-    return {
-      x: Math.max(5, Math.min(95, padding + ((obj.x - xMin) / (xMax - xMin)) * contentArea)),
-      // Image Y grows downward, 3D Y grows toward the back of the plate.
-      y: Math.max(5, Math.min(95, padding + ((yMax - obj.y) / (yMax - yMin)) * contentArea)),
-    };
-  }
-  // 3. No bbox — assume a full 256mm plate.
-  if (obj.x != null && obj.y != null) {
-    const buildPlate = 256;
-    return {
-      x: Math.max(5, Math.min(95, (obj.x / buildPlate) * 100)),
-      y: Math.max(5, Math.min(95, 100 - (obj.y / buildPlate) * 100)),
-    };
-  }
-  // 4. No coordinates at all — lay them out in a grid so every object is still
-  //    reachable. Positions are meaningless here; the list is the real UI.
-  const cols = Math.ceil(Math.sqrt(total));
-  const rows = Math.ceil(total / cols);
-  return {
-    x: 15 + (idx % cols) * (70 / cols) + 35 / cols,
-    y: 15 + Math.floor(idx / cols) * (70 / rows) + 35 / rows,
-  };
-}

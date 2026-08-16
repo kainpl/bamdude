@@ -25,8 +25,8 @@ import { server } from '../mocks/server';
 
 const OBJECTS = {
   objects: [
-    { id: 11, name: 'bracket-left', skipped: false, x: 0.25, y: 0.4, norm: true },
-    { id: 12, name: 'bracket-right', skipped: true, x: 0.75, y: 0.4, norm: true },
+    { id: 11, name: 'bracket-left', skipped: false, x: 0.25, y: 0.4, norm: true, marker: { x: 25, y: 40 } },
+    { id: 12, name: 'bracket-right', skipped: true, x: 0.75, y: 0.4, norm: true, marker: { x: 75, y: 40 } },
   ],
   bbox_all: null,
 };

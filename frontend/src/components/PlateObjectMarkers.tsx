@@ -1,11 +1,11 @@
 /** Object-ID markers laid over a plate image.
  *
- * Component only — the geometry knobs and ``markerPosition`` live in
- * ./plateDialogLayout so this file keeps Fast Refresh
+ * Component only — the geometry knobs live in ./plateDialogLayout so this file
+ * keeps Fast Refresh
  * (``react-refresh/only-export-components``).
  */
 
-import { markerPosition, type PlateObject } from './plateDialogLayout';
+import { type PlateObject } from './plateDialogLayout';
 
 /** Clickable object-ID markers laid over a plate image.
  *
@@ -25,13 +25,11 @@ import { markerPosition, type PlateObject } from './plateDialogLayout';
  */
 export function PlateMarkers({
   objects,
-  bboxAll,
   canSkip = () => false,
   onSkip = () => {},
   t,
 }: {
   objects: PlateObject[];
-  bboxAll?: number[] | null;
   canSkip?: (obj: PlateObject) => boolean;
   onSkip?: (target: { id: number; name: string }) => void;
   t: (key: string, options?: Record<string, unknown>) => string;
@@ -40,8 +38,13 @@ export function PlateMarkers({
 
   return (
     <div className="absolute inset-0 pointer-events-none">
-      {objects.map((obj, idx) => {
-        const { x, y } = markerPosition(obj, idx, objects.length, bboxAll);
+      {/* An object with no marker is dropped rather than placed by a guess.
+          The server computes placement (services/plate_markers.py); a client
+          talking to a backend older than that field would otherwise take the
+          whole dialog down. Dropping the pin degrades visibly — the object is
+          still in the list beside the plate. */}
+      {objects.filter((obj) => obj.marker).map((obj) => {
+        const { x, y } = obj.marker;
         const skippable = canSkip(obj);
 
         return (

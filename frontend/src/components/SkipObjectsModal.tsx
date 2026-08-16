@@ -188,7 +188,6 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
                       fixed size and how a click reaches the confirm dialog. */}
                   <PlateMarkers
                     objects={objectsData.objects}
-                    bboxAll={objectsData.bbox_all}
                     canSkip={canSkipObject}
                     onSkip={setPendingSkip}
                     t={t}
@@ -327,7 +326,6 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
           {/* Same interactive markers as the inline preview — see PlateMarkers. */}
           <PlateMarkers
             objects={objectsData.objects}
-            bboxAll={objectsData.bbox_all}
             canSkip={canSkipObject}
             onSkip={setPendingSkip}
             t={t}

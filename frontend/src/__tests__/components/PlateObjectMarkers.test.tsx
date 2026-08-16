@@ -1,11 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { PlateMarkers } from '../../components/PlateObjectMarkers';
-import { markerPosition, type PlateObject } from '../../components/plateDialogLayout';
+import { type PlateObject } from '../../components/plateDialogLayout';
 
 const objects: PlateObject[] = [
-  { id: 941, name: 'part', x: 0.25, y: 0.25, norm: true, skipped: false },
-  { id: 942, name: 'part', x: 0.75, y: 0.75, norm: true, skipped: false },
+  { id: 941, name: 'part', x: 0.25, y: 0.25, norm: true, skipped: false, marker: { x: 25, y: 25 } },
+  { id: 942, name: 'part', x: 0.75, y: 0.75, norm: true, skipped: false, marker: { x: 75, y: 75 } },
 ];
 const t = (key: string) => key;
 
@@ -35,21 +35,14 @@ describe('PlateMarkers', () => {
     const { container } = render(<PlateMarkers objects={[]} t={t} />);
     expect(container).toBeEmptyDOMElement();
   });
-});
 
-describe('markerPosition', () => {
-  it('uses the normalised pick centroid when there is one', () => {
-    expect(markerPosition(objects[0], 0, 2, null)).toEqual({ x: 25, y: 25 });
-  });
-
-  it('falls back to a grid when the object has no coordinates at all', () => {
-    // Positions are meaningless here, but every object must still land inside
-    // the plate box so it stays reachable — the list is the real UI.
-    const orphan: PlateObject = { id: 7, name: 'x', x: null, y: null, skipped: false };
-    const { x, y } = markerPosition(orphan, 3, 9, null);
-    expect(x).toBeGreaterThan(0);
-    expect(x).toBeLessThan(100);
-    expect(y).toBeGreaterThan(0);
-    expect(y).toBeLessThan(100);
+  it('drops an object the server sent no marker for, keeping the rest', () => {
+    // Rolling upgrade: a browser holding this bundle can be talking to a
+    // backend that predates the server-side marker. Losing one pin is a
+    // degradation; destructuring undefined would take the whole dialog down.
+    const mixed = [{ ...objects[0], marker: undefined }, objects[1]] as unknown as PlateObject[];
+    render(<PlateMarkers objects={mixed} t={t} />);
+    expect(screen.queryByText('941')).not.toBeInTheDocument();
+    expect(screen.getByText('942')).toBeInTheDocument();
   });
 });

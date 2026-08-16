@@ -110,11 +110,13 @@ export interface PlateObjectItem {
   id: number;
   name: string;
   // Normalised pick-PNG centroid when `norm` is true, millimetres otherwise,
-  // null when the object appears in no positional source at all (markerPosition
-  // then lays it out on its tier-4 grid).
+  // null when the object appears in no positional source at all (the server's
+  // plate_markers then lays it out on its branch-4 grid).
   x: number | null;
   y: number | null;
   norm: boolean;
+  /** Marker placement in percentages, computed server-side. See PlateObject. */
+  marker: { x: number; y: number };
 }
 
 export interface PlateObjectsResponse {

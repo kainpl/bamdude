@@ -14,11 +14,18 @@ class PlateObjectItem(BaseModel):
     id: int
     name: str
     # Normalised pick-PNG centroid when ``norm`` is true, millimetres otherwise,
-    # None when the object appears in no positional source at all (the frontend
-    # then lays it out on a grid — see markerPosition tier 4).
+    # None when the object appears in no positional source at all (branch 4 of
+    # ``services.plate_markers`` then lays it out on a grid).
     x: float | None = None
     y: float | None = None
     norm: bool = False
+    # Where the marker goes, as percentages of the image box. Computed by
+    # ``services.plate_markers.marker_position`` — the ONE implementation, read
+    # by the web overlay and by the image the Telegram bot draws.
+    #
+    # ⚠️ Optional only for wire compatibility with a client older than this
+    # field. Every route BamDude serves fills it.
+    marker: dict[str, float] | None = None
 
 
 class PlateObjectsResponse(BaseModel):

@@ -92,6 +92,7 @@ export function PlateObjectsPreviewModal({ source, id, isOpen, onClose }: PlateO
     x: o.x,
     y: o.y,
     norm: o.norm,
+    marker: o.marker,
     skipped: false,
   }));
 
@@ -238,7 +239,7 @@ export function PlateObjectsPreviewModal({ source, id, isOpen, onClose }: PlateO
                       </div>
                       {/* Markers with no canSkip/onSkip render disabled — the
                           read-only branch PlateMarkers already had. */}
-                      <PlateMarkers objects={objects} bboxAll={data.bbox_all} t={t} />
+                      <PlateMarkers objects={objects} t={t} />
                     </div>
                   ) : (
                     <div className="w-full aspect-square rounded-lg bg-gray-100 dark:bg-bambu-dark flex flex-col items-center justify-center gap-2 px-4 text-center">
@@ -315,7 +316,7 @@ export function PlateObjectsPreviewModal({ source, id, isOpen, onClose }: PlateO
               alt={t('library.plateObjects.title')}
               className="w-full h-full object-contain rounded-lg bg-gray-900"
             />
-            <PlateMarkers objects={objects} bboxAll={data.bbox_all} t={t} />
+            <PlateMarkers objects={objects} t={t} />
           </div>
         </div>
       )}
