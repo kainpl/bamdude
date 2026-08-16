@@ -29,7 +29,7 @@
 
 ### Fixed
 
-- **Large files can be fetched back from a printer again.** BamDude gave a print sliced in Orca or Bambu Studio a "no 3MF available" archive whenever the file took longer to download than the FTP timeout allowed — which made that setting a limit on file size rather than a guard against a stalled connection. Measured on a P1S, a 21.6 MB file needs 96 seconds; the limit was 90, and the default is 30. The timeout now bounds what it was meant to bound, and a transfer that keeps arriving is left to finish.
+- **A large print's 3MF is no longer abandoned part-way through downloading.** BamDude gave a print sliced in Orca or Bambu Studio a "no 3MF available" archive whenever the file took longer to download than the FTP timeout allowed — which made that setting a limit on file size rather than a guard against a stalled connection. Measured on a P1S, a 21.6 MB file needs 96 seconds; the limit was 90, and the default is 30. The timeout now bounds what it was meant to bound, and a transfer that keeps arriving is left to finish, so a big plate archives with its thumbnail, 3D preview and metadata instead of as a bare row.
 
 - **A print now appears in BamDude the moment it starts, not when its file finishes downloading.** For a print started from the printer's screen or sent straight from a slicer, BamDude fetches the file back off the printer in order to archive it — and that fetch reads the same card the print is reading from. Measured on a P1S: 22 MB took eight minutes and forty seconds. Until it finished, the print was nowhere to be seen — no entry in Archives, no "print started" notification, and the queue still showing the printer as free.
 
