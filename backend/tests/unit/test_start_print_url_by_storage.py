@@ -40,7 +40,7 @@ def _client_capturing() -> tuple[BambuMQTTClient, list[dict]]:
 @pytest.mark.parametrize(
     ("storage", "expected_url", "expected_md5"),
     [
-        ("external", "ftp://job.gcode.3mf", ""),
+        ("external", "ftp://job.gcode.3mf", "ABC123"),
         ("internal", "brtc://emmc/job.gcode.3mf", "ABC123"),
     ],
 )
@@ -54,16 +54,19 @@ def test_the_url_scheme_follows_the_storage(storage, expected_url, expected_md5)
     assert payload["md5"] == expected_md5
 
 
-def test_the_internal_md5_is_uppercase_and_the_upload_one_was_not():
+def test_the_command_md5_is_uppercase_and_the_upload_one_was_not():
     """One digest, two spellings, decided by which channel carries it."""
     client, sent = _client_capturing()
     client.start_print("job.gcode.3mf", storage="internal", file_md5="deadbeef")
     assert sent[-1]["print"]["md5"] == "DEADBEEF"
 
 
-def test_external_keeps_todays_empty_md5():
-    """Unchanged on every printer that has a card — this stage must not alter
-    the FTP payload in any way."""
+def test_external_with_no_digest_still_sends_the_field():
+    """⚠️ Empty here means "nobody gave us one", NOT "the FTP path never
+    carries one" — it does, and Orca's own capture off a P1S proves it. This
+    file used to pin the opposite, written while the file-tunnel work was
+    under a "change nothing on the card path" constraint that has since been
+    lifted deliberately. See test_project_file_md5.py for the evidence."""
     client, sent = _client_capturing()
     client.start_print("job.gcode.3mf")
     assert sent[-1]["print"]["md5"] == ""
