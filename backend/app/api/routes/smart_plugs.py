@@ -820,6 +820,8 @@ async def get_plug_status(
         if energy:
             if energy.get("today") is None:
                 energy = {**energy, "today": await _today_from_snapshots(db, plug.id, energy.get("total"), request)}
+            if energy.get("yesterday") is None:
+                energy = {**energy, "yesterday": await _yesterday_from_snapshots(db, plug.id, request)}
             energy_data = SmartPlugEnergy(**energy)
 
             # Check power alerts
@@ -860,29 +862,75 @@ async def _today_from_snapshots(
     function exists to remove.
     """
     from backend.app.core.timezones import client_timezone, start_of_today
-    from backend.app.models.smart_plug_energy_snapshot import SmartPlugEnergySnapshot
 
     if total_now is None:
         return None
 
-    midnight_utc = start_of_today(client_timezone(request))
-    baseline = (
+    baseline = await _snapshot_at_or_before(db, plug_id, start_of_today(client_timezone(request)))
+    if baseline is None:
+        return None
+    # Clamped: a plug whose counter was reset today would otherwise report a
+    # negative figure, which is worse than admitting to zero.
+    return round(max(0.0, float(total_now) - float(baseline)), 3)
+
+
+async def _snapshot_at_or_before(db: AsyncSession, plug_id: int, moment: datetime) -> float | None:
+    """The plug's lifetime counter as of ``moment``, from the nearest earlier snapshot.
+
+    The same shape ``_sum_snapshot_deltas`` uses for ranges: a day's consumption
+    is the difference between two such readings, never a sum of consecutive
+    pairs — so extra snapshots can only move the endpoints closer to the real
+    boundaries, and nothing double-counts however densely they land.
+    """
+    from backend.app.models.smart_plug_energy_snapshot import SmartPlugEnergySnapshot
+
+    return (
         await db.execute(
             select(SmartPlugEnergySnapshot.lifetime_kwh)
             .where(
                 SmartPlugEnergySnapshot.plug_id == plug_id,
-                SmartPlugEnergySnapshot.recorded_at <= midnight_utc,
+                SmartPlugEnergySnapshot.recorded_at <= moment,
             )
             .order_by(SmartPlugEnergySnapshot.recorded_at.desc())
             .limit(1)
         )
     ).scalar()
 
-    if baseline is None:
+
+async def _yesterday_from_snapshots(db: AsyncSession, plug_id: int, request: Request) -> float | None:
+    """Energy used yesterday, for plugs whose protocol has no such figure.
+
+    The sibling of :func:`_today_from_snapshots`, and it exists for the same
+    reason: Tasmota keeps a ``Yesterday`` register and Zigbee cannot, because
+    the Metering cluster exposes only a cumulative counter. The summary card
+    read 0 for an all-Zigbee farm that had printed all of the previous day —
+    which states that nothing was used, not that nothing can be read.
+
+    Both ends come from snapshots here, unlike today's, whose endpoint is the
+    live counter: yesterday is closed, so its closing value is the counter as
+    of this morning's midnight.
+
+    ⚠️ Day boundaries via ``day_bounds`` rather than "24 hours before midnight".
+    Subtracting a fixed day from a UTC instant is wrong across a DST change,
+    and wrong by exactly one hour of a farm's consumption.
+
+    Returns None rather than 0 when either boundary is missing — a plug adopted
+    this morning has no yesterday, and saying "0 kWh" would be a claim about a
+    day it was not there for.
+    """
+    from backend.app.core.timezones import client_timezone, day_bounds
+
+    tz = client_timezone(request)
+    yesterday = (datetime.now(tz) - timedelta(days=1)).date()
+    opened_at, closed_at = day_bounds(yesterday, tz)
+
+    opening = await _snapshot_at_or_before(db, plug_id, opened_at)
+    closing = await _snapshot_at_or_before(db, plug_id, closed_at)
+    if opening is None or closing is None:
         return None
-    # Clamped: a plug whose counter was reset today would otherwise report a
-    # negative figure, which is worse than admitting to zero.
-    return round(max(0.0, float(total_now) - float(baseline)), 3)
+    # Clamped for the same reason as today's: a counter reset mid-day would
+    # otherwise report a negative day.
+    return round(max(0.0, float(closing) - float(opening)), 3)
 
 
 async def check_power_alerts(plug: SmartPlug, current_power: float | None, db: AsyncSession):
