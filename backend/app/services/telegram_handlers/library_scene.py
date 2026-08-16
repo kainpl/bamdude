@@ -35,23 +35,30 @@ class LibraryPrintState(StatesGroup):
 
 
 async def _get_library_files(offset: int = 0, limit: int = PAGE_SIZE):
-    """Get printable library files."""
+    """Get printable library files.
+
+    ⚠️ This asked for ``file_type == "3mf"`` until 2026-08-16, which is the
+    exact opposite of printable: ``detect_file_type`` collapses ``.gcode.3mf``
+    to ``"gcode"`` and leaves ``"3mf"`` for unsliced project packages. Measured
+    against a live farm, the list offered 29 files that cannot be printed and
+    hid the 103 that can. ``is_printable`` is the shared predicate — the SQL
+    twin of the ``gcode`` tag the web UI gates on.
+
+    Trashed files are excluded too; they were not before, so a file deleted in
+    the web UI stayed printable from the bot.
+    """
     from sqlalchemy import func, select
 
     from backend.app.core.database import async_session
     from backend.app.models.library import LibraryFile
 
+    printable = (LibraryFile.deleted_at.is_(None), LibraryFile.is_printable())
+
     async with async_session() as db:
-        total = (
-            await db.execute(select(func.count(LibraryFile.id)).where(LibraryFile.file_type == "3mf"))
-        ).scalar() or 0
+        total = (await db.execute(select(func.count(LibraryFile.id)).where(*printable))).scalar() or 0
 
         result = await db.execute(
-            select(LibraryFile)
-            .where(LibraryFile.file_type == "3mf")
-            .order_by(LibraryFile.created_at.desc())
-            .offset(offset)
-            .limit(limit)
+            select(LibraryFile).where(*printable).order_by(LibraryFile.created_at.desc()).offset(offset).limit(limit)
         )
         files = list(result.scalars().all())
 
