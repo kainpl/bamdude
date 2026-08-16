@@ -30,13 +30,16 @@ PAUSE_REASON_CODES: dict[str, str] = {
     "0300_8017": "foreign_object",
 }
 
-# Operator-facing copy for the normalised reason keys. Kept here (not in
-# JSON) because notifications go through the existing template engine which
-# only substitutes scalar variables — translation of the *human-readable*
-# reason text is handled by the per-locale ``notification_templates_*.json``
-# overrides if they want to redefine ``{reason}`` content. For now the same
-# English label is reused across locales (the HMS table is English-only
-# upstream); future i18n can override per-key.
+# Fallback copy for the normalised reason keys, used when the catalogue has no
+# description for the code — which since the catalogue went to 14 models means,
+# in practice, BamDude's OWN pauses (plate objects, Obico) that raise no HMS
+# code at all.
+#
+# ⚠️ **This table is the last resort, not the source.** The strings live in
+# ``data/pause_reasons_{en,uk}.json`` and are read through ``t()``; the dict
+# below answers only when a key is missing there, because ``t()`` returns the
+# KEY on a miss and "filament_runout" in front of an operator is worse than
+# English prose.
 PAUSE_REASON_LABELS: dict[str, str] = {
     "user": "Paused by user",
     "filament_runout": "Filament runout",
@@ -52,23 +55,43 @@ PAUSE_REASON_LABELS: dict[str, str] = {
 }
 
 
-def _describe(device: str, short_code: str) -> str | None:
+def _label(key: str, lang: str) -> str:
+    """The generic reason text for a normalised key, in ``lang``.
+
+    Its own namespace rather than ``notification_templates`` on purpose: that
+    file seeds a DB table of templates, and a pause reason is not a template.
+    ``measurements`` is the precedent — a small file read only through ``t()``.
+    """
+    from backend.app.i18n import t
+
+    text = t(lang, "pause_reasons", key)
+    return PAUSE_REASON_LABELS.get(key, key) if text == key else text
+
+
+def _describe(device: str, short_code: str, lang: str) -> str | None:
     """Bambu's own text for a code, or ``None``.
 
     ⚠️ ``device`` may be empty — a pause can be classified before we know which
     machine it came from. Then there is no description and the caller falls back
     to its generic label, which is exactly what happened for every code before
     this catalogue existed.
+
+    ⚠️ ``lang`` is not optional on purpose. It used to be omitted here, and the
+    default quietly made every pause reason English — in the app and in
+    Telegram — while the same catalogue served the error dialog in Ukrainian
+    correctly, because that caller did pass it. A parameter that defaults to a
+    language is a parameter that gets forgotten.
     """
     from backend.app.services.hms_catalogue import describe
 
-    return describe(device, None, short_code.replace("_", "")) if device else None
+    return describe(device, None, short_code.replace("_", ""), lang) if device else None
 
 
 def classify_pause_reason(
     hms_codes: list[str] | None,
     expected_reason: str | None = None,
     device: str = "",
+    lang: str | None = None,
 ) -> tuple[str, str, str | None]:
     """Resolve a pause's normalised reason key + human-readable text.
 
@@ -82,6 +105,9 @@ def classify_pause_reason(
             the pause command). Wins over HMS classification when set —
             internal pauses don't always raise an HMS code, and when they
             do the HMS code is generic ("paused by user").
+        lang: Language for the HMS description. Defaults to the system
+            language held in process memory — this runs on the sync MQTT
+            push path, which cannot await a settings read.
 
     Returns:
         ``(reason_code, reason_label, hms_code)`` — ``reason_code`` is the
@@ -89,8 +115,13 @@ def classify_pause_reason(
         operator-facing string used in notification ``{reason}`` variable;
         ``hms_code`` is the matched HMS code or ``None``.
     """
+    if lang is None:
+        from backend.app.i18n import current_language
+
+        lang = current_language()
+
     if expected_reason and expected_reason in PAUSE_REASON_LABELS:
-        return expected_reason, PAUSE_REASON_LABELS[expected_reason], None
+        return expected_reason, _label(expected_reason, lang), None
 
     if hms_codes:
         for code in hms_codes:
@@ -100,12 +131,12 @@ def classify_pause_reason(
                 # Prefer the precise HMS description over the generic label —
                 # operators want to see "The door seems to be open, so
                 # printing was paused." not just "Door / cover open".
-                desc = _describe(device, normalised) or PAUSE_REASON_LABELS[key]
+                desc = _describe(device, normalised, lang) or _label(key, lang)
                 return key, desc, normalised
         # Unknown HMS code — surface the first one so operators can search
         # for it instead of getting a useless "Unknown".
         first = hms_codes[0].upper()
-        desc = _describe(device, first) or PAUSE_REASON_LABELS["hms_other"]
+        desc = _describe(device, first, lang) or _label("hms_other", lang)
         return "hms_other", desc, first
 
-    return "unknown", PAUSE_REASON_LABELS["unknown"], None
+    return "unknown", _label("unknown", lang), None

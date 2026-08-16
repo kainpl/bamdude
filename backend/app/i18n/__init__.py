@@ -96,6 +96,37 @@ def invalidate_cache() -> None:
     _load_translations.cache_clear()
 
 
+# The system language, held in process memory for callers that cannot await.
+#
+# ⚠️ Why this exists. ``get_language()`` opens a DB session, and some of the
+# code that needs the language is **synchronous and on a hot path** — the MQTT
+# push handler classifies a pause reason on every RUNNING→PAUSE edge and cannot
+# await anything. Without this it silently used the ``"en"`` default, so the
+# pause reason arrived in English however the system was configured.
+#
+# ⚠️ Staleness is the whole risk, and it is handled at the write: the language
+# only changes through ``locale_updater.update_locale_data``, which already
+# invalidates the translation cache and now stamps the new value here in the
+# same breath. It is stamped from the value being written, not re-read, so
+# there is no window where the cache and the setting disagree.
+_current_language: str | None = None
+
+
+def current_language() -> str:
+    """The system language, without awaiting. Falls back to English until warm.
+
+    Warmed at startup and kept warm by every ``get_language()`` call, so the
+    fallback is a genuinely cold process rather than a normal state.
+    """
+    return _current_language or FALLBACK_LANG
+
+
+def set_language_cache(lang: str | None) -> None:
+    """Stamp the language the system was just switched to."""
+    global _current_language
+    _current_language = lang or FALLBACK_LANG
+
+
 # MarkdownV2 special characters that must be escaped
 _MD_ESCAPE_RE = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
 
@@ -106,7 +137,12 @@ def escape_md(text: str) -> str:
 
 
 async def get_language() -> str:
-    """Read the current system language from DB settings."""
+    """Read the current system language from DB settings.
+
+    Also refreshes the process cache behind :func:`current_language`, so the
+    sync path stays warm as a by-product of normal use rather than needing its
+    own schedule.
+    """
     try:
         from sqlalchemy import select
 
@@ -115,7 +151,9 @@ async def get_language() -> str:
 
         async with async_session() as db:
             result = await db.execute(select(Settings.value).where(Settings.key == "language"))
-            lang = result.scalar_one_or_none()
-            return lang or FALLBACK_LANG
+            lang = result.scalar_one_or_none() or FALLBACK_LANG
     except Exception:
-        return FALLBACK_LANG
+        # A failed read must not overwrite a good cached value with English.
+        return current_language()
+    set_language_cache(lang)
+    return lang

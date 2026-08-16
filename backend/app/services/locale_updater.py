@@ -35,11 +35,14 @@ async def update_locale_data(db: AsyncSession, language: str) -> dict:
     except Exception:
         pass
 
-    # Invalidate i18n translation cache
+    # Invalidate i18n translation cache, and stamp the new language for the
+    # sync readers (see i18n.current_language). Stamped from ``lang`` rather
+    # than re-read, so the cache cannot disagree with the write that caused it.
     try:
-        from backend.app.i18n import invalidate_cache
+        from backend.app.i18n import invalidate_cache, set_language_cache
 
         invalidate_cache()
+        set_language_cache(lang)
     except Exception:
         pass
 

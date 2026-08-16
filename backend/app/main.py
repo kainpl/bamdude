@@ -7184,6 +7184,18 @@ async def lifespan(app: FastAPI):
 
     await init_db()
 
+    # Warm the system language into process memory. Sync callers on hot paths
+    # read it from there — notably the MQTT pause classifier, which cannot
+    # await a settings read and would otherwise report every pause reason in
+    # English regardless of the configured language. Kept fresh afterwards by
+    # locale_updater on change and by every get_language() call.
+    try:
+        from backend.app.i18n import get_language as _warm_language
+
+        await _warm_language()
+    except Exception:  # noqa: BLE001 — nothing in startup may take the boot down
+        logging.getLogger(__name__).debug("Language cache warm-up skipped", exc_info=True)
+
     # OIDC provider declared by BAMDUDE_OIDC_* (#2593). Re-applied on every boot,
     # which is what makes the environment the authority and the UI read-only —
     # and what lets removing the variables release the row rather than strand it.

@@ -1,0 +1,13 @@
+{
+  "user": "Paused by user",
+  "filament_runout": "Filament runout",
+  "door_open": "Door / cover open",
+  "presence_check": "Presence-check failed",
+  "file_pause_command": "G-code pause command",
+  "ai_first_layer_defect": "AI: first-layer defect",
+  "ai_spaghetti": "AI: spaghetti / pile-up",
+  "foreign_object": "Foreign object on heatbed",
+  "plate_objects": "Objects detected on plate",
+  "hms_other": "HMS error",
+  "unknown": "Unknown"
+}
