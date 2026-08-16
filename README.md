@@ -75,7 +75,10 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy), aimed
 Upstream can send a Telegram message — a notification channel, one way, over the Bot API. BamDude's is a complete aiogram 3.x bot you can hold a conversation with:
 
 - Live status, printer control, camera snapshots and print-speed mode
+- **Controls under the camera snapshot** — see the problem, act on it in the same message, rather than reaching for a VPN and the web
+- **Skip a failed object** — the plate seen from above with a numbered pin on each part; press the number, confirm by name, and the other nineteen carry on printing
 - **Print from the library** — pick a file, pick a model-compatible printer, print now or queue it
+- **Send the bot a file** — it lands in the library with the same checks as a web upload, and offers to print it right there
 - **Queue management** — paginated list, detail, reorder, cancel
 - **Maintenance** — see what is overdue, mark it done, edit the hours
 - **Add a printer** — type an IP and let SSDP fill in the serial, name and model
@@ -190,6 +193,7 @@ The channel exists only on that newer generation, and BamDude decides by asking 
 - External camera support (MJPEG, RTSP, USB)
 - Build plate empty detection
 - Printer control (stop, pause, resume, light, speed)
+- **Skip Objects** — cancel individual parts mid-print instead of losing the plate to one failure. The plate is shown from above with a clickable numbered marker on each object, positioned from the slicer's own pick data; already-skipped parts stay visible so nothing shifts under the cursor, and a skip raises the archive's defective-part count from the printer's own report. Available in the web and in the Telegram bot, from the same marker placement
 - **Printer storage browser on both media** — browse, download, preview plates, import into the library and delete on the SD card *and* on the built-in storage of printers that have it (X2D, P2S, H2C, H2D, H2D Pro, H2S), with a switch between the two and separate model / timelapse catalogues on the internal side
 - **Timelapse pre-flight** — the tick is checked against the printer before it is promised: a machine with no SD card, an unreadable one or a read-only one is named in the print dialog with which of the three it is, and a queue whose printer has run out of room **pauses** instead of quietly dropping the recording. Printers with internal storage or a timelapse kit skip the card question entirely
 - **Timelapse target, chosen per print** — on a printer with both built-in storage and a card, the print dialog offers which one records it, the way Bambu Studio does; the choice travels with the queue item and is re-checked against the card at dispatch, so a card removed in the meantime means the recording falls back to internal storage rather than the print failing. A print sent from a slicer to a Virtual Printer keeps the slicer's own pick
@@ -264,7 +268,10 @@ The channel exists only on that newer generation, and BamDude decides by asking 
 <td width="50%" valign="top">
 
 ### Telegram Bot
-- Full printer control: pause, resume, stop, light, speed, camera snapshot
+- Full printer control: pause, resume, stop (asks first), light, speed, camera snapshot
+- Camera snapshot carries the print controls, from the button and from `/camera`
+- Skip Objects from the bot: rendered plate with numbered markers, paginated keyboard, confirmation by object name
+- Upload: send a document, choose a library folder, print or queue it
 - Printer calibration from bot: model-aware selection (bed leveling, vibration, motor noise, nozzle offset, high-temp heatbed)
 - Printer status with model tag, maintenance indicators
 - Edit printer hours, view/mark maintenance from bot
@@ -278,7 +285,7 @@ The channel exists only on that newer generation, and BamDude decides by asking 
 - Per-chat notification events, quiet hours, daily digest
 - Actionable notification buttons: clear plate, mark maintenance done, pause/stop on progress
 - Auto-registration mode for new chats
-- 13 handler modules, 171 i18n keys (EN/UK), MarkdownV2 formatting
+- 17 handler modules, 198 i18n keys (EN/UK), MarkdownV2 formatting
 
 ### Notifications
 - Telegram (auto-restart bot on config change), Discord, Email, Pushover, ntfy, CallMeBot, **Bark** (free iOS push, no account)
