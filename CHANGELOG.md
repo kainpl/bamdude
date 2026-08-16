@@ -57,6 +57,8 @@
 
 ### Fixed
 
+- **A file added to the library now appears in tabs that are already open.** The list refreshed itself for one case only — a file sent by a slicer to the Virtual Printer — because that was the only place the notice was ever sent from. Uploading through the browser, sending the bot a file, or posting one through the API left every other open tab showing the old list until somebody pressed refresh.
+
 - **A printer can no longer be handed a command it already carried out hours ago.** This one destroyed prints, so it is worth describing exactly. On 16 August an A1 Mini eleven hours into a job lost its network link for two seconds; when it came back, the printer received — and obeyed — a plate-change command BamDude had sent at **two o'clock that morning**. It swept the finished part's bed clear and carried on extruding into the air. A second printer was hit the same day, twice.
 
     The cause is a promise made in the wrong place. BamDude sends commands with a delivery guarantee of "at least once", which means the network library keeps a copy and re-sends it until the printer's own message broker confirms receipt. That broker is the printer's firmware, and it loses confirmations — a known quirk BamDude already worked around. So a command that had **run perfectly** looked undelivered, was held indefinitely, and was re-sent the next time the link came back.
