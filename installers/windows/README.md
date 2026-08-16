@@ -51,14 +51,22 @@ python build.py
 
 Output: `installers\windows\build\output\bamdude-windows-setup.exe`
 
-## Testing without signing
+## Signing
 
-The installer can be built and run unsigned. Windows SmartScreen will
-show "Windows protected your PC" on first run. Click **More info** →
-**Run anyway** to proceed. This is expected and harmless for testing.
-Production builds will be signed via SignPath OSS (application in
-flight as of 2026-06-10) and won't show this warning after reputation
-accrues.
+**Every build is unsigned, release builds included.** Windows SmartScreen
+shows "Windows protected your PC" on first run; **More info** → **Run
+anyway** proceeds. There is no signing step in CI and no certificate to
+add one with.
+
+An earlier version of this file promised SignPath OSS signing "in
+flight as of 2026-06-10". That sentence arrived with the port of
+upstream Bambuddy's installer pipeline and described *their*
+application, submitted before this repo had an installer at all. An OSS
+approval covers the project it was granted to, so wiring signing up
+here means applying on our own behalf first. The entry requirements —
+a public repository under an OSI licence — are already met (this repo
+is public and AGPL-3.0), so what is missing is the application itself,
+not eligibility.
 
 ## CI build
 

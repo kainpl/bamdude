@@ -6,9 +6,10 @@ name: Windows Installer
 #   - Tag push matching v* (release builds, uploaded as a release asset)
 #   - Manual dispatch (for testing the build pipeline)
 #
-# The installer is unsigned until SignPath OSS approval lands. Once it
-# does, add the SignPath GitHub Action between the ISCC step and the
-# upload step.
+# The installer ships unsigned — there is no code-signing certificate for
+# this project and nothing pending that would produce one. A signing step
+# belongs between ISCC and upload once that changes; see the Signing
+# section of installers/windows/README.md for what "changes" means here.
 
 on:
   push:
