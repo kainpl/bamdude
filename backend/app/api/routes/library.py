@@ -68,10 +68,12 @@ from backend.app.services.design_settings import (
     overrides_from_config,
 )
 from backend.app.services.library_helpers import (
+    SLICED_GCODE_META_KEY,
     detect_file_type,
     folder_activity_at,
     project_for_library_file,
     skip_objects_supported_from_metadata,
+    sliced_gcode_in_3mf,
     sync_system_tags,
 )
 from backend.app.services.library_trash import library_trash_service
@@ -422,6 +424,12 @@ async def save_3mf_bytes_to_library(
                     f.write(thumbnail_data)
                 thumbnail_path = str(thumb_path)
             metadata = _clean_3mf_metadata(raw_metadata)
+            # Content decides whether this container is sliced; the tag rule
+            # prefers it over the filename. Unset when unreadable, which reads
+            # as unknown rather than as a claim. See sliced_gcode_in_3mf.
+            _sliced = sliced_gcode_in_3mf(file_path)
+            if _sliced is not None:
+                metadata[SLICED_GCODE_META_KEY] = _sliced
             try:
                 import zipfile as _zf
 
@@ -3261,6 +3269,180 @@ async def slice_library_file(
     }
 
 
+async def store_library_upload(
+    db: AsyncSession,
+    *,
+    filename: str,
+    content: bytes,
+    target_folder: LibraryFolder | None,
+    generate_stl_thumbnails: bool = True,
+    created_by_id: int | None = None,
+) -> tuple[LibraryFile, int | None]:
+    """Put an uploaded file in the library. Returns ``(row, duplicate_of_id)``.
+
+    Everything that makes an upload a library file: destination, magic-byte
+    validation, disk write, SHA-256, duplicate detection, thumbnails, per-plate
+    cache, sliced-by-content flag, swap detection, tags, folder-project
+    inheritance.
+
+    Extracted so the Telegram bot's document handler and the HTTP route are the
+    same code. A second implementation would have started identical and drifted
+    — which is precisely how this codebase once had three different readings of
+    ``.gcode.3mf`` (see ``library_helpers``).
+
+    ⚠️ Lives here rather than under ``services/`` because it leans on a dozen
+    module-private helpers of this route (``_resolve_upload_destination``,
+    ``_clean_3mf_metadata``, ``_stored_file_path``, thumbnail generators…).
+    Moving those too would be a far larger change than the one this feature
+    needs; the callers importing it from a route module is the smaller wrong.
+
+    ⚠️ Raises ``HTTPException`` — the messages are written for a human to read,
+    and the bot shows ``e.detail`` verbatim rather than inventing a second
+    vocabulary for the same rejections.
+    """
+    ext = os.path.splitext(filename)[1].lower()
+    file_type = detect_file_type(filename)
+    folder_id = target_folder.id if target_folder else None
+
+    file_path, is_external_upload = _resolve_upload_destination(target_folder, filename)
+
+    # Validation sniffs magic bytes, so it runs on the bytes in hand; the file
+    # reaches disk only after the checks pass (#1401).
+    validate_print_file_upload(filename, content)
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    # Calculate hash
+    file_hash = calculate_file_hash(file_path)
+
+    # Check for duplicates — only against active (non-trashed) files. A
+    # trashed sibling has been deleted by the user and shouldn't pin a
+    # fresh upload to it.
+    dup_result = await db.execute(
+        select(LibraryFile.id).where(LibraryFile.file_hash == file_hash, LibraryFile.deleted_at.is_(None)).limit(1)
+    )
+    duplicate_of = dup_result.scalar()
+
+    # Extract metadata and thumbnail
+    metadata = {}
+    thumbnail_path = None
+    thumbnails_dir = get_library_thumbnails_dir()
+
+    if ext == ".3mf":
+        try:
+            parser = ThreeMFParser(str(file_path))
+            raw_metadata = parser.parse()
+
+            # Extract thumbnail before cleaning metadata
+            thumbnail_data = raw_metadata.get("_thumbnail_data")
+            thumbnail_ext = raw_metadata.get("_thumbnail_ext", ".png")
+
+            # Save thumbnail if extracted
+            if thumbnail_data:
+                thumb_filename = f"{uuid.uuid4().hex}{thumbnail_ext}"
+                thumb_path = (
+                    thumbnails_dir / thumb_filename
+                )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
+                with open(thumb_path, "wb") as f:
+                    f.write(thumbnail_data)
+                thumbnail_path = str(thumb_path)
+
+            metadata = _clean_3mf_metadata(raw_metadata)
+
+            # Whether this container actually holds sliced G-code, decided
+            # by looking inside it. ``compute_file_tags`` prefers this over
+            # the filename, so a model named ``*.gcode.3mf`` no longer gets
+            # a Print affordance it cannot honour — the printer answers
+            # that thirty seconds later as "unable to parse the 3mf file".
+            # Unset when unreadable: unknown, not a claim.
+            _sliced = sliced_gcode_in_3mf(file_path)
+            if _sliced is not None:
+                metadata[SLICED_GCODE_META_KEY] = _sliced
+
+            # Populate per-plate cache so the gallery / list endpoint
+            # doesn't need to reopen the ZIP on every read. ``plates``
+            # carries the full per-plate breakdown; ``is_multi_plate``
+            # is a tiny top-level boolean that the file-list response
+            # uses to gate gallery rendering on the frontend.
+            try:
+                import zipfile as _zf
+
+                from backend.app.services.archive import parse_plates_from_3mf
+
+                with _zf.ZipFile(str(file_path), "r") as _zfh:
+                    plates_payload = parse_plates_from_3mf(_zfh)
+                if plates_payload:
+                    metadata["plates"] = plates_payload
+                    metadata["is_multi_plate"] = len(plates_payload) > 1
+            except Exception as _pe:
+                logger.debug("Per-plate parse for upload failed (non-critical): %s", _pe)
+        except Exception as e:
+            logger.warning("Failed to parse 3MF: %s", e)
+
+    elif ext == ".gcode":
+        # Extract embedded thumbnail from gcode
+        try:
+            thumbnail_data = extract_gcode_thumbnail(file_path)
+            if thumbnail_data:
+                thumb_filename = f"{uuid.uuid4().hex}.png"
+                thumb_path = (
+                    thumbnails_dir / thumb_filename
+                )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
+                with open(thumb_path, "wb") as f:
+                    f.write(thumbnail_data)
+                thumbnail_path = str(thumb_path)
+        except Exception as e:
+            logger.warning("Failed to extract gcode thumbnail: %s", e)
+
+    elif ext.lower() in IMAGE_EXTENSIONS:
+        # For image files, create a thumbnail from the image itself
+        thumbnail_path = create_image_thumbnail(file_path, thumbnails_dir)
+
+    elif ext in (".stl", ".obj"):
+        # Generate mesh thumbnail (STL + OBJ both go through trimesh).
+        # Skip stub / placeholder meshes below MIN_USABLE_STL_BYTES — they
+        # can't contain a usable mesh and would only log noise (#1820).
+        if generate_stl_thumbnails and file_path.stat().st_size >= MIN_USABLE_STL_BYTES:
+            thumbnail_path = generate_stl_thumbnail(file_path, thumbnails_dir)
+
+    # Detect swap mode compatibility from filename. Covers both the
+    # singular ".swap." suffix (older / custom tooling) and the ".swaps."
+    # suffix that swaplist.app actually emits on export.
+    fname_lower = filename.lower()
+    swap_compatible = (
+        fname_lower.endswith((".swap.3mf", ".swaps.3mf")) or ".swap." in fname_lower or ".swaps." in fname_lower
+    )
+
+    # Create database entry (managed files store relative paths for
+    # portability; external files store the absolute mount path — same
+    # shape scan produces).
+    library_file = LibraryFile(
+        folder_id=folder_id,
+        is_external=is_external_upload,
+        filename=filename,
+        file_path=_stored_file_path(file_path, is_external_upload),
+        file_type=file_type,
+        skip_objects_supported=skip_objects_supported_from_metadata(metadata if metadata else None),
+        file_size=len(content),
+        file_hash=file_hash,
+        thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
+        file_metadata=_without_print_name(metadata) if metadata else None,
+        created_by_id=created_by_id,
+        swap_compatible=swap_compatible,
+    )
+    db.add(library_file)
+    await db.flush()
+    await sync_system_tags(db, library_file)
+    # Inherit the target folder's projects + plant matching print-plan
+    # rows so a 3MF dropped into a project-tagged folder shows up in
+    # the project's plan automatically.
+    await inherit_folder_projects(db, library_file, target_folder)
+    await db.commit()
+    await db.refresh(library_file)
+
+    return library_file, duplicate_of
+
+
 @router.post("/files", response_model=FileUploadResponse)
 @router.post("/files/", response_model=FileUploadResponse)
 async def upload_file(
@@ -3282,9 +3464,6 @@ async def upload_file(
             validate_print_filename(filename)
         except InvalidFilenameError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        ext = os.path.splitext(filename)[1].lower()
-        file_type = detect_file_type(filename)
-
         # Verify folder exists if specified. Eager-load .projects so a
         # subsequent ``inherit_folder_projects`` call doesn't trip the
         # async lazy-load — the file inherits the folder's projects so the
@@ -3305,132 +3484,14 @@ async def upload_file(
         # folder-permission rejections (403 read-only, 400 missing
         # path, 409 collision) still surface before any "bad file
         # format" 400 — preserves existing error ordering / tests.
-        file_path, is_external_upload = _resolve_upload_destination(target_folder, filename)
-
-        # Read upload now so the validation can sniff magic bytes; the
-        # file is written to disk only after the checks pass (#1401).
-        content = await file.read()
-        validate_print_file_upload(filename, content)
-        with open(file_path, "wb") as f:
-            f.write(content)
-
-        # Calculate hash
-        file_hash = calculate_file_hash(file_path)
-
-        # Check for duplicates — only against active (non-trashed) files. A
-        # trashed sibling has been deleted by the user and shouldn't pin a
-        # fresh upload to it.
-        dup_result = await db.execute(
-            select(LibraryFile.id).where(LibraryFile.file_hash == file_hash, LibraryFile.deleted_at.is_(None)).limit(1)
-        )
-        duplicate_of = dup_result.scalar()
-
-        # Extract metadata and thumbnail
-        metadata = {}
-        thumbnail_path = None
-        thumbnails_dir = get_library_thumbnails_dir()
-
-        if ext == ".3mf":
-            try:
-                parser = ThreeMFParser(str(file_path))
-                raw_metadata = parser.parse()
-
-                # Extract thumbnail before cleaning metadata
-                thumbnail_data = raw_metadata.get("_thumbnail_data")
-                thumbnail_ext = raw_metadata.get("_thumbnail_ext", ".png")
-
-                # Save thumbnail if extracted
-                if thumbnail_data:
-                    thumb_filename = f"{uuid.uuid4().hex}{thumbnail_ext}"
-                    thumb_path = (
-                        thumbnails_dir / thumb_filename
-                    )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
-                    with open(thumb_path, "wb") as f:
-                        f.write(thumbnail_data)
-                    thumbnail_path = str(thumb_path)
-
-                metadata = _clean_3mf_metadata(raw_metadata)
-
-                # Populate per-plate cache so the gallery / list endpoint
-                # doesn't need to reopen the ZIP on every read. ``plates``
-                # carries the full per-plate breakdown; ``is_multi_plate``
-                # is a tiny top-level boolean that the file-list response
-                # uses to gate gallery rendering on the frontend.
-                try:
-                    import zipfile as _zf
-
-                    from backend.app.services.archive import parse_plates_from_3mf
-
-                    with _zf.ZipFile(str(file_path), "r") as _zfh:
-                        plates_payload = parse_plates_from_3mf(_zfh)
-                    if plates_payload:
-                        metadata["plates"] = plates_payload
-                        metadata["is_multi_plate"] = len(plates_payload) > 1
-                except Exception as _pe:
-                    logger.debug("Per-plate parse for upload failed (non-critical): %s", _pe)
-            except Exception as e:
-                logger.warning("Failed to parse 3MF: %s", e)
-
-        elif ext == ".gcode":
-            # Extract embedded thumbnail from gcode
-            try:
-                thumbnail_data = extract_gcode_thumbnail(file_path)
-                if thumbnail_data:
-                    thumb_filename = f"{uuid.uuid4().hex}.png"
-                    thumb_path = (
-                        thumbnails_dir / thumb_filename
-                    )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
-                    with open(thumb_path, "wb") as f:
-                        f.write(thumbnail_data)
-                    thumbnail_path = str(thumb_path)
-            except Exception as e:
-                logger.warning("Failed to extract gcode thumbnail: %s", e)
-
-        elif ext.lower() in IMAGE_EXTENSIONS:
-            # For image files, create a thumbnail from the image itself
-            thumbnail_path = create_image_thumbnail(file_path, thumbnails_dir)
-
-        elif ext in (".stl", ".obj"):
-            # Generate mesh thumbnail (STL + OBJ both go through trimesh).
-            # Skip stub / placeholder meshes below MIN_USABLE_STL_BYTES — they
-            # can't contain a usable mesh and would only log noise (#1820).
-            if generate_stl_thumbnails and file_path.stat().st_size >= MIN_USABLE_STL_BYTES:
-                thumbnail_path = generate_stl_thumbnail(file_path, thumbnails_dir)
-
-        # Detect swap mode compatibility from filename. Covers both the
-        # singular ".swap." suffix (older / custom tooling) and the ".swaps."
-        # suffix that swaplist.app actually emits on export.
-        fname_lower = filename.lower()
-        swap_compatible = (
-            fname_lower.endswith((".swap.3mf", ".swaps.3mf")) or ".swap." in fname_lower or ".swaps." in fname_lower
-        )
-
-        # Create database entry (managed files store relative paths for
-        # portability; external files store the absolute mount path — same
-        # shape scan produces).
-        library_file = LibraryFile(
-            folder_id=folder_id,
-            is_external=is_external_upload,
+        library_file, duplicate_of = await store_library_upload(
+            db,
             filename=filename,
-            file_path=_stored_file_path(file_path, is_external_upload),
-            file_type=file_type,
-            skip_objects_supported=skip_objects_supported_from_metadata(metadata if metadata else None),
-            file_size=len(content),
-            file_hash=file_hash,
-            thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
-            file_metadata=_without_print_name(metadata) if metadata else None,
+            content=await file.read(),
+            target_folder=target_folder,
+            generate_stl_thumbnails=generate_stl_thumbnails,
             created_by_id=current_user.id if current_user else None,
-            swap_compatible=swap_compatible,
         )
-        db.add(library_file)
-        await db.flush()
-        await sync_system_tags(db, library_file)
-        # Inherit the target folder's projects + plant matching print-plan
-        # rows so a 3MF dropped into a project-tagged folder shows up in
-        # the project's plan automatically.
-        await inherit_folder_projects(db, library_file, target_folder)
-        await db.commit()
-        await db.refresh(library_file)
 
         return FileUploadResponse(
             id=library_file.id,
@@ -3628,6 +3689,15 @@ async def extract_zip_file(
                                 thumbnail_path = str(thumb_path)
 
                             metadata = _clean_3mf_metadata(raw_metadata)
+
+                            # Content decides whether this container is sliced;
+                            # the tag rule prefers it over the filename. Unset
+                            # when unreadable, which reads as unknown rather
+                            # than as a claim. See sliced_gcode_in_3mf.
+                            _sliced = sliced_gcode_in_3mf(file_path)
+                            if _sliced is not None:
+                                metadata[SLICED_GCODE_META_KEY] = _sliced
+
                             # Per-plate cache (same as upload_file path).
                             try:
                                 import zipfile as _zf

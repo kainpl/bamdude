@@ -2,7 +2,21 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, Select, String, Text, func, select
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Select,
+    String,
+    Text,
+    and_,
+    func,
+    or_,
+    select,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -169,6 +183,34 @@ class LibraryFile(Base):
         sweeper) build their own query with ``deleted_at.isnot(None)``.
         """
         return select(cls).where(cls.deleted_at.is_(None))
+
+    @classmethod
+    def is_printable(cls):
+        """SQL predicate for "this file can be sent to a printer as-is".
+
+        The SQL twin of the frontend's ``isSliced`` (``file_tags`` contains
+        ``gcode``). Expressed against the columns the tag is computed FROM,
+        because ``file_tags`` is a JSON array and portable containment across
+        SQLite and PostgreSQL is not worth the cast gymnastics — while
+        ``file_type`` plus the content flag are both plain lookups.
+
+        ⚠️ ``file_type`` alone is NOT the answer, and getting that wrong is
+        exactly the bug this exists to close: ``detect_file_type`` collapses
+        ``.gcode.3mf`` to ``"gcode"`` and leaves ``"3mf"`` for **unsliced**
+        packages, so the Telegram bot's "printable" list selected
+        ``file_type == "3mf"`` and thereby showed only the files that cannot be
+        printed — 29 of them, while hiding the 103 that can.
+
+        ⚠️ A missing flag counts as printable for a ``gcode`` row. Rows written
+        before the content check exists have no answer, and the filename rule
+        is what they were created under; treating unknown as "not printable"
+        would empty the list on any install that has not run the m137 backfill.
+        """
+        sliced = cls.file_metadata["has_sliced_gcode"].as_boolean()
+        return or_(
+            and_(cls.file_type == "gcode", or_(sliced.is_(None), sliced.is_(True))),
+            and_(cls.file_type == "3mf", sliced.is_(True)),
+        )
 
     # Relationships
     folder: Mapped["LibraryFolder | None"] = relationship(back_populates="files")

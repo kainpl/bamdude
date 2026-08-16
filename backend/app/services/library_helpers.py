@@ -11,10 +11,44 @@ hardcoded ``"gcode"`` in slicer-output).
 
 from __future__ import annotations
 
+import logging
 import os
+import zipfile
 from datetime import datetime
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _SLICED_3MF_SUFFIX = ".gcode.3mf"
+
+# The key ``compute_file_tags`` prefers over the filename when deciding whether
+# a 3MF is sliced. Written by whoever parses the file; absent on rows that
+# predate it, which the tag rule handles explicitly.
+SLICED_GCODE_META_KEY = "has_sliced_gcode"
+
+
+def sliced_gcode_in_3mf(path: str | Path) -> bool | None:
+    """Does this 3MF actually contain sliced G-code? ``None`` when unreadable.
+
+    The one content check behind the ``gcode`` tag. A Bambu slicer writes
+    ``Metadata/plate_N.gcode`` into the container; a project or model export
+    does not, whatever it is called.
+
+    ⚠️ Reads only the ZIP **central directory** — ``namelist()`` — and extracts
+    nothing. That is what makes it cheap enough to run over a whole library in
+    a migration, and it is the same read ``parse_plates_from_3mf`` already does
+    to discover plates.
+
+    ⚠️ ``None`` is not ``False``. A file that cannot be opened has not been
+    shown to lack G-code, and the caller must fall back rather than record an
+    answer it does not have.
+    """
+    try:
+        with zipfile.ZipFile(str(path), "r") as zf:
+            return any(n.startswith("Metadata/") and n.endswith(".gcode") for n in zf.namelist())
+    except (OSError, zipfile.BadZipFile) as e:
+        logger.debug("Could not inspect %s for sliced gcode: %s", path, e)
+        return None
 
 
 def detect_file_type(filename: str) -> str:
@@ -85,21 +119,45 @@ def compute_file_tags(
     """
     tags: list[str] = []
     lower_name = filename.lower()
-    is_sliced_3mf = lower_name.endswith(_SLICED_3MF_SUFFIX)
     meta = file_metadata or {}
 
+    # ⚠️ **Content beats the filename.** ``file_type`` comes from
+    # ``detect_file_type(filename)``, so on its own the ``gcode`` tag answers
+    # "is it NAMED like a sliced file", not "is it one" — and that tag is what
+    # gates every "can this be printed" affordance. ``sliced_gcode_in_3mf``
+    # looks inside the container; whoever parsed the file leaves the answer
+    # here.
+    #
+    # ⚠️ Absent means unknown, NOT false. Three migrations (m036, m037, m041)
+    # call this helper from stored metadata and never open a file, and rows
+    # written before the key existed have no answer either. Both fall back to
+    # the filename rule, which is what they were built on.
+    # ⚠️ ``effective_type`` is resolved ONCE and drives both the format chip and
+    # the readiness chip below. Deriving them separately is how a file could end
+    # up tagged ``gcode`` and ``project`` at the same time — contradictory, and
+    # invisible until something filtered on one of them.
+    sliced_by_content = meta.get(SLICED_GCODE_META_KEY)
+    effective_type = file_type
+    if sliced_by_content is not None and file_type in ("gcode", "3mf"):
+        # Only a 3MF container can be re-judged: the key is written by the 3MF
+        # parse, and a raw ``.gcode`` never carries it.
+        effective_type = "gcode" if sliced_by_content else "3mf"
+
     # Format chip(s).
-    if file_type == "gcode":
+    if effective_type == "gcode":
         tags.append("gcode")
-        if is_sliced_3mf:
-            tags.append("3mf")  # composite — sliced 3MF carries both
-    elif file_type == "3mf":
+        # Composite: a sliced 3MF carries both chips. Gated on the container
+        # being a 3MF at all — a raw ``.gcode`` is sliced by definition and is
+        # still not a 3MF, whatever the content key says.
+        if lower_name.endswith(".3mf"):
+            tags.append("3mf")
+    elif effective_type == "3mf":
         tags.append("3mf")
-    elif file_type == "stl":
+    elif effective_type == "stl":
         tags.append("stl")
-    elif file_type == "obj":
+    elif effective_type == "obj":
         tags.append("obj")
-    elif file_type in ("step", "stp"):
+    elif effective_type in ("step", "stp"):
         tags.append("step")
     # Anything else (txt, gif, image…) gets no format tag.
 
@@ -113,12 +171,12 @@ def compute_file_tags(
         # because ``detect_file_type`` collapses ``.gcode.3mf`` to ``gcode`` and
         # the ``project`` branch below only catches a bare ``3mf``.
         tags.append("sliced")
-    elif file_type == "3mf":
+    elif effective_type == "3mf":
         # ``detect_file_type`` already collapses sliced .gcode.3mf to
-        # ``"gcode"``, so file_type == "3mf" here means the row is an
-        # unsliced project package.
+        # ``"gcode"``, so ``3mf`` here means the row is an unsliced project
+        # package — by content where we know it, by name where we do not.
         tags.append("project")
-    elif file_type in ("stl", "obj", "step", "stp"):
+    elif effective_type in ("stl", "obj", "step", "stp"):
         tags.append("geometry")
 
     # Structural modifiers.
