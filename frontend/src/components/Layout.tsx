@@ -922,7 +922,7 @@ export function Layout() {
                         href={link.url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className={`flex items-center ${isSidebarCompact || sidebarExpanded ? 'gap-3 px-4' : 'justify-center px-2'} py-3 rounded-lg transition-colors group text-bambu-gray-light hover:bg-bambu-dark-tertiary hover:text-white`}
+                        className={`flex items-center ${isSidebarCompact || sidebarExpanded ? 'gap-3 px-4' : 'justify-center px-2'} py-1.5 rounded-lg transition-colors group text-bambu-gray-light hover:bg-bambu-dark-tertiary hover:text-white`}
                         title={!isSidebarCompact && !sidebarExpanded ? link.name : undefined}
                       >
                         {sidebarExpanded && !isSidebarCompact && (
@@ -943,7 +943,7 @@ export function Layout() {
                       <NavLink
                         to={`/external/${link.id}`}
                         className={({ isActive }) =>
-                          `flex items-center ${isSidebarCompact || sidebarExpanded ? 'gap-3 px-4' : 'justify-center px-2'} py-3 rounded-lg transition-colors group ${
+                          `flex items-center ${isSidebarCompact || sidebarExpanded ? 'gap-3 px-4' : 'justify-center px-2'} py-1.5 rounded-lg transition-colors group ${
                             isActive
                               ? 'bg-bambu-green text-white'
                               : 'text-bambu-gray-light hover:bg-bambu-dark-tertiary hover:text-white'
@@ -1034,7 +1034,7 @@ export function Layout() {
                     <NavLink
                       to={to}
                       className={({ isActive }) =>
-                        `flex items-center ${isSidebarCompact || sidebarExpanded ? 'gap-3 px-4' : 'justify-center px-2'} py-3 rounded-lg transition-colors group ${
+                        `flex items-center ${isSidebarCompact || sidebarExpanded ? 'gap-3 px-4' : 'justify-center px-2'} py-1.5 rounded-lg transition-colors group ${
                           isActive
                             ? 'bg-bambu-green text-white'
                             : 'text-bambu-gray-light hover:bg-bambu-dark-tertiary hover:text-white'
