@@ -178,49 +178,13 @@ async def show_printer_detail(
     can_control = has_perm(tg_chat, "printers:control")
 
     if printer["connected"] and can_control:
-        if printer["state"] == "RUNNING":
-            btns.append(
-                [
-                    InlineKeyboardButton(
-                        text=f"\u23f8 {t(lang, NS, 'actions.btn_pause')}", callback_data=f"action:pause:{printer_id}"
-                    ),
-                    InlineKeyboardButton(
-                        text=f"\u23f9 {t(lang, NS, 'actions.btn_stop')}", callback_data=f"action:stop:{printer_id}"
-                    ),
-                    InlineKeyboardButton(
-                        text=f"\U0001f3ce\ufe0f {t(lang, NS, 'actions.btn_speed')}",
-                        callback_data=f"action:speed:{printer_id}",
-                    ),
-                ]
-            )
-        elif printer["state"] == "PAUSE":
-            btns.append(
-                [
-                    InlineKeyboardButton(
-                        text=f"\u25b6\ufe0f {t(lang, NS, 'actions.btn_resume')}",
-                        callback_data=f"action:resume:{printer_id}",
-                    ),
-                    InlineKeyboardButton(
-                        text=f"\u23f9 {t(lang, NS, 'actions.btn_stop')}", callback_data=f"action:stop:{printer_id}"
-                    ),
-                    InlineKeyboardButton(
-                        text=f"\U0001f3ce\ufe0f {t(lang, NS, 'actions.btn_speed')}",
-                        callback_data=f"action:speed:{printer_id}",
-                    ),
-                ]
-            )
+        # ⚠️ The same builder the camera snapshot uses. These buttons are gated
+        # by printer state and by permission, and two copies would drift the
+        # next time either gate moves — which is exactly how the camera path
+        # ended up with no controls under it at all.
+        from backend.app.services.telegram_handlers.print_controls import print_control_rows
 
-        # Skip an object — only while something is actually printing. Whether
-        # this PLATE can be skipped is deliberately NOT asked here: the flag
-        # that answers it is empty until the web loads the objects, so asking
-        # hid the button after every restart. ``entry_button`` explains why,
-        # and the screen behind it explains any refusal.
-        if printer["state"] in ("RUNNING", "PAUSE"):
-            from backend.app.services.telegram_handlers.skip_objects_scene import entry_button
-
-            skip_btn = entry_button(printer_id, lang)
-            if skip_btn:
-                btns.append([skip_btn])
+        btns.extend(print_control_rows(printer, tg_chat, lang))
 
         btns.append(
             [

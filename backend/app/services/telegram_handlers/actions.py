@@ -16,6 +16,24 @@ if TYPE_CHECKING:
 
 router = Router()
 
+
+async def camera_controls(printer_id: int, tg_chat: TelegramChat | None, lang: str) -> InlineKeyboardMarkup | None:
+    """The control keyboard to hang under a camera snapshot, or ``None``.
+
+    ``None`` rather than an empty keyboard: an idle printer, or a chat that may
+    only look, gets a plain photo exactly as before.
+    """
+    from backend.app.services.telegram_handlers.print_controls import print_control_rows
+
+    printers = await get_printers_data()
+    printer = next((p for p in printers if p["id"] == printer_id), None)
+    if not printer:
+        return None
+
+    rows = print_control_rows(printer, tg_chat, lang)
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
 # Speed mode definitions
 SPEED_MODES = {
     1: {"key": "speed.silent", "emoji": "\U0001f422"},
@@ -70,6 +88,11 @@ async def cb_camera_snapshot(callback: CallbackQuery, tg_chat: TelegramChat | No
             await callback.message.answer_photo(
                 photo=photo,
                 caption=f"\U0001f4f7 {escape_md(printer.name)}",
+                # The point of the whole feature: whoever just SAW the problem
+                # can act on it here instead of reaching for a VPN and the web.
+                # State is read now, beside the snapshot — not inherited from
+                # the card that launched it, which may be minutes stale.
+                reply_markup=await camera_controls(printer_id, tg_chat, lang),
             )
         else:
             await callback.message.answer(escape_md(t(lang, NS, "camera.failed")))
@@ -129,7 +152,14 @@ async def cb_speed_menu(
         ]
     )
 
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
+    markup = InlineKeyboardMarkup(inline_keyboard=btns)
+    if callback.message.photo:
+        # From under a camera snapshot: the speed menu is text, and a photo
+        # message cannot become one. It arrives as its own message below the
+        # picture, which also leaves the picture on screen where it is useful.
+        await callback.message.answer(text, reply_markup=markup)
+        return
+    await callback.message.edit_text(text, reply_markup=markup)
 
 
 @router.callback_query(F.data.startswith("speed:set:"))
@@ -186,6 +216,52 @@ async def cb_clear_plate(callback: CallbackQuery, tg_chat: TelegramChat | None =
     await show_printer_detail(callback, printer_id, tg_chat)
 
 
+# === Stop, which asks first ===
+
+
+@router.callback_query(F.data.startswith("action:stop_ask:"))
+async def cb_stop_ask(callback: CallbackQuery, tg_chat: TelegramChat | None = None) -> None:
+    """Swap the keyboard for the stop question.
+
+    ⚠️ Registered ABOVE ``cb_printer_action``, whose filter is the catch-all
+    ``action:``. aiogram takes handlers in registration order within a router,
+    so moving this below it would send the question to the catch-all, which
+    matches no branch and silently just redraws.
+
+    Only the keyboard changes. The message may be a photo — under a camera
+    snapshot it always is — and a caption cannot become a question without
+    re-uploading the image. Both screens already name the printer above.
+    """
+    lang = await get_language()
+    if not has_perm(tg_chat, "printers:control"):
+        await callback.answer(t(lang, NS, "auth.no_permission"), show_alert=True)
+        return
+
+    from backend.app.services.telegram_handlers.print_controls import stop_confirm_rows
+
+    printer_id = int(callback.data.split(":")[2])
+    back = f"action:controls:{printer_id}" if callback.message.photo else f"printer:{printer_id}"
+
+    await callback.answer()
+    await callback.message.edit_reply_markup(
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=stop_confirm_rows(printer_id, lang, back))
+    )
+
+
+@router.callback_query(F.data.startswith("action:controls:"))
+async def cb_restore_controls(callback: CallbackQuery, tg_chat: TelegramChat | None = None) -> None:
+    """Put the ordinary controls back under a photo.
+
+    Used to cancel the stop question and to refresh after an action, because a
+    photo message cannot be redrawn through ``show_printer_detail`` — that ends
+    in ``edit_text``, which Telegram refuses on a photo.
+    """
+    lang = await get_language()
+    printer_id = int(callback.data.split(":")[2])
+    await callback.answer()
+    await callback.message.edit_reply_markup(reply_markup=await camera_controls(printer_id, tg_chat, lang))
+
+
 # === Generic actions (pause, stop, resume, light) - catch-all, must be last ===
 
 
@@ -236,6 +312,14 @@ async def cb_printer_action(callback: CallbackQuery, tg_chat: TelegramChat | Non
             await callback.answer(f"\U0001f4a1 {light_msg}")
         else:
             await callback.answer(t(lang, NS, "printers.not_connected"), show_alert=True)
+
+    if callback.message.photo:
+        # Launched from under a camera snapshot. ``show_printer_detail`` ends in
+        # edit_text, which Telegram refuses on a photo — so every one of these
+        # actions would have worked and then reported a failure. Refresh the
+        # keyboard instead: the new state (paused → resume) shows up there.
+        await callback.message.edit_reply_markup(reply_markup=await camera_controls(printer_id, tg_chat, lang))
+        return
 
     from backend.app.services.telegram_handlers.printers import show_printer_detail
 

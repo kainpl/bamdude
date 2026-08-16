@@ -128,7 +128,8 @@
     "stop_ok": "Print stopped",
     "stop_fail": "Failed to stop",
     "light_on": "Light on",
-    "light_off": "Light off"
+    "light_off": "Light off",
+    "stop_confirm": "Yes, stop the print"
   },
   "skip_objects": {
     "btn_entry": "Skip an object",

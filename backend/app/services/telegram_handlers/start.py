@@ -183,9 +183,15 @@ async def cmd_camera(message: Message, tg_chat=None) -> None:
                 if jpeg:
                     from aiogram.types import BufferedInputFile
 
+                    from backend.app.services.telegram_handlers.actions import camera_controls
+
                     await message.answer_photo(
                         photo=BufferedInputFile(jpeg, "snapshot.jpg"),
                         caption=f"\U0001f4f7 {escape_md(printer.name)}",
+                        # ⚠️ The command path needs this as much as the button
+                        # does — the report that asked for it starts with
+                        # "/camera", not with the printer card.
+                        reply_markup=await camera_controls(printer.id, tg_chat, lang),
                     )
                     return
             except Exception:

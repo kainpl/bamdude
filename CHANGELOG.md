@@ -2,6 +2,12 @@
 
 ### Added
 
+- **The camera snapshot in the bot now comes with the controls.** Asked for by a user, in their words: *"I pull `/camera`, I see on the picture that it's printing into thin air — and then I have to turn on the VPN, go to the URL and stop it, instead of just hitting stop from the bot."*
+
+    Nothing was actually missing but the path: the bot has been able to pause, resume and stop for a long time, and the snapshot simply arrived with no buttons under it. It now carries the same controls the printer card shows — the same ones, built in one place, so they cannot drift apart — including **Skip an object**, which is the pairing this was really about: you see one part has failed, and you drop that part instead of the plate. Both the camera button and the `/camera` command, and only for chats that may control the printer.
+
+    **Stop now asks first, everywhere in the bot.** It ends the print and discards every part on the plate, it sits next to Pause on a phone screen, and skipping a single object already asked — so stop not asking was the wrong way round.
+
 - **Skip a failed object from the Telegram bot.** A part comes loose halfway through a plate of twenty. You find out from a notification, on your phone, nowhere near the printer — and until now the only thing the bot could do about it was Stop, which throws away the nineteen that are still fine.
 
     The bot now sends you the plate seen from above with a numbered pin on every object, and a keyboard of those same numbers below it. Press one, check the name it reads back, confirm, and that object is dropped while the rest of the plate carries on. The pins are placed by the same code the browser uses, so a number means the same part in both.
