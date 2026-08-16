@@ -160,6 +160,48 @@ PRINT_OP_AUTO_RECOVERY = 0
 _ACTIVE_PRINT_STATES = frozenset({"PREPARE", "SLICING", "RUNNING", "PAUSE"})
 
 
+# ── paho's outgoing retry queue: the only two places we touch it ─────────────
+# We publish with ``qos=1``, which is a promise — *at least once* — and paho
+# keeps that promise by holding the message in ``Client._out_messages`` and
+# re-sending it until the broker returns a PUBACK. The broker here is the
+# printer's own firmware, and it loses PUBACKs (see the
+# ``max_inflight_messages_set`` note below, #1164).
+#
+# ⚠️ An unacknowledged packet is NOT a lost one. Measured 2026-08-16: a plate
+# sweep published at 02:06 executed on the printer, its receipt went missing,
+# and paho re-delivered it at 16:42 — eleven hours into another print, which it
+# swept off the bed. paho cannot tell "never arrived" from "arrived, receipt
+# lost"; from the transport's side those are one case.
+#
+# ⚠️ There is no public API for this, and that is not an oversight: MQTT has no
+# "withdraw", and QoS 1 exists to promise the opposite, so a public cancel
+# would be a method for breaking the guarantee the API is for. Hence private
+# state — kept behind these two functions so there is one place to fix when
+# paho moves it, and pinned by a canary test.
+
+
+def _drain_outgoing(client: object) -> int:
+    """Forget every message paho is still trying to deliver. Returns the count."""
+    pending = getattr(client, "_out_messages", None)
+    if not isinstance(pending, dict) or not pending:
+        return 0
+    count = len(pending)
+    pending.clear()
+    return count
+
+
+def _drop_queued_message(client: object, mid: int) -> bool:
+    """Withdraw one message from the retry queue.
+
+    ``False`` when it was already gone, which is the normal case: the PUBACK
+    usually beats the printer's own acknowledgement.
+    """
+    pending = getattr(client, "_out_messages", None)
+    if not isinstance(pending, dict):
+        return False
+    return pending.pop(mid, None) is not None
+
+
 # ── A2L "AMS Lite" unit-id normalisation (upstream a2l-am-unit-16) ───────────
 # The A2L reports its 4-slot AMS Lite as physical unit **id 16**, but the
 # firmware is internally inconsistent about it:
@@ -1616,6 +1658,10 @@ class BambuMQTTClient:
         # GCode ACK listeners: sequence_id -> (threading.Event, result_dict)
         # Used by macro execute to wait for printer ACK before returning HTTP response
         self._ack_listeners: dict[str, tuple[threading.Event, dict]] = {}
+        # Our gcode sequence_id -> paho's message id, so the printer's own
+        # acknowledgement can retire that packet from paho's retry queue
+        # (see _drop_queued_message). Emptied on connect with the queue itself.
+        self._mid_by_sequence: dict[str, int] = {}
 
         # Xcam hold timers - OrcaSlicer pattern: ignore incoming data for 3 seconds after command
         # Key: module_name, Value: timestamp when command was sent
@@ -1923,6 +1969,32 @@ class BambuMQTTClient:
     def _on_connect(self, client, userdata, flags, rc, properties=None):
         if rc == 0:
             self.state.connected = True
+
+            # ⚠️ Anything paho is still retrying was published BEFORE this link
+            # dropped, and a command is not state: "change the plate" was right
+            # when the print ended and destroys a print eleven hours later.
+            # Measured 2026-08-16 — a sweep published at 02:06 was re-delivered
+            # at 16:42 and swept the bed mid-print.
+            #
+            # Nothing depends on redelivery. The requests below are re-issued on
+            # every connect; macro sends wait on the printer's own ACK and fail
+            # loudly rather than hoping a retry saves them; the reconcile sweep
+            # re-arms itself. This sits beside _pending_assignments.clear() for
+            # the same reason: state that must not outlive a reconnect.
+            #
+            # ⚠️ Only on rc == 0. A failed connect is not a connection, and
+            # discarding there would throw away commands that never had their
+            # chance on a client that may still succeed.
+            discarded = _drain_outgoing(client)
+            self._mid_by_sequence.clear()
+            if discarded:
+                logger.warning(
+                    "[%s] Discarded %d unacknowledged command(s) on connect — a command that missed "
+                    "its moment is cancelled, not delivered late",
+                    self.serial_number,
+                    discarded,
+                )
+
             self._stale_reconnecting = False  # Clear stale-reconnect flag on successful connect
             # Reset per-connection warning state so warnings fire once per (re)connection
             self._ams_version_warned = set()
@@ -2235,6 +2307,20 @@ class BambuMQTTClient:
                     reason,
                     self.state.macro_executing,
                 )
+                # ⚠️ The printer has now said "I received this and acted on it",
+                # which is better evidence than a broker PUBACK — that only means
+                # the hop in between is content. Keeping the packet retriable past
+                # this point is not caution; it is a second execution waiting for
+                # a disconnect. Applies to a refusal too ("device busy" is still
+                # an answer): re-delivering a declined movement command later,
+                # when the machine is in a different state, is the hazard itself.
+                _retired_mid = self._mid_by_sequence.pop(seq_id, None) if seq_id else None
+                if _retired_mid is not None and _drop_queued_message(self._client, _retired_mid):
+                    logger.debug(
+                        "[%s] Withdrew seq=%s from the retry queue — the printer confirmed it",
+                        self.serial_number,
+                        seq_id,
+                    )
                 if seq_id and seq_id in self._ack_listeners:
                     event, result_dict = self._ack_listeners.pop(seq_id)
                     result_dict["success"] = result == "success"
@@ -6889,7 +6975,10 @@ class BambuMQTTClient:
                         payload=command,
                     )
                 )
-            self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+            # Returned so callers can pair our sequence id with paho's mid; see
+            # send_gcode. Additive — every existing caller ignores it.
+            return self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+        return None
 
     def register_raw_message_handler(self, handler: Callable[[str, bytes], None]) -> None:
         """Register a handler invoked for every incoming MQTT message.
@@ -8089,7 +8178,13 @@ class BambuMQTTClient:
 
         self._sequence_id += 1
         command = {"print": {"command": "gcode_line", "param": gcode, "sequence_id": str(self._sequence_id)}}
-        self.send_command(command)
+        info = self.send_command(command)
+        # Remember which paho packet carries this sequence, so the printer's own
+        # acknowledgement can retire it from the retry queue. Bounded: one entry
+        # per in-flight command, removed on its ACK and cleared on connect.
+        mid = getattr(info, "mid", None)
+        if mid is not None:
+            self._mid_by_sequence[str(self._sequence_id)] = mid
         logger.debug("[%s] Sent G-code (seq=%d): %s...", self.serial_number, self._sequence_id, gcode[:50])
         return True
 

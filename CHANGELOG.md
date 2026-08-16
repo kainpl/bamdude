@@ -35,6 +35,18 @@
 
 ### Fixed
 
+- **A printer can no longer be handed a command it already carried out hours ago.** This one destroyed prints, so it is worth describing exactly. On 16 August an A1 Mini eleven hours into a job lost its network link for two seconds; when it came back, the printer received — and obeyed — a plate-change command BamDude had sent at **two o'clock that morning**. It swept the finished part's bed clear and carried on extruding into the air. A second printer was hit the same day, twice.
+
+    The cause is a promise made in the wrong place. BamDude sends commands with a delivery guarantee of "at least once", which means the network library keeps a copy and re-sends it until the printer's own message broker confirms receipt. That broker is the printer's firmware, and it loses confirmations — a known quirk BamDude already worked around. So a command that had **run perfectly** looked undelivered, was held indefinitely, and was re-sent the next time the link came back.
+
+    That guarantee suits a temperature reading, which is still true an hour later. It does not suit an instruction: "change the plate" was right when the print finished and is destructive at any other moment. BamDude now discards anything still waiting to be re-sent whenever a printer connects, and retires a command from the retry queue as soon as the printer itself acknowledges it — the printer's own word being better evidence than the confirmation that goes missing. Nothing waits for a redelivery: every command that matters is either re-issued on connect or reported as failed at the time.
+
+    If you saw an unexplained plate change or a print that carried on in mid-air, this was it.
+
+- **"Yesterday" in the energy summary is no longer always zero.** Reported from a farm running Zigbee plugs: a full day of printing, and the card said 0 kWh. Nothing was lost — the readings were all recorded — but the figure was being asked of the plug itself, and a Zigbee plug has no such register. Its Metering cluster keeps one cumulative counter and nothing else, so "since midnight" and "yesterday" do not exist to be read. Tasmota does keep both, which is why the summary looked correct on some setups and empty on others.
+
+    BamDude already derived **Today** from its own hourly readings; **Yesterday** now comes from the same place, as the difference between the counter at the start of your yesterday and at the start of your today. Both use *your* day, taken from the browser, so a farm three hours ahead of UTC does not see its first three hours filed under the previous date. A plug with no reading from before yesterday shows nothing at all rather than zero — it was not there to use anything.
+
 - **The reason a print paused is now given in your language.** The pause notification arrived with a translated title and an English reason underneath — "Причина: Please observe the nozzle…" — even though the description existed in Ukrainian and the same catalogue served the error dialog correctly. The pause path asked for the description without saying which language it wanted, and the default answered for it.
 
     Fixing it needed somewhere to keep the answer: the pause is classified on the MQTT path, which is synchronous and cannot stop to read a setting. The system language is now held in process memory, warmed at startup and re-stamped the moment the language is changed — from the value being written, so the two cannot disagree. A failed read leaves the known language alone rather than quietly reverting to English.
