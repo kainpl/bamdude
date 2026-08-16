@@ -1577,7 +1577,7 @@ def add_fired_layer_macro(archive: PrintArchive, macro_id: int) -> bool:
     return True
 
 
-def load_objects_from_archive_into_state(archive: PrintArchive, printer_id: int) -> bool:
+def load_objects_from_archive_into_state(archive: PrintArchive, printer_id: int, *, is_retrigger: bool = False) -> bool:
     """Parse the archive's stored 3MF and push printable_objects into MQTT state.
 
     Used by ``main.on_print_start`` and the on-demand
@@ -1596,6 +1596,14 @@ def load_objects_from_archive_into_state(archive: PrintArchive, printer_id: int)
     skip-objects button stays hidden, which is the truthful UI for "we
     don't know the object list for this print".
 
+    ``is_retrigger=True`` says "this is the print already in state, told to me
+    again" — a reconnect re-firing ``on_print_start``. Then an unreadable file
+    means do nothing at all, rather than reset: there is no previous print's
+    data to protect against, and the reset would throw away the current
+    print's. Leave it False whenever the archive might be a *different* print
+    from whatever the state holds; the reset is what stops one print's ids
+    being offered for another's plate.
+
     Returns True iff non-empty objects were loaded.
     """
     # Local import — printer_manager pulls in archive_download_retry which
@@ -1603,6 +1611,24 @@ def load_objects_from_archive_into_state(archive: PrintArchive, printer_id: int)
     from backend.app.services.printer_manager import printer_manager
 
     client = printer_manager.get_client(printer_id)
+
+    file_path = settings.base_dir / archive.file_path if archive.file_path else None
+    readable = file_path is not None and file_path.is_file() and str(file_path).endswith(".3mf")
+
+    if not readable and is_retrigger:
+        # ⚠️ Leave the state alone. The caller is re-declaring the print it is
+        # ALREADY holding (a reconnect re-fires ``on_print_start``), so the
+        # objects in state belong to this same print — wiping them here can
+        # only lose good data, never protect anything.
+        #
+        # This became reachable when the archive row moved to PRINT START: the
+        # row now exists with ``file_path=""`` for the whole download window,
+        # which on a slow printer is minutes (22 MB off a P1S measured 8m40s
+        # mid-print). Any reconnect in that window used to land here, blank the
+        # objects, and leave the Skip button dark for the rest of the plate —
+        # seen on 3 of 4 machines printing the same file.
+        return False
+
     if client is not None:
         client.state.printable_objects = {}
         client.state.printable_objects_bbox_all = None
@@ -1611,10 +1637,7 @@ def load_objects_from_archive_into_state(archive: PrintArchive, printer_id: int)
         client.state.skip_objects_supported = False
 
     try:
-        if not archive.file_path:
-            return False
-        file_path = settings.base_dir / archive.file_path
-        if not file_path.is_file() or not str(file_path).endswith(".3mf"):
+        if not readable:
             return False
         with open(file_path, "rb") as f:
             threemf_data = f.read()

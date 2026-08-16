@@ -139,7 +139,9 @@
     "confirm_irreversible": "It will be excluded for the rest of the print. This cannot be undone.",
     "btn_confirm": "Skip it",
     "skipped": "Object {id} skipped",
-    "failed": "Could not skip the object"
+    "failed": "Could not skip the object",
+    "unsupported": "This plate was sliced without object labels, so its parts cannot be skipped. In the slicer it is the \"Label objects\" and \"Exclude objects\" options — both have to be on when the file is sliced.",
+    "only_one_left": "Only one object is still printing. Skipping it would end the print, so use Stop for that."
   },
   "stats": {
     "title": "Statistics",

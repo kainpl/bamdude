@@ -6,9 +6,13 @@ throws away the other nineteen parts on the plate.
 
 ⚠️ The gates are the point of this suite. Skipping is irreversible: the object
 is excluded for the rest of the print and nothing brings it back. So the
-entry button must be absent when the action would not work, the confirmation
-must name what it is about to cancel, and an already-skipped object must stay
-on screen rather than renumbering the ones beside it.
+confirmation must name what it is about to cancel, and an already-skipped
+object must stay on screen rather than shifting the ones beside it.
+
+Where a gate lives matters as much as what it says. The entry button asks only
+what is true straight after a reconnect; every refusal that needs the 3MF read
+is spoken on the screen behind it. Gating the button on ``skip_objects_supported``
+made it vanish after a restart, which is the case the feature is for.
 """
 
 from __future__ import annotations
@@ -79,6 +83,11 @@ def _wire(monkeypatch, payload, *, picture=b"png", skip=None):
     monkeypatch.setattr(scene, "_objects_payload", AsyncMock(return_value=payload))
     monkeypatch.setattr(scene, "_plate_picture", AsyncMock(return_value=picture))
     monkeypatch.setattr(scene, "_perform_skip", skip or AsyncMock())
+    # A printer that CAN skip, so the refusal branch stays out of the way. The
+    # tests about refusals override this after calling _wire — stated here so
+    # that "no refusal" is a choice this file makes rather than a side effect
+    # of get_client happening to return None.
+    monkeypatch.setattr(scene, "printer_manager", _manager(_state()))
 
 
 def _shown(callback) -> tuple[str, list]:
@@ -110,29 +119,26 @@ def _callbacks(keyboard) -> list[str]:
 # ── the entry button ────────────────────────────────────────────────────────
 
 
-def test_no_button_when_the_plate_does_not_support_skipping(monkeypatch):
-    """The plate was sliced without object labels, so the g-code has nothing to
-    skip by. Offering the button anyway costs the operator a press, a wait and
-    a refusal — m114 already knows the answer."""
-    monkeypatch.setattr(scene, "printer_manager", _manager(_state(supported=False)))
+def test_the_button_survives_a_restart_with_no_objects_loaded(monkeypatch):
+    """⚠️ The bug this suite was rewritten for.
 
-    assert scene.entry_button(1, "en") is None
+    ``skip_objects_supported`` is written in three places — two branches of
+    ``GET /print/objects`` and ``on_print_start``. A backend restarted while a
+    print is running hits none of them, so the flag is False and the object
+    dict empty until somebody opens the Skip dialog **in the web**. Gating the
+    button on either hid it in exactly the case the feature exists for: the
+    operator who is not at a computer. Measured on a live farm — restarted,
+    no button."""
+    monkeypatch.setattr(scene, "printer_manager", _manager(_state(supported=False, objects={})))
+
+    assert scene.entry_button(7, "en") is not None
 
 
 def test_no_button_when_the_printer_reported_it_cannot(monkeypatch):
-    """``fun`` bit 49 said no. Firmware's answer to a skip it cannot do is
-    silence, which is the worst possible feedback."""
+    """``fun`` bit 49 said no — the machine itself, over telemetry, so this one
+    IS true straight after a reconnect. Firmware's answer to a skip it cannot
+    do is silence, which is the worst possible feedback."""
     monkeypatch.setattr(scene, "printer_manager", _manager(_state(partskip=False)))
-
-    assert scene.entry_button(1, "en") is None
-
-
-def test_no_button_with_fewer_than_two_objects_left(monkeypatch):
-    """Skipping the only object still printing is Stop with extra steps — and
-    with none of Stop's confirmation."""
-    monkeypatch.setattr(
-        scene, "printer_manager", _manager(_state(objects={1: {"name": "a"}, 2: {"name": "b"}}, skipped=[1]))
-    )
 
     assert scene.entry_button(1, "en") is None
 
@@ -149,6 +155,43 @@ def test_the_button_appears_when_the_action_would_work(monkeypatch):
     button = scene.entry_button(7, "en")
     assert button is not None
     assert button.callback_data == "skipobj:show:7:0"
+
+
+# ── refusals are explained on the screen, not by a missing button ───────────
+
+
+async def test_a_plate_without_object_labels_says_so(monkeypatch):
+    """Hiding explains nothing — and this is the case where somebody flips the
+    wrong slicer switch for want of being told which one. Same call the web
+    preview modal already made."""
+    from backend.app.i18n import t
+
+    _wire(monkeypatch, _payload([_obj(1, "a"), _obj(2, "b")]))
+    monkeypatch.setattr(scene, "printer_manager", _manager(_state(supported=False)))
+
+    cb = _callback("skipobj:show:1:0")
+    await scene.cb_show(cb, tg_chat=_Chat())
+
+    caption, keyboard = _shown(cb)
+    assert t("en", "telegram_ui", "skip_objects.unsupported")[:30] in _plain(caption)
+    assert not any(b.callback_data.startswith("skipobj:pick:") for row in keyboard for b in row)
+
+
+async def test_one_object_left_says_to_use_stop(monkeypatch):
+    """Skipping the last one is Stop with extra steps and none of Stop's own
+    confirmation — refused, but out loud, naming the control that does mean
+    'end this print'."""
+    from backend.app.i18n import t
+
+    _wire(monkeypatch, _payload([_obj(1, "a", skipped=True), _obj(2, "b")]))
+    monkeypatch.setattr(scene, "printer_manager", _manager(_state()))
+
+    cb = _callback("skipobj:show:1:0")
+    await scene.cb_show(cb, tg_chat=_Chat())
+
+    caption, keyboard = _shown(cb)
+    assert t("en", "telegram_ui", "skip_objects.only_one_left")[:30] in _plain(caption)
+    assert not any(b.callback_data.startswith("skipobj:pick:") for row in keyboard for b in row)
 
 
 # ── the picker ──────────────────────────────────────────────────────────────
@@ -313,3 +356,33 @@ async def test_confirming_without_permission_does_not_skip(monkeypatch):
     await scene.cb_do(cb, tg_chat=_Chat(allowed=False))
 
     skip.assert_not_awaited()
+
+
+# ── leaving the picker ──────────────────────────────────────────────────────
+
+
+async def test_back_from_a_photo_screen_deletes_it(monkeypatch):
+    """⚠️ The picker is a photo, and Telegram refuses to edit text into one.
+    A plain ``printer:{id}`` button lands in show_printer_detail, which ends in
+    edit_text — so Back did nothing at all on the screens that work best. The
+    printer card is still above, so removing the photo is the way out."""
+    monkeypatch.setattr(scene, "get_language", AsyncMock(return_value="en"))
+    cb = _callback("skipobj:back:1")
+    cb.message.delete = AsyncMock()
+
+    await scene.cb_back(cb, tg_chat=_Chat())
+
+    cb.message.delete.assert_awaited_once()
+
+
+async def test_back_from_a_text_screen_redraws_the_card(monkeypatch):
+    """No top view → the picker edited the card itself, so there is nothing
+    above to return to."""
+    monkeypatch.setattr(scene, "get_language", AsyncMock(return_value="en"))
+    detail = AsyncMock()
+    monkeypatch.setattr("backend.app.services.telegram_handlers.printers.show_printer_detail", detail)
+
+    cb = _callback("skipobj:back:1", photo=False)
+    await scene.cb_back(cb, tg_chat=_Chat())
+
+    detail.assert_awaited_once()

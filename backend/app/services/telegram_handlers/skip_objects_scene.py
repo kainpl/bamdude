@@ -12,12 +12,16 @@ called rather than reimplemented so that both of BambuStudio's gates and the
 MQTT freshness check apply here exactly as they do in the web.
 
 ⚠️ **Skipping cannot be undone.** The object is excluded for the rest of the
-print and no command brings it back. Three consequences run through this file:
-the entry button is absent whenever the action would not work, the press asks
-for confirmation *by name*, and an object that is already skipped stays on the
-screen — greyed, unpressable, in place. Removing it would shift every button
-beside it, so the spot the operator was about to press means a different part
-between one screen and the next.
+print and no command brings it back. Two consequences run through this file:
+the press asks for confirmation *by name*, and an object that is already
+skipped stays on the screen — greyed, unpressable, in place. Removing it would
+shift every button beside it, so the spot the operator was about to press
+means a different part between one screen and the next.
+
+A refusal is **said, not hidden**. The entry button gates only on what is true
+straight after a reconnect; anything that needs the 3MF read is answered on
+the screen behind it, where the objects have been loaded and the reason can be
+given. :func:`entry_button` records what gating the other way cost.
 """
 
 from __future__ import annotations
@@ -55,32 +59,59 @@ NAME_CHARS = 28
 def entry_button(printer_id: int, lang: str) -> InlineKeyboardButton | None:
     """The Skip-objects button for the printer detail screen, or ``None``.
 
-    Deliberately cheap — it runs on every render of that screen, so it reads
-    the live state and never triggers the archive/FTP object load the route
-    does. A printer whose objects have not been loaded yet simply shows no
-    button, which is also the honest answer: nothing here knows what is on the
-    plate.
+    ⚠️ **Gates only on what survives a restart.** The obvious gate —
+    ``state.skip_objects_supported`` — does not: it is written in exactly three
+    places, two branches of ``GET /print/objects`` and ``on_print_start``. A
+    backend restarted mid-print therefore holds ``False`` and an empty
+    ``printable_objects`` until somebody opens the Skip dialog **in the web**.
+    Gating on it hid this button in precisely the situation the feature exists
+    for — the operator who is not at the computer. Measured: restarted with a
+    print running, no button.
+
+    So the substantive answers ("this plate has no object labels", "only one
+    object left") are given INSIDE the screen, where pressing the button has
+    loaded the objects and the refusal can be explained. That is the same call
+    the web preview modal already records: hiding a control explains nothing,
+    and this is exactly the case where somebody flips the wrong slicer switch
+    for want of being told which one.
+
+    What is kept here is the one gate that comes from telemetry rather than
+    from a 3MF read, so it is true immediately after a reconnect.
     """
     client = printer_manager.get_client(printer_id)
-    if not client or not getattr(client.state, "skip_objects_supported", False):
+    if not client:
         return None
 
-    # Both of BS's gates, same reading as the endpoint: ``partskip`` False is a
-    # refusal, ``partskip`` absent is "not reported yet" and keeps working.
+    # BS's first gate — ``fun`` bit 49. ``partskip`` False is a refusal by the
+    # machine itself; ``partskip`` absent is "not reported yet" and keeps
+    # working, the same reading the endpoint uses.
     if (getattr(client.state, "print_option_support", None) or {}).get("partskip") is False:
-        return None
-
-    objects = getattr(client.state, "printable_objects", None) or {}
-    skipped = set(getattr(client.state, "skipped_objects", None) or [])
-    if len([oid for oid in objects if oid not in skipped]) < 2:
-        # One object left means skipping it is Stop with extra steps, and
-        # without Stop's own confirmation.
         return None
 
     return InlineKeyboardButton(
         text=f"✂️ {t(lang, NS, 'skip_objects.btn_entry')}",
         callback_data=f"skipobj:show:{printer_id}:0",
     )
+
+
+def _refusal(printer_id: int, objects: list[dict], lang: str) -> str | None:
+    """Why this plate cannot be skipped from here, or ``None`` if it can.
+
+    Read AFTER the payload load, because that load is what fills
+    ``skip_objects_supported`` — see :func:`entry_button` for why it cannot be
+    consulted before.
+    """
+    client = printer_manager.get_client(printer_id)
+    if client and not getattr(client.state, "skip_objects_supported", False):
+        return t(lang, NS, "skip_objects.unsupported")
+
+    if len([o for o in objects if not o["skipped"]]) < 2:
+        # Skipping the last one is Stop with extra steps and none of Stop's
+        # confirmation, so it is refused — but said out loud, with the control
+        # that does mean "end this print" named.
+        return t(lang, NS, "skip_objects.only_one_left")
+
+    return None
 
 
 async def _objects_payload(printer_id: int) -> dict:
@@ -165,6 +196,22 @@ async def _screen(printer_id: int, offset: int, lang: str) -> tuple[str, InlineK
     """Caption, keyboard and picture for one page of the picker."""
     payload = await _objects_payload(printer_id)
     objects = sorted(payload["objects"], key=lambda o: o["id"])
+
+    refusal = _refusal(printer_id, objects, lang)
+    if refusal:
+        # No picture and no number keyboard: every one of them would be a
+        # control that does nothing. The sentence and the way back, only.
+        back = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=f"◀️ {t(lang, NS, 'printers.btn_back')}", callback_data=f"skipobj:back:{printer_id}"
+                    )
+                ]
+            ]
+        )
+        return f"✂️ *{escape_md(t(lang, NS, 'skip_objects.title'))}*\n\n{escape_md(refusal)}", back, None
+
     picture = await _plate_picture(printer_id, objects)
 
     page = objects[offset : offset + PAGE_SIZE]
@@ -197,7 +244,7 @@ async def _screen(printer_id: int, offset: int, lang: str) -> tuple[str, InlineK
     if nav:
         rows.append(nav)
     rows.append(
-        [InlineKeyboardButton(text=f"◀️ {t(lang, NS, 'printers.btn_back')}", callback_data=f"printer:{printer_id}")]
+        [InlineKeyboardButton(text=f"◀️ {t(lang, NS, 'printers.btn_back')}", callback_data=f"skipobj:back:{printer_id}")]
     )
 
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows), picture
@@ -250,6 +297,40 @@ async def cb_show(callback: CallbackQuery, tg_chat: TelegramChat | None = None) 
         )
     else:
         await callback.message.edit_text(text, reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("skipobj:back:"))
+async def cb_back(callback: CallbackQuery, tg_chat: TelegramChat | None = None) -> None:
+    """Leave the picker.
+
+    ⚠️ Not a plain ``printer:{id}`` button, which is what it was at first and
+    why it did nothing. That callback lands in ``show_printer_detail``, which
+    ends in ``edit_text`` — and Telegram refuses to edit text into a PHOTO
+    message ("there is no text in the message to edit"). The picker is a photo
+    whenever the plate has a top view, so the button silently failed on
+    exactly the screens that work best.
+
+    Which way out is right depends on how the picker arrived:
+
+    * as a **new photo** below the printer card — the card is still on screen
+      with its own buttons, so deleting the photo puts the operator back
+      exactly where they were;
+    * as an **edit of the card itself** (no top view, so it stayed text) —
+      there is nothing above to go back to, so redraw the card in place.
+    """
+    printer_id = int(callback.data.split(":")[2])
+    await callback.answer()
+
+    if callback.message.photo:
+        try:
+            await callback.message.delete()
+            return
+        except Exception:  # noqa: BLE001 — too old to delete (48h) or already gone
+            pass
+
+    from backend.app.services.telegram_handlers.printers import show_printer_detail
+
+    await show_printer_detail(callback, printer_id, tg_chat)
 
 
 @router.callback_query(F.data.startswith("skipobj:pick:"))

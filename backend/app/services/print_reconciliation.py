@@ -533,6 +533,71 @@ async def reconcile_printer_prints(
             name=f"reconcile-energy-{archive_id}",
         )
 
+    await _load_objects_for_a_print_already_running(printer_id, live_state)
+
+
+async def _load_objects_for_a_print_already_running(printer_id: int, live_state: str) -> None:
+    """Fill ``printable_objects`` for a print that was under way before we got here.
+
+    ⚠️ **Nothing else does this.** The three writers of
+    ``state.skip_objects_supported`` are two branches of ``GET /print/objects``
+    and ``on_print_start`` — and ``on_print_start`` fires on a *transition* into
+    printing. A backend that starts, or an MQTT client that is recreated, while
+    a plate is half done sees no such transition: it joins mid-print. A comment
+    in ``main.py`` claimed a restart "papers over the symptom, the next
+    on_print_start takes the full path" — there is no next one.
+
+    What that cost, measured on a live farm: after a restart the Skip Objects
+    button was dark on 3 of 4 machines printing the *same file*, and stayed
+    dark until somebody opened the dialog in the web — which is the one action
+    that calls the route that loads. The operator on a phone had no way to
+    reach it at all.
+
+    Runs on the connect edge, reads one archive row and one 3MF off local disk,
+    and is wrapped so a failure can never touch the connect path.
+    ``is_retrigger=True``: this is the print already in progress, so an
+    unreadable file must leave state alone rather than blank it.
+    """
+    if live_state not in ("RUNNING", "PAUSE"):
+        return
+
+    try:
+        from backend.app.core.database import async_session
+        from backend.app.services.archive import load_objects_from_archive_into_state
+
+        async with async_session() as db:
+            archive = (
+                (
+                    await db.execute(
+                        select(PrintArchive)
+                        .where(
+                            PrintArchive.printer_id == printer_id,
+                            PrintArchive.status == "printing",
+                            PrintArchive.file_path != "",
+                        )
+                        .order_by(PrintArchive.id.desc())
+                        .limit(1)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+
+        if archive is None:
+            # No archive yet (the 3MF is still downloading) or the print ended
+            # and the sweep above just closed it. Either way there is nothing
+            # to read, and the download path loads objects when it lands.
+            return
+
+        if load_objects_from_archive_into_state(archive, printer_id, is_retrigger=True):
+            logger.info(
+                "reconcile: loaded printable objects for printer %d from archive %d (joined mid-print)",
+                printer_id,
+                archive.id,
+            )
+    except Exception:  # noqa: BLE001 — a convenience load must never break connecting
+        logger.exception("reconcile: mid-print object load failed for printer %d", printer_id)
+
 
 async def release_interrupted_dispatch_claims(db: AsyncSession) -> int:
     """Give back printers claimed by a dispatch that died before it archived anything.

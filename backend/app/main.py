@@ -2718,7 +2718,7 @@ async def _dispatch_user_print_email(
     )
 
 
-def _load_objects_from_archive(archive, printer_id: int, logger) -> None:
+def _load_objects_from_archive(archive, printer_id: int, logger, *, is_retrigger: bool = False) -> None:
     """Thin wrapper around services.archive.load_objects_from_archive_into_state.
 
     Kept as a backward-compatible shim — call sites in this file pass a
@@ -2728,7 +2728,7 @@ def _load_objects_from_archive(archive, printer_id: int, logger) -> None:
     _ = logger  # noqa: F841 — intentional discard, see docstring
     from backend.app.services.archive import load_objects_from_archive_into_state
 
-    load_objects_from_archive_into_state(archive, printer_id)
+    load_objects_from_archive_into_state(archive, printer_id, is_retrigger=is_retrigger)
 
 
 def _archive_matches_check_name(row, check_name: str) -> bool:
@@ -3250,7 +3250,7 @@ async def on_print_start(printer_id: int, data: dict):
                         await db.execute(select(PrintArchive).where(PrintArchive.id == active_archive_id))
                     ).scalar_one_or_none()
                     if _arc is not None:
-                        _load_objects_from_archive(_arc, printer_id, logger)
+                        _load_objects_from_archive(_arc, printer_id, logger, is_retrigger=True)
                 except Exception as e:
                     logger.debug("[CALLBACK] re-load printable_objects failed: %s", e)
                 return
@@ -3600,7 +3600,7 @@ async def on_print_start(printer_id: int, data: dict):
                 }
                 await _send_print_start_notification(printer_id, data, archive_data, logger)
             # Extract printable objects from the archived 3MF file
-            _load_objects_from_archive(existing_archive, printer_id, logger)
+            _load_objects_from_archive(existing_archive, printer_id, logger, is_retrigger=True)
             return
 
         # ── The archive row is created HERE, before the 3MF is fetched ─────

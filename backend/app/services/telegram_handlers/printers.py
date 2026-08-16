@@ -210,10 +210,11 @@ async def show_printer_detail(
                 ]
             )
 
-        # Skip an object — only while something is actually printing, and only
-        # when the plate, the printer and the object count all allow it. The
-        # helper answers all three from live state without any I/O; see its
-        # docstring for why a printer with no loaded objects shows nothing.
+        # Skip an object — only while something is actually printing. Whether
+        # this PLATE can be skipped is deliberately NOT asked here: the flag
+        # that answers it is empty until the web loads the objects, so asking
+        # hid the button after every restart. ``entry_button`` explains why,
+        # and the screen behind it explains any refusal.
         if printer["state"] in ("RUNNING", "PAUSE"):
             from backend.app.services.telegram_handlers.skip_objects_scene import entry_button
 

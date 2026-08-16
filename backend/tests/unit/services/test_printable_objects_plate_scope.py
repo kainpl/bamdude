@@ -90,3 +90,59 @@ class TestArchiveReloadPassesThePlate:
         assert set(client.state.printable_objects) == {201}, (
             "the plate-3 job got plate 1's object ids — skipping one would cancel the wrong object on the running plate"
         )
+
+
+class TestAReTriggerNeverBlanksTheCurrentPrint:
+    """⚠️ Regression: the Skip button went dark mid-print on 3 of 4 machines.
+
+    ``load_objects_from_archive_into_state`` resets the state before checking
+    whether it can read anything — deliberately, so one print's ids are never
+    offered for another's plate. What changed underneath it is that the archive
+    row is now created at PRINT START with ``file_path=""``, so a "printing"
+    row with nothing on disk is ordinary for the whole download window (22 MB
+    off a P1S: 8m40s mid-print). A reconnect in that window re-fires
+    ``on_print_start``, which re-declares the print it is already holding — and
+    that call blanked the objects and loaded nothing back.
+    """
+
+    @staticmethod
+    def _client_holding_objects():
+        client = MagicMock()
+        client.state = SimpleNamespace(
+            printable_objects={101: {"name": "alpha"}},
+            printable_objects_bbox_all=[0, 0, 200, 200],
+            printable_objects_approximate=False,
+            skipped_objects=[101],
+            skip_objects_supported=True,
+        )
+        return client
+
+    def _run(self, tmp_path, *, is_retrigger: bool):
+        client = self._client_holding_objects()
+        archive = SimpleNamespace(id=7, file_path="", plate_index=1, extra_data=None)
+
+        with (
+            patch("backend.app.core.config.settings.base_dir", tmp_path),
+            patch("backend.app.services.printer_manager.printer_manager") as pm,
+        ):
+            pm.get_client.return_value = client
+            ok = load_objects_from_archive_into_state(archive, printer_id=1, is_retrigger=is_retrigger)
+
+        return ok, client.state
+
+    def test_a_retrigger_with_no_file_yet_leaves_the_objects_alone(self, tmp_path):
+        ok, state = self._run(tmp_path, is_retrigger=True)
+
+        assert ok is False
+        assert state.printable_objects == {101: {"name": "alpha"}}
+        assert state.skip_objects_supported is True
+        assert state.skipped_objects == [101], "the live skip state was thrown away too"
+
+    def test_an_unrelated_archive_with_no_file_still_clears(self, tmp_path):
+        """The reset is what stops the PREVIOUS print's ids being offered for
+        this one's plate. Only the re-trigger caller may skip it."""
+        ok, state = self._run(tmp_path, is_retrigger=False)
+
+        assert ok is False
+        assert state.printable_objects == {}
+        assert state.skip_objects_supported is False
