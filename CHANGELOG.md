@@ -6,7 +6,7 @@
 
     Left off by default on purpose: having a copy in BamDude is not the same as nobody needing the file on the machine, where it can still be watched from the printer's screen or carried away on the card.
 
-- **Printer errors now speak Ukrainian.** Bambu ships sixteen languages and Ukrainian is not one of them, so the whole catalogue — every code on every model — was translated for BamDude: around 36 500 descriptions. Terminology follows the rest of the interface, so a nozzle is a nozzle in the error dialog and in the settings page alike. A code added by a future firmware appears in English until it is translated, never blank.
+- **Printer errors now speak Ukrainian.** Bambu ships sixteen languages and Ukrainian is not one of them, so the whole catalogue — every code on every model — was translated for BamDude: **54 643 descriptions across all fourteen printer types**, including the seven Bambu Studio does not ship and BamDude fetches itself. Terminology follows the rest of the interface, so a nozzle is a nozzle in the error dialog and in the settings page alike. A code added by a future firmware appears in English until it is translated, never blank.
 
 ### Changed
 
