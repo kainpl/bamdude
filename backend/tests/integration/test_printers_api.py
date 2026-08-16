@@ -1072,6 +1072,11 @@ class TestSkipObjectsAPI:
         }
         mock_client.state.skipped_objects = []
         mock_client.state.state = "RUNNING"
+        # Set explicitly: a MagicMock auto-attribute is truthy, so leaving these
+        # off does not simulate "absent" — it hands the route a mock where a
+        # bbox and a boolean belong.
+        mock_client.state.printable_objects_bbox_all = [0.0, 0.0, 200.0, 200.0]
+        mock_client.state.printable_objects_approximate = False
 
         with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
             mock_pm.get_client.return_value = mock_client

@@ -130,6 +130,17 @@
     "light_on": "Light on",
     "light_off": "Light off"
   },
+  "skip_objects": {
+    "btn_entry": "Skip an object",
+    "title": "Skip an object",
+    "approximate": "Positions are approximate — the plate could not be read, so the pins are laid out in a grid. Check the number against the name below.",
+    "no_picture": "No top-down view of this plate is available, so no picture is shown. The numbers below are still the printer's own.",
+    "confirm_title": "Skip this object?",
+    "confirm_irreversible": "It will be excluded for the rest of the print. This cannot be undone.",
+    "btn_confirm": "Skip it",
+    "skipped": "Object {id} skipped",
+    "failed": "Could not skip the object"
+  },
   "stats": {
     "title": "Statistics",
     "total": "Total prints",

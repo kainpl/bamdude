@@ -210,6 +210,17 @@ async def show_printer_detail(
                 ]
             )
 
+        # Skip an object — only while something is actually printing, and only
+        # when the plate, the printer and the object count all allow it. The
+        # helper answers all three from live state without any I/O; see its
+        # docstring for why a printer with no loaded objects shows nothing.
+        if printer["state"] in ("RUNNING", "PAUSE"):
+            from backend.app.services.telegram_handlers.skip_objects_scene import entry_button
+
+            skip_btn = entry_button(printer_id, lang)
+            if skip_btn:
+                btns.append([skip_btn])
+
         btns.append(
             [
                 InlineKeyboardButton(

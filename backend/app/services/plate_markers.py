@@ -63,8 +63,9 @@ def marker_position(
         return {"x": _clamp(x * 100.0, 2.0, 98.0), "y": _clamp(y * 100.0, 2.0, 98.0)}
 
     # 2. Millimetres mapped through the bbox the top view was rendered from.
-    if x is not None and y is not None and bbox_all:
-        x_min, y_min, x_max, y_max = (float(v) for v in bbox_all[:4])
+    corners = _four_numbers(bbox_all)
+    if x is not None and y is not None and corners:
+        x_min, y_min, x_max, y_max = corners
         span_x = x_max - x_min
         span_y = y_max - y_min
         if span_x > 0 and span_y > 0:
@@ -94,3 +95,21 @@ def marker_position(
         "x": 15.0 + (idx % cols) * (70.0 / cols) + 35.0 / cols,
         "y": 15.0 + (idx // cols) * (70.0 / rows) + 35.0 / rows,
     }
+
+
+def _four_numbers(bbox_all) -> tuple[float, float, float, float] | None:
+    """``bbox_all`` as four floats, or ``None`` if it is not that.
+
+    ⚠️ Checked rather than trusted. This is a *cached* value on the MQTT client
+    state, written by whichever extractor last ran and absent on a client that
+    has only just reconnected — so "a bbox is present" and "a bbox has four
+    numbers in it" are genuinely different questions. Unpacking blind turned a
+    plate listing into a 500, and the fallback below it is perfectly good.
+    """
+    if not bbox_all:
+        return None
+    try:
+        x_min, y_min, x_max, y_max = (float(v) for v in tuple(bbox_all)[:4])
+    except (TypeError, ValueError):
+        return None
+    return x_min, y_min, x_max, y_max

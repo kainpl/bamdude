@@ -100,3 +100,14 @@ def test_no_input_puts_a_marker_outside_the_image(obj, bbox):
     got = marker_position(obj, 0, 1, bbox)
 
     assert 0 < got["x"] < 100 and 0 < got["y"] < 100, (obj, got)
+
+
+def test_a_bbox_that_is_not_four_numbers_falls_through():
+    """⚠️ It is a cached value on client state, not a validated field: absent
+    on a fresh reconnect, and whatever the last extractor left otherwise.
+    Unpacking it blind made the plate listing answer 500."""
+    for bogus in ([1, 2], "0,0,200,200", [None, None, None, None], object()):
+        marker = marker_position({"x": 100.0, "y": 50.0}, 0, 1, bogus)
+        assert set(marker) == {"x", "y"}, bogus
+        # the 256mm-plate branch, not the bbox one
+        assert marker == marker_position({"x": 100.0, "y": 50.0}, 0, 1, None), bogus

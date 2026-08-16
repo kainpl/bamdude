@@ -92,6 +92,7 @@ async def start_telegram_bot() -> None:
     from backend.app.services.telegram_handlers.printers import router as printers_router
     from backend.app.services.telegram_handlers.queue import router as queue_router
     from backend.app.services.telegram_handlers.queue_scene import router as queue_scene_router
+    from backend.app.services.telegram_handlers.skip_objects_scene import router as skip_objects_router
     from backend.app.services.telegram_handlers.start import router as start_router
     from backend.app.services.telegram_handlers.stats import router as stats_router
 
@@ -103,6 +104,10 @@ async def start_telegram_bot() -> None:
     _dispatcher.include_router(calibration_router)
     _dispatcher.include_router(maintenance_router)
     _dispatcher.include_router(actions_router)
+    # Its own callbacks are ``skipobj:*``, so it collides with nothing above —
+    # in particular not with actions_router's catch-all ``action:*``, which is
+    # why the entry button is NOT called ``action:skip_objects``.
+    _dispatcher.include_router(skip_objects_router)
     _dispatcher.include_router(queue_router)
     _dispatcher.include_router(stats_router)
     _dispatcher.include_router(library_router)
