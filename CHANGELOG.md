@@ -2,6 +2,12 @@
 
 ### Added
 
+- **Skip a failed object from the Telegram bot.** A part comes loose halfway through a plate of twenty. You find out from a notification, on your phone, nowhere near the printer — and until now the only thing the bot could do about it was Stop, which throws away the nineteen that are still fine.
+
+    The bot now sends you the plate seen from above with a numbered pin on every object, and a keyboard of those same numbers below it. Press one, check the name it reads back, confirm, and that object is dropped while the rest of the plate carries on. The pins are placed by the same code the browser uses, so a number means the same part in both.
+
+    Because a skip cannot be undone, the button is simply not there when it would not work: on a plate sliced without object labels, on a printer that has reported it cannot do it, or when only one object is still printing — that last one is Stop with extra steps. An object you have already skipped stays on the screen, greyed out, rather than disappearing and shifting everything next to it. And if the plate has no top-down view stored, the bot says so and shows the list without a picture instead of drawing the pins on a three-quarter render, where they would point convincingly at the wrong part.
+
 - **Send a file to the Telegram bot and print it from there.** Asked for by a user: *"you're at work, you remember you wanted to print something, you throw the bot a 3MF, pick a printer, and print it."* Everything after that first step already worked — the bot could browse the library, pick a printer, print or queue — but it accepted no files at all.
 
     Now it does. Send a document, choose which library folder it belongs in (a **Telegram** folder is offered by default, created the first time you use it), and it is saved with the same checks, thumbnails and duplicate detection as a file uploaded through the web. If it is ready to print, the bot offers to print it or add it to a queue right there.
