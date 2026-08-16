@@ -185,7 +185,19 @@
     "btn_cancel": "Cancel",
     "print_dispatched": "Sending to printer...",
     "queued": "Added to queue!",
-    "failed": "Failed to start print"
+    "failed": "Failed to start print",
+    "upload": {
+      "choose_folder": "Where should it go?",
+      "saving": "Saving {name}…",
+      "saved": "Saved to the library.",
+      "duplicate": "You already have this exact file — this is a second entry for the same content.",
+      "not_sliced": "It is not sliced, so it cannot be printed from here. Slice it and send the result back.",
+      "too_big": "{name} is {size} MB. Telegram only lets a bot download files up to {limit} MB — upload it through the web interface instead.",
+      "download_failed": "Telegram would not hand over the file: {error}",
+      "failed": "Could not save the file.",
+      "cancelled": "Cancelled — nothing was saved.",
+      "btn_print": "Print it"
+    }
   },
   "printer_add": {
     "title": "Add Printer",

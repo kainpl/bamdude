@@ -86,6 +86,7 @@ async def start_telegram_bot() -> None:
     from backend.app.services.telegram_handlers.calibration import router as calibration_router
     from backend.app.services.telegram_handlers.fallback import router as fallback_router
     from backend.app.services.telegram_handlers.library_scene import router as library_router
+    from backend.app.services.telegram_handlers.library_upload_scene import router as library_upload_router
     from backend.app.services.telegram_handlers.maintenance_handlers import router as maintenance_router
     from backend.app.services.telegram_handlers.printer_add_scene import router as printer_add_router
     from backend.app.services.telegram_handlers.printers import router as printers_router
@@ -105,6 +106,10 @@ async def start_telegram_bot() -> None:
     _dispatcher.include_router(queue_router)
     _dispatcher.include_router(stats_router)
     _dispatcher.include_router(library_router)
+    # Receives documents and hands the stored file back to library_router's
+    # ``lib:file:{id}`` picker, so it must sit above the fallback and may sit
+    # anywhere below the scenes that claim free text.
+    _dispatcher.include_router(library_upload_router)
     _dispatcher.include_router(queue_scene_router)
     _dispatcher.include_router(printer_add_router)
     # ⚠️ LAST, and it must stay last: it answers any message no handler above

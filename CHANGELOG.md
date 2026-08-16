@@ -2,6 +2,16 @@
 
 ### Added
 
+- **Send a file to the Telegram bot and print it from there.** Asked for by a user: *"you're at work, you remember you wanted to print something, you throw the bot a 3MF, pick a printer, and print it."* Everything after that first step already worked — the bot could browse the library, pick a printer, print or queue — but it accepted no files at all.
+
+    Now it does. Send a document, choose which library folder it belongs in (a **Telegram** folder is offered by default, created the first time you use it), and it is saved with the same checks, thumbnails and duplicate detection as a file uploaded through the web. If it is ready to print, the bot offers to print it or add it to a queue right there.
+
+    A file too large for Telegram to hand over is refused **immediately**, by name and with the limit stated, rather than after a wait. Models and STLs are accepted too — they are perfectly good library files — and the bot says plainly that they cannot be printed until they are sliced, instead of offering a button that would fail at the printer.
+
+- **"Print from Library" in the bot was showing the wrong files.** It listed unsliced models and hid everything that could actually be printed — on the farm this was found on, 29 unprintable files offered and 103 printable ones hidden. Picking one got as far as the printer, which rejected it half a minute later with a parse error. It now lists what can be printed, and no longer offers files you have moved to the trash.
+
+- **Whether a file counts as printable is now decided by looking inside it.** That judgement came from the file's *name*: anything called `*.gcode.3mf` was assumed to be sliced. A model saved under that name got a Print button it could not honour. BamDude now checks whether the container really holds sliced G-code, and the badges, filters and Print affordances follow the answer. Existing files are re-checked once on upgrade.
+
 - **A project can be duplicated.** Asked for by users who run the same build again — a second Voron, another batch for another customer. **Duplicate** sits in the project card's menu and on the project page, and copies the setup while leaving the past behind: description, colour, targets, notes, tags, priority, budget, link and cover come across, along with the part list, the linked library files and folders, and the print plan with each file's copy count and order. The uploaded attachments are copied as real files, so the new project owns them and deleting the original cannot take its pictures away.
 
     What does not come across is everything that records what the original has *done*: its print history and its queued jobs stay where they are, and purchased quantities in the part list start again at zero. The copy opens as **active** whatever the original's status was, because a duplicate is work about to start.
