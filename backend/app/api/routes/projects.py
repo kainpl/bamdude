@@ -51,7 +51,7 @@ from backend.app.schemas.project import (
     ProjectUpdate,
     TimelineEvent,
 )
-from backend.app.services.library_helpers import compute_file_tags, detect_file_type
+from backend.app.services.library_helpers import detect_file_type, sync_system_tags
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.safe_path import safe_join_under
 
@@ -2243,6 +2243,9 @@ async def import_project_file(
 
     # Create linked folders and files
     library_dir = get_library_dir()
+    # Collected so their system tags can be synced after the single flush below —
+    # the associations key off each row's id, which does not exist until then.
+    imported_library_files: list[LibraryFile] = []
     for folder_data in data.get("linked_folders", []):
         folder_name = folder_data.get("name")
         if not folder_name:
@@ -2322,19 +2325,21 @@ async def import_project_file(
                 filename=relative_path,
                 file_path=f"{folder_name}/{relative_path}",
                 file_type=file_type,
-                file_tags=compute_file_tags(
-                    filename=relative_path,
-                    file_type=file_type,
-                    file_metadata=None,
-                    source_type=None,
-                    swap_compatible=False,
-                ),
                 file_size=len(file_content),
                 is_external=False,
             )
             db.add(lib_file)
+            imported_library_files.append(lib_file)
 
     await db.flush()
+    # ⚠️ AFTER the flush, never in the constructor: the system-tag associations
+    # key off ``lib_file.id``. This site kept the pre-m128 form — ``file_tags=``
+    # in the constructor — which writes the cache column and no associations, so
+    # every file imported with a project rendered its badges correctly and was
+    # absent from every server-side tag filter. ``sync_system_tags`` is the one
+    # writer of both representations.
+    for lib_file in imported_library_files:
+        await sync_system_tags(db, lib_file)
     await db.refresh(project)
 
     stats = await compute_project_stats(db, project.id, project.target_count, project.target_parts_count)

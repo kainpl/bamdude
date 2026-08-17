@@ -642,9 +642,9 @@ class VirtualPrinterInstance:
             from backend.app.models.library import LibraryFile
             from backend.app.services.archive import ThreeMFParser
             from backend.app.services.library_helpers import (
-                compute_file_tags,
                 detect_file_type,
                 skip_objects_supported_from_metadata,
+                sync_system_tags,
             )
 
             async with self._session_factory() as db_session:
@@ -752,13 +752,6 @@ class VirtualPrinterInstance:
                     filename=filename,
                     file_path=to_relative_path(dest_path),
                     file_type=file_type,
-                    file_tags=compute_file_tags(
-                        filename=filename,
-                        file_type=file_type,
-                        file_metadata=metadata,
-                        source_type=detected_source_type,
-                        swap_compatible=False,
-                    ),
                     skip_objects_supported=skip_objects_supported_from_metadata(metadata),
                     file_size=file_path.stat().st_size,
                     file_hash=file_hash,
@@ -767,6 +760,15 @@ class VirtualPrinterInstance:
                     source_type=detected_source_type,
                 )
                 db_session.add(library_file)
+                # ⚠️ Flush before the sync, and sync before the commit: the
+                # system-tag associations key off ``library_file.id``. This site
+                # kept the pre-m128 form — ``file_tags=`` in the constructor —
+                # which writes the cache column and no associations, so every
+                # file the slicer sent through the Virtual Printer rendered its
+                # badges correctly and was missing from every server-side tag
+                # filter.
+                await db_session.flush()
+                await sync_system_tags(db_session, library_file)
                 await db_session.commit()
                 await db_session.refresh(library_file)
                 logger.info(

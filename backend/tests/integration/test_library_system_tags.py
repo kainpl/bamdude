@@ -240,20 +240,34 @@ async def test_sync_leaves_user_tags_alone(db_session, system_tags):
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_every_library_file_construction_syncs_its_tags():
-    """Six near-identical call sites, and a missed one produces a file that
+    """Eight near-identical call sites, and a missed one produces a file that
     looks completely normal and is simply absent from every tag filter.
 
-    A source guard rather than six end-to-end tests: three of the six sit deep
-    inside routes (external scan, slicer output, ZIP extraction) that cannot be
-    driven honestly in a unit test, and a path with NO test is exactly the one
-    that gets left behind. This fails when a new construction site appears
-    without a sync beside it.
+    A source guard rather than eight end-to-end tests: several sit deep inside
+    routes (external scan, slicer output, ZIP extraction) that cannot be driven
+    honestly in a unit test, and a path with NO test is exactly the one that
+    gets left behind. This fails when a new construction site appears without a
+    sync beside it.
+
+    ⚠️ **The file list is the whole assertion.** This guard scanned two files
+    for two weeks and read as proof of coverage, while ``routes/projects.py``
+    and ``services/virtual_printer/manager.py`` — both outside the list — built
+    their rows with the pre-m128 form (``file_tags=`` in the constructor, no
+    ``sync_system_tags`` anywhere in the file) and produced library files absent
+    from every server-side tag filter. Files arrive through the VP straight from
+    the slicer, so that was a primary path, not a corner. A hand-written list
+    asserts exactly as much as the list.
     """
     import re
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[3]
-    for rel in ("backend/app/api/routes/library.py", "backend/app/services/calibration_service.py"):
+    for rel in (
+        "backend/app/api/routes/library.py",
+        "backend/app/api/routes/projects.py",
+        "backend/app/services/calibration_service.py",
+        "backend/app/services/virtual_printer/manager.py",
+    ):
         source = (root / rel).read_text(encoding="utf-8")
         for match in re.finditer(r"LibraryFile\(", source):
             following = source[match.end() : match.end() + 3000]
