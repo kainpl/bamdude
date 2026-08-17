@@ -22,6 +22,13 @@ interface UploadFile {
   isZip?: boolean;
   is3mf?: boolean;
   extractedCount?: number;
+  // What the backend did with these bytes. A substitution the user cannot see
+  // reads as an upload that did nothing, so the row says which of the three it
+  // was: a new row, the row that already held this content, or a row whose file
+  // had gone missing and was put back from what was just sent.
+  dedupOutcome?: 'deduped' | 'restored';
+  dedupName?: string;
+  skippedDuplicates?: number;
 }
 
 interface FileUploadModalProps {
@@ -95,11 +102,16 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
           updateFileStatus(uf.file, {
             status: result.errors.length > 0 && result.extracted === 0 ? 'error' : 'success',
             extractedCount: result.extracted,
+            skippedDuplicates: result.skipped_duplicates,
             error: result.errors.length > 0 ? t('fileManager.zipFilesFailed', '{{count}} files failed', { count: result.errors.length }) : undefined,
           });
         } else {
           const result = await api.uploadLibraryFile(uf.file, folderId, generateStlThumbnails);
-          updateFileStatus(uf.file, { status: 'success' });
+          updateFileStatus(uf.file, {
+            status: 'success',
+            dedupOutcome: result.outcome === 'created' ? undefined : result.outcome,
+            dedupName: result.filename,
+          });
           const error = onFileUploaded?.(result);
           if (error) {
             setUploadError(error);
@@ -315,7 +327,20 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
                       {uploadFile.extractedCount !== undefined && (
                         <span className="text-green-700 dark:text-green-400 ml-2">• {t('fileManager.filesExtracted', { count: uploadFile.extractedCount })}</span>
                       )}
+                      {uploadFile.skippedDuplicates ? (
+                        <span className="text-blue-700 dark:text-blue-400 ml-2">• {t('fileManager.dedupSkippedInZip', { count: uploadFile.skippedDuplicates })}</span>
+                      ) : null}
                     </p>
+                    {uploadFile.dedupOutcome === 'deduped' && (
+                      <p className="text-xs text-blue-700 dark:text-blue-400 mt-1 break-words">
+                        {t('fileManager.dedupUsedExisting', { name: uploadFile.dedupName })}
+                      </p>
+                    )}
+                    {uploadFile.dedupOutcome === 'restored' && (
+                      <p className="text-xs text-blue-700 dark:text-blue-400 mt-1 break-words">
+                        {t('fileManager.dedupRestored')}
+                      </p>
+                    )}
                     {/* #1401: errors render inline rather than as a
                         hover-only title. The backend's rejection
                         messages explain the actual fix (re-export as

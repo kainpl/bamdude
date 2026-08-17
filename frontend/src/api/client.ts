@@ -9064,6 +9064,13 @@ export interface LibraryFileUploadResponse {
   file_size: number;
   thumbnail_path: string | null;
   duplicate_of: number | null;
+  // What the backend did with the bytes that were sent. 'created' is a new row;
+  // 'deduped' means the content was already in the library and `id`/`filename`
+  // describe that existing row; 'restored' means the row existed but had lost
+  // its file, and these bytes put it back.
+  outcome: 'created' | 'deduped' | 'restored';
+  // The name the upload carried, when it differs from the row that was used.
+  superseded_name: string | null;
   metadata: Record<string, unknown> | null;
 }
 
@@ -9090,6 +9097,10 @@ export interface ZipExtractError {
 
 export interface ZipExtractResponse {
   extracted: number;
+  // Entries whose content the library already held, so no row was created and
+  // the extracted bytes were removed again. Reported so a ZIP that adds nothing
+  // does not read as an extraction that silently failed.
+  skipped_duplicates: number;
   folders_created: number;
   files: ZipExtractResult[];
   errors: ZipExtractError[];
