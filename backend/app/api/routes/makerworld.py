@@ -448,7 +448,7 @@ async def import_instance(
     # there as on the manifest-supplied name.
     filename = suggested_name if suggested_name.endswith(".3mf") else unquote(download_filename)
 
-    library_file, was_existing = await save_3mf_bytes_to_library(
+    result = await save_3mf_bytes_to_library(
         db,
         content=file_bytes,
         filename=filename,
@@ -457,6 +457,11 @@ async def import_instance(
         source_type=_SOURCE_TYPE,
         source_url=source_url,
     )
+    # ⚠️ ``result.file`` may be a row this import did not create — either the
+    # same source_url was imported before, or another row already holds these
+    # exact bytes. Both mean the metadata work below has already been done.
+    library_file = result.file
+    was_existing = result.outcome != "created"
 
     # Stash detailed MakerWorld metadata + download covers locally. Reuses
     # the same service instance so we don't make a third client. Wrapped

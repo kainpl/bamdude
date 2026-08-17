@@ -393,7 +393,16 @@ class FileUploadResponse(BaseModel):
     file_tags: list[str] = []
     file_size: int
     thumbnail_path: str | None
-    duplicate_of: int | None = None  # ID of existing file with same hash
+    duplicate_of: int | None = None  # the row that was used instead, when one was
+    # What actually happened to the bytes that were sent. ``created`` is a new
+    # row; ``deduped`` means the content was already here and ``id`` is that
+    # existing row; ``restored`` means the row existed but had lost its file and
+    # these bytes put it back. A substitution the user cannot see reads as an
+    # upload that did nothing, so every surface says which of the three it was.
+    outcome: str = "created"
+    # The name the upload was going to carry, kept only when it differs from the
+    # row that was used — "you sent X, we used Y" needs both halves.
+    superseded_name: str | None = None
     metadata: dict | None = None
 
 

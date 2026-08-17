@@ -76,6 +76,7 @@ from backend.app.services.library_helpers import (
     sliced_gcode_in_3mf,
     sync_system_tags,
 )
+from backend.app.services.library_ingest import IngestResult, find_reusable_row
 from backend.app.services.library_trash import library_trash_service
 from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing
 from backend.app.services.print_plan import inherit_folder_projects, sync_plan_for_file, sync_plan_for_folder
@@ -368,7 +369,7 @@ async def save_3mf_bytes_to_library(
     source_url: str | None = None,
     extra_metadata: dict | None = None,
     commit: bool = True,
-) -> tuple[LibraryFile, bool]:
+) -> IngestResult:
     """Persist raw 3MF / gcode bytes as a ``LibraryFile`` row.
 
     Used by automated sources that already hold the full file in memory —
@@ -377,12 +378,20 @@ async def save_3mf_bytes_to_library(
     uploads from the browser stay on the existing ``upload_file`` path,
     which has its own ``UploadFile``-specific plumbing.
 
-    Returns ``(library_file, was_existing)``. When ``source_url`` is given
-    and a non-trashed row already references that URL, returns the existing
-    row immediately without rewriting bytes — that's the MakerWorld dedupe
-    hot path. ``was_existing=True`` also fires when a different row shares
-    the same content hash, so the caller can surface "already in library"
-    UX even for plain re-uploads of the same plate.
+    Returns an :class:`IngestResult`. ⚠️ **Use ``result.file``** — on a
+    ``deduped`` or ``restored`` outcome it is a row this call did not create,
+    and carrying on with anything else silently opts out of deduplication.
+
+    Two independent short-circuits reach ``deduped``. ``source_url`` is the
+    MakerWorld hot path: a re-import of the same plate must not download and
+    repack on every click. Content is the general one, and it is separate on
+    purpose — two different MakerWorld profiles can produce byte-identical 3MFs.
+
+    ⚠️ This used to return ``(row, was_existing)``, and that flag meant two
+    different things depending on which branch set it: on the URL path it meant
+    "this IS the existing row", on the hash path merely "one exists somewhere",
+    while a second row was created regardless. The outcome enum is the whole
+    answer now.
     """
 
     # Source-URL dedupe: MakerWorld re-imports of the same plate must not
@@ -394,7 +403,7 @@ async def save_3mf_bytes_to_library(
             await db.execute(LibraryFile.active().where(LibraryFile.source_url == source_url).limit(1))
         ).scalar_one_or_none()
         if existing_by_url is not None:
-            return existing_by_url, True
+            return IngestResult(file=existing_by_url, outcome="deduped", superseded_name=filename)
 
     ext = os.path.splitext(filename)[1].lower()
     file_type = detect_file_type(filename)
@@ -404,6 +413,29 @@ async def save_3mf_bytes_to_library(
         f.write(content)
 
     file_hash = calculate_file_hash(file_path)
+
+    # The content decision, before any row is built. ``find_reusable_row`` is the
+    # one place that answers it; this function used to answer it itself, as a
+    # boolean the caller was invited to render as a badge while a second row was
+    # created anyway.
+    reusable = await find_reusable_row(db, content_hash=file_hash)
+    if reusable is not None:
+        existing, present = reusable
+        if present:
+            # ⚠️ Our bytes are redundant and already written — delete them, or a
+            # deduplication feature becomes an orphan-file generator.
+            file_path.unlink(missing_ok=True)
+            return IngestResult(file=existing, outcome="deduped", superseded_name=filename)
+        # The row is missing only its BYTES, and we are holding them. Re-pointing
+        # keeps its name, folder, notes, tags, projects and print history; the
+        # hash matched, so the content is identical — a restore, not a swap.
+        existing.file_path = _stored_file_path(file_path, False)
+        existing.file_size = len(content)
+        existing.fs_modified_at = None
+        if commit:
+            await db.commit()
+            await db.refresh(existing)
+        return IngestResult(file=existing, outcome="restored", superseded_name=filename)
 
     metadata: dict = {}
     thumbnail_path: str | None = None
@@ -467,14 +499,6 @@ async def save_3mf_bytes_to_library(
         fname_lower.endswith((".swap.3mf", ".swaps.3mf")) or ".swap." in fname_lower or ".swaps." in fname_lower
     )
 
-    # Hash-based "already in library" hint — the caller may use it to render
-    # an "exists already" badge. Independent of the source_url path above:
-    # two different MakerWorld profiles can produce byte-identical 3MFs.
-    dup_existing = (
-        await db.execute(LibraryFile.active().where(LibraryFile.file_hash == file_hash).limit(1))
-    ).scalar_one_or_none()
-    was_existing = dup_existing is not None
-
     library_file = LibraryFile(
         folder_id=folder.id if folder is not None else None,
         is_external=is_external_upload,
@@ -504,7 +528,7 @@ async def save_3mf_bytes_to_library(
         await db.commit()
         await db.refresh(library_file)
 
-    return library_file, was_existing
+    return IngestResult(file=library_file, outcome="created")
 
 
 class _MoveSkip(Exception):
@@ -3277,8 +3301,12 @@ async def store_library_upload(
     target_folder: LibraryFolder | None,
     generate_stl_thumbnails: bool = True,
     created_by_id: int | None = None,
-) -> tuple[LibraryFile, int | None]:
-    """Put an uploaded file in the library. Returns ``(row, duplicate_of_id)``.
+) -> IngestResult:
+    """Put an uploaded file in the library. Returns an :class:`IngestResult`.
+
+    ⚠️ **Use ``result.file``** — on a ``deduped`` or ``restored`` outcome it is
+    a row this call did not create, and carrying on with anything else
+    silently opts out of deduplication.
 
     Everything that makes an upload a library file: destination, magic-byte
     validation, disk write, SHA-256, duplicate detection, thumbnails, per-plate
@@ -3315,13 +3343,27 @@ async def store_library_upload(
     # Calculate hash
     file_hash = calculate_file_hash(file_path)
 
-    # Check for duplicates — only against active (non-trashed) files. A
-    # trashed sibling has been deleted by the user and shouldn't pin a
-    # fresh upload to it.
-    dup_result = await db.execute(
-        select(LibraryFile.id).where(LibraryFile.file_hash == file_hash, LibraryFile.deleted_at.is_(None)).limit(1)
-    )
-    duplicate_of = dup_result.scalar()
+    # The content decision, before any row is built. Only active rows count — a
+    # trashed sibling was deleted by the user and must not pin a fresh upload to
+    # it. ``find_reusable_row`` is the one place that answers this; this function
+    # used to answer it separately, as an id it returned and acted on in no way.
+    reusable = await find_reusable_row(db, content_hash=file_hash)
+    if reusable is not None:
+        existing, present = reusable
+        if present:
+            # ⚠️ Our bytes are redundant and already on disk — delete them, or a
+            # deduplication feature becomes an orphan-file generator.
+            file_path.unlink(missing_ok=True)
+            return IngestResult(file=existing, outcome="deduped", superseded_name=filename)
+        # The row is missing only its BYTES, and we are holding them. Re-pointing
+        # keeps its name, folder, notes, tags, projects and print history; the
+        # hash matched, so the content is identical — a restore, not a swap.
+        existing.file_path = _stored_file_path(file_path, False)
+        existing.file_size = len(content)
+        existing.fs_modified_at = None
+        await db.commit()
+        await db.refresh(existing)
+        return IngestResult(file=existing, outcome="restored", superseded_name=filename)
 
     # Extract metadata and thumbnail
     metadata = {}
@@ -3457,7 +3499,7 @@ async def store_library_upload(
     except Exception:
         logger.debug("library_file_added broadcast failed", exc_info=True)
 
-    return library_file, duplicate_of
+    return IngestResult(file=library_file, outcome="created")
 
 
 @router.post("/files", response_model=FileUploadResponse)
@@ -3501,7 +3543,7 @@ async def upload_file(
         # folder-permission rejections (403 read-only, 400 missing
         # path, 409 collision) still surface before any "bad file
         # format" 400 — preserves existing error ordering / tests.
-        library_file, duplicate_of = await store_library_upload(
+        result = await store_library_upload(
             db,
             filename=filename,
             content=await file.read(),
@@ -3509,6 +3551,7 @@ async def upload_file(
             generate_stl_thumbnails=generate_stl_thumbnails,
             created_by_id=current_user.id if current_user else None,
         )
+        library_file = result.file
 
         return FileUploadResponse(
             id=library_file.id,
@@ -3517,7 +3560,12 @@ async def upload_file(
             file_tags=library_file.file_tags or [],
             file_size=library_file.file_size,
             thumbnail_path=library_file.thumbnail_path,
-            duplicate_of=duplicate_of,
+            # ``duplicate_of`` was a hint beside a row that got created anyway.
+            # It now describes what actually happened, so the client can say
+            # which file was used instead of the one that was sent.
+            duplicate_of=library_file.id if result.outcome != "created" else None,
+            outcome=result.outcome,
+            superseded_name=result.superseded_name,
             metadata=library_file.file_metadata,
         )
     except HTTPException:

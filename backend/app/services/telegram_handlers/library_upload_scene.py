@@ -167,12 +167,16 @@ async def cb_folder_chosen(callback: CallbackQuery, state: FSMContext, tg_chat: 
     async with async_session() as db:
         folder = (await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))).scalar_one_or_none()
         try:
-            library_file, duplicate_of = await store_library_upload(
+            result = await store_library_upload(
                 db,
                 filename=file_name,
                 content=buf.getvalue(),
                 target_folder=folder,
             )
+            # ⚠️ ``result.file`` may be a row this upload did not create — the
+            # bytes were already in the library, so that row is what gets used.
+            library_file = result.file
+            duplicate_of = library_file.id if result.outcome != "created" else None
         except HTTPException as e:
             # ⚠️ Shown verbatim. These messages were written for a human —
             # "the file is not a valid 3MF archive" and the like — and a second

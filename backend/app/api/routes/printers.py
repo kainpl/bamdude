@@ -2060,7 +2060,7 @@ async def import_printer_files_to_library(
         normalised_filename, detected_source_type = _normalise_3mf_filename(filename, data)
 
         try:
-            library_file, was_existing = await save_3mf_bytes_to_library(
+            result = await save_3mf_bytes_to_library(
                 db,
                 content=data,
                 filename=normalised_filename,
@@ -2068,6 +2068,10 @@ async def import_printer_files_to_library(
                 created_by_id=current_user.id if current_user else None,
                 source_type=detected_source_type,
             )
+            # ⚠️ ``result.file`` may be a row this import did not create — the
+            # SD card can hold a file the library already has.
+            library_file = result.file
+            was_existing = result.outcome != "created"
             imported.append(
                 {
                     "path": path,

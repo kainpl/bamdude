@@ -2955,7 +2955,7 @@ async def save_archive_to_library(
         if folder is None:
             raise HTTPException(404, "Folder not found")
 
-    library_file, already_there = await save_3mf_bytes_to_library(
+    result = await save_3mf_bytes_to_library(
         db,
         content=file_path.read_bytes(),
         filename=archive.filename,
@@ -2966,6 +2966,10 @@ async def save_archive_to_library(
         # necessarily is.
         source_type="archive",
     )
+    # ⚠️ ``result.file`` may be a row this call did not create — the bytes were
+    # already in the library, so that row is what the response points at.
+    library_file = result.file
+    already_there = result.outcome != "created"
 
     return {
         "success": True,

@@ -8,7 +8,7 @@ this helper. It must:
   upload (same file_path semantics, same hash, same metadata extraction).
 - Dedupe by ``source_url`` BEFORE writing — MakerWorld re-imports of the
   same plate must not re-download or repack.
-- Surface the hash-equal "already exists" hint via ``was_existing`` so the
+- Return the row that already holds these bytes, so the
   caller can show "already in library" UX even when source_url is empty.
 - Forward ``source_type`` + ``source_url`` to the row, propagate
   ``extra_metadata`` into ``file_metadata``.
@@ -52,30 +52,30 @@ class TestSave3mfHappyPath:
     @pytest.mark.integration
     async def test_writes_row_and_bytes(self, db_session, isolated_archive_dir):
         content = _minimal_3mf_bytes()
-        lib_file, was_existing = await save_3mf_bytes_to_library(
+        result = await save_3mf_bytes_to_library(
             db_session,
             content=content,
             filename="model.3mf",
             source_type="sliced",
         )
-        assert was_existing is False
-        assert lib_file.id is not None
-        assert lib_file.filename == "model.3mf"
-        assert lib_file.file_type == "3mf"
-        assert lib_file.file_size == len(content)
-        assert lib_file.source_type == "sliced"
-        assert lib_file.source_url is None
+        assert result.outcome == "created"
+        assert result.file.id is not None
+        assert result.file.filename == "model.3mf"
+        assert result.file.file_type == "3mf"
+        assert result.file.file_size == len(content)
+        assert result.file.source_type == "sliced"
+        assert result.file.source_url is None
         # Bytes actually landed on disk.
         from backend.app.api.routes.library import to_absolute_path
 
-        on_disk = to_absolute_path(lib_file.file_path)
+        on_disk = to_absolute_path(result.file.file_path)
         assert on_disk is not None and on_disk.exists()
         assert on_disk.read_bytes() == content
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_extra_metadata_merged(self, db_session, isolated_archive_dir):
-        lib_file, _ = await save_3mf_bytes_to_library(
+        result = await save_3mf_bytes_to_library(
             db_session,
             content=_minimal_3mf_bytes(),
             filename="result.gcode.3mf",
@@ -87,10 +87,10 @@ class TestSave3mfHappyPath:
                 "used_embedded_settings": True,
             },
         )
-        assert lib_file.file_metadata is not None
-        assert lib_file.file_metadata["print_time_seconds"] == 1234
-        assert lib_file.file_metadata["filament_used_g"] == 18.5
-        assert lib_file.file_metadata["used_embedded_settings"] is True
+        assert result.file.file_metadata is not None
+        assert result.file.file_metadata["print_time_seconds"] == 1234
+        assert result.file.file_metadata["filament_used_g"] == 18.5
+        assert result.file.file_metadata["used_embedded_settings"] is True
 
 
 class TestSourceUrlDedupe:
@@ -98,27 +98,27 @@ class TestSourceUrlDedupe:
     @pytest.mark.integration
     async def test_returns_existing_row_without_rewrite(self, db_session, isolated_archive_dir):
         canonical = "https://makerworld.com/models/12345#profileId-678"
-        first, was_existing_first = await save_3mf_bytes_to_library(
+        first_result = await save_3mf_bytes_to_library(
             db_session,
             content=_minimal_3mf_bytes(),
             filename="plate1.3mf",
             source_type="makerworld",
             source_url=canonical,
         )
-        assert was_existing_first is False
+        assert first_result.outcome == "created"
         # Re-import: different filename, but same source_url.
-        second, was_existing_second = await save_3mf_bytes_to_library(
+        second_result = await save_3mf_bytes_to_library(
             db_session,
             content=b"different content; helper must not even look at it",
             filename="plate1-renamed.3mf",
             source_type="makerworld",
             source_url=canonical,
         )
-        assert was_existing_second is True
-        assert second.id == first.id
+        assert second_result.outcome == "deduped"
+        assert second_result.file.id == first_result.file.id
         # Filename of the existing row is unchanged — dedup short-circuits
         # before any new row materialises.
-        assert second.filename == "plate1.3mf"
+        assert second_result.file.filename == "plate1.3mf"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -126,16 +126,16 @@ class TestSourceUrlDedupe:
         from datetime import datetime, timezone
 
         canonical = "https://makerworld.com/models/777#profileId-1"
-        first, _ = await save_3mf_bytes_to_library(
+        first_result = await save_3mf_bytes_to_library(
             db_session,
             content=_minimal_3mf_bytes(),
             filename="orig.3mf",
             source_type="makerworld",
             source_url=canonical,
         )
-        first.deleted_at = datetime.now(timezone.utc)
+        first_result.file.deleted_at = datetime.now(timezone.utc)
         await db_session.commit()
-        second, was_existing = await save_3mf_bytes_to_library(
+        second_result = await save_3mf_bytes_to_library(
             db_session,
             content=_minimal_3mf_bytes(),
             filename="reimport.3mf",
@@ -143,25 +143,36 @@ class TestSourceUrlDedupe:
             source_url=canonical,
         )
         # Soft-deleted row is filtered by ``LibraryFile.active()`` — re-import
-        # creates a new row instead of resurrecting the trashed one.
-        assert second.id != first.id
-        assert was_existing is False
+        # creates a new row instead of resurrecting the trashed one. Holds for
+        # the content path too: a trashed sibling was deleted by the user and
+        # must not pin a fresh arrival to itself.
+        assert second_result.file.id != first_result.file.id
+        assert second_result.outcome == "created"
 
 
-class TestHashDedupeHint:
+class TestHashDedupe:
+    """⚠️ This class used to be called ``TestHashDedupeHint`` and asserted the
+    opposite, with a comment explaining why: *"Both rows persist (same hash is a
+    hint, not a hard dedup) so the caller can show 'this is a duplicate of file
+    #N' without losing the second row's distinct provenance."*
+
+    The provenance it protected was a filename. What it cost was a library that
+    accumulates byte-identical copies, and a queue, a printer and an archive
+    each pointing at a different row for the same content.
+    """
+
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_byte_identical_reupload_flags_was_existing(self, db_session, isolated_archive_dir):
+    async def test_byte_identical_reupload_reuses_the_row(self, db_session, isolated_archive_dir):
         content = _minimal_3mf_bytes()
-        first, was_existing_first = await save_3mf_bytes_to_library(db_session, content=content, filename="a.3mf")
-        second, was_existing_second = await save_3mf_bytes_to_library(db_session, content=content, filename="b.3mf")
-        assert was_existing_first is False
-        # Both rows persist (same hash is a hint, not a hard dedup) so the
-        # caller can show "this is a duplicate of file #N" without losing the
-        # second row's distinct provenance.
-        assert was_existing_second is True
-        assert second.id != first.id
-        assert second.file_hash == first.file_hash
+        first_result = await save_3mf_bytes_to_library(db_session, content=content, filename="a.3mf")
+        second_result = await save_3mf_bytes_to_library(db_session, content=content, filename="b.3mf")
+
+        assert first_result.outcome == "created"
+        assert second_result.outcome == "deduped"
+        assert second_result.file.id == first_result.file.id, "the same bytes must not make a second row"
+        assert second_result.file.filename == "a.3mf", "the existing row keeps its own name"
+        assert second_result.superseded_name == "b.3mf", "and the caller is told what it sent"
 
 
 class TestFolderRouting:
@@ -172,7 +183,7 @@ class TestFolderRouting:
         db_session.add(folder)
         await db_session.commit()
         await db_session.refresh(folder)
-        lib_file, _ = await save_3mf_bytes_to_library(
+        result = await save_3mf_bytes_to_library(
             db_session,
             content=_minimal_3mf_bytes(),
             filename="plate.3mf",
@@ -180,15 +191,15 @@ class TestFolderRouting:
             source_type="makerworld",
             source_url="https://makerworld.com/models/1#profileId-1",
         )
-        assert lib_file.folder_id == folder.id
+        assert result.file.folder_id == folder.id
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_no_folder_means_root(self, db_session, isolated_archive_dir):
-        lib_file, _ = await save_3mf_bytes_to_library(
+        result = await save_3mf_bytes_to_library(
             db_session,
             content=_minimal_3mf_bytes(),
             filename="plate.3mf",
             source_type="sliced",
         )
-        assert lib_file.folder_id is None
+        assert result.file.folder_id is None
