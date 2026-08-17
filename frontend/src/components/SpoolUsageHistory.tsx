@@ -15,6 +15,16 @@ const STATUS_COLORS: Record<string, string> = {
   completed: 'text-bambu-green',
   failed: 'text-red-700 dark:text-red-400',
   aborted: 'text-yellow-700 dark:text-yellow-400',
+  ams_sync: 'text-blue-700 dark:text-blue-400',
+};
+
+// Only `ams_sync` is translated. The print outcomes are the printer's own
+// vocabulary and read the same in both locales; this one is a BamDude concept
+// ("the AMS says filament is gone and no print of ours explains it") that means
+// nothing as a raw enum value. Anything unmapped still falls back to the raw
+// string, so a status added later shows up rather than disappearing.
+const STATUS_LABEL_KEYS: Record<string, string> = {
+  ams_sync: 'inventory.usageStatusAmsSync',
 };
 
 export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
@@ -107,8 +117,11 @@ export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
             <div className="flex items-center gap-2 flex-shrink-0 ml-2">
               <span className="text-white font-medium">{record.weight_used.toFixed(1)}g</span>
               <span className="text-bambu-gray">({record.percent_used}%)</span>
-              <span className={STATUS_COLORS[record.status] || 'text-bambu-gray'}>
-                {record.status}
+              <span
+                className={STATUS_COLORS[record.status] || 'text-bambu-gray'}
+                title={record.status === 'ams_sync' ? t('inventory.usageStatusAmsSyncHint') : undefined}
+              >
+                {STATUS_LABEL_KEYS[record.status] ? t(STATUS_LABEL_KEYS[record.status]) : record.status}
               </span>
               <button
                 type="button"

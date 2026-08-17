@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.spool import Spool
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spool_usage_history import SpoolUsageHistory
+from backend.app.utils.filament_remaining import usable_remain_percent
 
 logger = logging.getLogger(__name__)
 
@@ -385,6 +386,83 @@ async def _warn_if_low_stock(db: AsyncSession, spool: Spool, printer_id: int, gl
         logger.exception("[UsageTracker] filament_low notification failed for spool %s", spool.id)
 
 
+# The status an AMS-sync correction carries in ``spool_usage_history``. Distinct
+# from the print outcomes (completed/failed/aborted/cancelled) because it is not
+# a print — it is filament this instance never saw leave the spool.
+AMS_SYNC_STATUS = "ams_sync"
+
+
+async def record_ams_sync_usage(
+    db: AsyncSession,
+    spool: Spool,
+    *,
+    printer_id: int,
+    ams_id: int,
+    tray_id: int,
+    new_used: float,
+) -> float:
+    """Move a spool's ``weight_used`` to the AMS reading, and leave a row behind.
+
+    Both AMS-sync sites — the live one in ``main.on_ams_change`` and the manual
+    ``POST /inventory/sync-ams-weights`` — go through here, so the rule cannot
+    drift between them the way the grams conversion once did.
+
+    ⚠️ **This is the one write path that used to move the books in silence.**
+    Every other writer of ``weight_used`` (the 3MF path, the layer path, the
+    remain%-delta fallback) adds a ``SpoolUsageHistory`` row beside the number,
+    which is why a discrepancy between them is meaningful at all — and why an
+    AMS sync that skipped the row was invisible until someone summed the history
+    by hand and found 154 g of prints against a spool the page called spent.
+
+    An **increase** is genuine consumption this instance did not witness — a job
+    started from the touchscreen, a purge, a spool moved between printers — so it
+    earns a row and feeds the forecast like any other. A **decrease** is a
+    correction of our own books, not a negative print, and gets no row: every
+    reader of this table SUMs it, and a negative row would quietly subtract from
+    farm-wide consumption. It re-arms the low-stock warning instead, because a
+    spool that was topped up and then burnt back down in one print would
+    otherwise stay silent (m117).
+
+    Returns the delta in grams — positive when filament went missing.
+    """
+    old_used = float(spool.weight_used or 0.0)
+    delta = round(new_used - old_used, 1)
+    spool.weight_used = new_used
+
+    if delta <= 0:
+        if (spool.weight_used_baseline or 0) > new_used:
+            spool.weight_used_baseline = new_used
+        spool.low_stock_notified = False
+        return delta
+
+    label = spool.label_weight or 0
+    spool.last_used = datetime.now(timezone.utc)
+    db.add(
+        SpoolUsageHistory(
+            spool_id=spool.id,
+            printer_id=printer_id,
+            print_name=None,
+            weight_used=delta,
+            percent_used=int(round(delta / label * 100)) if label > 0 else 0,
+            status=AMS_SYNC_STATUS,
+            cost=None,
+            archive_id=None,
+        )
+    )
+    await _warn_if_low_stock(db, spool, printer_id, _global_tray_id(ams_id, tray_id))
+    logger.info(
+        "[UsageTracker] Spool %d reconciled +%.1fg from AMS reading on printer %d AMS%d-T%d (%s -> %s)",
+        spool.id,
+        delta,
+        printer_id,
+        ams_id,
+        tray_id,
+        round(old_used, 1),
+        new_used,
+    )
+    return delta
+
+
 async def _resolve_spool_id_for_tray(
     printer_id: int,
     ams_id: int,
@@ -457,8 +535,8 @@ async def on_print_start(printer_id: int, data: dict, printer_manager, db: Async
         ams_id = int(ams_unit.get("id", 0))
         for tray in ams_unit.get("tray", []):
             tray_id = int(tray.get("id", 0))
-            remain = tray.get("remain", -1)
-            if isinstance(remain, int) and 0 <= remain <= 100:
+            remain = usable_remain_percent(tray.get("remain"))
+            if remain is not None:
                 tray_remain_start[(ams_id, tray_id)] = remain
 
     print_name = data.get("subtask_name", "") or data.get("filename", "unknown")
@@ -623,8 +701,12 @@ async def on_print_complete(
                     if key not in session.tray_remain_start:
                         continue
 
-                    current_remain = tray.get("remain", -1)
-                    if not isinstance(current_remain, int) or current_remain < 0 or current_remain > 100:
+                    # ⚠️ A zero here is refused, not read as "empty" — see
+                    # ``usable_remain_percent``. Taking it at face value charged
+                    # ``start - 0``: up to the whole reel, on the sentinel the
+                    # firmware emits whenever it has nothing to report.
+                    current_remain = usable_remain_percent(tray.get("remain"))
+                    if current_remain is None:
                         continue
 
                     start_remain = session.tray_remain_start[key]

@@ -1799,6 +1799,44 @@ def _is_bambu_uuid(tray_uuid: str) -> bool:
     return bool(tray_uuid) and tray_uuid not in ("", "0" * len(tray_uuid))
 
 
+# The firmware's explicit "this slot is empty" codes. ``apply_tray_exist_bits``
+# stamps state=9 on every slot the feed-hall sensor reports vacant, which is the
+# same signal BambuStudio draws its empty slots from (``is_exists`` off
+# ``tray_exist_bits``, DevFilaSystem.cpp).
+_FIRMWARE_EMPTY_STATES = (9, 10)
+
+
+def slot_reported_no_filament(tray_type: str, tray_state: object) -> bool:
+    """True when the slot told us **nothing** — as opposed to told us it is empty.
+
+    The distinction decides whether a spool assignment survives. The
+    reconciliation in :func:`on_ams_change` compares the slot's filament against
+    the assignment's fingerprint and unlinks on any difference — and ``""``
+    differs from every material name, so a slot reporting nothing read as a slot
+    reporting *something else*, and healthy links were deleted. Four times in a
+    week, each with a fingerprint matching its spool exactly. The clearest came
+    two seconds after the user assigned a spool mid-print:
+
+        Auto-unlink: spool 145 AMS255-T0 - fingerprint mismatch
+          (cur=50543DFF/  fp=000000FF/PETG  spool=50543DFF/PETG)
+
+    The tray had already come back carrying the NEW spool's colour — the
+    assignment had plainly taken, and BambuStudio showed the slot correctly
+    configured throughout. Only ``tray_type`` was missing from a partial report,
+    and that alone deleted the link. Nothing automatic restores an ``ams_id=255``
+    link either, because auto-assign runs inside the ``ams`` loop that the
+    external slot never enters.
+
+    ⚠️ **A blank is authoritative only when the firmware says so.** With one of
+    :data:`_FIRMWARE_EMPTY_STATES` the slot really is empty and the caller should
+    go on to unlink. Without one, a blank type means a partial report, a state
+    code our clearing rule does not recognise (an X2D was seen reporting 26), or
+    an external slot, which has no exist-bits at all — in every case we were told
+    nothing, and being told nothing must change nothing.
+    """
+    return not (tray_type or "").strip() and tray_state not in _FIRMWARE_EMPTY_STATES
+
+
 async def on_ams_change(printer_id: int, ams_data: list):
     """Handle AMS data changes - sync to Spoolman if enabled and auto mode."""
     logger = logging.getLogger(__name__)
@@ -1806,7 +1844,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
     # Check if a print is actively running on this printer - if so, skip AMS
     # weight sync to avoid double-deducting spool weight (the usage tracker
     # handles weight deduction precisely during prints via 3MF/G-code data).
-    from backend.app.services.usage_tracker import _active_sessions
+    from backend.app.services.usage_tracker import _active_sessions, record_ams_sync_usage
 
     _print_active = printer_id in _active_sessions
 
@@ -1983,6 +2021,24 @@ async def on_ams_change(printer_id: int, ams_data: list):
                         assignment.fingerprint_type = cur_type
                         continue
 
+                    # Being told nothing must change nothing. Deliberately placed
+                    # AFTER the pre-config replay above: that branch fires on
+                    # state==11 with a still-blank type and is about *gaining* a
+                    # filament, not losing one.
+                    if slot_reported_no_filament(cur_type, cur_state):
+                        logger.info(
+                            "Auto-unlink skipped: spool %d AMS%d-T%d reported no filament type "
+                            "(state=%s colour=%r fp=%s/%s) — absence is not a swap",
+                            assignment.spool_id,
+                            assignment.ams_id,
+                            assignment.tray_id,
+                            cur_state,
+                            cur_color,
+                            fp_color,
+                            fp_type,
+                        )
+                        continue
+
                     if not _colors_similar(cur_color, fp_color) or cur_type.upper() != fp_type.upper():
                         # Fingerprint mismatch - but check if tray now matches the
                         # assigned spool (e.g. auto-configure changed the tray).
@@ -2106,6 +2162,11 @@ async def on_ams_change(printer_id: int, ams_data: list):
                             # Sync spool weight_used from AMS remain - only INCREASE, never decrease.
                             # The AMS remain% is low-resolution (integer %, i.e. 10g steps for 1kg spool)
                             # and must not overwrite precise values from the usage tracker (3MF/G-code).
+                            #
+                            # ⚠️ Which readings are usable at all is ``grams_used``'s question, not
+                            # this loop's — in particular a zero from either field is "nothing to
+                            # tell you", never an empty spool. Do not re-add a range check here; the
+                            # last one drifted to accept 0 and spent three 1 kg spools in 16 ms.
                             remain_raw = tray.get("remain")
                             if (
                                 remain_raw is not None
@@ -2124,13 +2185,21 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                     current_used = existing_assignment.spool.weight_used or 0
                                     if new_used > current_used + 1:
                                         logger.info(
-                                            "Weight sync: spool %d weight_used %s -> %s (remain=%d)",
+                                            "Weight sync: spool %d weight_used %s -> %s (remain=%d, remain_g=%s)",
                                             existing_assignment.spool_id,
                                             current_used,
                                             new_used,
                                             remain_val,
+                                            tray.get("remain_g"),
                                         )
-                                        existing_assignment.spool.weight_used = new_used
+                                        await record_ams_sync_usage(
+                                            db,
+                                            existing_assignment.spool,
+                                            printer_id=printer_id,
+                                            ams_id=ams_id,
+                                            tray_id=tray_id,
+                                            new_used=new_used,
+                                        )
                                         await db.commit()
 
                             # Re-apply stored K-profile when the live tray's

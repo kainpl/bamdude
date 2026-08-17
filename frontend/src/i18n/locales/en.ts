@@ -5050,6 +5050,8 @@ export default {
     historyCleared: 'Usage history cleared',
     deleteUsageRecord: 'Remove this record and return its weight to the spool',
     usageRecordDeleted: 'Record removed, weight returned to spool',
+    usageStatusAmsSync: 'AMS sync',
+    usageStatusAmsSyncHint: 'Filament the AMS reported as gone that no print of ours accounts for',
     fillSourceLabel: '(Inv)',
     lowStockThresholdError: 'Threshold must be between 0.1 and 99.9',
     assignMismatchTitle: 'Material mismatch',

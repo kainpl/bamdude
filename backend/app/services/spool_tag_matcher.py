@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.models.spool import Spool
 from backend.app.models.spool_assignment import SpoolAssignment
+from backend.app.utils.filament_remaining import grams_used
 from backend.app.utils.tag_normalization import (
     normalize_tag_uid as _normalize_tag_uid,
     normalize_tray_uuid as _normalize_tray_uuid,
@@ -154,16 +155,20 @@ async def create_spool_from_tray(db: AsyncSession, tray_data: dict) -> Spool:
         if not slicer_filament_name and tray_sub_brands:
             slicer_filament_name = tray_sub_brands
 
-    # Calculate initial weight_used from AMS remain percentage
+    # Calculate initial weight_used from what the tray reports it has left.
+    #
+    # ⚠️ Unknown → assume full, and a zero reading counts as unknown. ``remain``
+    # and ``remain_g`` are sentinels for "the firmware has nothing for you" far
+    # more often than they are a measurement, and a spool being born as 1 kg
+    # already spent is the loudest possible way to be wrong about a spool nobody
+    # has printed with yet. ``grams_used`` carries BS's own precedence and
+    # declines on every zero — see ``utils/filament_remaining``.
     remain_raw = tray_data.get("remain")
     try:
-        remain_pct = int(remain_raw) if remain_raw is not None else 100
+        remain_pct = int(remain_raw) if remain_raw is not None else -1
     except (TypeError, ValueError):
-        remain_pct = 100
-    # Clamp to valid range: negative means unknown, >100 is invalid
-    if remain_pct < 0 or remain_pct > 100:
-        remain_pct = 100  # Unknown → assume full
-    weight_used = round(label_weight * (100 - remain_pct) / 100.0, 1)
+        remain_pct = -1
+    weight_used = grams_used(tray_data.get("remain_g"), remain_pct, label_weight) or 0.0
 
     spool = Spool(
         material=material,

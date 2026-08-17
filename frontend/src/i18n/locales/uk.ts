@@ -5063,6 +5063,8 @@ export default {
     historyCleared: 'Історію використання очищено',
     deleteUsageRecord: 'Видалити цей запис і повернути його вагу до котушки',
     usageRecordDeleted: 'Запис видалено, вагу повернено до котушки',
+    usageStatusAmsSync: 'Синхронізація AMS',
+    usageStatusAmsSyncHint: 'Філамент, який AMS порахував витраченим, але жоден наш друк його не пояснює',
     fillSourceLabel: '(Інв)',
     lowStockThresholdError: 'Поріг повинен бути від 0.1 до 99.9',
     assignMismatchTitle: 'Невідповідність матеріалу',

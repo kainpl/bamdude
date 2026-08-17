@@ -2479,6 +2479,7 @@ async def sync_weights_from_ams(
     tool - it bypasses the normal "only increase" guard.
     """
     from backend.app.services.printer_manager import printer_manager
+    from backend.app.services.usage_tracker import record_ams_sync_usage
 
     result = await db.execute(select(SpoolAssignment).options(selectinload(SpoolAssignment.spool)))
     assignments = list(result.scalars().all())
@@ -2551,17 +2552,24 @@ async def sync_weights_from_ams(
 
         if round(old_used, 1) != new_used:
             logger.info(
-                "AMS weight sync: spool %d weight_used %s -> %s (remain=%d%%)",
+                "AMS weight sync: spool %d weight_used %s -> %s (remain=%d%%, remain_g=%s)",
                 spool.id,
                 old_used,
                 new_used,
                 remain_val,
+                tray.get("remain_g"),
             )
-            if new_used < old_used:
-                # The tray reports more filament than we had recorded — a refill
-                # or a corrected reading. Re-arm the low-stock warning (m117).
-                spool.low_stock_notified = False
-            spool.weight_used = new_used
+            # Shared with the live sync in ``main.on_ams_change``: an increase
+            # earns a usage-history row (filament this instance never saw leave
+            # the spool), a decrease re-arms the low-stock warning (m117).
+            await record_ams_sync_usage(
+                db,
+                spool,
+                printer_id=assignment.printer_id,
+                ams_id=assignment.ams_id,
+                tray_id=assignment.tray_id,
+                new_used=new_used,
+            )
             synced += 1
         else:
             skipped += 1

@@ -393,6 +393,65 @@ def apply_tray_exist_bits(
     return cleared
 
 
+def _merge_vt_tray(existing: object, incoming: list) -> list:
+    """Overlay an external-spool report onto what we already know, per slot.
+
+    The AMS trays next door have always been merged field-by-field; ``vt_tray``
+    was assigned wholesale, so a partial report silently erased every field it
+    did not happen to carry. The printer was never wrong — BambuStudio parses
+    into a **persistent** ``DevAmsTray`` and its ``DevJsonValParser::ParseVal``
+    only writes the keys a message actually contains, which is why BS shows the
+    slot correctly configured while our cache has forgotten what is in it.
+
+    ⚠️ **What this cost.** The forgotten field was usually ``tray_type``, and a
+    blank type is what ``main.on_ams_change`` compared against the assignment's
+    fingerprint — so the spool link on the external slot was deleted, and
+    nothing automatic ever restores an ``ams_id=255`` link (auto-assign lives
+    inside the ``ams`` loop). Worse, the erasure fed
+    ``_maybe_trigger_external_spool_change``, whose identity hash is built from
+    exactly the fields that vanished: the truncated report **caused** the
+    reconciliation that then believed it.
+
+    Rules, matching the AMS merge:
+
+    * a key absent from the report keeps its previous value;
+    * a key present overwrites — including with an empty value, because an
+      explicit empty *is* a report (a slot being cleared must still clear);
+    * except ``tag_uid`` / ``tray_uuid``, where an empty never overwrites a
+      known one. The AMS path documents why: routine pushes carry blank RFID
+      fields that would otherwise wipe what the connect-time pushall
+      established, and identity is the one thing a partial report has no
+      business revoking.
+    """
+    if not isinstance(existing, list) or not existing:
+        return incoming
+
+    def _slot_key(entry: object) -> str | None:
+        if not isinstance(entry, dict):
+            return None
+        raw = entry.get("id")
+        return None if raw is None else str(raw)
+
+    previous = {k: e for e in existing if (k := _slot_key(e)) is not None}
+    if not previous:
+        return incoming
+
+    merged: list = []
+    for entry in incoming:
+        key = _slot_key(entry)
+        before = previous.get(key) if key is not None else None
+        if not isinstance(entry, dict) or not isinstance(before, dict):
+            merged.append(entry)
+            continue
+        combined = dict(before)
+        for field_name, value in entry.items():
+            if field_name in ("tag_uid", "tray_uuid") and not value and combined.get(field_name):
+                continue
+            combined[field_name] = value
+        merged.append(combined)
+    return merged
+
+
 @dataclass
 class MQTTLogEntry:
     """Log entry for MQTT message debugging."""
@@ -2479,7 +2538,7 @@ class BambuMQTTClient:
                     # Dual-nozzle (H2D) has 2 slots: id=254 (Ext-L) and id=255 (Ext-R).
                     if len(vir_slot) == 1 and str(vir_slot[0].get("id", "")) == "255":
                         vir_slot[0]["id"] = "254"
-                    self.state.raw_data["vt_tray"] = vir_slot
+                    self.state.raw_data["vt_tray"] = _merge_vt_tray(self.state.raw_data.get("vt_tray"), vir_slot)
 
             # Handle vt_tray (virtual tray / external spool) data
             # Only use vt_tray if vir_slot is NOT in this message AND we don't already
@@ -2494,7 +2553,7 @@ class BambuMQTTClient:
                 else:
                     if isinstance(vt_tray, dict):
                         vt_tray = [vt_tray]
-                    self.state.raw_data["vt_tray"] = vt_tray
+                    self.state.raw_data["vt_tray"] = _merge_vt_tray(existing, vt_tray)
 
             # The AMS change-hash in _handle_ams_data sees AMS units only, and
             # _handle_ams_data already ran above — so a change to the external

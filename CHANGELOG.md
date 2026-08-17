@@ -57,6 +57,32 @@
 
 ### Fixed
 
+- **Assigned spools no longer fall off their slot on their own.** Reported from a farm where it kept happening on the A1 Minis, and caught in the act: two seconds after assigning a spool to a running printer, the link was gone again.
+
+    BamDude watches each slot and unlinks a spool when the filament in it changes. The check compared what the slot reports against what was recorded — and an empty report differs from every material name, so a slot that reported **nothing** was read as a slot holding **something else**. The link was deleted on the strength of a message that said nothing at all. Every instance found in a week of logs had a recording that matched its spool exactly; nothing had actually changed.
+
+    Two things produced those empty reports, and both are fixed:
+
+    **BamDude was forgetting what it already knew about the external spool.** Filament reports arrive in pieces — one carries the remaining percentage, another the colour — and for the external holder each piece *replaced* everything previously known instead of updating it, so any field the latest message happened to omit was erased. The AMS slots have always been updated piece by piece, and Bambu Studio does the same, which is why the printer and Bambu Studio both showed the slot correctly configured while BamDude had lost track of it. The external holder now works the same way, and the identity of a spool is never erased by a message that simply left it out.
+
+    **And a blank is now believed only when the printer says so.** The firmware has an explicit signal for an empty slot; short of it, an empty reading means the message did not carry that detail — a partial report, or a slot state BamDude does not recognise (one X2D reports a code no rule here covers). Pull a spool out and the link still drops, as it should.
+
+    This landed hardest on printers without an AMS, and there is a reason: nothing automatic ever re-attaches a spool to the external holder — that repair only runs for AMS slots. So on an A1 Mini the link went away and stayed away until it was made again by hand, while the same fault on an AMS slot usually healed itself unnoticed.
+
+- **A spool is no longer written off as empty because the AMS said "0".** Found on an X2D: three 1 kg spools showed nothing left, while their own print history added up to 154 g, 725 g and 160 g. The filament was on the reels — only the books said otherwise.
+
+    BamDude keeps a spool's weight in step with what the AMS reports, and a reading of zero was being taken as *"this spool is empty"* rather than *"the printer has nothing to tell you"*. Those are different answers, and firmware means the second one far more often. One badly timed message was enough: two seconds after a dropped connection came back, the printer reported zero remaining for every slot at once, and all three spools were marked fully spent in the same instant. Bambu Studio declines to answer on exactly that reading, and BamDude now does the same — **no reading from a printer can declare a spool spent.**
+
+    The write was also silent and one-way. This sync only ever raises a spool's used weight, so nothing walked it back; and it was the one place BamDude moved that number without leaving a line in the spool's usage history to say why — which is precisely why the loss showed up as nothing at all until someone added up the prints by hand. **It now records what it does.** An increase means filament left the spool while BamDude was not watching — a job started from the printer's screen, a purge, a reel carried to another machine — and appears in the spool's history as **AMS sync**.
+
+    **Spools already written off get their filament back on upgrade,** restored to what their print history accounts for. Only the ones carrying this fault: archived spools are left as they are, and so is any spool whose weight you set by hand — that locks it, which is why a fourth slot on the same printer came through untouched.
+
+    The same reading also reached new spools: one added automatically from a slot reporting zero was created already fully consumed. An unknown reading now means a full spool, which is what it was always meant to mean.
+
+    **The same rule now covers the two paths that estimate a print from the drop in the AMS percentage** — the one that fills gaps in BamDude's own inventory, and the one that reports to Spoolman. They subtract the reading at the end from the reading at the start, so a spurious zero at the end did not merely round badly: it charged everything the spool had at the start, up to a full reel. This is also the only place the **external spool holder** is accounted for at all, which makes it the one route by which a spool outside the AMS could be zeroed. A reading of zero is now declined at both ends.
+
+    The cost of declining is stated plainly: a spool that genuinely does run out mid-print reads zero, and that print goes unaccounted on this fallback. It is the better trade — an under-count is corrected by the next reading, a phantom kilogram is not — and the primary paths, which measure the print from the sliced file, are unaffected.
+
 - **A file added to the library now appears in tabs that are already open.** The list refreshed itself for one case only — a file sent by a slicer to the Virtual Printer — because that was the only place the notice was ever sent from. Uploading through the browser, sending the bot a file, or posting one through the API left every other open tab showing the old list until somebody pressed refresh.
 
 - **A printer can no longer be handed a command it already carried out hours ago.** This one destroyed prints, so it is worth describing exactly. On 16 August an A1 Mini eleven hours into a job lost its network link for two seconds; when it came back, the printer received — and obeyed — a plate-change command BamDude had sent at **two o'clock that morning**. It swept the finished part's bed clear and carried on extruding into the air. A second printer was hit the same day, twice.

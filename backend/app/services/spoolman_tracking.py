@@ -19,6 +19,7 @@ from backend.app.services.spoolman import (
     get_spoolman_client,
     init_spoolman_client,
 )
+from backend.app.utils.filament_remaining import usable_remain_percent
 
 logger = logging.getLogger(__name__)
 
@@ -196,9 +197,16 @@ def _snapshot_tray_remain(raw_data: dict) -> dict[str, dict]:
     the slot (or there's no 3MF at all — #1820).
 
     Returns ``{"<ams_id>-<tray_id>": {"remain": int, "tray_uuid": str}}``.
-    Only slots whose ``remain`` is a valid 0..100 int are included; invalid
-    values mean the AMS hasn't read the spool yet and a delta would be
-    meaningless. Mirrors the gate in ``usage_tracker.on_print_start``.
+    Only slots whose ``remain`` is usable are included — see
+    ``usable_remain_percent``, the gate ``usage_tracker.on_print_start`` shares.
+    An unusable value means the AMS has told us nothing about that slot and a
+    delta would be meaningless.
+
+    ⚠️ **This function feeds BOTH ends of the delta** — it is called once at
+    print start and again at completion — so the gate lands on both, which is
+    what closes the only zero-reading route that reaches the external spool.
+    The vt_tray branch below is that route: no other weight-accounting path
+    reads ``vt_tray`` at all.
     """
     snapshot: dict[str, dict] = {}
     ams_raw = raw_data.get("ams", [])
@@ -211,8 +219,8 @@ def _snapshot_tray_remain(raw_data: dict) -> dict[str, dict]:
             if not isinstance(tray, dict):
                 continue
             tray_id = int(tray.get("id", 0))
-            remain = tray.get("remain", -1)
-            if isinstance(remain, int) and 0 <= remain <= 100:
+            remain = usable_remain_percent(tray.get("remain"))
+            if remain is not None:
                 snapshot[f"{ams_id}-{tray_id}"] = {
                     "remain": remain,
                     "tray_uuid": tray.get("tray_uuid", "") or "",
@@ -226,8 +234,8 @@ def _snapshot_tray_remain(raw_data: dict) -> dict[str, dict]:
         vt_id = int(vt.get("id", 254))
         # 254 → (255, 0), 255 → (255, 1) — matches usage_tracker's encoding.
         vt_tray_id = vt_id - 254
-        remain = vt.get("remain", -1)
-        if isinstance(remain, int) and 0 <= remain <= 100:
+        remain = usable_remain_percent(vt.get("remain"))
+        if remain is not None:
             snapshot[f"255-{vt_tray_id}"] = {
                 "remain": remain,
                 "tray_uuid": vt.get("tray_uuid", "") or "",
