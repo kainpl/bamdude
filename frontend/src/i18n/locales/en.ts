@@ -3879,22 +3879,6 @@ export default {
     },
   },
 
-  libraryDedupe: {
-    headerButton: 'Duplicates',
-    headerTooltip: 'Find files whose contents are already in the library',
-    title: 'Duplicate files',
-    nothingToDo: 'No duplicates — every file in the library has unique contents.',
-    summary_one: '{{count}} file has contents that another file already holds.',
-    summary_other: '{{count}} files have contents that other files already hold, across {{groups}} group(s).',
-    whichSurvives: 'The copy something points at is kept — a print history, a queue item, a project. When they all do, the oldest is kept.',
-    reversible: 'The others go to the trash, so nothing is destroyed and you can restore any of them.',
-    confirm: 'Move duplicates to trash',
-    toast: {
-      success_one: '{{count}} duplicate moved to the trash',
-      success_other: '{{count}} duplicates moved to the trash',
-      failed: 'Could not clean up duplicates',
-    },
-  },
   libraryPurge: {
     title: 'Purge old files',
     headerButton: 'Purge old',

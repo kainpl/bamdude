@@ -21,6 +21,7 @@ pre-existing mess into an install that never starts again.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -113,3 +114,104 @@ def external_hash_is_stale(row: LibraryFile, *, size: int, mtime: float | None) 
     if row.file_size != size:
         return True
     return row.fs_modified_at != mtime
+
+
+async def trash_duplicate_rows(db: AsyncSession) -> tuple[int, int]:
+    """Send byte-identical duplicates already in the library to the trash.
+
+    Returns ``(groups, trashed)``. Called once per install, by m141.
+
+    ⚠️ **Soft-delete only. Nothing is re-pointed, and that is the whole design.**
+    A merge would have to reconcile four uniqueness constraints —
+    ``library_file_makerworld_meta`` is 1:1 per file, tags and projects are
+    unique pairs, and a plan item is unique per (project, file) *and carries a
+    copy count and an order*, so merging means summing or choosing. Setting
+    ``deleted_at`` leaves every foreign key intact: ``print_archives`` keeps its
+    link, queue rows keep theirs, and the dedup lookup already ignores trashed
+    rows, so the duplicate simply stops competing. It is also reversible, which
+    is what makes doing this to somebody else's library acceptable at all.
+
+    ⚠️ **Never route this through ``trash_or_purge``.** Its external branch
+    *purges* — nulling ``PrintArchive.library_file_id`` and deleting queue rows
+    on the way out — which is exactly the damage this avoids.
+
+    Survivor: the row something points at. When every duplicate is referenced,
+    the lowest ``id`` wins — oldest, stable, free to compute. That ordering
+    matters because the trash sweeper eventually purges what nobody rescued, so
+    it should take the row that was never referenced anyway.
+
+    ⚠️ **Columns by name, and reference counts in bulk — both because a
+    migration calls this.** An entity-wide ``select(LibraryFile)`` breaks mid-
+    chain the moment a later migration adds a column, and a per-row COUNT would
+    be seven queries per row: fine for a button, tens of thousands of queries at
+    startup on a library that actually has duplicates.
+    """
+    from sqlalchemy import func, select, update
+
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.auto_queue import AutoQueueItem
+    from backend.app.models.library_file_makerworld_meta import LibraryFileMakerworldMeta
+    from backend.app.models.library_file_note import LibraryFileNote
+    from backend.app.models.library_project_links import library_file_projects
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.project_print_plan import ProjectPrintPlanItem
+
+    duplicated_hashes = (
+        (
+            await db.execute(
+                select(LibraryFile.file_hash)
+                .where(LibraryFile.file_hash.isnot(None), LibraryFile.deleted_at.is_(None))
+                .group_by(LibraryFile.file_hash)
+                .having(func.count(LibraryFile.id) > 1)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not duplicated_hashes:
+        return 0, 0
+
+    rows = (
+        await db.execute(
+            select(LibraryFile.id, LibraryFile.file_hash)
+            .where(LibraryFile.file_hash.in_(duplicated_hashes), LibraryFile.deleted_at.is_(None))
+            .order_by(LibraryFile.id)
+        )
+    ).all()
+    candidate_ids = [row_id for row_id, _ in rows]
+
+    references: dict[int, int] = dict.fromkeys(candidate_ids, 0)
+    for source, column in (
+        (PrintArchive, PrintArchive.library_file_id),
+        (PrintQueueItem, PrintQueueItem.library_file_id),
+        (AutoQueueItem, AutoQueueItem.library_file_id),
+        (LibraryFileNote, LibraryFileNote.library_file_id),
+        (library_file_projects, library_file_projects.c.file_id),
+        (ProjectPrintPlanItem, ProjectPrintPlanItem.library_file_id),
+        (LibraryFileMakerworldMeta, LibraryFileMakerworldMeta.library_file_id),
+    ):
+        counted = await db.execute(
+            select(column, func.count()).select_from(source).where(column.in_(candidate_ids)).group_by(column)
+        )
+        for file_id, count in counted.all():
+            references[file_id] = references.get(file_id, 0) + count
+
+    grouped: dict[str, list[int]] = {}
+    for row_id, file_hash in rows:
+        grouped.setdefault(file_hash, []).append(row_id)
+
+    losers: list[int] = []
+    for group in grouped.values():
+        if len(group) < 2:
+            continue
+        # Most-referenced first; ``-id`` makes the lowest id win a tie.
+        ranked = sorted(group, key=lambda file_id: (references.get(file_id, 0), -file_id), reverse=True)
+        losers.extend(ranked[1:])
+
+    if not losers:
+        return len(grouped), 0
+
+    await db.execute(
+        update(LibraryFile).where(LibraryFile.id.in_(losers)).values(deleted_at=datetime.now(timezone.utc))
+    )
+    return len(grouped), len(losers)

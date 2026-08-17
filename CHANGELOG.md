@@ -10,7 +10,7 @@
 
     **You are always told.** The upload dialog says, per file, which of your library files was used instead and under what name, or that a file's missing contents were just restored.
 
-- **Duplicates already in your library can be cleared out.** A new **Duplicates** button on the file manager finds files whose contents are identical, tells you how many it found before doing anything, and moves the extras to the trash. The copy something points at — a print history, a queued job, a project — is the one that stays; if they are all in use, the oldest stays. Nothing is merged and nothing is destroyed: the rest sit in the trash, so anything you disagree with can be restored.
+- **Duplicates already in your library are cleared out on upgrade.** Whatever piled up before this existed is dealt with once, automatically, the first time this version starts. The copy something points at — a print history, a queued job, a project — is the one that stays; if they are all in use, the oldest stays. Nothing is merged and nothing is destroyed: the rest go to the trash, so anything you disagree with can be restored, and BamDude writes to its log how many it moved.
 
 - **Record a printer's MQTT traffic to a file, and close the tab.** Watching what a printer actually says used to mean running a script in a terminal and leaving the window open — close it and the evidence stopped arriving, which is the wrong shape for the intermittent faults it is used to catch. Recording is now switched on per printer from its card menu, keeps running with nothing open, and survives a restart of BamDude itself. Files land in `logs/mqtt/`, one per printer per day.
 
