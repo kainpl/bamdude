@@ -18,6 +18,7 @@ from backend.app.core.permissions import Permission
 from backend.app.models.user import User
 from backend.app.services.bug_report import submit_report
 from backend.app.services.printer_manager import printer_manager
+from backend.app.services.support_projection import project_for_issue
 
 router = APIRouter(prefix="/bug-report", tags=["bug-report"])
 logger = logging.getLogger(__name__)
@@ -99,6 +100,19 @@ async def submit_bug_report(
             support_info = await _collect_support_info()
             if report.debug_logs:
                 support_info["recent_logs"] = report.debug_logs
+            # ⚠️ Only this path is budgeted. The relay prints the whole payload
+            # into a GitHub issue body, which caps at 65 536 characters, and
+            # exceeding it is a 422 that loses the entire report — shown to the
+            # reporter as "Failed to create GitHub issue", which reads as the
+            # relay being down. Two sections scale per printer, so a farm of
+            # 13-19 printers already crossed that line.
+            #
+            # The downloaded ZIP takes the whole payload; it has no limit and is
+            # where the maintainer goes for whatever did not fit here.
+            support_info, trimmed = project_for_issue(support_info)
+            if trimmed:
+                support_info["_budget_notes"] = trimmed
+                logger.info("Bug report pack trimmed to fit the issue budget: %s", "; ".join(trimmed))
         except Exception:
             logger.exception("Failed to collect support info for bug report")
 
