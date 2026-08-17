@@ -52,6 +52,9 @@ class MqttRecorder:
         self._log_dir = log_dir
         self._manager = printer_manager
         self._handlers: dict[int, object] = {}
+        # The client each handler is attached to, so a rebuilt session is
+        # detected rather than assumed away. See start().
+        self._clients: dict[int, object] = {}
         self._files: dict[int, Path] = {}
         self._queue: queue.Queue = queue.Queue(maxsize=_QUEUE_MAX)
         self._writer: threading.Thread | None = None
@@ -76,18 +79,40 @@ class MqttRecorder:
         return printer_manager.get_client(printer_id)
 
     def start(self, printer_id: int) -> Path:
-        """Begin recording. Returns the file being written."""
-        if printer_id in self._handlers:
-            return self._files[printer_id]
+        """Begin recording, or re-attach if the client underneath has changed.
 
+        ⚠️ **Re-attaching is not an optimisation, it is the feature working at
+        all.** ``connection_watchdog`` rebuilds a stalled MQTT session by
+        creating a NEW ``BambuMQTTClient``, and ``ensure_fresh_connection*``
+        does the same on the dispatch path. The handler registered on the old
+        client dies with it, so a recording that was asked to run "until
+        stopped" would stop at the first reconnect — silently, with the badge
+        still showing and the file simply never growing again. Same trap that
+        blanked the skip-objects list on reconnect.
+
+        Calling this repeatedly is therefore correct and cheap: it is how a
+        recording survives the farm.
+        """
         client = self._get_client(printer_id)
         if client is None:
             raise RuntimeError(f"printer {printer_id} has no live MQTT client to record")
 
-        directory = self.log_dir / "mqtt"
-        directory.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
-        path = directory / f"mqtt-{stamp}-{printer_id}.log"
+        if printer_id in self._handlers:
+            if self._clients.get(printer_id) is client:
+                return self._files[printer_id]
+            # The session was rebuilt underneath us. Drop the dead handle and
+            # re-register on the live client, keeping the same file.
+            self._handlers.pop(printer_id, None)
+            logger.info("MQTT recording re-attached for printer %s after its session was rebuilt", printer_id)
+
+        # Same file across a re-attach: a rebuilt session is the same recording
+        # to the operator, and a second file per reconnect would shred it.
+        path = self._files.get(printer_id)
+        if path is None:
+            directory = self.log_dir / "mqtt"
+            directory.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+            path = directory / f"mqtt-{stamp}-{printer_id}.log"
 
         def _handler(topic: str, payload: bytes, _pid=printer_id) -> None:
             # paho's network thread. Enqueue and return; never write here.
@@ -98,6 +123,7 @@ class MqttRecorder:
 
         self._files[printer_id] = path
         self._handlers[printer_id] = _handler
+        self._clients[printer_id] = client
         client.register_raw_message_handler(_handler)
         self._ensure_writer()
         logger.info("MQTT recording started for printer %s -> %s", printer_id, path)
@@ -114,6 +140,7 @@ class MqttRecorder:
             except Exception:
                 logger.debug("unregister failed for printer %s", printer_id, exc_info=True)
         self._files.pop(printer_id, None)
+        self._clients.pop(printer_id, None)
         logger.info("MQTT recording stopped for printer %s", printer_id)
 
     def is_recording(self, printer_id: int) -> bool:

@@ -164,3 +164,35 @@ def test_size_is_reported_for_the_card(recorder):
     assert r.size_bytes(3) > 0
     r.stop(3)
     assert r.size_bytes(3) == 0
+
+
+def test_a_rebuilt_session_is_re_attached_not_abandoned(recorder):
+    """⚠️ The trap this codebase keeps falling into.
+
+    ``connection_watchdog`` rebuilds a stalled MQTT session by creating a NEW
+    client, and the handler registered on the old one dies with it. A recording
+    asked to run "until stopped" would stop at the first reconnect — silently,
+    with the badge still showing and the file simply never growing again.
+    """
+    r, first_client = recorder
+    path = r.start(3)
+
+    replacement = _Client()
+    r._manager.get_client.return_value = replacement
+    r.start(3)  # what resume_recordings does on every sweep
+
+    assert len(replacement.handlers) == 1, "not attached to the live client"
+    replacement.emit("device/01P00A/report", {"after": "rebuild"})
+    assert _wait_for(path, lambda t: "rebuild" in t)
+    assert r.file_for(3) == path, "a rebuilt session must not shred the recording into a second file"
+    r.stop(3)
+
+
+def test_re_attaching_does_not_double_register(recorder):
+    """Two handlers on one client would write every line twice."""
+    r, client = recorder
+    r.start(3)
+    r.start(3)
+
+    assert len(client.handlers) == 1
+    r.stop(3)

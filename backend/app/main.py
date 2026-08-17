@@ -7740,6 +7740,15 @@ async def lifespan(app: FastAPI):
     # pending confirmation can't let the queue auto-dispatch onto a dirty plate (#961).
     await printer_manager.load_awaiting_plate_clear_from_db()
 
+    # Resume MQTT recordings the database says are running. Same reasoning as
+    # the line above: the intent was persisted so it would survive a restart,
+    # which is only a longer version of closing the window it already survives.
+    # A printer still offline here is picked up by the connection watchdog's
+    # sweep, which also re-attaches after it rebuilds a session.
+    from backend.app.services.mqtt_recorder import resume_recordings
+
+    await resume_recordings()
+
     # Start the notification digest scheduler
     notification_service.start_digest_scheduler()
 

@@ -588,3 +588,15 @@ class DiagnosticRequest(BaseModel):
     ip_address: str
     serial_number: str | None = None
     access_code: str | None = None
+
+
+class MqttRecordingRequest(BaseModel):
+    """Start or stop recording this printer's MQTT traffic to a file.
+
+    One flag, deliberately: there is no duration and no size limit to pass.
+    Recording runs until it is switched off, because a limit that trips just
+    before the fault reproduces is worse than a large file — the printer card
+    carries the file size instead, so a forgotten recording is visible.
+    """
+
+    enabled: bool

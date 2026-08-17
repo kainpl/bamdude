@@ -33,6 +33,7 @@ from backend.app.schemas.printer import (
     FilaSwitchResponse,
     HmsActionBody,
     HMSErrorResponse,
+    MqttRecordingRequest,
     NozzleInfoResponse,
     NozzleRackSlot,
     PrinterCreate,
@@ -470,6 +471,50 @@ async def update_printer(
             await printer_manager.connect_printer(printer)
 
     return printer
+
+
+@router.post("/{printer_id}/mqtt-recording")
+async def set_mqtt_recording(
+    printer_id: int,
+    body: MqttRecordingRequest,
+    _=RequirePermission(Permission.PRINTERS_UPDATE),
+    db: AsyncSession = Depends(get_db),
+):
+    """Start or stop recording this printer's MQTT traffic to a file.
+
+    Replaces running a sniffer in a terminal and not closing the window: this
+    keeps recording with nothing open, and the intent is persisted so it
+    survives a restart of BamDude itself — that is the feature, not a side
+    effect.
+
+    Nothing caps the file. The printer card carries the size beside the badge,
+    which is what makes a recording nobody remembers starting visible rather
+    than something discovered when the disk fills.
+    """
+    from datetime import datetime, timezone
+
+    from backend.app.services.mqtt_recorder import mqtt_recorder
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    if body.enabled:
+        try:
+            mqtt_recorder.start(printer_id)
+        except RuntimeError as e:
+            # No live client to tee. Refused out loud: a silent no-op would look
+            # exactly like a recording that is running.
+            raise HTTPException(409, str(e)) from e
+        printer.mqtt_recording = True
+        printer.mqtt_recording_started_at = datetime.now(timezone.utc)
+    else:
+        mqtt_recorder.stop(printer_id)
+        printer.mqtt_recording = False
+
+    await db.commit()
+    return {"enabled": printer.mqtt_recording, "file": str(mqtt_recorder.file_for(printer_id) or "")}
 
 
 @router.post("/{printer_id}/archive")

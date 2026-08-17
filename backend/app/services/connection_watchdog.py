@@ -140,6 +140,19 @@ async def sweep_once() -> int:
         except Exception as exc:  # noqa: BLE001 — one bad client must not end the sweep
             logger.warning("Connection watchdog failed for printer %s: %s", printer.id, exc)
 
+    # ⚠️ After the sweep, not before. Rebuilding a session creates a NEW client,
+    # and a raw-message handler registered on the old one dies with it — so an
+    # MQTT recording would stop at the first reconnect, silently, with its badge
+    # still showing. This re-attaches whatever the database says should be
+    # recording, and is also what starts a recording for a printer that was
+    # offline when BamDude booted.
+    try:
+        from backend.app.services.mqtt_recorder import resume_recordings
+
+        await resume_recordings()
+    except Exception as exc:  # noqa: BLE001 — a recorder must never end the sweep
+        logger.warning("Could not re-attach MQTT recordings after the sweep: %s", exc)
+
     return rebuilt
 
 
