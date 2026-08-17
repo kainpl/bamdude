@@ -15,6 +15,7 @@ import {
   Signal,
   Clock,
   MoreVertical,
+  Radio,
   Trash2,
   RefreshCw,
   Box,
@@ -2058,6 +2059,25 @@ function PrinterCard({
   // metrics and the print picker — so flipping this flag puts the printer out
   // of service across every consumer in one place. Used from the overflow menu
   // and EditPrinterModal.
+  // MQTT recording toggle. Nothing caps the file, so the success toast names
+  // that plainly rather than a cheerful "started" — the operator should leave
+  // knowing they have to come back and switch it off.
+  const mqttRecordingMutation = useMutation({
+    mutationFn: (enabled: boolean) => api.setMqttRecording(printer.id, enabled),
+    onSuccess: (_data, enabled) => {
+      queryClient.invalidateQueries({ queryKey: ['printerStatus', printer.id] });
+      showToast(
+        enabled
+          ? t('printers.mqttRecording.toastStarted', { name: printer.name })
+          : t('printers.mqttRecording.toastStopped', { name: printer.name }),
+        'success',
+      );
+    },
+    // 409 means there is no live connection to tee — surfaced, because a silent
+    // failure would leave the operator believing a recording is running.
+    onError: (error: Error) => showToast(error.message || t('printers.mqttRecording.noClient'), 'error'),
+  });
+
   const maintenanceMutation = useMutation({
     mutationFn: (isActive: boolean) => api.updatePrinter(printer.id, { is_active: isActive }),
     onSuccess: (_data, isActive) => {
@@ -2985,6 +3005,28 @@ function PrinterCard({
                   >
                     <Info className="w-4 h-4" />
                     {t('printers.printerInformation')}
+                  </button>
+                  {/* MQTT recording toggle. Kept in the kebab rather than on the
+                      card: it is a debugging tool, and the card already tells you
+                      when one is running. */}
+                  <button
+                    className={`w-full px-4 py-2 text-left text-sm flex items-center gap-2 ${
+                      hasPermission('printers:update')
+                        ? 'hover:bg-bambu-dark-tertiary'
+                        : 'opacity-50 cursor-not-allowed'
+                    }`}
+                    disabled={mqttRecordingMutation.isPending || !hasPermission('printers:update')}
+                    onClick={() => {
+                      if (!hasPermission('printers:update')) return;
+                      setShowMenu(false);
+                      mqttRecordingMutation.mutate(!status?.mqtt_recording);
+                    }}
+                    title={!hasPermission('printers:update') ? t('printers.permission.noEdit') : undefined}
+                  >
+                    <Radio className="w-4 h-4" />
+                    {status?.mqtt_recording
+                      ? t('printers.mqttRecording.stop')
+                      : t('printers.mqttRecording.start')}
                   </button>
                   {/* Maintenance Mode toggle (#1476) — leverages backend is_active flag */}
                   <button

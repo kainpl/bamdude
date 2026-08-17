@@ -504,6 +504,8 @@ export default {
       tooltip: "Recording this printer's MQTT traffic to a file. Nothing limits the size — switch it off when you are done.",
       start: 'Start MQTT recording',
       stop: 'Stop MQTT recording',
+      toastStarted: 'MQTT recording started for {{name}} — nothing limits the size, so remember to stop it',
+      toastStopped: 'MQTT recording stopped for {{name}}',
       noClient: 'Cannot record: this printer has no live connection',
     },
     nozzleStatus: 'Status',

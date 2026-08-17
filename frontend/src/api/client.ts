@@ -5398,6 +5398,19 @@ export const api = {
       positions_approximate?: boolean;
     }>(`/printers/${printerId}/print/objects`),
 
+  /** Start or stop recording this printer's MQTT traffic to a file.
+   *
+   * Nothing caps the file — recording runs until it is switched off. A 409
+   * means the printer has no live connection to tee; that is surfaced rather
+   * than swallowed, because a silent failure would leave the operator
+   * believing a recording is running.
+   */
+  setMqttRecording: (printerId: number, enabled: boolean) =>
+    request<{ enabled: boolean; file: string }>(`/printers/${printerId}/mqtt-recording`, {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    }),
+
   skipObjects: (printerId: number, objectIds: number[]) =>
     request<{ success: boolean; message: string; skipped_objects: number[] }>(
       `/printers/${printerId}/print/skip-objects`,
