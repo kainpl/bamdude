@@ -449,6 +449,10 @@ class ZipExtractResponse(BaseModel):
     """Schema for ZIP extraction response."""
 
     extracted: int
+    # Entries whose content the library already held, so no row was created and
+    # the extracted bytes were removed again. Reported so a ZIP that adds
+    # nothing does not read as an extraction that silently failed.
+    skipped_duplicates: int = 0
     folders_created: int
     files: list[ZipExtractResult]
     errors: list[ZipExtractError]

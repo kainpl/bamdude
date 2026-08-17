@@ -276,6 +276,22 @@ async def test_every_library_file_construction_syncs_its_tags():
                 "sync_system_tags within the next 3000 characters — that file would carry "
                 "no system tags and vanish from every tag filter."
             )
+            # ⚠️ Scoped to the ENCLOSING FUNCTION, not a character window. The
+            # deduplication decision has to happen before a row is built, so
+            # ``find_reusable_row`` precedes the constructor at every site — a
+            # forward-only window would pass all of them while asserting
+            # nothing, and a fixed backward window either misses a long function
+            # (``save_3mf_bytes_to_library`` puts 80 lines of metadata and
+            # thumbnail work in between) or reaches into the previous one and
+            # passes on somebody else's call.
+            body_start = max(source.rfind("\nasync def ", 0, match.start()), source.rfind("\ndef ", 0, match.start()))
+            around = source[max(body_start, 0) : match.end() + 3000]
+            assert "find_reusable_row" in around, (
+                f"{rel}: a LibraryFile is constructed at offset {match.start()} without consulting "
+                "library_ingest — that path can still create a byte-identical duplicate row, and "
+                "nothing at runtime will say so. The chokepoint is the whole feature; this guard "
+                "is what fails the person who wrote a new path rather than the person running it."
+            )
 
 
 @pytest.mark.asyncio

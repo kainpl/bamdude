@@ -1,5 +1,6 @@
 import asyncio
 import copy as copy_module
+import hashlib
 import io
 import json
 import logging
@@ -52,6 +53,7 @@ from backend.app.schemas.project import (
     TimelineEvent,
 )
 from backend.app.services.library_helpers import detect_file_type, sync_system_tags
+from backend.app.services.library_ingest import find_reusable_row
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.safe_path import safe_join_under
 
@@ -2319,6 +2321,18 @@ async def import_project_file(
                 else:
                     file_type = "other"
 
+            # ⚠️ This site stored no hash at all, so project-imported files were
+            # invisible to deduplication in both directions. Computing it here
+            # is what puts them in.
+            content_hash = hashlib.sha256(file_content).hexdigest()
+            reusable = await find_reusable_row(db, content_hash=content_hash)
+            if reusable is not None and reusable[1]:
+                # The library already holds these bytes. Remove the copy just
+                # written and link the project to the row that exists.
+                file_disk_path.unlink(missing_ok=True)
+                imported_library_files.append(reusable[0])
+                continue
+
             # Create library file record
             lib_file = LibraryFile(
                 folder_id=folder.id,
@@ -2326,6 +2340,7 @@ async def import_project_file(
                 file_path=f"{folder_name}/{relative_path}",
                 file_type=file_type,
                 file_size=len(file_content),
+                file_hash=content_hash,
                 is_external=False,
             )
             db.add(lib_file)

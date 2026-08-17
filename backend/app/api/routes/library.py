@@ -76,7 +76,7 @@ from backend.app.services.library_helpers import (
     sliced_gcode_in_3mf,
     sync_system_tags,
 )
-from backend.app.services.library_ingest import IngestResult, find_reusable_row
+from backend.app.services.library_ingest import IngestResult, external_hash_is_stale, find_reusable_row
 from backend.app.services.library_trash import library_trash_service
 from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing
 from backend.app.services.print_plan import inherit_folder_projects, sync_plan_for_file, sync_plan_for_folder
@@ -1729,6 +1729,10 @@ async def scan_external_folder(
     # Scan the directory
     added = 0
     removed = 0
+    # Discovered files whose content the library already holds. Counted and
+    # reported: the scan is also how people browse a mount, so a silently
+    # skipped file reads as a scan that missed something.
+    skipped_duplicates = 0
     found_paths = set()
     # Directory mtimes gathered during the walk (#2680), applied in one pass
     # after it. Collected by id rather than written inline because the walk sees
@@ -1826,6 +1830,16 @@ async def scan_external_folder(
                 # break, for anyone still falling back to it.
                 if tracked.fs_modified_at != fs_modified_at:
                     tracked.fs_modified_at = fs_modified_at
+                # Re-hash only what changed. ``external_hash_is_stale`` answers
+                # off the size and mtime already stored on the row, so a mount
+                # that has not moved costs no reads at all — which is what makes
+                # hashing mounts affordable in the first place.
+                if external_hash_is_stale(tracked, size=stat.st_size, mtime=fs_modified_at):
+                    try:
+                        tracked.file_hash = calculate_file_hash(filepath)
+                        tracked.file_size = stat.st_size
+                    except OSError:
+                        pass  # unreadable right now; the next scan tries again
                 continue  # Already tracked
 
             file_type = detect_file_type(filepath.name)
@@ -1897,6 +1911,20 @@ async def scan_external_folder(
                 if thumbnail_path_str:
                     thumbnail_path = to_relative_path(Path(thumbnail_path_str))
 
+            # ⚠️ This used to write ``file_hash=None`` — "skip hashing external
+            # files for performance" — which put a whole mount outside
+            # deduplication. That decision predates m129 putting the on-disk
+            # mtime on the row: with size and mtime stored, the first scan pays
+            # a full read and every scan after it re-reads only what changed
+            # (``external_hash_is_stale``). A discovered file whose content the
+            # library already holds gets no row of its own, and the scan says so
+            # rather than looking like it missed something.
+            content_hash = calculate_file_hash(filepath)
+            reusable = await find_reusable_row(db, content_hash=content_hash)
+            if reusable is not None and reusable[1]:
+                skipped_duplicates += 1
+                continue
+
             db_file = LibraryFile(
                 folder_id=target_folder_id,
                 is_external=True,
@@ -1905,7 +1933,7 @@ async def scan_external_folder(
                 file_type=file_type,
                 skip_objects_supported=skip_objects_supported_from_metadata(file_metadata),
                 file_size=stat.st_size,
-                file_hash=None,  # Skip hashing external files for performance
+                file_hash=content_hash,
                 thumbnail_path=thumbnail_path,
                 file_metadata=_without_print_name(file_metadata),
                 fs_modified_at=fs_modified_at,
@@ -1994,7 +2022,12 @@ async def scan_external_folder(
         name=f"mesh-backfill-folder-{folder_id}",
     )
 
-    return {"status": "success", "added": added, "removed": removed}
+    return {
+        "status": "success",
+        "added": added,
+        "removed": removed,
+        "skipped_duplicates": skipped_duplicates,
+    }
 
 
 # ============ File Endpoints ============
@@ -2977,6 +3010,27 @@ async def slice_and_persist(
     if extra_metadata:
         metadata.update(extra_metadata)
 
+    # Slicing the same source twice with the same settings yields the same
+    # bytes, so this path produces duplicates readily. ``find_reusable_row`` is
+    # the one place that decides; an existing row is returned as-is, keeping its
+    # name, folder and print history.
+    sliced_hash = hashlib.sha256(sliced_bytes).hexdigest()
+    reusable = await find_reusable_row(db, content_hash=sliced_hash)
+    if reusable is not None:
+        existing, present = reusable
+        if present:
+            # ⚠️ The sliced bytes are already written — remove them, or a
+            # deduplication feature becomes an orphan-file generator.
+            out_path.unlink(missing_ok=True)
+            return SliceResponse(
+                library_file_id=existing.id,
+                name=existing.filename,
+                print_time_seconds=result.print_time_seconds,
+                filament_used_g=result.filament_used_g,
+                filament_used_mm=result.filament_used_mm,
+                used_embedded_settings=used_embedded_settings,
+            )
+
     new_file = LibraryFile(
         folder_id=folder_id,
         filename=out_filename,
@@ -2990,7 +3044,7 @@ async def slice_and_persist(
         file_type="gcode",
         skip_objects_supported=skip_objects_supported_from_metadata(metadata),
         file_size=len(sliced_bytes),
-        file_hash=hashlib.sha256(sliced_bytes).hexdigest(),
+        file_hash=sliced_hash,
         thumbnail_path=thumbnail_relative,
         file_metadata=metadata,
         source_type="sliced",
@@ -3621,6 +3675,10 @@ async def extract_zip_file(
         raise HTTPException(status_code=500, detail=f"Failed to save ZIP file: {str(e)}")
 
     extracted_files: list[ZipExtractResult] = []
+    # Files whose content the library already holds. Counted rather than
+    # reported per-file: a ZIP of fifty plates that are all already here should
+    # say so once, not fifty times.
+    skipped_duplicates = 0
     errors: list[ZipExtractError] = []
     folders_created = 0
     folder_cache: dict[str, int] = {}  # path -> folder_id
@@ -3730,6 +3788,18 @@ async def extract_zip_file(
 
                     # Calculate hash
                     file_hash = calculate_file_hash(file_path)
+
+                    # A ZIP of models routinely carries a plate the library
+                    # already holds. ``find_reusable_row`` is the one place that
+                    # decides; skipping here also spares the metadata and
+                    # thumbnail work below for a file we are not going to add.
+                    reusable = await find_reusable_row(db, content_hash=file_hash)
+                    if reusable is not None and reusable[1]:
+                        # ⚠️ Delete the bytes we just extracted — otherwise every
+                        # re-import of the same ZIP leaves another orphan behind.
+                        file_path.unlink(missing_ok=True)
+                        skipped_duplicates += 1
+                        continue
 
                     # Extract metadata and thumbnail for 3MF files
                     metadata = {}
@@ -3861,6 +3931,7 @@ async def extract_zip_file(
 
         return ZipExtractResponse(
             extracted=len(extracted_files),
+            skipped_duplicates=skipped_duplicates,
             folders_created=folders_created,
             files=extracted_files,
             errors=errors,

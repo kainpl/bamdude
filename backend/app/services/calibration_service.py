@@ -244,6 +244,7 @@ async def _persist_calibration_slice_to_library(
     from backend.app.api.routes.library import get_library_files_dir, to_relative_path
     from backend.app.models.library import LibraryFile
     from backend.app.services.library_helpers import skip_objects_supported_from_metadata, sync_system_tags
+    from backend.app.services.library_ingest import find_reusable_row
 
     unique_name = f"{uuid.uuid4().hex}.gcode.3mf"
     out_path = (
@@ -261,6 +262,8 @@ async def _persist_calibration_slice_to_library(
     if filament_used_mm is not None:
         metadata["filament_used_mm"] = filament_used_mm
 
+    content_hash = hashlib.sha256(content).hexdigest()
+
     new_file = LibraryFile(
         folder_id=None,
         filename=filename,
@@ -268,13 +271,22 @@ async def _persist_calibration_slice_to_library(
         file_type="gcode",
         skip_objects_supported=skip_objects_supported_from_metadata(metadata),
         file_size=len(content),
-        file_hash=hashlib.sha256(content).hexdigest(),
+        file_hash=content_hash,
         thumbnail_path=None,
         file_metadata=metadata,
         source_type="sliced",
         created_by_id=user_id,
     )
     async with async_session() as db:
+        # These are BamDude's own canned assets, sliced from a fixed source with
+        # fixed settings — running the same calibration twice produces the same
+        # bytes every time, so this path duplicates readily. There is no
+        # ``restored`` branch to write: a match means the asset is already here.
+        reusable = await find_reusable_row(db, content_hash=content_hash)
+        if reusable is not None and reusable[1]:
+            out_path.unlink(missing_ok=True)
+            return reusable[0].id
+
         db.add(new_file)
         await db.flush()
         await sync_system_tags(db, new_file)
