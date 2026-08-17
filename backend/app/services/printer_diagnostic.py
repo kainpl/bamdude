@@ -200,12 +200,31 @@ async def run_connection_diagnostic(
             )
 
     # --- MQTT credentials / connection ---
+    # ⚠️ The ORDER here is the point of the block, not a detail.
+    #
+    # A live, connected client answers this question for free. Asking it again
+    # by opening a second session is what the support bundle did to every
+    # printer on the farm: ``diagnostic_snapshot._run_connection_for`` passes
+    # credentials for existing printers, so the pre-add branch used to win and
+    # the "trust the live state" branch below it was unreachable from the one
+    # caller it was written for.
+    #
+    # Bambu printers tolerate few concurrent sessions and the cost was not
+    # theoretical — the live client reconnected, and the printer's request
+    # topic was disabled for the rest of the session. On the bug-report path,
+    # which a user takes while already having a problem, possibly mid-print.
+    #
+    # The active probe stays for the two cases that need it and cannot be hurt
+    # by it: adding a printer (no client exists yet), and a printer whose
+    # client is down (nothing to disturb, and the answer separates "offline"
+    # from "wrong access code").
     state = printer_manager.get_status(printer.id) if printer else None
     if not mqtt_ok:
         # Can't reach the broker at all — the port check already reported it.
         checks.append(DiagnosticCheck(id="mqtt_auth", status="skip"))
+    elif state is not None and state.connected:
+        checks.append(DiagnosticCheck(id="mqtt_auth", status="pass"))
     elif serial_number and access_code:
-        # Pre-add flow: actively probe with the credentials the user entered.
         try:
             result = await printer_manager.test_connection(
                 ip_address=ip_address,
@@ -217,9 +236,7 @@ async def run_connection_diagnostic(
             logger.debug("test_connection failed during diagnostic", exc_info=True)
             checks.append(DiagnosticCheck(id="mqtt_auth", status="fail"))
     elif state is not None:
-        # Existing printer: trust the live MQTT state rather than opening a
-        # second connection (Bambu printers tolerate few concurrent sessions).
-        checks.append(DiagnosticCheck(id="mqtt_auth", status="pass" if state.connected else "fail"))
+        checks.append(DiagnosticCheck(id="mqtt_auth", status="fail"))
     else:
         checks.append(DiagnosticCheck(id="mqtt_auth", status="skip"))
 

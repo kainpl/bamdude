@@ -64,6 +64,10 @@ class _Env:
         manager = MagicMock()
         manager.get_status.return_value = self.state
         manager.test_connection = AsyncMock(return_value={"success": self.test_connection_success})
+        # Exposed so a test can assert the probe was NOT made. Opening a second
+        # MQTT session to a printer that is already connected is a real cost,
+        # not an implementation detail, so it is asserted directly.
+        self.test_connection = manager.test_connection
         if self.report_messages_since_connect is None:
             manager.get_client.return_value = None
         else:
@@ -117,6 +121,45 @@ class TestExistingPrinter:
             "external_storage": "pass",
             "printer_publishing": "pass",
         }
+
+    async def test_a_connected_printer_is_never_probed(self):
+        """⚠️ The regression guard for the support bundle disturbing the farm.
+
+        ``diagnostic_snapshot._run_connection_for`` passes credentials for
+        EXISTING printers, which used to take the pre-add branch below and open
+        a second MQTT session to a printer that is already connected — on the
+        path a user takes while already having a problem, possibly mid-print.
+        Bambu firmware tolerates few concurrent sessions; the measured cost was
+        the live client reconnecting and the printer's request topic being
+        disabled for the rest of the session.
+
+        Every other test in this class omits the credentials, which is why the
+        branch order looked correct for so long.
+        """
+        with _Env(state=_state(connected=True)) as env:
+            result = await run_connection_diagnostic(
+                "192.168.1.50",
+                printer=_printer(),
+                serial_number="01P00A000000000",
+                access_code="12345678",
+            )
+
+        assert _statuses(result)["mqtt_auth"] == "pass"
+        env.test_connection.assert_not_called()
+
+    async def test_a_printer_whose_client_is_down_is_still_probed(self):
+        """There is no live session to disturb, and the probe is what separates
+        "offline" from "wrong access code"."""
+        with _Env(state=_state(connected=False)) as env:
+            result = await run_connection_diagnostic(
+                "192.168.1.50",
+                printer=_printer(),
+                serial_number="01P00A000000000",
+                access_code="12345678",
+            )
+
+        assert _statuses(result)["mqtt_auth"] == "pass"
+        env.test_connection.assert_called_once()
 
     async def test_mqtt_port_unreachable_is_a_problem(self):
         with _Env(ports=_port_probe({8883: False}), state=_state()):
