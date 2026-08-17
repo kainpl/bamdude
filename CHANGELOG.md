@@ -57,6 +57,14 @@
 
 ### Fixed
 
+- **Restarting BamDude no longer marks a running print as finished.** On an X2D two hours into a job, a restart closed the print's record as completed while the printer carried on printing it. Four A1 Minis printing at the same moment came through untouched.
+
+    Restarting means rejoining prints already in progress, and BamDude works out which record belongs to the job on the printer by comparing names. Half the models — the H2 and X series — do not report the name of the file they are printing at all, only a generic internal path that reads the same for every job, so the comparison falls back to the print's title. The printer hands that title back with spaces turned into underscores, and the record keeps the name as it was uploaded.
+
+    One space was the whole of it: `…_Rear Dry Pod` against `…_Rear_Dry_Pod`, identical otherwise. With no name in common the running print looked like a stranger, and the record was closed with the outcome marked unverifiable. The Minis survived only because their filename contains no spaces to begin with. Titles now compare with spaces and underscores treated alike.
+
+    Two things came back with it: the record stays open and completes normally, and **Skip Objects works again on a print you restarted through** — the list of objects on the plate is loaded when the print is rejoined, which never happened while the record was being closed instead.
+
 - **Assigned spools no longer fall off their slot on their own.** Reported from a farm where it kept happening on the A1 Minis, and caught in the act: two seconds after assigning a spool to a running printer, the link was gone again.
 
     BamDude watches each slot and unlinks a spool when the filament in it changes. The check compared what the slot reports against what was recorded — and an empty report differs from every material name, so a slot that reported **nothing** was read as a slot holding **something else**. The link was deleted on the strength of a message that said nothing at all. Every instance found in a week of logs had a recording that matched its spool exactly; nothing had actually changed.
