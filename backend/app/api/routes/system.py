@@ -83,7 +83,16 @@ def _is_under(path: Path, root: Path) -> bool:
 
 
 def _get_database_paths() -> list[Path]:
-    candidates = [settings.base_dir / "bambuddy.db", settings.base_dir / "bambutrack.db"]
+    # ⚠️ Current name FIRST. Without it the storage breakdown omitted the
+    # database entirely on every install since the rename — the largest file in
+    # DATA_DIR, missing from the page that exists to say where the space went.
+    # The legacy two stay so an install that has not been through the startup
+    # rename still shows its file.
+    candidates = [
+        settings.base_dir / "bamdude.db",
+        settings.base_dir / "bambuddy.db",
+        settings.base_dir / "bambutrack.db",
+    ]
     return [path for path in candidates if path.exists()]
 
 
@@ -455,8 +464,9 @@ async def get_system_info(
     archive_dir = settings.archive_dir
     archive_size = get_directory_size(archive_dir) if archive_dir.exists() else 0
 
-    # Database file size
-    db_path = settings.base_dir / "bambuddy.db"
+    # Database file size — ``bamdude.db``; the pre-rename name reported 0 here
+    # on every current install. See routes/support.py for the same fix.
+    db_path = settings.base_dir / "bamdude.db"
     db_size = db_path.stat().st_size if db_path.exists() else 0
 
     # Disk usage

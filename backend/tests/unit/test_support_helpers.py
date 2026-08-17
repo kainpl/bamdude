@@ -842,3 +842,48 @@ class TestRedactRawPushStatus:
         assert _redact_raw_push_status(None) == {}  # type: ignore[arg-type]
         assert _redact_raw_push_status([]) == {}  # type: ignore[arg-type]
         assert _redact_raw_push_status("") == {}  # type: ignore[arg-type]
+
+
+class TestDatabaseHealthReadsTheRealFile:
+    """⚠️ The database is ``bamdude.db``; this statted ``bambuddy.db``.
+
+    It has therefore reported a 0-byte database in every support bundle since
+    the rename — and a zero is worse than a missing key, because it reads as a
+    healthy empty database rather than as "we did not look".
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
+    async def test_the_size_is_read_from_bamdude_db(self):
+        from backend.app.api.routes.support import _collect_support_info
+        from backend.app.core.config import settings
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "bamdude.db").write_bytes(b"x" * 4096)
+            (base / "bamdude.db-wal").write_bytes(b"y" * 128)
+
+            with (
+                patch.object(settings, "base_dir", base),
+                patch("backend.app.api.routes.support.is_running_in_docker", return_value=False),
+                patch("backend.app.api.routes.support.async_session") as mock_session_ctx,
+                patch("backend.app.api.routes.support.printer_manager") as mock_pm,
+                patch("backend.app.api.routes.support.get_network_interfaces", return_value=[]),
+                patch("backend.app.api.routes.support.ws_manager") as mock_ws,
+            ):
+                mock_pm.get_all_statuses.return_value = {}
+                mock_ws.active_connections = []
+
+                mock_db = AsyncMock()
+                mock_result = MagicMock()
+                mock_result.scalar.return_value = 0
+                mock_result.scalar_one_or_none.return_value = None
+                mock_result.scalars.return_value.all.return_value = []
+                mock_db.execute = AsyncMock(return_value=mock_result)
+                mock_session_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+                mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+                info = await _collect_support_info()
+
+        assert info["database_health"]["db_size_bytes"] == 4096
+        assert info["database_health"]["wal_size_bytes"] == 128

@@ -1185,9 +1185,14 @@ async def _collect_support_info() -> dict:
             result = await db.execute(text("PRAGMA quick_check"))
             quick_check = result.scalar()
 
-            db_path = settings.base_dir / "bambuddy.db"
+            # ⚠️ ``bamdude.db``. This statted the pre-rename name, so every
+            # bundle since has reported a 0-byte database — which reads as a
+            # healthy empty one rather than as "we did not look". PostgreSQL
+            # installs have no file here and correctly report 0; ``journal_mode``
+            # above is what tells those two apart.
+            db_path = settings.base_dir / "bamdude.db"
             db_size = db_path.stat().st_size if db_path.exists() else 0
-            wal_path = settings.base_dir / "bambuddy.db-wal"
+            wal_path = settings.base_dir / "bamdude.db-wal"
             wal_size = wal_path.stat().st_size if wal_path.exists() else 0
 
             info["database_health"] = {
