@@ -57,7 +57,18 @@ async def submit_report(
             "issue_number": None,
         }
 
-    payload: dict = {"description": description}
+    # ⚠️ Top level, not inside support_info. The relay reads ``payload.install_id``
+    # and stores it on the report row; the copy the bundle carries in
+    # ``support_info["app"]`` never reached that field, so every report to date
+    # is stored with no install to correlate it against — which is the one thing
+    # the id exists for. The relay's schema has accepted it all along, commented
+    # "Added by newer clients"; we were the client that never started.
+    #
+    # Sent even when the reporter declined support info: the diagnostics are
+    # what that opt-in covers, and an anonymous install id is not one of them.
+    from backend.app.core.install_id import get_install_id
+
+    payload: dict = {"description": description, "install_id": get_install_id()}
     if reporter_email:
         payload["reporter_email"] = reporter_email
     if screenshot_base64:
