@@ -111,6 +111,9 @@ class PrinterResponse(PrinterBase):
     # to look the other up.
     location: PrinterLocationOut | None = None
     archived: bool = False
+    # The persisted intent, not the live handler — which is what the support
+    # bundle's checkbox list wants: "what did the operator switch on".
+    mqtt_recording: bool = False
     archived_at: datetime | None = None
     nozzle_count: int = 1  # 1 or 2, auto-detected from MQTT
     print_hours_offset: float = 0.0

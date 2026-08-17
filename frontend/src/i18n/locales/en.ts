@@ -3531,6 +3531,8 @@ export default {
     enableDebug: 'Enable',
     disableDebug: 'Disable',
     manageLogs: 'Manage',
+    mqttRecordingsAvailable: 'MQTT recordings are running. Attach one only if you mean to share it:',
+    includeMqttRecording: "Attach {{name}}'s MQTT recording — unlike the rest of this bundle it is unedited, and contains the printer's serial number and your local network addresses",
     supportBundle: 'Support Bundle',
     supportBundleDescription: 'Download system info and logs as a ZIP file',
     enableDebugFirst: 'Enable debug logging first',

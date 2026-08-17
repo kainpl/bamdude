@@ -3547,6 +3547,8 @@ export default {
     enableDebug: 'Увімкнути',
     disableDebug: 'Вимкнути',
     manageLogs: 'Керувати',
+    mqttRecordingsAvailable: 'Є активні записи MQTT. Долучайте лише те, чим справді хочете поділитися:',
+    includeMqttRecording: 'Долучити запис MQTT для {{name}} — на відміну від решти бандла він не відредагований і містить серійник принтера та адреси вашої локальної мережі',
     supportBundle: 'Пакет підтримки',
     supportBundleDescription: 'Завантажити системну інформацію та логи у ZIP-файлі',
     enableDebugFirst: 'Спочатку увімкніть налагоджувальне логування',

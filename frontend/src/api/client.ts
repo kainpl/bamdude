@@ -479,6 +479,7 @@ export interface Printer {
   nozzle_count: number;  // 1 or 2, auto-detected from MQTT
   is_active: boolean;
   // Soft-retire (#archived): archived printers are hidden from the whole app +
+  mqtt_recording?: boolean;
   // MQTT while their print history is kept. Independent from is_active
   // (Maintenance Mode). GET /printers/ excludes them unless include_archived.
   archived: boolean;
@@ -9566,12 +9567,19 @@ export const supportApi = {
       body: JSON.stringify({ enabled }),
     }),
 
-  downloadSupportBundle: async () => {
+  /** Download the support bundle.
+   *
+   * ``mqttPrinterIds`` attaches those printers' MQTT recordings. Empty by
+   * default and never implied: unlike everything else in the ZIP those files
+   * are raw, carrying the printer's serial and LAN addresses.
+   */
+  downloadSupportBundle: async (mqttPrinterIds: number[] = []) => {
     const headers: Record<string, string> = {};
     if (authToken) {
       headers['Authorization'] = `Bearer ${authToken}`;
     }
-    const response = await fetch(`${API_BASE}/support/bundle`, { headers });
+    const query = mqttPrinterIds.length ? `?mqtt_printer_ids=${mqttPrinterIds.join(',')}` : '';
+    const response = await fetch(`${API_BASE}/support/bundle${query}`, { headers });
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
       throw new Error(error.detail || `HTTP ${response.status}`);

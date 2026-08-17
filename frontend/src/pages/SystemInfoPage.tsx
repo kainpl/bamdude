@@ -168,11 +168,23 @@ export function SystemInfoPage() {
     }
   };
 
+  // Printers whose MQTT recording the operator ticked. Empty by default: those
+  // files are the only raw thing this ZIP can carry.
+  const [selectedMqttPrinters, setSelectedMqttPrinters] = useState<number[]>([]);
+  const { data: printersForMqtt = [] } = useQuery({
+    queryKey: ['printers'],
+    queryFn: api.getPrinters,
+  });
+  // Read from the printer row: it carries the persisted intent, which is the
+  // right question here — "what did the operator switch on" — and saves a
+  // status round-trip per printer.
+  const recordingPrinters = printersForMqtt.filter((p) => p.mqtt_recording);
+
   const handleDownloadBundle = async () => {
     setBundleError(null);
     setBundleDownloading(true);
     try {
-      await supportApi.downloadSupportBundle();
+      await supportApi.downloadSupportBundle(selectedMqttPrinters);
     } catch (err) {
       setBundleError(err instanceof Error ? err.message : 'Failed to download support bundle');
     } finally {
@@ -348,6 +360,33 @@ export function SystemInfoPage() {
                 : t('common.download', 'Download')}
             </button>
           </div>
+
+          {/* MQTT recordings, opt-in per printer.
+              ⚠️ The label names what it adds. Everything else in this ZIP is
+              sanitised — no names, serials or IPs — and the text posted to
+              GitHub says so; a raw capture carries the serial in the topic and
+              LAN addresses in net.info. Somebody attaching this to a public
+              issue should know that before they tick it, not after. */}
+          {recordingPrinters.length > 0 && (
+            <div className="mt-4 pt-4 border-t border-bambu-dark-tertiary space-y-2">
+              <p className="text-sm text-bambu-gray">{t('support.mqttRecordingsAvailable')}</p>
+              {recordingPrinters.map((printer) => (
+                <label key={printer.id} className="flex items-start gap-2 text-sm text-white cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={selectedMqttPrinters.includes(printer.id)}
+                    onChange={(e) =>
+                      setSelectedMqttPrinters((prev) =>
+                        e.target.checked ? [...prev, printer.id] : prev.filter((id) => id !== printer.id),
+                      )
+                    }
+                  />
+                  <span>{t('support.includeMqttRecording', { name: printer.name })}</span>
+                </label>
+              ))}
+            </div>
+          )}
 
           {/* Progress indicator — bundle generation now runs connection +
               virtual-printer diagnostics and the log-health scan before

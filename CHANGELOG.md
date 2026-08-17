@@ -2,6 +2,12 @@
 
 ### Added
 
+- **Record a printer's MQTT traffic to a file, and close the tab.** Watching what a printer actually says used to mean running a script in a terminal and leaving the window open — close it and the evidence stopped arriving, which is the wrong shape for the intermittent faults it is used to catch. Recording is now switched on per printer from its card menu, keeps running with nothing open, and survives a restart of BamDude itself. Files land in `logs/mqtt/`, one per printer per day.
+
+    It records the connection BamDude already has rather than opening a second one, so switching it on costs the printer nothing — and it re-attaches itself when a printer's connection is rebuilt, which would otherwise have ended the recording silently. **Nothing limits the size**: a limit that trips just before the fault happens again would defeat the point. So the printer card shows the recording badge together with the file's current size, and a recording nobody remembered starting is visible rather than silent.
+
+    A recording can be attached to a support bundle by ticking it. Never automatically: unlike everything else in the bundle these files are unedited, and the checkbox says so, because they contain the printer's serial number and the addresses of your local network.
+
 - **The camera snapshot in the bot now comes with the controls.** Asked for by a user, in their words: *"I pull `/camera`, I see on the picture that it's printing into thin air — and then I have to turn on the VPN, go to the URL and stop it, instead of just hitting stop from the bot."*
 
     Nothing was actually missing but the path: the bot has been able to pause, resume and stop for a long time, and the snapshot simply arrived with no buttons under it. It now carries the same controls the printer card shows — the same ones, built in one place, so they cannot drift apart — including **Skip an object**, which is the pairing this was really about: you see one part has failed, and you drop that part instead of the plate. Both the camera button and the `/camera` command, and only for chats that may control the printer.
@@ -56,6 +62,16 @@
 - **Filament hover cards are no longer clipped at the edges of the page.** The card that appears over an AMS slot is now drawn above the whole page instead of inside the scrolling area, so the leftmost and topmost slots show it in full. Enter animations that had quietly never worked — the card and three dialogs were asking for one — now play.
 
 ### Fixed
+
+- **Asking for help no longer disturbs the printers you are asking about.** Generating a support bundle — or sending a bug report — opened a second connection to every printer on the farm, which Bambu firmware tolerates poorly: the live connection dropped and reconnected, and the printer's status channel stayed degraded until BamDude was restarted. On the one path a user takes while already having a problem, and able to land mid-print. It now reads the connection it already has. A printer that is genuinely offline is still probed, because there is nothing there to disturb and that answer is the useful one.
+
+- **A bug report from a larger farm no longer vanishes.** The report is attached to a GitHub issue, whose body has a hard size limit, and nothing was checking it — so above roughly fifteen printers the report failed to send at all, and the message blamed the relay rather than the size. The pack is now measured before it is sent: the diagnostics that matter always fit, the log excerpt takes what is left, and anything shortened is said out loud instead of quietly missing. The downloadable support bundle is unchanged and still carries everything.
+
+- **Bug reports can now be matched to the installation that sent them.** Every report has been stored without its anonymous install id since the feature shipped — it was sent in the wrong place, so the field the receiving end reads was always empty.
+
+- **The support bundle reported a database of 0 bytes** on every installation since the file was renamed, and the storage breakdown in System Info left the database out entirely.
+
+- **The support bundle now carries the settings that stop a queue.** Whether a printer is waiting for its plate to be cleared, whether it requires that at all, whether swap mode is on, whether it has been archived, and its stagger interval — plus a per-printer breakdown of the queue, and the auto-queue counters, which were invisible. A bundle that does not contain the field that broke is a form, not a diagnosis; these are the fields a farm-wide stall is diagnosed from.
 
 - **Restarting BamDude no longer marks a running print as finished.** On an X2D two hours into a job, a restart closed the print's record as completed while the printer carried on printing it. Four A1 Minis printing at the same moment came through untouched.
 
