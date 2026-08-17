@@ -6,7 +6,6 @@ carries the printer's serial in the topic itself and LAN addresses in
 ``net.info``. So it is opt-in per printer, and these tests pin that the default
 really is off.
 
-
 ⚠️ ``db_session`` is taken by every test purely to bring the ORM up: the bundle
 collector touches Printer, whose mapper cannot configure without every model
 imported.
@@ -89,7 +88,6 @@ def debug_on(monkeypatch):
 
 async def test_a_recording_is_not_included_by_default(recording, debug_on, db_session, test_engine, monkeypatch):
     """The load-bearing assertion: silence means nothing raw was added."""
-    _isolate_collector(monkeypatch, test_engine)
     _isolate_collector(monkeypatch, test_engine)
     content = await _bundle()
 
