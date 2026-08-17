@@ -46,6 +46,7 @@ import {
   Layers,
   Cog,
   Tag as TagIcon,
+  Copy,
 } from 'lucide-react';
 import { api } from '../api/client';
 import type {
@@ -70,6 +71,7 @@ import { FolderReadmePanel } from '../components/FolderReadmePanel';
 import { FolderTreePicker } from '../components/FolderTreePicker';
 import { LibraryFileNotesButton } from '../components/LibraryFileNotesButton';
 import { PurgeOldFilesModal } from '../components/PurgeOldFilesModal';
+import { DedupeLibraryModal } from '../components/DedupeLibraryModal';
 import { TrashSplitButton } from '../components/TrashSplitButton';
 import { MakerWorldIcon } from '../components/BrandIcons';
 import { useToast } from '../contexts/ToastContext';
@@ -1642,6 +1644,7 @@ export function FileManagerPage() {
   const [isPageDragging, setIsPageDragging] = useState(false);
   const dragCounterRef = useRef(0);
   const [showPurgeModal, setShowPurgeModal] = useState(false);
+  const [showDedupeModal, setShowDedupeModal] = useState(false);
   const [linkFolder, setLinkFolder] = useState<LibraryFolderTree | null>(null);
   const [linkFile, setLinkFile] = useState<LibraryFileListItem | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'file' | 'folder' | 'bulk'; id: number; count?: number } | null>(null);
@@ -2516,6 +2519,17 @@ export function FileManagerPage() {
             <Upload className="w-4 h-4 mr-2" />
             {t('common.upload')}
           </Button>
+          {hasAnyPermission('library:delete_own', 'library:delete_all') && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowDedupeModal(true)}
+              title={t('libraryDedupe.headerTooltip')}
+            >
+              <Copy className="w-4 h-4 mr-1" />
+              {t('libraryDedupe.headerButton')}
+            </Button>
+          )}
           {hasAnyPermission('library:delete_own', 'library:delete_all') && (
             <TrashSplitButton
               trashHref="/files/trash"
@@ -3626,6 +3640,7 @@ export function FileManagerPage() {
         />
       )}
 
+      {showDedupeModal && <DedupeLibraryModal onClose={() => setShowDedupeModal(false)} />}
       {showPurgeModal && (
         <PurgeOldFilesModal onClose={() => setShowPurgeModal(false)} />
       )}

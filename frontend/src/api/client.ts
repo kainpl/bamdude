@@ -8103,6 +8103,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ older_than_days: olderThanDays, include_never_printed: includeNeverPrinted }),
     }),
+  // Send byte-identical duplicates already in the library to the trash. Nothing
+  // is re-pointed and nothing is merged — the row something points at survives,
+  // lowest id when they all do, and the rest are soft-deleted so the operator
+  // can restore any of them.
+  dedupeLibraryFiles: (dryRun: boolean = false) =>
+    request<{ groups: number; trashed: number; dry_run?: boolean }>(
+      `/library/files/dedupe-existing${dryRun ? '?dry_run=true' : ''}`,
+      { method: 'POST' },
+    ),
   listLibraryTrash: (limit: number = 100, offset: number = 0) =>
     request<LibraryTrashListResponse>(`/library/trash?limit=${limit}&offset=${offset}`),
   restoreLibraryTrash: (fileId: number) =>

@@ -5487,3 +5487,135 @@ async def get_library_stats(
         "disk_total_bytes": disk_total_bytes,
         "disk_used_bytes": disk_used_bytes,
     }
+
+
+@router.post("/files/dedupe-existing")
+async def dedupe_existing_files(
+    dry_run: bool = False,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_DELETE_ALL,
+            Permission.LIBRARY_DELETE_OWN,
+        )
+    ),
+):
+    """Send byte-identical duplicates already in the library to the trash.
+
+    New arrivals never create a duplicate any more — ``library_ingest`` sees to
+    that. This is the one-time cleanup for what accumulated before, and it is a
+    button rather than a migration on purpose: at startup there is nobody to
+    show the report to, while the trash retention clock is already running.
+
+    ⚠️ **Soft-delete only. Nothing is re-pointed, and that is the whole design.**
+    A merge would have to reconcile four uniqueness constraints —
+    ``library_file_makerworld_meta`` is 1:1 per file, tags and projects are
+    unique pairs, and a plan item is unique per (project, file) *and carries a
+    copy count and an order*, so merging means summing or choosing. Setting
+    ``deleted_at`` leaves every foreign key intact: ``print_archives`` keeps its
+    link, queue rows keep theirs, and the dedup lookup already ignores trashed
+    rows, so the duplicate simply stops competing. It is also reversible, which
+    is what makes doing it to somebody else's library acceptable at all.
+
+    ⚠️ **Never call ``trash_or_purge`` here.** Its external branch *purges* —
+    nulling ``PrintArchive.library_file_id`` and deleting queue rows on the way
+    out — which is exactly the damage this design avoids.
+
+    Survivor: the row something points at. When every duplicate is referenced,
+    the lowest ``id`` wins — oldest, stable, free to compute. That ordering
+    matters because the trash sweeper eventually purges what nobody rescued, and
+    it should take the row that was never referenced anyway.
+
+    A hash duplicate is not always a duplicate to the person who filed it (two
+    MakerWorld profiles can produce byte-identical 3MFs), which is the other
+    reason this asks to be run rather than running itself.
+
+    ``dry_run`` answers the same question without writing, so the dialog can say
+    what it is about to do. Same convention as the inventory CSV import.
+    """
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.auto_queue import AutoQueueItem
+    from backend.app.models.library_file_makerworld_meta import LibraryFileMakerworldMeta
+    from backend.app.models.library_file_note import LibraryFileNote
+    from backend.app.models.library_project_links import library_file_projects
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.project_print_plan import ProjectPrintPlanItem
+
+    duplicated_hashes = (
+        (
+            await db.execute(
+                select(LibraryFile.file_hash)
+                .where(LibraryFile.file_hash.isnot(None), LibraryFile.deleted_at.is_(None))
+                .group_by(LibraryFile.file_hash)
+                .having(func.count(LibraryFile.id) > 1)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not duplicated_hashes:
+        return {"groups": 0, "trashed": 0}
+
+    rows = (
+        (
+            await db.execute(
+                LibraryFile.active().where(LibraryFile.file_hash.in_(duplicated_hashes)).order_by(LibraryFile.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    async def _reference_count(file_id: int) -> int:
+        """How much would be orphaned if this row went away.
+
+        Every table that names a library file, so the row carrying a print
+        history, a queue item or a project link is the one that survives.
+        """
+        total = 0
+        for model, column in (
+            (PrintArchive, PrintArchive.library_file_id),
+            (PrintQueueItem, PrintQueueItem.library_file_id),
+            (AutoQueueItem, AutoQueueItem.library_file_id),
+            (LibraryFileNote, LibraryFileNote.library_file_id),
+            (library_file_projects, library_file_projects.c.file_id),
+            (ProjectPrintPlanItem, ProjectPrintPlanItem.library_file_id),
+            (LibraryFileMakerworldMeta, LibraryFileMakerworldMeta.library_file_id),
+        ):
+            total += (await db.execute(select(func.count()).select_from(model).where(column == file_id))).scalar() or 0
+        return total
+
+    grouped: dict[str, list[LibraryFile]] = {}
+    for row in rows:
+        grouped.setdefault(row.file_hash, []).append(row)
+
+    now = datetime.now(timezone.utc)
+    trashed = 0
+    for group in grouped.values():
+        if len(group) < 2:
+            continue
+        scored = [(await _reference_count(row.id), -row.id, row) for row in group]
+        # Highest reference count wins; ``-id`` makes the lowest id win a tie.
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        for _, _, loser in scored[1:]:
+            if not dry_run:
+                loser.deleted_at = now
+            trashed += 1
+
+    if dry_run:
+        # Nothing was written, but rows were still loaded into this session —
+        # expire them so a caller that goes on to read a file does not see a
+        # ``deleted_at`` that was never committed.
+        await db.rollback()
+        return {"groups": len(grouped), "trashed": trashed, "dry_run": True}
+
+    await db.commit()
+    if trashed:
+        try:
+            from backend.app.core.websocket import ws_manager
+
+            await ws_manager.send_library_file_added({"id": 0, "filename": ""})
+        except Exception:
+            logger.debug("library refresh broadcast failed", exc_info=True)
+
+    return {"groups": len(grouped), "trashed": trashed}
