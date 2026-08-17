@@ -2,6 +2,16 @@
 
 ### Added
 
+- **The same file is never stored twice.** Send a file BamDude already has — upload it, post it through the API, drop it on a printer or a queue, import it with a project, slice the same model again, send it from the slicer — and it uses the copy already in your library instead of making another one. Not a refusal and not a warning badge: whatever you were doing carries on, with the file that is already there.
+
+    It applies everywhere a file can arrive, which took some doing: eight places in BamDude create a library file, and a test now fails the build if a ninth appears without asking the same question. **Mounted folders join in too** — they were skipped for speed, which meant an entire external drive sat outside this. A scan now reads each file once and remembers its fingerprint next to the size and date it already stored, so later scans only re-read what actually changed, and the scan reports how many files it skipped as already-present rather than looking like it missed them.
+
+    **A file whose contents went missing gets them back.** If BamDude still lists a file but the bytes are gone from disk, sending that same file again restores it in place — keeping its name, folder, notes, tags, projects and print history — rather than starting a fresh entry with none of that.
+
+    **You are always told.** The upload dialog says, per file, which of your library files was used instead and under what name, or that a file's missing contents were just restored.
+
+- **Duplicates already in your library can be cleared out.** A new **Duplicates** button on the file manager finds files whose contents are identical, tells you how many it found before doing anything, and moves the extras to the trash. The copy something points at — a print history, a queued job, a project — is the one that stays; if they are all in use, the oldest stays. Nothing is merged and nothing is destroyed: the rest sit in the trash, so anything you disagree with can be restored.
+
 - **Record a printer's MQTT traffic to a file, and close the tab.** Watching what a printer actually says used to mean running a script in a terminal and leaving the window open — close it and the evidence stopped arriving, which is the wrong shape for the intermittent faults it is used to catch. Recording is now switched on per printer from its card menu, keeps running with nothing open, and survives a restart of BamDude itself. Files land in `logs/mqtt/`, one per printer per day.
 
     It records the connection BamDude already has rather than opening a second one, so switching it on costs the printer nothing — and it re-attaches itself when a printer's connection is rebuilt, which would otherwise have ended the recording silently. **Nothing limits the size**: a limit that trips just before the fault happens again would defeat the point. So the printer card shows the recording badge together with the file's current size, and a recording nobody remembered starting is visible rather than silent.
