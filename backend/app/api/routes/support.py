@@ -901,6 +901,58 @@ async def _collect_queue_info(db: AsyncSession) -> dict:
         info["oldest_pending_age_seconds"] = int((datetime.now(timezone.utc) - oldest).total_seconds())
     else:
         info["oldest_pending_age_seconds"] = None
+
+    # Per-printer breakdown. The totals above cannot say WHICH printer is stuck,
+    # and ``PrinterQueue.status`` is the claim that serialises tier 1 — a queue
+    # reading ``printing`` with nothing running is the shape of a lost claim.
+    # ``is_paused`` is the operator's own switch and is orthogonal to it: a
+    # printer can be ``printing`` and paused at once.
+    #
+    # ⚠️ Keyed on the same anonymous 1-based index as ``info["printers"]``, so
+    # the two can be read side by side without either carrying a name.
+    from backend.app.models.printer import Printer
+    from backend.app.models.printer_queue import PrinterQueue
+
+    printer_ids = [row[0] for row in (await db.execute(select(Printer.id).order_by(Printer.id))).all()]
+    index_of = {pid: i + 1 for i, pid in enumerate(printer_ids)}
+
+    queues = (await db.execute(select(PrinterQueue))).scalars().all()
+    pending_by_queue = dict(
+        (
+            await db.execute(
+                select(PrintQueueItem.queue_id, func.count(PrintQueueItem.id))
+                .where(PrintQueueItem.status == "pending")
+                .group_by(PrintQueueItem.queue_id)
+            )
+        ).all()
+    )
+
+    info["per_printer"] = [
+        {
+            "index": index_of.get(q.printer_id),
+            "queue_status": q.status,
+            "paused": bool(q.is_paused),
+            "pending": pending_by_queue.get(q.id, 0),
+        }
+        for q in queues
+        if q.printer_id in index_of
+    ]
+
+    # Auto-queue was invisible here, so the bundle inherited the same undercount
+    # the queue UI used to have: work waiting in the distributor counted as no
+    # work at all.
+    from backend.app.models.auto_queue import AutoQueueItem
+
+    by_status = dict(
+        (
+            await db.execute(select(AutoQueueItem.status, func.count(AutoQueueItem.id)).group_by(AutoQueueItem.status))
+        ).all()
+    )
+    info["auto_queue"] = {
+        "pending": by_status.get("pending", 0),
+        "assigned": by_status.get("assigned", 0),
+        "by_status": by_status,
+    }
     return info
 
 
@@ -1078,6 +1130,25 @@ async def _collect_support_info() -> dict:
                     "model": printer.model or "Unknown",
                     "nozzle_count": printer.nozzle_count,
                     "is_active": printer.is_active,
+                    # Soft-retire (m105). An archived printer is excluded from
+                    # every availability query, and without this it looked like
+                    # any other idle machine in the bundle.
+                    "archived": printer.archived,
+                    # The gates that stop a queue. ``awaiting_plate_clear`` is
+                    # persistent and survives restarts; it is what stalled the
+                    # farm in issue #21, where triage came down to a guess
+                    # because the bundle carried 19 fields and not this one.
+                    # ``require_plate_clear`` is what makes it readable —
+                    # waiting with the requirement off is a different bug from
+                    # waiting with it on.
+                    "awaiting_plate_clear": printer.awaiting_plate_clear,
+                    "require_plate_clear": printer.require_plate_clear,
+                    # Half the queue logic branches on this.
+                    "swap_mode_enabled": printer.swap_mode_enabled,
+                    # The global stagger setting already shipped; the
+                    # per-printer one did not, so a farm that staggers looked
+                    # exactly like one that does not.
+                    "stagger_interval_minutes": printer.stagger_interval_minutes,
                     "mqtt_connected": state.connected if state else False,
                     "state": state.state if state else "unknown",
                     "firmware_version": state.firmware_version if state else None,
