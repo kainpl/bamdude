@@ -1569,9 +1569,15 @@ def _redact_raw_push_status(raw: dict) -> dict:
 
 @router.get("/bundle")
 async def generate_support_bundle(
+    mqtt_printer_ids: str = "",
     _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
-    """Generate a support bundle ZIP file for issue reporting."""
+    """Generate a support bundle ZIP file for issue reporting.
+
+    ``mqtt_printer_ids`` is a comma-separated list of printers whose MQTT
+    recording should be attached. Empty by default and never implied: those
+    files are the only unsanitised thing this ZIP can contain (see below).
+    """
     # Check if debug logging is enabled and collect sensitive values for redaction
     async with async_session() as db:
         enabled, _enabled_at = await _get_debug_setting(db)
@@ -1617,9 +1623,33 @@ async def generate_support_bundle(
     zip_buffer = io.BytesIO()
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 
+    # Parse before opening the ZIP so a malformed value costs nothing. Anything
+    # unparseable is ignored rather than a 400: a bad query parameter must not
+    # stand between somebody and their support bundle.
+    requested_mqtt_ids: list[int] = []
+    for token in mqtt_printer_ids.split(","):
+        token = token.strip()
+        if token.isdigit():
+            requested_mqtt_ids.append(int(token))
+
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         # Add support info JSON
         zf.writestr("support-info.json", json.dumps(support_info, indent=2, default=str))
+
+        # MQTT recordings, only the ones explicitly asked for.
+        #
+        # ⚠️ These are RAW, and they change what this ZIP is. Everything else in
+        # here is sanitised — no names, serials, IPs — and both the UI and the
+        # text the relay posts to GitHub say so. A capture carries the serial in
+        # the topic itself and LAN addresses in ``net.info``, so it is opt-in per
+        # printer, never swept in, and the control that offers it names what it
+        # adds rather than saying "include MQTT logs".
+        from backend.app.services.mqtt_recorder import mqtt_recorder
+
+        for printer_id in requested_mqtt_ids:
+            recording = mqtt_recorder.file_for(printer_id)
+            if recording and recording.exists():
+                zf.write(recording, f"mqtt/{recording.name}")
 
         # Per-printer cached push_status dump. Bambu firmware ships per-model
         # config in a different shape for every family, and the shape of
