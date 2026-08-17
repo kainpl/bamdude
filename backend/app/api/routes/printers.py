@@ -59,6 +59,7 @@ from backend.app.services.bambu_mqtt import (
     airduct_mode_effective,
     airduct_parts_effective,
 )
+from backend.app.services.mqtt_recorder import mqtt_recorder
 from backend.app.services.printer_diagnostic import run_connection_diagnostic
 from backend.app.services.printer_files.factory import transport_for
 from backend.app.services.printer_location_service import load_tree, subtree_ids
@@ -1019,6 +1020,8 @@ async def get_printer_status(
         last_ams_update=state.last_ams_update,
         printable_objects_count=len(state.printable_objects),
         skip_objects_supported=state.skip_objects_supported,
+        mqtt_recording=mqtt_recorder.is_recording(printer.id),
+        mqtt_recording_bytes=mqtt_recorder.size_bytes(printer.id),
         cooling_fan_speed=state.cooling_fan_speed,
         big_fan1_speed=state.big_fan1_speed,
         big_fan2_speed=state.big_fan2_speed,

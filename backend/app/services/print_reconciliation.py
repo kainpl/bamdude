@@ -120,13 +120,32 @@ def _subtask_norm(name: str) -> str:
     NOT strip *every* dot the way :func:`_file_matches` does — subtask names are
     human labels that may legitimately contain dots, and both sides here derive
     from the same ``subtask_name`` so aggressive stripping only risks collisions.
+
+    ⚠️ **Spaces and underscores are folded together, because the printer folds
+    them.** The firmware echoes ``subtask_name`` as the *sanitised* file stem,
+    with every space turned into an underscore, while the archive keeps the name
+    as uploaded. One space was enough to lose a print: an X2D mid-job reported
+
+        subtask: AMS_2_Pro_Dry_Pods_–_Modular_Desiccant_System_Rear_Dry_Pod
+
+    against an archive filename ending ``…_Rear Dry Pod.gcode.3mf``. Identical
+    but for that, the fallback in :func:`_name_matches_subtask` missed, and
+    because H2/X-series firmware also hides the real filename there was nothing
+    left to match on — a print two hours in was closed as completed on restart.
+    Four A1 Minis printing the same evening were untouched: their filename
+    happens to contain no spaces at all.
+
+    Folding is the safe direction. It can only make a match *more* likely, and
+    on a false positive :func:`_classify` answers "running" (keep the row) or
+    "completed" rather than "uncertain" — none of which invents a completion for
+    a print that is still going.
     """
     s = os.path.basename((name or "").strip().replace("\\", "/").rstrip("/"))
     for ext in (".gcode.3mf", ".gcode", ".3mf"):
         if s.lower().endswith(ext):
             s = s[: -len(ext)]
             break
-    return s.strip().lower()
+    return s.strip().lower().replace(" ", "_")
 
 
 def _name_matches_subtask(archive: PrintArchive, live_subtask_name: str) -> bool:
@@ -146,6 +165,15 @@ def _name_matches_subtask(archive: PrintArchive, live_subtask_name: str) -> bool
     Requires both sides non-empty: an empty live subtask is ambiguous (printer
     between jobs) and must fall through to the state-based classification, never
     force a spurious match.
+
+    ⚠️ **``filename`` is the candidate that actually carries the weight**;
+    ``print_name`` is checked first only because it is the cheaper identity when
+    it happens to agree. On a multi-plate job ``print_name`` gains a
+    ``" - Plate N"`` suffix and can never equal a subtask by construction — the
+    archive that started this whole investigation read *"AMS 2 Pro Dry Pods –
+    Modular Desiccant System - Plate 5"*. Do not "fix" that by stripping the
+    suffix: a file may legitimately be named that way, and the filename match
+    (see :func:`_subtask_norm` on space folding) already answers it correctly.
     """
     live = _subtask_norm(live_subtask_name)
     if not live:

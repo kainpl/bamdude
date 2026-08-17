@@ -475,6 +475,11 @@ class PrinterStatus(BaseModel):
     # AND exclude_object both true in slicer profile). UI gates the skip
     # button on this AND printable_objects_count >= 2.
     skip_objects_supported: bool = False
+    # MQTT recording (0.5.3). The size rides along because nothing caps the
+    # file: the number on the card is what makes a recording nobody remembers
+    # starting visible, rather than something found when the disk fills.
+    mqtt_recording: bool = False
+    mqtt_recording_bytes: int = 0
     # Fan speeds (0-100 percentage, None if not available for this model)
     cooling_fan_speed: int | None = None  # Part cooling fan
     big_fan1_speed: int | None = None  # Auxiliary fan

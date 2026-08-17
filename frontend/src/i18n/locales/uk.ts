@@ -507,6 +507,13 @@ export default {
     nozzleIdle: 'Неактивне',
     nozzleDiameter: 'Діаметр',
     nozzleType: 'Тип',
+    mqttRecording: {
+      badge: 'ЗАПИС · {{size}}',
+      tooltip: 'Триває запис MQTT-трафіку цього принтера у файл. Розмір нічим не обмежений — вимкніть, коли закінчите.',
+      start: 'Почати запис MQTT',
+      stop: 'Зупинити запис MQTT',
+      noClient: "Запис неможливий: у принтера немає живого з'єднання",
+    },
     nozzleStatus: 'Статус',
     nozzleFilament: 'Філамент',
     nozzleWear: 'Знос',

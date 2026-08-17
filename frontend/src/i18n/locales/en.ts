@@ -499,6 +499,13 @@ export default {
     nozzleIdle: 'Idle',
     nozzleDiameter: 'Diameter',
     nozzleType: 'Type',
+    mqttRecording: {
+      badge: 'REC · {{size}}',
+      tooltip: "Recording this printer's MQTT traffic to a file. Nothing limits the size — switch it off when you are done.",
+      start: 'Start MQTT recording',
+      stop: 'Stop MQTT recording',
+      noClient: 'Cannot record: this printer has no live connection',
+    },
     nozzleStatus: 'Status',
     nozzleFilament: 'Filament',
     nozzleWear: 'Wear',

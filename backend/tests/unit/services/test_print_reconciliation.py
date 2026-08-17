@@ -111,6 +111,47 @@ def test_name_matches_subtask_rejects_mismatch_and_empty():
     assert _name_matches_subtask(a, "   ") is False
 
 
+def test_subtask_norm_folds_spaces_onto_underscores():
+    """The printer echoes ``subtask_name`` as the sanitised file stem, spaces
+    turned into underscores; the archive keeps the name as uploaded."""
+    assert _subtask_norm("Rear Dry Pod") == _subtask_norm("Rear_Dry_Pod")
+    assert _subtask_norm("a b.gcode.3mf") == "a_b"
+    # Folding must not disturb anything that had no spaces to begin with.
+    assert _subtask_norm("W76622_DA_m4t-batholder-vb.1.1_x6") == "w76622_da_m4t-batholder-vb.1.1_x6"
+
+
+def test_one_space_no_longer_closes_a_running_print():
+    """Regression, from the live incident on 2026-08-17.
+
+    An X2D two hours into a job reported::
+
+        subtask: AMS_2_Pro_Dry_Pods_–_Modular_Desiccant_System_Rear_Dry_Pod
+
+    against an archive filename ending ``…_Rear Dry Pod.gcode.3mf`` — identical
+    but for one space. H2/X-series firmware also hides the real filename behind
+    ``/data/Metadata/plate_5.gcode``, so with the fallback missing there was
+    nothing left to match on and the print was closed as completed on restart.
+    Four A1 Minis printing the same evening survived only because their filename
+    contains no spaces.
+    """
+    live_subtask = "AMS_2_Pro_Dry_Pods_–_Modular_Desiccant_System_Rear_Dry_Pod"
+    a = _archive_stub(
+        print_name="AMS 2 Pro Dry Pods – Modular Desiccant System - Plate 5",
+        filename="AMS_2_Pro_Dry_Pods_–_Modular_Desiccant_System_Rear Dry Pod.gcode.3mf",
+    )
+
+    assert _file_matches(a.filename, "/data/Metadata/plate_5.gcode") is False, (
+        "premise: the generic gcode path is why the subtask fallback exists at all"
+    )
+    assert _name_matches_subtask(a, live_subtask) is True
+
+    # ⚠️ It matches on the FILENAME. ``print_name`` carries a " - Plate N"
+    # suffix on every multi-plate job and can never equal a subtask — which is
+    # why the filename candidate must keep working and must not be dropped.
+    b = _archive_stub(print_name=a.print_name, filename="")
+    assert _name_matches_subtask(b, live_subtask) is False
+
+
 # ---------- _slicer_estimates (pure, best-effort) ----------
 
 

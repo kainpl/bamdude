@@ -762,6 +762,8 @@ export interface PrinterStatus {
   // gcode_label_objects AND exclude_object both true in project settings).
   // Skip-objects button is gated on this AND printable_objects_count >= 2.
   skip_objects_supported: boolean;
+  mqtt_recording?: boolean;
+  mqtt_recording_bytes?: number;
   // Fan speeds (0-100 percentage, null if not available for this model)
   cooling_fan_speed: number | null;  // Part cooling fan
   big_fan1_speed: number | null;     // Auxiliary fan
@@ -947,6 +949,8 @@ export interface Archive {
   // gcode_label_objects AND exclude_object. Badge in the list; the preview
   // modal explains what it means rather than hiding itself when false.
   skip_objects_supported: boolean;
+  mqtt_recording?: boolean;
+  mqtt_recording_bytes?: number;
   print_name: string | null;
   print_time_seconds: number | null;
   actual_time_seconds: number | null;  // Computed from started_at/completed_at
@@ -8926,6 +8930,8 @@ export interface LibraryFile {
   // gcode_label_objects AND exclude_object. Badge in the list; the preview
   // modal explains what it means rather than hiding itself when false.
   skip_objects_supported: boolean;
+  mqtt_recording?: boolean;
+  mqtt_recording_bytes?: number;
   sliced_for_model: string | null;
   swap_compatible: boolean;
   // Provenance (m033) — populated for MakerWorld imports + slicer outputs.
@@ -8964,6 +8970,8 @@ export interface LibraryFileListItem {
   // gcode_label_objects AND exclude_object. Badge in the list; the preview
   // modal explains what it means rather than hiding itself when false.
   skip_objects_supported: boolean;
+  mqtt_recording?: boolean;
+  mqtt_recording_bytes?: number;
   sliced_for_model: string | null;
   swap_compatible: boolean;
   // True iff the 3MF carries 2+ plates (extracted at upload / m023 backfill).

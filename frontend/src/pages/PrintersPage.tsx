@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ZigbeeStatusBadge } from '../components/zigbee/ZigbeeStatusBadge';
 import { useTranslation } from 'react-i18next';
 import { PrinterLocationSelect } from '../components/PrinterLocationSelect';
+import { formatFileSize } from '../utils/file';
 import { compareLocationNames } from '../utils/locationOrder';
 import { buildLocationIndex } from '../utils/locationTree';
 import { useTheme } from '../contexts/ThemeContext';
@@ -2840,6 +2841,20 @@ function PrinterCard({
                     pauseStartedAt={status?.pause_started_at}
                     size={viewMode === 'compact' ? 'xs' : 'sm'}
                   />
+                  {/* MQTT recording chip.
+                      ⚠️ The SIZE is the point of it, not decoration. Nothing caps
+                      the file — recording runs until it is switched off — so this
+                      number is the only thing between a recording somebody forgot
+                      and a full disk. Shown in every view mode for the same reason. */}
+                  {status?.mqtt_recording && (
+                    <span
+                      className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-red-900/50 text-red-300 flex-shrink-0"
+                      title={t('printers.mqttRecording.tooltip')}
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />
+                      {t('printers.mqttRecording.badge', { size: formatFileSize(status.mqtt_recording_bytes ?? 0) })}
+                    </span>
+                  )}
                   {/* Connection indicator dot for compact mode */}
                   {viewMode === 'compact' && (() => {
                     const hmsErrors = status?.connected && status.hms_errors ? filterKnownHMSErrors(status.hms_errors) : [];
