@@ -34,6 +34,13 @@ class Printer(Base):
     # Mode). See migration m105 + docs spec 2026-07-12-archived-printers.
     archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # MQTT recording (m139). Persisted on purpose: the feature exists so a
+    # capture outlives the window that started it, and a backend restart is only
+    # a longer version of closing that window — the lifespan restarts whatever
+    # is flagged here. Nothing caps the file, so ``started_at`` is what answers
+    # "since when" about a recording nobody remembers switching on.
+    mqtt_recording: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    mqtt_recording_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     auto_archive: Mapped[bool] = mapped_column(Boolean, default=True)
     # Remove the print's files from the printer once it finishes — ours and the
     # copies the printer derives from them, on the card and in internal storage.

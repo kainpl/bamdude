@@ -1,0 +1,187 @@
+"""Record a printer's MQTT traffic to a file, for as long as it is asked to.
+
+Watching MQTT used to mean running ``scripts/mqtt_sniffer.py`` in a terminal and
+keeping the window open — close it and the evidence stops arriving. That is the
+wrong shape for the faults it catches, which are the intermittent ones nobody is
+sitting and watching for.
+
+⚠️ **This tees the connection BamDude already holds.** It registers on
+``BambuMQTTClient``'s raw fan-out — the same extension point the VP MQTT bridge
+uses — and never opens a session of its own. A second session to a printer that
+is already connected is what made generating a support bundle disturb the whole
+farm; see the branch-order comment in ``printer_diagnostic``.
+
+⚠️ **The raw handler runs on paho's network thread and must not block.** It
+appends to a queue and returns; a daemon thread does the writing. A disk write
+on that thread stalls message ingest for every printer sharing it — the same
+reasoning as ``services/measurement_buffer.py``.
+
+**Nothing caps the size,** deliberately: recording runs until stopped, because a
+cap that trips just before the fault reproduces is worse than a large file. What
+keeps it honest is visibility — the printer card shows the badge and the current
+size, so a forgotten recording is something you see rather than something you
+discover when the disk fills.
+
+Files are written raw. They are the operator's own copy of their own farm, and
+redacting the serial would make two machines impossible to tell apart. They are
+NOT swept into the support bundle: that is opt-in per printer, and the control
+that offers it says what it adds.
+"""
+
+from __future__ import annotations
+
+import logging
+import queue
+import threading
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# Bounded so a stalled writer cannot grow without limit. Dropping is the right
+# failure here: a recorder must never become backpressure on the client that
+# feeds every other feature.
+_QUEUE_MAX = 10_000
+
+
+class MqttRecorder:
+    """One writer thread; one file per printer per day."""
+
+    def __init__(self, log_dir: Path | None = None, printer_manager=None):
+        self._log_dir = log_dir
+        self._manager = printer_manager
+        self._handlers: dict[int, object] = {}
+        self._files: dict[int, Path] = {}
+        self._queue: queue.Queue = queue.Queue(maxsize=_QUEUE_MAX)
+        self._writer: threading.Thread | None = None
+        self._stop_writer = threading.Event()
+        # Test hook: lets a test prove the raw handler returns without waiting
+        # for the disk.
+        self._writer_paused = threading.Event()
+
+    @property
+    def log_dir(self) -> Path:
+        if self._log_dir is not None:
+            return self._log_dir
+        from backend.app.core.config import settings
+
+        return settings.log_dir
+
+    def _get_client(self, printer_id: int):
+        if self._manager is not None:
+            return self._manager.get_client(printer_id)
+        from backend.app.services.printer_manager import printer_manager
+
+        return printer_manager.get_client(printer_id)
+
+    def start(self, printer_id: int) -> Path:
+        """Begin recording. Returns the file being written."""
+        if printer_id in self._handlers:
+            return self._files[printer_id]
+
+        client = self._get_client(printer_id)
+        if client is None:
+            raise RuntimeError(f"printer {printer_id} has no live MQTT client to record")
+
+        directory = self.log_dir / "mqtt"
+        directory.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+        path = directory / f"mqtt-{stamp}-{printer_id}.log"
+
+        def _handler(topic: str, payload: bytes, _pid=printer_id) -> None:
+            # paho's network thread. Enqueue and return; never write here.
+            try:
+                self._queue.put_nowait((_pid, time.time(), topic, payload))
+            except queue.Full:
+                pass
+
+        self._files[printer_id] = path
+        self._handlers[printer_id] = _handler
+        client.register_raw_message_handler(_handler)
+        self._ensure_writer()
+        logger.info("MQTT recording started for printer %s -> %s", printer_id, path)
+        return path
+
+    def stop(self, printer_id: int) -> None:
+        handler = self._handlers.pop(printer_id, None)
+        if handler is None:
+            return
+        client = self._get_client(printer_id)
+        if client is not None:
+            try:
+                client.unregister_raw_message_handler(handler)
+            except Exception:
+                logger.debug("unregister failed for printer %s", printer_id, exc_info=True)
+        self._files.pop(printer_id, None)
+        logger.info("MQTT recording stopped for printer %s", printer_id)
+
+    def is_recording(self, printer_id: int) -> bool:
+        return printer_id in self._handlers
+
+    def file_for(self, printer_id: int) -> Path | None:
+        return self._files.get(printer_id)
+
+    def size_bytes(self, printer_id: int) -> int:
+        path = self._files.get(printer_id)
+        if path is None or not path.exists():
+            return 0
+        return path.stat().st_size
+
+    def recording_printer_ids(self) -> list[int]:
+        return sorted(self._handlers)
+
+    def _ensure_writer(self) -> None:
+        if self._writer is not None and self._writer.is_alive():
+            return
+        self._stop_writer.clear()
+        self._writer = threading.Thread(target=self._drain, name="mqtt-recorder", daemon=True)
+        self._writer.start()
+
+    def _drain(self) -> None:
+        while not self._stop_writer.is_set():
+            if self._writer_paused.is_set():
+                time.sleep(0.01)
+                continue
+            try:
+                printer_id, ts, topic, payload = self._queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            path = self._files.get(printer_id)
+            if path is None:
+                # Stopped between enqueue and write. Dropping is correct: the
+                # operator asked for it to stop.
+                continue
+            try:
+                stamp = datetime.fromtimestamp(ts, timezone.utc).isoformat()
+                line = payload.decode("utf-8", "replace")
+                with path.open("a", encoding="utf-8") as fh:
+                    fh.write(f"{stamp}\t{topic}\t{line}\n")
+            except Exception:
+                logger.debug("MQTT recorder write failed for printer %s", printer_id, exc_info=True)
+
+
+mqtt_recorder = MqttRecorder()
+
+
+async def resume_recordings() -> None:
+    """Restart every recording the database says should be running.
+
+    Called from the lifespan after printers connect — there has to be a client
+    to tee. A printer still offline is skipped and picked up the next time this
+    runs, so the failure mode is "starts late", never "starts a session of its
+    own".
+    """
+    from sqlalchemy import select
+
+    from backend.app.core.database import async_session
+    from backend.app.models.printer import Printer
+
+    async with async_session() as db:
+        ids = [row[0] for row in (await db.execute(select(Printer.id).where(Printer.mqtt_recording.is_(True)))).all()]
+
+    for printer_id in ids:
+        try:
+            mqtt_recorder.start(printer_id)
+        except Exception:
+            logger.warning("Could not resume MQTT recording for printer %s", printer_id, exc_info=True)
