@@ -4,9 +4,9 @@ import {
   Search, X, ArrowUpNarrowWide, ArrowDownWideNarrow,
   LayoutGrid, List, Activity, Filter, SlidersHorizontal,
 } from 'lucide-react';
+import type { QueueSortOption as SortOption } from '../../utils/queueOrder';
 
 type ViewMode = 'expanded' | 'all' | 'timeline';
-type SortOption = 'name' | 'status' | 'model' | 'location';
 
 interface QueueToolbarProps {
   search: string;

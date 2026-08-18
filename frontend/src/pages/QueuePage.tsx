@@ -4,7 +4,8 @@ import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Calendar, LayoutGrid, Loader2 } from 'lucide-react';
 import { api } from '../api/client';
-import { byLocationName, compareLocationNames } from '../utils/locationOrder';
+import { compareLocationNames } from '../utils/locationOrder';
+import { readStoredQueueSort, sortQueues, type QueueSortOption } from '../utils/queueOrder';
 import { buildLocationIndex, readStoredLocationFilter } from '../utils/locationTree';
 import { groupByLocation } from '../utils/locationGroups';
 import type { PrinterQueue, PrintQueueItem } from '../api/client';
@@ -17,7 +18,6 @@ import { QueueToolbar } from '../components/Queue/QueueToolbar';
 import { PrintModal } from '../components/PrintModal';
 
 type ViewMode = 'expanded' | 'all' | 'timeline';
-type SortOption = 'name' | 'status' | 'model' | 'location';
 
 const VALID_VIEW_MODES: ViewMode[] = ['expanded', 'all', 'timeline'];
 
@@ -38,13 +38,11 @@ export function QueuePage() {
 
   const [editingItem, setEditingItem] = useState<PrintQueueItem | null>(null);
 
-  const [sortBy, setSortBy] = useState<SortOption>(() => {
-    return (localStorage.getItem('queueSortBy') as SortOption) || 'name';
-  });
-
-  const [sortAsc, setSortAsc] = useState<boolean>(() => {
-    return localStorage.getItem('queueSortAsc') !== 'false';
-  });
+  // Read once, from the one place that knows how these two keys are spelled —
+  // the same helper the copy-queue dialog reads, so both are in step.
+  const [storedSort] = useState(readStoredQueueSort);
+  const [sortBy, setSortBy] = useState<QueueSortOption>(storedSort.sortBy);
+  const [sortAsc, setSortAsc] = useState<boolean>(storedSort.sortAsc);
 
   const [search, setSearch] = useState<string>(() => localStorage.getItem('queueSearch') || '');
   const [statusFilter, setStatusFilter] = useState<string>(() => localStorage.getItem('queueStatusFilter') || 'all');
@@ -133,7 +131,7 @@ export function QueuePage() {
     localStorage.setItem('queueViewMode', mode);
   };
 
-  const handleSortChange = (sort: SortOption) => {
+  const handleSortChange = (sort: QueueSortOption) => {
     setSortBy(sort);
     localStorage.setItem('queueSortBy', sort);
   };
@@ -187,31 +185,7 @@ export function QueuePage() {
       return true;
     });
 
-    const statusOrder: Record<string, number> = { printing: 0, error: 1, paused: 2, idle: 3 };
-
-    switch (sortBy) {
-      case 'name':
-        filtered.sort((a, b) => (a.printer_name || '').localeCompare(b.printer_name || ''));
-        break;
-      case 'status':
-        filtered.sort((a, b) => {
-          const aO = statusOrder[a.status] ?? 4;
-          const bO = statusOrder[b.status] ?? 4;
-          if (aO !== bO) return aO - bO;
-          if (b.pending_count !== a.pending_count) return b.pending_count - a.pending_count;
-          return (a.printer_name || '').localeCompare(b.printer_name || '');
-        });
-        break;
-      case 'model':
-        filtered.sort((a, b) => (a.printer_model || '').localeCompare(b.printer_model || ''));
-        break;
-      case 'location':
-        filtered.sort(byLocationName(q => q.printer_location?.path));
-        break;
-    }
-
-    if (!sortAsc) filtered.reverse();
-    return filtered;
+    return sortQueues(filtered, sortBy, sortAsc);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- statusCacheVersion is intentional: it forces recompute when WS / poll updates printer status cache; queryClient is stable
   }, [queues, search, statusFilter, locationFilter, locationIndex, hideOffline, sortBy, sortAsc, statusCacheVersion]);
 

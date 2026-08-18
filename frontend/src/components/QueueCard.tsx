@@ -43,8 +43,11 @@ import {
   Ban,
   RotateCcw,
   ListPlus,
+  Copy,
 } from 'lucide-react';
 import { BatchActionDialog } from './Queue/BatchActionDialog';
+import { CopyQueueModal } from './CopyQueueModal';
+import { copyableItems } from '../lib/copyQueue';
 import { LibraryPickerModal } from './LibraryPickerModal';
 import { QueueSequencer } from './QueueSequencer';
 import type { SequencedFile } from './QueueSequencer';
@@ -130,6 +133,10 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
   // The same batch, chosen instead of dropped. Both end in `droppedForQueue`
   // and the same per-file Schedule dialog — only the way in differs.
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Copying this queue onto other printers of the same model. Lands in the same
+  // `droppedForQueue` run as everything else, with every chosen printer pinned.
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [copyTargetIds, setCopyTargetIds] = useState<number[] | null>(null);
   const dragCounterRef = useRef(0);
 
   // Pull system time-format so ETA respects the user's 12h/24h choice.
@@ -523,6 +530,24 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
     </div>
   ) : null;
 
+  // What a copy would take: the running print first, then the queue in order.
+  // Both are what "the queue right now" means to somebody looking at the card.
+  const copyableSourceItems = [...(printingItems ?? []), ...(pendingItems ?? [])];
+  const canCopyQueue = copyableItems(copyableSourceItems).length > 0;
+
+  const copyQueueModal = copyOpen ? (
+    <CopyQueueModal
+      source={queue}
+      items={copyableSourceItems}
+      onCancel={() => setCopyOpen(false)}
+      onConfirm={(files, printerIds) => {
+        setCopyOpen(false);
+        setCopyTargetIds(printerIds);
+        setDroppedForQueue(files);
+      }}
+    />
+  ) : null;
+
   const libraryPicker = pickerOpen ? (
     <LibraryPickerModal
       printerModel={queue.printer_model}
@@ -539,12 +564,16 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
     <QueueSequencer
       files={droppedForQueue}
       // The card IS the printer, so the run is pinned to it — shown in the
-      // dialog and not untickable, rather than hidden.
-      initialSelectedPrinterIds={[queue.printer_id]}
+      // dialog and not untickable, rather than hidden. A copy run pins the
+      // printers it was aimed at instead; PrintModal queues to every one of
+      // them and maps filament per printer, so one dialog per item covers the
+      // whole copy.
+      initialSelectedPrinterIds={copyTargetIds ?? [queue.printer_id]}
       lockPrinterSelection
       lockDispatchMode
       onDone={() => {
         setDroppedForQueue(null);
+        setCopyTargetIds(null);
         queryClient.invalidateQueries({ queryKey: ['queue', queue.printer_id] });
         queryClient.invalidateQueries({ queryKey: ['queues'] });
       }}
@@ -619,6 +648,18 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
                 <Pause className="w-2.5 h-2.5" />
                 {t('queueCard.pausedPill')}
               </span>
+            )}
+            {/* Only when there is a queue to copy — a running print or something
+                waiting. An empty queue copies nothing, and a button that opens
+                a dialog to say so is worse than one that is not there. */}
+            {canDrop && canCopyQueue && (
+              <button
+                onClick={() => setCopyOpen(true)}
+                className="p-1 rounded hover:bg-bambu-dark-tertiary transition-colors"
+                title={t('copyQueue.open')}
+              >
+                <Copy className="w-4 h-4 text-bambu-gray" />
+              </button>
             )}
             {/* Same permission as the drop zone this sits beside — both add
                 items to this queue, and only the gesture differs. */}
@@ -970,6 +1011,7 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
       </CardContent>
     </Card>
       {dropOverlay}
+      {copyQueueModal}
       {libraryPicker}
       {dropPrintModal}
     </div>

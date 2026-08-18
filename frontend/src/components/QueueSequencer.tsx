@@ -8,6 +8,15 @@ export interface SequencedFile {
   id: number;
   /** What the dialog calls it — a print name where there is one, else the filename. */
   name: string;
+  /** Which side of PrintModal's either/or the id belongs to. Defaults to the
+   *  library file, which is what every caller had until a queue could be copied
+   *  — a queue item can be backed by an archive instead. */
+  source?: 'library' | 'archive';
+  /** Pre-select this plate instead of letting the dialog default to the first.
+   *  Only a caller that KNOWS the file's plates may set it — copying a queue
+   *  does, because it is literally the same file. A general bulk selection must
+   *  not: plate 3 of one file need not exist in the next. */
+  plateId?: number | null;
 }
 
 interface QueueSequencerProps {
@@ -72,9 +81,11 @@ export function QueueSequencer({
 
   return (
     <PrintModal
-      key={file.id}
+      key={`${file.source ?? 'library'}-${file.id}`}
       mode={mode}
-      libraryFileId={file.id}
+      libraryFileId={file.source === 'archive' ? undefined : file.id}
+      archiveId={file.source === 'archive' ? file.id : undefined}
+      preselectedPlateId={file.plateId}
       archiveName={file.name}
       initialSelectedPrinterIds={initialSelectedPrinterIds}
       initialDispatchMode={initialDispatchMode}

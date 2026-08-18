@@ -29,6 +29,16 @@ export interface PrintModalProps {
   queueItem?: PrintQueueItem;
   /** Pre-select specific printers when opening the modal */
   initialSelectedPrinterIds?: number[];
+  /** Open with this plate already chosen instead of the file's first plate.
+   *
+   *  ⚠️ Only for a caller that knows this file's plates. Copying a queue onto
+   *  another printer of the same model does — it is the same file, so the plate
+   *  the source item was queued with exists there too, and a "copy" that forgot
+   *  which plate was queued would not be one. A bulk selection of arbitrary
+   *  files must NOT set it: plate 3 of one file need not exist in the next.
+   *
+   *  Ignored in `edit-queue-item` mode, where the item's own plate wins. */
+  preselectedPlateId?: number | null;
   /** Position of this dialog in a run over several files ("2 / 5"), rendered as
    *  a badge beside the title. Display only — the modal does not know a run
    *  exists and cannot advance one; QueueSequencer owns that. Omitted for a

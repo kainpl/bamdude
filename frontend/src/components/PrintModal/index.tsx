@@ -68,6 +68,7 @@ export function PrintModal({
   archiveName,
   queueItem,
   initialSelectedPrinterIds,
+  preselectedPlateId,
   sequence,
   onClose,
   onSuccess,
@@ -109,6 +110,12 @@ export function PrintModal({
   const [selectedPlates, setSelectedPlates] = useState<Set<number>>(() => {
     if (mode === 'edit-queue-item' && queueItem?.plate_id != null) {
       return new Set([queueItem.plate_id]);
+    }
+    // A caller that already knows which plate this is about — copying a queue
+    // onto another printer of the same model. The "fall back to plate 1" effect
+    // below only fires on an empty set, so this survives the plates arriving.
+    if (preselectedPlateId != null) {
+      return new Set([preselectedPlateId]);
     }
     return new Set();
   });
