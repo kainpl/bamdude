@@ -193,5 +193,10 @@
     "name": "Sensor Reporting Again",
     "title_template": "Sensor Recovered",
     "body_template": "{location} — {sensor} is reporting again"
+  },
+  "filament_deficit": {
+    "name": "Filament Will Run Out",
+    "title_template": "Filament Will Run Out",
+    "body_template": "{printer}: {print_name} needs {needed}g in slot {slot}, which holds {available}g — short by {missing}g. The print has started anyway."
   }
 }

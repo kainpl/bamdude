@@ -19,6 +19,9 @@ interface WebSocketMessage {
   data?: Record<string, unknown>;
   printer_name?: string;
   missing_slots?: Array<{ slot?: string }>;
+  // Filament shortfall announced at dispatch — informative, the print is going.
+  print_name?: string;
+  shortfalls?: Array<{ slot?: string; needed?: number; available?: number; missing?: number }>;
   // Spool-assignment read-back verification (upstream #2582).
   slot?: string;
   verified?: boolean;
@@ -54,6 +57,7 @@ export function useWebSocket() {
   // Re-set on every connect, cleared on every close.
   const sendPingRef = useRef<(() => void) | null>(null);
   const lastMissingSpoolWarningRef = useRef<Map<number, string>>(new Map());
+  const lastFilamentDeficitRef = useRef<Map<number, string>>(new Map());
   const { showToast } = useToast();
   const { t } = useTranslation();
 
@@ -347,6 +351,36 @@ export function useWebSocket() {
           queryClient.invalidateQueries({ queryKey: ['queue', message.printer_id] });
         }
         break;
+
+      case 'filament_deficit': {
+        // Informative only — the print is already running. The decision was to
+        // warn, never to gate: a farm finishes a spool mid-plate on purpose.
+        if (message.printer_id === undefined || !Array.isArray(message.shortfalls)) {
+          break;
+        }
+        const worst = message.shortfalls
+          .filter((s) => s && typeof s.slot === 'string')
+          .sort((a, b) => (b.missing ?? 0) - (a.missing ?? 0))[0];
+        if (!worst) break;
+
+        // Same de-duplication as the spool-assignment toast below: the socket
+        // can redeliver, and a warning repeated is a warning ignored.
+        const signature = `${worst.slot}|${worst.missing}`;
+        if (lastFilamentDeficitRef.current.get(message.printer_id) === signature) {
+          break;
+        }
+        lastFilamentDeficitRef.current.set(message.printer_id, signature);
+
+        showToast(
+          t('printers.toast.filamentDeficit', {
+            printer: message.printer_name || `Printer ${message.printer_id}`,
+            slot: worst.slot,
+            missing: worst.missing,
+          }),
+          'warning',
+        );
+        break;
+      }
 
       case 'missing_spool_assignment': {
         if (message.printer_id === undefined || !Array.isArray(message.missing_slots)) {

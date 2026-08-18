@@ -189,6 +189,83 @@ def _mqtt_commands_rejected(status) -> bool:
     return False
 
 
+async def _warn_on_filament_deficit(db, job, archive) -> None:
+    """Tell the operator this print will empty a slot, and let it run.
+
+    ⚠️ **Best-effort, and silent on any failure.** A warning is worth having; it
+    is not worth a dispatch. Everything it reads — requirements from the 3MF,
+    the printer's live slots, inventory remaining — can be unavailable for
+    ordinary reasons, and none of them is a reason to stop a print.
+    """
+    try:
+        from backend.app.services.filament_deficit import compute_shortfalls
+        from backend.app.services.print_scheduler import scheduler as _sched
+
+        mapping = job.options.get("ams_mapping")
+        if not mapping:
+            return
+
+        status = printer_manager.get_status(job.printer_id)
+        if status is None:
+            return
+
+        item = getattr(job, "queue_item", None)
+        requirements = await _sched._get_filament_requirements(db, item) if item is not None else None
+        if not requirements:
+            return
+
+        loaded = _sched._build_loaded_filaments(status)
+        if not loaded:
+            return
+
+        remaining = await _sched._build_inventory_remain_overrides(db, job.printer_id, loaded)
+        # ⚠️ Only slots whose remaining we actually track are judged; see the
+        # module docstring on why silence must not read as empty.
+        shortfalls = compute_shortfalls(
+            requirements,
+            loaded,
+            mapping,
+            remaining or {},
+            # ⚠️ ``ams_auto_switch_filament`` is what the state actually calls it
+            # (home_flag bit 10, BS AutoRefill). Guessing the name here would
+            # have silently disabled the backup pooling — getattr returns the
+            # default and nothing complains.
+            auto_refill=bool(getattr(status, "ams_auto_switch_filament", False)),
+        )
+        if not shortfalls:
+            return
+
+        printer = printer_manager.get_printer(job.printer_id)
+        printer_name = getattr(printer, "name", None) or f"Printer {job.printer_id}"
+        print_name = archive.print_name or archive.filename or ""
+
+        logger.warning(
+            "Filament deficit on %s for %r: %s",
+            printer_name,
+            print_name,
+            ", ".join(f"{s.slot_label} short by {s.missing_grams}g" for s in shortfalls),
+        )
+        from backend.app.services.notification_service import notification_service
+
+        await notification_service.on_filament_deficit(job.printer_id, printer_name, print_name, shortfalls, db)
+        await ws_manager.send_filament_deficit(
+            job.printer_id,
+            printer_name,
+            print_name,
+            [
+                {
+                    "slot": s.slot_label,
+                    "needed": s.needed_grams,
+                    "available": s.available_grams,
+                    "missing": s.missing_grams,
+                }
+                for s in shortfalls
+            ],
+        )
+    except Exception:  # noqa: BLE001 - a warning must never cost a dispatch
+        logger.debug("Filament deficit check failed for printer %s", job.printer_id, exc_info=True)
+
+
 async def _apply_calibrations_for_print(
     db,
     printer_id: int,
@@ -1307,6 +1384,12 @@ class BackgroundDispatchService:
                 from backend.app.services.archive_colors import apply_loaded_spool_colors
 
                 await apply_loaded_spool_colors(db, archive, job.printer_id, job.options.get("ams_mapping"))
+
+                # ⚠️ Warn, never gate. The print goes out either way — see
+                # ``services/filament_deficit``. Placed here because this is the
+                # one point that has all three inputs at once: the printer, the
+                # mapping actually dispatched, and an archive to name.
+                await _warn_on_filament_deficit(db, job, archive)
 
                 await db.commit()
             finally:

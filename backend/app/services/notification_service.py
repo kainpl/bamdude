@@ -1892,6 +1892,45 @@ class NotificationService:
             variables=variables,
         )
 
+    async def on_filament_deficit(
+        self,
+        printer_id: int,
+        printer_name: str,
+        print_name: str,
+        shortfalls: list,
+        db,
+    ):
+        """A print has started that will exhaust at least one mapped slot.
+
+        ⚠️ **Sent after the print is already going.** This is deliberate — the
+        decision was to warn, not to gate: a farm routinely finishes a spool
+        mid-plate on purpose, and refusing to dispatch would stop work the
+        operator intended. The message says so, so nobody reads it as "we
+        stopped it for you".
+
+        Only the worst slot is named. A message listing four slots with four
+        gram figures is not read; the operator needs to know a swap is coming
+        and which spool goes first.
+        """
+        providers = await self._get_providers_for_event(db, "on_filament_deficit", printer_id)
+        if not providers or not shortfalls:
+            return
+
+        worst = max(shortfalls, key=lambda s: s.missing_grams)
+        variables = {
+            "printer": printer_name,
+            "print_name": print_name or "",
+            "slot": worst.slot_label,
+            "needed": f"{worst.needed_grams:g}",
+            "available": f"{worst.available_grams:g}",
+            "missing": f"{worst.missing_grams:g}",
+        }
+
+        title, message = await self._build_message_from_template(db, "filament_deficit", variables)
+        await self._send_to_providers(
+            providers, title, message, db, "filament_deficit", printer_id, printer_name, variables=variables
+        )
+
     async def on_filament_low(
         self,
         printer_id: int,

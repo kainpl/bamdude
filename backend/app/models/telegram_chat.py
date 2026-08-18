@@ -17,6 +17,7 @@ DEFAULT_NOTIFY_EVENTS = [
     "print_stopped",
     "print_paused",
     "plate_not_empty",
+    "filament_deficit",
     "queue_job_waiting",
     "queue_job_skipped",
     "queue_job_failed",
@@ -39,6 +40,7 @@ ALL_NOTIFY_EVENTS = [
     "printer_error",
     "ai_failure_detection",
     "filament_low",
+    "filament_deficit",
     "maintenance_due",
     # AMS environmental
     "ams_humidity_high",

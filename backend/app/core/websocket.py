@@ -188,6 +188,30 @@ class ConnectionManager:
             }
         )
 
+    async def send_filament_deficit(
+        self,
+        printer_id: int,
+        printer_name: str,
+        print_name: str,
+        shortfalls: list[dict],
+    ):
+        """Tell open tabs a print started that will exhaust a slot.
+
+        Informative only — the print is already running. It rides the socket
+        rather than waiting for the notification channel because the operator
+        standing at the farm screen is exactly who can walk over and put a new
+        spool on before it matters.
+        """
+        await self.broadcast(
+            {
+                "type": "filament_deficit",
+                "printer_id": printer_id,
+                "printer_name": printer_name,
+                "print_name": print_name,
+                "shortfalls": shortfalls,
+            }
+        )
+
 
 # Global connection manager
 ws_manager = ConnectionManager()

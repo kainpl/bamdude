@@ -46,6 +46,7 @@ _TELEGRAM_FORCED_TRUE_FIELDS = (
     "on_printer_error",
     "on_ai_failure_detection",
     "on_filament_low",
+    "on_filament_deficit",
     "on_maintenance_due",
     "on_ams_humidity_high",
     "on_ams_temperature_high",
@@ -101,6 +102,7 @@ def _provider_to_dict(provider: NotificationProvider) -> dict:
         "on_printer_error": provider.on_printer_error,
         "on_ai_failure_detection": provider.on_ai_failure_detection,
         "on_filament_low": provider.on_filament_low,
+        "on_filament_deficit": provider.on_filament_deficit,
         "on_maintenance_due": provider.on_maintenance_due,
         # AMS environmental alarms (regular AMS)
         "on_ams_humidity_high": provider.on_ams_humidity_high,
@@ -188,6 +190,7 @@ async def create_notification_provider(
         on_printer_error=provider_data.on_printer_error,
         on_ai_failure_detection=provider_data.on_ai_failure_detection,
         on_filament_low=provider_data.on_filament_low,
+        on_filament_deficit=provider_data.on_filament_deficit,
         on_maintenance_due=provider_data.on_maintenance_due,
         # AMS environmental alarms (regular AMS)
         on_ams_humidity_high=provider_data.on_ams_humidity_high,

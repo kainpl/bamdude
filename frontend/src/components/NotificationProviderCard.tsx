@@ -256,6 +256,10 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                             <span
                                 className="px-2 py-0.5 bg-cyan-100 dark:bg-cyan-500/20 text-cyan-700 dark:text-cyan-400 text-xs rounded">{t('notifications.lowFilament')}</span>
                         )}
+                        {!isTelegram && provider.on_filament_deficit && (
+                            <span
+                                className="px-2 py-0.5 bg-cyan-100 dark:bg-cyan-500/20 text-cyan-700 dark:text-cyan-400 text-xs rounded">{t('notifications.filamentDeficit')}</span>
+                        )}
                         {!isTelegram && provider.on_maintenance_due && (
                             <span
                                 className="px-2 py-0.5 bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-400 text-xs rounded">{t('notifications.maintenance')}</span>

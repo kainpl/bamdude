@@ -50,6 +50,9 @@ class NotificationProviderBase(BaseModel):
         description="Notify when Obico AI detects a possible print failure (spaghetti)",
     )
     on_filament_low: bool = Field(default=False, description="Notify when filament is running low")
+    on_filament_deficit: bool = Field(
+        default=True, description="Notify when a print needs more filament than the mapped slot holds"
+    )
     on_maintenance_due: bool = Field(default=False, description="Notify when maintenance is due")
 
     # Event triggers - AMS environmental alarms (regular AMS)
@@ -148,6 +151,7 @@ class NotificationProviderUpdate(BaseModel):
     on_printer_error: bool | None = None
     on_ai_failure_detection: bool | None = None
     on_filament_low: bool | None = None
+    on_filament_deficit: bool | None = None
     on_maintenance_due: bool | None = None
 
     # Event triggers - AMS environmental alarms (regular AMS)

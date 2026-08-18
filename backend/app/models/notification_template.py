@@ -98,6 +98,15 @@ DEFAULT_TEMPLATES = [
         "body_template": "{printer}: Objects detected on build plate. Print has been paused. Clear plate and resume.",
     },
     {
+        "event_type": "filament_deficit",
+        "name": "Filament Will Run Out",
+        "title_template": "Filament Will Run Out",
+        "body_template": (
+            "{printer}: {print_name} needs {needed}g in slot {slot}, which holds {available}g "
+            "— short by {missing}g. The print has started anyway."
+        ),
+    },
+    {
         "event_type": "filament_low",
         "name": "Filament Low",
         "title_template": "Filament Low",

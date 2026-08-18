@@ -6,6 +6,12 @@
 
 ### Fixed
 
+- **You are told when a print will run the spool out.** BamDude worked this out only inside the print dialog — so a job the queue dispatched on its own, which never opens one, started and emptied a spool with nothing said. It now checks at dispatch and says so: a toast for whoever has a tab open, and a notification for whoever does not.
+
+    **It warns; it does not stop the print.** Finishing a spool mid-plate and swapping it is ordinary farm work, and refusing to dispatch would stop work you meant to do. The message says the print has started anyway.
+
+    **AMS auto-refill is counted.** If another slot holds the same filament and the printer is set to switch over, there is no shortfall and nothing is said — warning about one would teach you to ignore the next. A slot BamDude has no weight figure for is passed over rather than assumed empty, for the same reason.
+
 - **Work aimed at a printer model now switches a printer on.** Queue a job to "any P1S" with every P1S powered off and it waited for ever: routing has to see what filament is loaded, a printer that is off reports none, so no printer was eligible — and the thing that powers printers on is the per-printer queue the job never reached. The identical file pinned to one printer woke it within a minute. The auto-queue now wakes one, and only one: a printer the job could actually have run on, not one already waiting for its plate to be cleared, and not the same one over and over if its plug is unreachable.
 
 - **BamDude now knows which storage a print was sent to.** The printer says so when the print starts — the card, or its own internal storage — and that answer was being thrown away. It is remembered for the print that is running and forgotten when it ends, because plenty of prints never announce it at all (started from the printer's screen, or picked up after a restart) and a stale answer would speak for them.

@@ -74,6 +74,10 @@ class NotificationProvider(Base):
     on_printer_error = Column(Boolean, default=False)  # AMS issues, etc.
     on_ai_failure_detection = Column(Boolean, default=False)  # Obico spaghetti / failure detection (#1794)
     on_filament_low = Column(Boolean, default=False)
+    # "this print needs more than the slot holds" — a comparison against a job,
+    # unlike on_filament_low, which is a threshold on a spool. Defaults True:
+    # it fires rarely by construction and only when we can prove the shortfall.
+    on_filament_deficit = Column(Boolean, default=True)
     on_maintenance_due = Column(Boolean, default=False)  # Maintenance reminder
 
     # Event triggers - AMS environmental alarms (regular AMS with 4 slots)

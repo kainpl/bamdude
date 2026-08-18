@@ -193,5 +193,10 @@
     "name": "Датчик знову говорить",
     "title_template": "Датчик у нормі",
     "body_template": "{location} — {sensor} знову говорить"
+  },
+  "filament_deficit": {
+    "name": "Філаменту не вистачить",
+    "title_template": "Філаменту не вистачить",
+    "body_template": "{printer}: для «{print_name}» потрібно {needed} г у слоті {slot}, а там {available} г — бракує {missing} г. Друк усе одно запущено."
   }
 }

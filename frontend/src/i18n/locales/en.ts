@@ -528,6 +528,7 @@ export default {
     // Discovery
     // Toast messages
     toast: {
+      filamentDeficit: '{{printer}}: slot {{slot}} is about {{missing}}g short for this print. It has started anyway — swap the spool before it runs out.',
       missingSpoolAssignment: 'Print started on {{printer}}. Missing spool assignment for: {{slots}}',
       assignmentVerified: 'Filament loaded on slot {{slot}} ({{printer}})',
       assignmentVerifiedNoKprofile: 'Slot {{slot}} on {{printer}} loaded, but the flow calibration (K-profile) was not applied',
@@ -6619,6 +6620,7 @@ export default {
     resumed: 'Resumed',
     progress: 'Progress',
     offline: 'Offline',
+    filamentDeficit: 'Filament Will Run Out',
     lowFilament: 'Low Filament',
     maintenance: 'Maintenance',
     amsHumidity: 'AMS Humidity',

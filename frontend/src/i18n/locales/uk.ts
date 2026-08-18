@@ -536,6 +536,7 @@ export default {
     // Discovery
     // Toast messages
     toast: {
+      filamentDeficit: '{{printer}}: у слоті {{slot}} бракує приблизно {{missing}} г на цей друк. Друк усе одно запущено — поміняйте котушку, поки не закінчилась.',
       missingSpoolAssignment: 'Друк розпочато на {{printer}}. Відсутнє призначення котушки для: {{slots}}',
       assignmentVerified: 'Філамент завантажено у слот {{slot}} ({{printer}})',
       assignmentVerifiedNoKprofile: 'Слот {{slot}} на {{printer}} завантажено, але калібрування потоку (K-профіль) не застосовано',
@@ -6652,6 +6653,7 @@ export default {
     resumed: 'Відновлено',
     progress: 'Прогрес',
     offline: 'Офлайн',
+    filamentDeficit: 'Філаменту не вистачить',
     lowFilament: 'Мало філаменту',
     maintenance: 'Обслуговування',
     amsHumidity: 'Вологість AMS',
