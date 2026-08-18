@@ -15,29 +15,16 @@ import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
 import { server } from '../mocks/server';
 import { QueueSequencer } from '../../components/QueueSequencer';
-import type { LibraryFileListItem } from '../../api/client';
+import type { SequencedFile } from '../../components/QueueSequencer';
 
 // One active printer, so PrintModal auto-selects it and the run needs no
 // printer click — these tests are about the run, not about picking a machine.
 const PRINTERS = [{ id: 7, name: 'Solo', model: 'X1C', is_active: true, enabled: true }];
 
-const file = (id: number, name: string) =>
-  ({
-    id,
-    filename: `${name.toLowerCase()}.gcode.3mf`,
-    print_name: name,
-    file_type: 'gcode',
-    file_path: `/library/${id}`,
-    file_size: 1024,
-    folder_id: null,
-    thumbnail_path: null,
-    print_time_seconds: null,
-    duplicate_count: 0,
-    print_count: 0,
-    file_tags: ['gcode'],
-    tags: [],
-    created_at: '2024-01-01T00:00:00Z',
-  }) as unknown as LibraryFileListItem;
+// ⚠️ The sequencer takes the least a file must say about itself — id and the
+// name to show. It used to take a whole LibraryFileListItem, which the drop
+// targets cannot produce: they have a fresh upload response, not a list row.
+const file = (id: number, name: string): SequencedFile => ({ id, name });
 
 const FIRST = file(1, 'First');
 const SECOND = file(2, 'Second');

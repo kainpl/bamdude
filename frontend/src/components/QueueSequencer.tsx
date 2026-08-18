@@ -1,18 +1,35 @@
 import { useRef, useState } from 'react';
 
-import type { LibraryFileListItem } from '../api/client';
 import { PrintModal } from './PrintModal';
+import type { PrintModalMode } from './PrintModal';
+
+/** The least a file must say about itself to be scheduled. */
+export interface SequencedFile {
+  id: number;
+  /** What the dialog calls it — a print name where there is one, else the filename. */
+  name: string;
+}
 
 interface QueueSequencerProps {
   /** The files to distribute, in the order the operator sees them. */
-  files: LibraryFileListItem[];
+  files: SequencedFile[];
   /** Called once when the run ends, with the files that were never queued. */
-  onDone: (remaining: LibraryFileListItem[]) => void;
+  onDone: (remaining: SequencedFile[]) => void;
+  /** Defaults to `add-to-queue`, which is what every caller wants today. */
+  mode?: PrintModalMode;
+  /** Pin the run to one printer — the drop target already chose it. Pair with
+   *  ``lockPrinterSelection`` so the dialog still SHOWS which printer rather
+   *  than omitting the question. */
+  initialSelectedPrinterIds?: number[];
+  lockPrinterSelection?: boolean;
+  initialDispatchMode?: 'specific' | 'auto';
+  /** Hide the specific/auto toggle when the drop target already implies it. */
+  lockDispatchMode?: boolean;
 }
 
 /**
- * Queue a selection of library files by opening the Schedule dialog once per
- * file, carrying a `2/5` counter.
+ * Queue a set of files by opening the Schedule dialog once per file, carrying a
+ * `2/5` counter.
  *
  * There is no bulk dialog because there is nothing a bulk dialog could ask that
  * this one doesn't: printer or auto-queue, plates, AMS mapping, print options,
@@ -23,8 +40,20 @@ interface QueueSequencerProps {
  * mapping and per-printer config belong to one file; carrying them over would
  * be wrong rather than convenient — plate 3 of one file need not exist in the
  * next.
+ *
+ * Used by the library's bulk Schedule and by dropping files onto a printer or a
+ * printer's queue. The drop targets pass a pinned printer; the library passes
+ * none and lets the dialog ask.
  */
-export function QueueSequencer({ files, onDone }: QueueSequencerProps) {
+export function QueueSequencer({
+  files,
+  onDone,
+  mode = 'add-to-queue',
+  initialSelectedPrinterIds,
+  initialDispatchMode,
+  lockDispatchMode,
+  lockPrinterSelection,
+}: QueueSequencerProps) {
   const [index, setIndex] = useState(0);
 
   // PrintModal calls onSuccess and THEN onClose on a successful submit, and
@@ -40,9 +69,13 @@ export function QueueSequencer({ files, onDone }: QueueSequencerProps) {
   return (
     <PrintModal
       key={file.id}
-      mode="add-to-queue"
+      mode={mode}
       libraryFileId={file.id}
-      archiveName={file.print_name || file.filename}
+      archiveName={file.name}
+      initialSelectedPrinterIds={initialSelectedPrinterIds}
+      initialDispatchMode={initialDispatchMode}
+      lockDispatchMode={lockDispatchMode}
+      lockPrinterSelection={lockPrinterSelection}
       sequence={files.length > 1 ? { current: index + 1, total: files.length } : undefined}
       onSuccess={() => {
         queuedRef.current = true;

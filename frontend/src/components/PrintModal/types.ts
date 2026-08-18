@@ -52,6 +52,16 @@ export interface PrintModalProps {
    *  drop target itself implies the mode (queue card → specific, auto-queue
    *  panel → auto). Only meaningful for add-to-queue mode. */
   lockDispatchMode?: boolean;
+  /** The run is pinned to the printers in ``initialSelectedPrinterIds`` and the
+   *  operator cannot change them.
+   *
+   *  ⚠️ Pinned is NOT hidden. Passing ``initialSelectedPrinterIds`` alone makes
+   *  the selector disappear, which answers the question by omitting it — the
+   *  dialog then never says where the print is going. With this flag the
+   *  selector still renders, showing that one printer, ticked and not
+   *  untickable. Used by drops onto a printer or its queue, where the target
+   *  chose the printer but the dialog should still say so. */
+  lockPrinterSelection?: boolean;
 }
 
 /**
@@ -217,6 +227,9 @@ export interface PrinterSelectorProps {
   showInactive?: boolean;
   /** Disable selection of busy printers (used in reprint mode) */
   disableBusy?: boolean;
+  /** Render as a statement rather than a question: the printers shown are the
+   *  ones this run goes to, ticked, and the tick cannot be removed. */
+  locked?: boolean;
   /** Suggested model from sliced file (for pre-selection) */
   slicedForModel?: string | null;
   /** File is swap mode compatible - filter to swap-enabled printers only */

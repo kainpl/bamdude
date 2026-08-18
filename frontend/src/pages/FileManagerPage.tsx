@@ -3724,7 +3724,10 @@ export function FileManagerPage() {
 
       {queueSequence && (
         <QueueSequencer
-          files={queueSequence.files}
+          // The sequencer takes the least a file must say about itself, so the
+          // drop zones can feed it a freshly-uploaded {id, name} without
+          // inventing a whole list row.
+          files={queueSequence.files.map((f) => ({ id: f.id, name: f.print_name || f.filename }))}
           onDone={(remaining) => {
             const { fromSelection } = queueSequence;
             setQueueSequence(null);

@@ -212,6 +212,7 @@ export function PrinterSelector({
   allowMultiple = false,
   showInactive = false,
   disableBusy = false,
+  locked = false,
   printerMappingResults,
   filamentReqs,
   onAutoConfigurePrinter,
@@ -321,6 +322,9 @@ export function PrinterSelector({
   }
 
   const handlePrinterClick = (printerId: number) => {
+    // Pinned: the drop target already chose. The row is shown so the dialog
+    // says where the print is going — taking the tick off is not on offer.
+    if (locked) return;
     if (disableBusy && isPrinterBusy(printerId)) return;
 
     if (allowMultiple) {
@@ -378,7 +382,7 @@ export function PrinterSelector({
               : t('printModal.printersSelected', { count: selectedCount })}
           </span>
           <div className="flex gap-2">
-            {selectedCount < displayPrinters.length && (
+            {!locked && selectedCount < displayPrinters.length && (
               <button
                 type="button"
                 onClick={handleSelectAll}
@@ -387,7 +391,7 @@ export function PrinterSelector({
                 {t('printModal.selectAll')}
               </button>
             )}
-            {selectedCount > 0 && (
+            {!locked && selectedCount > 0 && (
               <button
                 type="button"
                 onClick={handleDeselectAll}

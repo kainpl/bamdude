@@ -75,6 +75,7 @@ export function PrintModal({
   cleanupLibraryAfterDispatch,
   initialDispatchMode,
   lockDispatchMode,
+  lockPrinterSelection,
 }: PrintModalProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -1315,10 +1316,20 @@ export function PrintModal({
               />
             )}
 
-            {/* Printer selection with per-printer mapping - hidden when printer is pre-selected via props */}
-            {!isAutoMode && !initialSelectedPrinterIds?.length && (
+            {/* Printer selection with per-printer mapping.
+                ⚠️ Hidden when a printer arrives pre-selected — EXCEPT when the
+                run is pinned (``lockPrinterSelection``), where it renders the
+                one printer, ticked and untickable. Hiding it answers "which
+                printer" by never asking, so the dialog stops saying where the
+                print is going; a pinned row says it and takes nothing away. */}
+            {!isAutoMode && (!initialSelectedPrinterIds?.length || lockPrinterSelection) && (
               <PrinterSelector
-                printers={availablePrinters || []}
+                printers={
+                  lockPrinterSelection
+                    ? (availablePrinters || []).filter((p) => selectedPrinters.includes(p.id))
+                    : availablePrinters || []
+                }
+                locked={lockPrinterSelection}
                 selectedPrinterIds={selectedPrinters}
                 onMultiSelect={setSelectedPrinters}
                 isLoading={loadingPrinters}

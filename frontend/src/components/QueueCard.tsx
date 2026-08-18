@@ -44,7 +44,8 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { BatchActionDialog } from './Queue/BatchActionDialog';
-import { PrintModal } from './PrintModal';
+import { QueueSequencer } from './QueueSequencer';
+import type { SequencedFile } from './QueueSequencer';
 import { api, withStreamToken } from '../api/client';
 import type { PrinterQueue, PrintQueueItem, Permission } from '../api/client';
 import { Card, CardContent } from './Card';
@@ -121,7 +122,9 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
   // status (idle/printing/paused) — adding to a queue is always allowed.
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [isDropUploading, setIsDropUploading] = useState(false);
-  const [printAfterUpload, setPrintAfterUpload] = useState<{ id: number; filename: string } | null>(null);
+  // Files just dropped on this card, waiting to go through the Schedule dialog
+  // one at a time. Same run the library's bulk Schedule uses.
+  const [droppedForQueue, setDroppedForQueue] = useState<SequencedFile[] | null>(null);
   const dragCounterRef = useRef(0);
 
   // Pull system time-format so ETA respects the user's 12h/24h choice.
@@ -441,60 +444,50 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
     setIsDraggingFile(false);
     if (!canDrop) return;
 
-    // ⚠️ Every dropped file is answered for. This read files[0] and discarded
-    // the rest in silence, so a five-file drop acted on one and said nothing
-    // about the other four.
+    // ⚠️ Every dropped file is answered for — the unwanted ones by name, right
+    // here; the rest by going through the Schedule dialog one at a time.
     const { candidates, rejected } = partitionDroppedFiles(Array.from(e.dataTransfer.files));
     for (const { file: bad, rejection } of rejected) {
       showToast(t(dropRejectionKey(rejection), { filename: bad.name }), 'error');
     }
-    const file = candidates[0];
-    for (const extra of candidates.slice(1)) {
-      showToast(t('printers.dropOneAtATime', { filename: extra.name }), 'error');
-    }
-    if (!file) return;
+    if (candidates.length === 0) return;
 
     setIsDropUploading(true);
     try {
-      const result = await api.uploadLibraryFile(file, null);
-      if (result.outcome !== 'created') {
-        showToast(t('fileManager.dedupUsedExisting', { name: result.filename }), 'info');
+      // ⚠️ Every candidate, not just the first. Each goes through the same
+      // deduplication as any upload, so re-dropping a file the library already
+      // has reuses that row instead of making a second one.
+      const queued: { id: number; name: string }[] = [];
+      for (const candidate of candidates) {
+        try {
+          const result = await api.uploadLibraryFile(candidate, null);
+          if (result.outcome !== 'created') {
+            showToast(t('fileManager.dedupUsedExisting', { name: result.filename }), 'info');
+          }
+          if (!isPrintable(result)) {
+            if (result.outcome === 'created') await api.deleteLibraryFile(result.id).catch(() => {});
+            showToast(t('printers.dropNoGcodeInside', { filename: candidate.name }), 'error');
+            continue;
+          }
+          const slicedFor = (result.metadata as Record<string, unknown>)?.sliced_for_model as string | undefined;
+          if (slicedFor && mapModelCode(queue.printer_model) && slicedFor.toLowerCase() !== mapModelCode(queue.printer_model).toLowerCase()) {
+            if (result.outcome === 'created') await api.deleteLibraryFile(result.id).catch(() => {});
+            showToast(t('printers.incompatibleFile', { slicedFor, printerModel: mapModelCode(queue.printer_model) }), 'error');
+            continue;
+          }
+          queued.push({ id: result.id, name: result.filename });
+        } catch {
+          showToast(t('common.uploadFailed'), 'error');
+        }
       }
-      // ⚠️ The NAME cannot prove a 3MF holds sliced G-code — only the parse
-      // can, and the upload response carries its answer. A plain model .3mf
-      // passes the drop gate and would otherwise be queued unprintable.
-      if (!isPrintable(result)) {
-        if (result.outcome === 'created') await api.deleteLibraryFile(result.id).catch(() => {});
-        showToast(t('printers.dropNoGcodeInside', { filename: file.name }), 'error');
-        return;
-      }
-
-      // Compatibility check against printer model — abort + delete the
-      // transient upload if mismatched, same UX as the printer-card flow.
-      const slicedFor = (result.metadata as Record<string, unknown>)?.sliced_for_model as string | undefined;
-      const printerModel = mapModelCode(queue.printer_model);
-      if (slicedFor && printerModel && slicedFor.toLowerCase() !== printerModel.toLowerCase()) {
-        if (result.outcome === 'created') await api.deleteLibraryFile(result.id).catch(() => {});
-        showToast(
-          t('printers.incompatibleFile', { slicedFor, printerModel }),
-          'error',
-        );
-        return;
-      }
-
-      // Surface the new library file in File Manager immediately —
-      // without this the cached list would stay stale for up to the
-      // global 60s staleTime and the operator would think the upload
-      // never happened.
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-stats'] });
-      setPrintAfterUpload({ id: result.id, filename: result.filename });
-    } catch {
-      showToast(t('common.uploadFailed'), 'error');
+      if (queued.length > 0) setDroppedForQueue(queued);
     } finally {
       setIsDropUploading(false);
     }
   };
+
 
   const dropOverlay = (isDraggingFile || isDropUploading) ? (
     <div className="absolute inset-0 z-30 pointer-events-none flex items-center justify-center rounded-xl border-2 border-dashed border-bambu-green bg-bambu-green/10 backdrop-blur-sm">
@@ -515,16 +508,16 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
     </div>
   ) : null;
 
-  const dropPrintModal = printAfterUpload ? (
-    <PrintModal
-      mode="add-to-queue"
-      libraryFileId={printAfterUpload.id}
-      archiveName={printAfterUpload.filename}
+  const dropPrintModal = droppedForQueue ? (
+    <QueueSequencer
+      files={droppedForQueue}
+      // The card IS the printer, so the run is pinned to it — shown in the
+      // dialog and not untickable, rather than hidden.
       initialSelectedPrinterIds={[queue.printer_id]}
+      lockPrinterSelection
       lockDispatchMode
-      onClose={() => setPrintAfterUpload(null)}
-      onSuccess={() => {
-        setPrintAfterUpload(null);
+      onDone={() => {
+        setDroppedForQueue(null);
         queryClient.invalidateQueries({ queryKey: ['queue', queue.printer_id] });
         queryClient.invalidateQueries({ queryKey: ['queues'] });
       }}
