@@ -642,6 +642,57 @@ async def delete_printer(
     return {"status": "deleted", "archives_deleted": delete_archives}
 
 
+async def resolve_current_archive_id(
+    db: AsyncSession,
+    printer_id: int,
+    subtask_id: str | None,
+) -> int | None:
+    """The archive of the print running on this printer right now.
+
+    Only meaningful while the printer is actually printing — the caller gates
+    on that; the two lookups here would otherwise name the last print instead.
+
+    ⚠️ **``subtask_id`` answers for cloud prints and nobody else.** A job sent
+    from the printer's screen or straight from the slicer carries none — on the
+    A1 mini this was measured on, every archive had ``subtask_id IS NULL`` while
+    genuinely printing — so keying only on it left this NULL for exactly the
+    prints that have no other record of themselves. Those are also the prints
+    with no queue row, which is how "copy this queue" ended up with no button on
+    a machine that was visibly busy.
+
+    The fallback is the archive still open on this printer: ``on_print_start``
+    creates it and ``on_print_complete`` closes it, so an open one is by
+    definition the print in progress.
+
+    Newest-first is the tie-break in both branches, and it is what makes a stale
+    ``printing`` row harmless — a print that crashed without its completion
+    handler leaves one behind, and the archive of the print running NOW was
+    created later.
+    """
+    from backend.app.models.archive import PrintArchive
+
+    if subtask_id:
+        by_subtask = await db.execute(
+            select(PrintArchive.id)
+            .where(PrintArchive.subtask_id == subtask_id)
+            .where(PrintArchive.printer_id == printer_id)
+            .order_by(PrintArchive.created_at.desc())
+            .limit(1)
+        )
+        found = by_subtask.scalar_one_or_none()
+        if found is not None:
+            return found
+
+    still_open = await db.execute(
+        select(PrintArchive.id)
+        .where(PrintArchive.printer_id == printer_id)
+        .where(PrintArchive.status == "printing")
+        .order_by(PrintArchive.created_at.desc())
+        .limit(1)
+    )
+    return still_open.scalar_one_or_none()
+
+
 @router.get("/{printer_id}/status", response_model=PrinterStatus)
 async def get_printer_status(
     printer_id: int,
@@ -930,23 +981,25 @@ async def get_printer_status(
 
     # Resolve the active print's archive + plate (upstream #881 follow-up): lets
     # the printer card show the plate name for multi-plate 3MFs instead of just
-    # the 3MF filename. Only attempted for active prints, since subtask_id is
-    # only meaningful then.
+    # the 3MF filename, and is what "copy this queue" reads when the running
+    # print has no queue row of its own.
+    #
+    # ⚠️ **``subtask_id`` answers for cloud prints and nobody else.** A job sent
+    # from the printer's screen or straight from the slicer carries none — every
+    # archive on the A1 mini this was measured on had ``subtask_id IS NULL``
+    # while genuinely printing — so keying only on it left this NULL for exactly
+    # the prints that have no other record. The fallback is the archive that is
+    # still open on this printer, which ``on_print_start`` creates and
+    # ``on_print_complete`` closes.
+    #
+    # Newest-first is the same tie-break the subtask branch uses, and it is what
+    # makes a stale ``printing`` row (a crashed print whose completion never
+    # ran) harmless: the archive of the print running NOW was created later.
     current_archive_id: int | None = None
     current_plate_id: int | None = None
     if state.state in ("RUNNING", "PAUSE"):
         current_plate_id = resolve_plate_id(state)
-        if state.subtask_id:
-            from backend.app.models.archive import PrintArchive
-
-            archive_row = await db.execute(
-                select(PrintArchive.id)
-                .where(PrintArchive.subtask_id == state.subtask_id)
-                .where(PrintArchive.printer_id == printer_id)
-                .order_by(PrintArchive.created_at.desc())
-                .limit(1)
-            )
-            current_archive_id = archive_row.scalar_one_or_none()
+        current_archive_id = await resolve_current_archive_id(db, printer_id, state.subtask_id)
 
     return PrinterStatus(
         id=printer_id,

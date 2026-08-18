@@ -115,6 +115,8 @@
 
 ### Fixed
 
+- **BamDude now knows which file a print started outside it is running.** It matched the running print to its archive by the cloud task id — and a job sent from the printer's screen or straight from the slicer has none, so on those prints BamDude ended up with no idea what was on the bed even though it had recorded the print itself. It now falls back to the print record it opened when the job started. The visible effects: multi-plate prints show which plate is running instead of just the file name, and a queue running such a job can be copied to other printers.
+
 - **Asking for help no longer disturbs the printers you are asking about.** Generating a support bundle — or sending a bug report — opened a second connection to every printer on the farm, which Bambu firmware tolerates poorly: the live connection dropped and reconnected, and the printer's status channel stayed degraded until BamDude was restarted. On the one path a user takes while already having a problem, and able to land mid-print. It now reads the connection it already has. A printer that is genuinely offline is still probed, because there is nothing there to disturb and that answer is the useful one.
 
 - **A bug report from a larger farm no longer vanishes.** The report is attached to a GitHub issue, whose body has a hard size limit, and nothing was checking it — so above roughly fifteen printers the report failed to send at all, and the message blamed the relay rather than the size. The pack is now measured before it is sent: the diagnostics that matter always fit, the log excerpt takes what is left, and anything shortened is said out loud instead of quietly missing. The downloadable support bundle is unchanged and still carries everything.
