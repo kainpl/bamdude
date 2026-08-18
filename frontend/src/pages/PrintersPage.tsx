@@ -3030,22 +3030,6 @@ function PrinterCard({
                     from the corner — same direction (downward) but the
                     visual origin is the corner, not the button's bottom. */}
                 <div className="absolute right-0 top-0 max-w-58 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg z-20 whitespace-nowrap">
-                  {/* Fill this printer's queue from the library. Gated on
-                      `queue:create`, not on the drop zone's `canDrop`: a drop
-                      is refused while the machine prints, but loading its queue
-                      is exactly what you do then. */}
-                  {hasPermission('queue:create') && (
-                    <button
-                      className="w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2"
-                      onClick={() => {
-                        setShowMenu(false);
-                        setPickerOpen(true);
-                      }}
-                    >
-                      <ListPlus className="w-4 h-4" />
-                      {t('libraryPicker.open')}
-                    </button>
-                  )}
                   {/* Info & Maintenance */}
                   <button
                     className="w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2"
@@ -5780,6 +5764,22 @@ function PrinterCard({
                 <HardDrive className="w-4 h-4" />
                 {t('printers.files')}
               </Button>
+              {/* Fill this printer's queue from the library. Gated on
+                  `queue:create`, not on the neighbouring Print button's
+                  `printers:control` + not-RUNNING: printing is exactly when you
+                  load the queue, and it queues rather than prints. Icon only,
+                  matching the same control on the queue cards. */}
+              {hasPermission('queue:create') && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setPickerOpen(true)}
+                  title={t('libraryPicker.open')}
+                  aria-label={t('libraryPicker.open')}
+                >
+                  <ListPlus className="w-4 h-4" />
+                </Button>
+              )}
               {isConnected && status?.state !== 'RUNNING' && status?.state !== 'PAUSE' && (
                 <Button
                   size="sm"
