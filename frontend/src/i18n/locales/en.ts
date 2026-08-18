@@ -6084,6 +6084,11 @@ export default {
         title: 'Control service (port {{port}})',
         fail: 'Nothing is listening on port {{port}} of the bind IP, so the slicer cannot connect or show status.',
       },
+      privileged_ports: {
+        title: 'Permission to use port {{port}}',
+        pass: 'Granted - the service may open ports below 1024.',
+        fail: 'Port {{port}} is below 1024, and this service is not allowed to open it. Everything else works and only the virtual printer is dead, because its sockets never open. On Linux add "AmbientCapabilities=CAP_NET_BIND_SERVICE" to the systemd unit and reload it; under Docker add "cap_add: [NET_BIND_SERVICE]" to the compose service.',
+      },
       port_bind: {
         title: 'Discovery service (port {{port}})',
         fail: 'Nothing is listening on port {{port}} of the bind IP, so the slicer\'s discovery handshake fails.',

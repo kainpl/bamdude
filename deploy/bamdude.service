@@ -52,6 +52,18 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=bamdude
 
+# Allow binding to privileged ports (322, 990, 2024-2026) for the Virtual
+# Printer. Both VP modes bind below 1024, and a service running as a normal
+# user may not do that without this capability. Missing it, the rest of BamDude
+# works and only the VP is dead: the sockets never open, the slicer never finds
+# the printer, and the sole trace is one EACCES line in the journal — which
+# reads exactly like an ordinary port conflict.
+#
+# ⚠️ Must sit BEFORE NoNewPrivileges=true has any chance to matter, and cannot
+# be dropped alongside it: `install/install.sh` has carried this line for
+# months while this template — the one a manual install copies — never got it.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
 # Security hardening
 NoNewPrivileges=true
 PrivateTmp=true

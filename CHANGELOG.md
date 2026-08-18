@@ -6,6 +6,10 @@
 
 ### Fixed
 
+- **A manually installed BamDude could have a dead Virtual Printer and no way to tell.** The Virtual Printer listens on ports below 1024, which a service running as a normal user is not allowed to open without being granted the right. The install script has granted it for months; the systemd unit template shipped for manual installs never did. Everything else worked, so the only symptom was that no slicer could find the printer, and the only trace one line in the journal that reads exactly like an ordinary port conflict.
+
+    The template now grants it, and the Virtual Printer's own diagnostic says so out loud: when a port below 1024 fails to open, it checks whether this service is even permitted to open one and tells you the line to add — for systemd or for Docker. It stays quiet when the ports are fine, on macOS and Windows where the permission does not exist, and on hosts that front those ports another way.
+
 - **The Windows installer can no longer be built from an untested commit.** Publishing a Docker image already refused unless CI was green for that exact commit, but the installer — the file people actually download from a release — skipped that check entirely. It now passes the same gate, which lives in one place instead of two so the two cannot drift apart.
 
 ### Changed

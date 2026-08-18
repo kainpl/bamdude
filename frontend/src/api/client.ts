@@ -9292,6 +9292,7 @@ export interface VPDiagnosticCheck {
     | 'port_ftps'
     | 'port_mqtt'
     | 'port_bind'
+    | 'privileged_ports'
     | 'certificate';
   status: VPDiagnosticStatus;
   params: Record<string, string | number>;
