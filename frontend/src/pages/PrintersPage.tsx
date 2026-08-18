@@ -129,6 +129,7 @@ import { PlateClearedIcon } from '../components/icons/PlateClearedIcon';
 import { SkipObjectsModal, SkipObjectsIcon } from '../components/SkipObjectsModal';
 import { FileUploadModal } from '../components/FileUploadModal';
 import { LibraryPickerModal } from '../components/LibraryPickerModal';
+import { shouldShowClearPlateButton } from '../utils/plateClear';
 import { QueueSequencer } from '../components/QueueSequencer';
 import type { SequencedFile } from '../components/QueueSequencer';
 import { PrintModal } from '../components/PrintModal';
@@ -2021,8 +2022,13 @@ function PrinterCard({
     needsPlateClear
     && (status?.state === 'FINISH' || status?.state === 'FAILED')
     && hasAutoDispatchableQueue;
-  const showClearPlateButton =
-    status?.connected && needsPlateClear && !isPrintingOrPaused && !greenClearCtaVisible;
+  const showClearPlateButton = shouldShowClearPlateButton({
+    connected: status?.connected,
+    needsPlateClear,
+    isPrintingOrPaused,
+    greenClearCtaVisible,
+    viewMode,
+  });
   const plateStatus = (() => {
     if (!requirePlateClear || !status?.connected) return null;
     if (isPrintingOrPaused) {
