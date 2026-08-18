@@ -120,6 +120,7 @@ import { AmsBackupModal } from '../components/AmsBackupModal';
 import { PrinterSettingsModal } from '../components/PrinterSettingsModal';
 import { FilamentCalibrationModal } from '../components/FilamentCalibrationModal';
 import { CalibrationHistoryModal } from '../components/CalibrationHistoryModal';
+import { partitionDroppedFiles, dropRejectionFor, dropRejectionKey } from '../utils/printableDrop';
 import { useToast } from '../contexts/ToastContext';
 import { ChamberLight } from '../components/icons/ChamberLight';
 import { PlateClearedIcon } from '../components/icons/PlateClearedIcon';
@@ -2725,20 +2726,25 @@ function PrinterCard({
 
     if (!canDrop) return;
 
-    const droppedFiles = Array.from(e.dataTransfer.files);
-    const file = droppedFiles[0];
-    if (!file) return;
-
-    // Only accept sliced/printable files (.gcode, .gcode.3mf, etc.)
-    const lower = file.name.toLowerCase();
-    if (!lower.endsWith('.gcode') && !lower.includes('.gcode.')) {
-      showToast(t('printers.dropNotPrintable', 'Only .gcode and .gcode.3mf files can be printed'), 'error');
-      return;
+    // ⚠️ Every dropped file is answered for. This took files[0] and discarded
+    // the rest in silence, so a five-file drop printed one and said nothing
+    // about the other four.
+    const { candidates, rejected } = partitionDroppedFiles(Array.from(e.dataTransfer.files));
+    for (const { file: bad, rejection } of rejected) {
+      showToast(t(dropRejectionKey(rejection), { filename: bad.name }), 'error');
     }
+    const file = candidates[0];
+    for (const extra of candidates.slice(1)) {
+      showToast(t('printers.dropOneAtATime', { filename: extra.name }), 'error');
+    }
+    if (!file) return;
 
     setIsDropUploading(true);
     try {
       const result = await api.uploadLibraryFile(file, null);
+      if (result.outcome !== 'created') {
+        showToast(t('fileManager.dedupUsedExisting', { name: result.filename }), 'info');
+      }
 
       // Check printer compatibility if sliced_for_model is available in metadata
       const slicedFor = (result.metadata as Record<string, unknown>)?.sliced_for_model as string | undefined;
@@ -5761,12 +5767,13 @@ function PrinterCard({
           onClose={() => setShowUploadForPrint(false)}
           onUploadComplete={() => {}}
           autoUpload
-          accept=".gcode,.3mf"
+          accept=".3mf"
           validateFile={(file) => {
-            const lower = file.name.toLowerCase();
-            if (!lower.endsWith('.gcode') && !lower.includes('.gcode.')) {
-              return t('printers.dropNotPrintable', 'Only .gcode and .gcode.3mf files can be printed');
-            }
+            // Same one rule as the three drop zones — this was a fourth copy of
+            // it, and the ``accept=".gcode,.3mf"`` beside it offered the raw
+            // .gcode the backend refuses.
+            const rejection = dropRejectionFor(file.name);
+            if (rejection) return t(dropRejectionKey(rejection), { filename: file.name });
           }}
           onFileUploaded={(uploadedFile) => {
             // Check printer compatibility if sliced_for_model is available in metadata

@@ -10,6 +10,12 @@
 
     **You are always told.** The upload dialog says, per file, which of your library files was used instead and under what name, or that a file's missing contents were just restored — and a notification says the same as the dialog closes, so the answer does not vanish with it. Dropping files straight onto the file manager goes through the same dialog, so it behaves identically.
 
+- **Dropping a file on a printer or a queue now answers for every file you dropped.** These three targets — a printer card, a per-printer queue, the auto-queue panel — quietly took the first file and discarded the rest. Drop five, one got queued, nothing said what happened to the other four. Each unwanted file now says why it was not taken, by name, and each extra one says it was not taken at all.
+
+    **And they no longer accept a file the printer cannot print.** All three checked the filename the same way, in three separate copies of one line, and all three let a raw `.gcode` through — which BamDude then rejects on upload, because Bambu printers in network mode only read the `.gcode.3mf` container and a raw `.gcode` fails at the printer half a minute after you press Print. The rule now lives in one place, matches what the server actually accepts, and says so at the moment you drop the file rather than after. A fourth copy, in the printer card's "upload and print" dialog, went the same way — its file picker had been offering `.gcode` too.
+
+    Dropping something already in your library says so here as well, the same as uploading it does.
+
 - **Restoring a file from the trash asks first if it would make a duplicate.** Everything else now refuses to store the same file twice, but taking a file back out of the trash was the one way left to end up with two copies — it simply put the file back, whatever else was in the library by then.
 
     It now checks, and only speaks up when the file really is identical to one you already have: the dialog names the file that is already there, and you decide. Restoring several at once asks **once**, listing exactly which of them are duplicates, and offers to restore only the rest. A file with nothing matching it restores as before, without a question.

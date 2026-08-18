@@ -902,7 +902,9 @@ export default {
     developerModeWarning: 'Режим розробника LAN не увімкнений на: {{names}}. Деякі функції можуть не працювати.',
     howToEnable: 'Як увімкнути',
     incompatibleFile: 'Цей файл було нарізано для {{slicedFor}}, але цей принтер - {{printerModel}}',
-    dropNotPrintable: 'Друкувати можна лише файли .gcode та .gcode.3mf',
+    dropRawGcode: '{{filename}} — це сирий .gcode, а принтерам Bambu потрібен контейнер .gcode.3mf. Переекспортуйте зі слайсера.',
+    dropOneAtATime: '{{filename}} не взято — сюди можна класти по одному файлу.',
+    dropNotPrintable: '{{filename}} надрукувати не можна — приймаються лише нарізані файли .gcode.3mf.',
     dropToPrint: 'Перетягніть для друку',
     cannotPrint: 'Принтер зайнятий'
   },

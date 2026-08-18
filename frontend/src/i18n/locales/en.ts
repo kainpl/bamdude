@@ -897,7 +897,9 @@ export default {
     developerModeWarning: 'Developer LAN mode is not enabled on: {{names}}. Some features may not work.',
     howToEnable: 'How to enable',
     incompatibleFile: 'This file was sliced for {{slicedFor}}, but this printer is a {{printerModel}}',
-    dropNotPrintable: 'Only .gcode and .gcode.3mf files can be printed',
+    dropRawGcode: '{{filename}} is a raw .gcode file — Bambu printers need a .gcode.3mf container. Re-export it from your slicer.',
+    dropOneAtATime: '{{filename}} was not taken — drop one file at a time here.',
+    dropNotPrintable: '{{filename}} cannot be printed — only sliced .gcode.3mf files can.',
     dropToPrint: 'Drop to print',
     cannotPrint: 'Printer busy'
   },

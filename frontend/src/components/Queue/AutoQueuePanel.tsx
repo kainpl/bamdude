@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Loader2, Sparkles, Trash2, Upload, Zap, ChevronRight } from 'lucide-react';
 import { api } from '../../api/client';
 import type { AutoQueueItem } from '../../api/client';
+import { partitionDroppedFiles, dropRejectionKey } from '../../utils/printableDrop';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { PrintModal } from '../PrintModal';
@@ -118,18 +119,25 @@ export function AutoQueuePanel() {
     setIsDraggingFile(false);
     if (!canDrop) return;
 
-    const file = e.dataTransfer.files[0];
-    if (!file) return;
-
-    const lower = file.name.toLowerCase();
-    if (!lower.endsWith('.gcode') && !lower.includes('.gcode.')) {
-      showToast(t('printers.dropNotPrintable'), 'error');
-      return;
+    // ⚠️ Every dropped file is answered for. This read files[0] and discarded
+    // the rest in silence, so a five-file drop acted on one and said nothing
+    // about the other four.
+    const { candidates, rejected } = partitionDroppedFiles(Array.from(e.dataTransfer.files));
+    for (const { file: bad, rejection } of rejected) {
+      showToast(t(dropRejectionKey(rejection), { filename: bad.name }), 'error');
     }
+    const file = candidates[0];
+    for (const extra of candidates.slice(1)) {
+      showToast(t('printers.dropOneAtATime', { filename: extra.name }), 'error');
+    }
+    if (!file) return;
 
     setIsDropUploading(true);
     try {
       const result = await api.uploadLibraryFile(file, null);
+      if (result.outcome !== 'created') {
+        showToast(t('fileManager.dedupUsedExisting', { name: result.filename }), 'info');
+      }
       // No printer compatibility check here — auto-queue router filters
       // by sliced_for_model + target_model at dispatch time, and the
       // operator picks target constraints in the modal anyway.

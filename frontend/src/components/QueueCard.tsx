@@ -49,6 +49,7 @@ import { api, withStreamToken } from '../api/client';
 import type { PrinterQueue, PrintQueueItem, Permission } from '../api/client';
 import { Card, CardContent } from './Card';
 import { useAuth } from '../contexts/AuthContext';
+import { partitionDroppedFiles, dropRejectionKey } from '../utils/printableDrop';
 import { useToast } from '../contexts/ToastContext';
 import { formatETA, formatDuration } from '../utils/date';
 import { getBedTypeInfo } from '../utils/bedType';
@@ -439,19 +440,25 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
     setIsDraggingFile(false);
     if (!canDrop) return;
 
-    const file = e.dataTransfer.files[0];
-    if (!file) return;
-
-    // Only sliced/printable formats — same gate as the printer-card direct-print drop.
-    const lower = file.name.toLowerCase();
-    if (!lower.endsWith('.gcode') && !lower.includes('.gcode.')) {
-      showToast(t('printers.dropNotPrintable'), 'error');
-      return;
+    // ⚠️ Every dropped file is answered for. This read files[0] and discarded
+    // the rest in silence, so a five-file drop acted on one and said nothing
+    // about the other four.
+    const { candidates, rejected } = partitionDroppedFiles(Array.from(e.dataTransfer.files));
+    for (const { file: bad, rejection } of rejected) {
+      showToast(t(dropRejectionKey(rejection), { filename: bad.name }), 'error');
     }
+    const file = candidates[0];
+    for (const extra of candidates.slice(1)) {
+      showToast(t('printers.dropOneAtATime', { filename: extra.name }), 'error');
+    }
+    if (!file) return;
 
     setIsDropUploading(true);
     try {
       const result = await api.uploadLibraryFile(file, null);
+      if (result.outcome !== 'created') {
+        showToast(t('fileManager.dedupUsedExisting', { name: result.filename }), 'info');
+      }
 
       // Compatibility check against printer model — abort + delete the
       // transient upload if mismatched, same UX as the printer-card flow.
