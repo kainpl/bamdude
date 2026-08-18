@@ -16,6 +16,8 @@
 
     Only the same model is offered — the items were sliced for this machine, and BamDude cannot re-slice. **Each item keeps the plate it was queued with**, because it is literally the same file. Copies go to the end of each target queue, so a printer that is mid-job finishes first.
 
+    **A print started outside BamDude counts as part of the queue here.** A job sent from the printer's screen or straight from the slicer leaves no queue entry — the card shows it because it reads the printer directly, and the copy now reads it from the same place. Without that, the button was missing on exactly the machine a farm most wants to clone.
+
     Then the usual Schedule dialog opens once per item with every chosen printer ticked and locked — filament is mapped per printer inside that one dialog, which is why copying three items to four printers is three dialogs and not twelve.
 
 - **Load a queue straight from your library.** A printer card, a per-printer queue and the auto-queue panel each open a file picker: the folder tree down the left, small cards on the right with a preview, the name, print time, filament and size. Tick as many as you like — **your ticks are kept as you move between folders and search**, so a batch assembled from three different folders is one selection, not three trips.

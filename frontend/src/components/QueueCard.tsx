@@ -1,4 +1,4 @@
-import { useRef, useState, type DragEvent } from 'react';
+import { useMemo, useRef, useState, type DragEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -47,7 +47,7 @@ import {
 } from 'lucide-react';
 import { BatchActionDialog } from './Queue/BatchActionDialog';
 import { CopyQueueModal } from './CopyQueueModal';
-import { copyableItems } from '../lib/copyQueue';
+import { copyableItems, withCurrentPrint } from '../lib/copyQueue';
 import { LibraryPickerModal } from './LibraryPickerModal';
 import { QueueSequencer } from './QueueSequencer';
 import type { SequencedFile } from './QueueSequencer';
@@ -530,15 +530,30 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
     </div>
   ) : null;
 
-  // What a copy would take: the running print first, then the queue in order.
-  // Both are what "the queue right now" means to somebody looking at the card.
-  const copyableSourceItems = [...(printingItems ?? []), ...(pendingItems ?? [])];
-  const canCopyQueue = copyableItems(copyableSourceItems).length > 0;
+  // What a copy would take: the running print first, then the queue in order —
+  // what "the queue right now" means to somebody looking at the card.
+  //
+  // ⚠️ The running print is added from the printer's live status when the queue
+  // has no row for it. A print started from the screen or the slicer usually
+  // has none, and the card shows it anyway because its "currently printing"
+  // block reads MQTT — so a copy that only read queue rows had no button on
+  // exactly the machine a farm most wants to clone.
+  const queueRows = useMemo(
+    () => [...(printingItems ?? []), ...(pendingItems ?? [])],
+    [printingItems, pendingItems],
+  );
+  const copySourceItems = useMemo(
+    () => withCurrentPrint(copyableItems(queueRows), status),
+    [queueRows, status],
+  );
+  const copyDroppedCount = queueRows.length - copyableItems(queueRows).length;
+  const canCopyQueue = copySourceItems.length > 0;
 
   const copyQueueModal = copyOpen ? (
     <CopyQueueModal
       source={queue}
-      items={copyableSourceItems}
+      items={copySourceItems}
+      droppedCount={copyDroppedCount}
       onCancel={() => setCopyOpen(false)}
       onConfirm={(files, printerIds) => {
         setCopyOpen(false);

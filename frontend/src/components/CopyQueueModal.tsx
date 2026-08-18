@@ -4,31 +4,22 @@ import { useTranslation } from 'react-i18next';
 import { Check, Copy, FileBox, Printer as PrinterIcon, X } from 'lucide-react';
 
 import { api } from '../api/client';
-import type { PrinterQueue, PrintQueueItem } from '../api/client';
+import type { PrinterQueue } from '../api/client';
 import { Button } from './Button';
 import type { SequencedFile } from './QueueSequencer';
-import { copyableItems, copyTargets, type CopyableItem } from '../lib/copyQueue';
+import { copyTargets, type CopyableItem } from '../lib/copyQueue';
 import { groupByLocation } from '../utils/locationGroups';
 import { readStoredQueueSort, sortQueues } from '../utils/queueOrder';
 import { formatDuration } from '../utils/date';
 
-/** The item's picture, served by whichever row backs it. */
-function itemThumbnail(entry: CopyableItem): string | null {
-  const { file, item } = entry;
-  if (file.source === 'library' && item.library_file_thumbnail) {
-    return api.getLibraryFileThumbnailUrl(file.id);
-  }
-  if (file.source === 'archive' && item.archive_thumbnail) {
-    return api.getArchiveThumbnail(file.id);
-  }
-  return null;
-}
-
 interface CopyQueueModalProps {
   source: PrinterQueue;
-  /** What is on the source queue right now — the printing item first, then the
-   *  pending ones in queue order. */
-  items: PrintQueueItem[];
+  /** What is on the source queue right now — the running print first, then the
+   *  pending items in queue order. Built by the card, because only it knows
+   *  whether the running print has a queue row at all. */
+  items: CopyableItem[];
+  /** How many queue rows had no file behind them and were left out upstream. */
+  droppedCount?: number;
   onCancel: () => void;
   /** Never called with an empty side. */
   onConfirm: (files: SequencedFile[], printerIds: number[]) => void;
@@ -49,14 +40,11 @@ interface CopyQueueModalProps {
  * Items start ticked, printers do not. The queue is what you came to copy; the
  * machines are the decision.
  */
-export function CopyQueueModal({ source, items, onCancel, onConfirm }: CopyQueueModalProps) {
+export function CopyQueueModal({ source, items, droppedCount = 0, onCancel, onConfirm }: CopyQueueModalProps) {
   const { t } = useTranslation();
 
-  const copyable = useMemo(() => copyableItems(items), [items]);
-  const dropped = items.length - copyable.length;
-
   const [pickedItems, setPickedItems] = useState<Set<number>>(
-    () => new Set(copyable.map((_, index) => index)),
+    () => new Set(items.map((_, index) => index)),
   );
   const [pickedPrinters, setPickedPrinters] = useState<Set<number>>(new Set());
 
@@ -156,16 +144,16 @@ export function CopyQueueModal({ source, items, onCancel, onConfirm }: CopyQueue
                 {t('copyQueue.whatCount', { count: pickedItems.size })}
               </h3>
               {bulkButtons(
-                () => setPickedItems(new Set(copyable.map((_, index) => index))),
+                () => setPickedItems(new Set(items.map((_, index) => index))),
                 () => setPickedItems(new Set()),
-                pickedItems.size === copyable.length,
+                pickedItems.size === items.length,
               )}
             </div>
             <div className="flex-1 overflow-y-auto p-3 space-y-2">
-              {copyable.length === 0 ? (
+              {items.length === 0 ? (
                 <p className="text-sm text-bambu-gray italic p-4 text-center">{t('copyQueue.nothingToCopy')}</p>
               ) : (
-                copyable.map(({ file, item }, index) => {
+                items.map(({ file, printing, printTimeSeconds, filamentGrams, thumbnailUrl }, index) => {
                   const checked = pickedItems.has(index);
                   return (
                     <button
@@ -181,9 +169,9 @@ export function CopyQueueModal({ source, items, onCancel, onConfirm }: CopyQueue
                     >
                       {tick(checked)}
                       <span className="w-12 h-12 shrink-0 rounded bg-bambu-dark-tertiary overflow-hidden flex items-center justify-center">
-                        {itemThumbnail(copyable[index]) ? (
+                        {thumbnailUrl ? (
                           <img
-                            src={itemThumbnail(copyable[index]) as string}
+                            src={thumbnailUrl}
                             alt=""
                             className="w-full h-full object-contain"
                           />
@@ -195,10 +183,10 @@ export function CopyQueueModal({ source, items, onCancel, onConfirm }: CopyQueue
                         <span className="block text-sm text-white truncate">{file.name}</span>
                         <span className="block text-xs text-bambu-gray truncate">
                           {[
-                            item.status === 'printing' ? t('copyQueue.printingNow') : null,
+                            printing ? t('copyQueue.printingNow') : null,
                             file.plateId != null ? t('copyQueue.plate', { n: file.plateId }) : null,
-                            item.print_time_seconds ? formatDuration(item.print_time_seconds) : null,
-                            item.filament_used_grams ? `${Math.round(item.filament_used_grams)} g` : null,
+                            printTimeSeconds ? formatDuration(printTimeSeconds) : null,
+                            filamentGrams ? `${Math.round(filamentGrams)} g` : null,
                           ]
                             .filter(Boolean)
                             .join(' · ')}
@@ -208,9 +196,9 @@ export function CopyQueueModal({ source, items, onCancel, onConfirm }: CopyQueue
                   );
                 })
               )}
-              {dropped > 0 && (
+              {droppedCount > 0 && (
                 <p className="text-xs text-bambu-gray italic pt-1">
-                  {t('copyQueue.notCopyable', { count: dropped })}
+                  {t('copyQueue.notCopyable', { count: droppedCount })}
                 </p>
               )}
             </div>
@@ -306,7 +294,7 @@ export function CopyQueueModal({ source, items, onCancel, onConfirm }: CopyQueue
               disabled={!canCopy}
               onClick={() =>
                 onConfirm(
-                  copyable.filter((_, index) => pickedItems.has(index)).map((entry) => entry.file),
+                  items.filter((_, index) => pickedItems.has(index)).map((entry) => entry.file),
                   [...pickedPrinters],
                 )
               }

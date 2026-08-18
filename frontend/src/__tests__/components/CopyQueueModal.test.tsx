@@ -15,8 +15,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { I18nextProvider } from 'react-i18next';
 import i18n from '../../i18n';
 import { CopyQueueModal } from '../../components/CopyQueueModal';
-import { copyableItems, copyTargets } from '../../lib/copyQueue';
-import { api, type PrinterQueue, type PrintQueueItem } from '../../api/client';
+import { copyableItems, copyTargets, copyableCurrentPrint, withCurrentPrint } from '../../lib/copyQueue';
+import { api, type PrinterQueue, type PrinterStatus, type PrintQueueItem } from '../../api/client';
 
 const item = (over: Partial<PrintQueueItem> = {}): PrintQueueItem =>
   ({
@@ -54,13 +54,22 @@ const queue = (over: Partial<PrinterQueue> = {}): PrinterQueue =>
 
 const SOURCE = queue({ id: 1, printer_id: 1, printer_name: 'P1S-A', printer_model: 'P1S' });
 
-function renderModal(items: PrintQueueItem[]) {
+const status = (over: Partial<PrinterStatus> = {}): PrinterStatus =>
+  ({ connected: true, progress: 0, current_archive_id: null, current_plate_id: null, ...over }) as PrinterStatus;
+
+function renderModal(items: PrintQueueItem[], droppedCount = 0) {
   const onConfirm = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
       <I18nextProvider i18n={i18n}>
-        <CopyQueueModal source={SOURCE} items={items} onCancel={vi.fn()} onConfirm={onConfirm} />
+        <CopyQueueModal
+          source={SOURCE}
+          items={copyableItems(items)}
+          droppedCount={droppedCount}
+          onCancel={vi.fn()}
+          onConfirm={onConfirm}
+        />
       </I18nextProvider>
     </QueryClientProvider>,
   );
@@ -88,6 +97,48 @@ describe('what can be copied', () => {
     ]);
 
     expect(only.file).toMatchObject({ id: 99, source: 'archive', name: 'Ran from the screen' });
+  });
+});
+
+describe('a print with no queue row behind it', () => {
+  it('is taken from the printer instead — a screen-started job has no row', () => {
+    const live = copyableCurrentPrint(
+      status({ current_archive_id: 42, current_plate_id: 2, subtask_name: 'Ran from the screen' }),
+    );
+
+    expect(live?.file).toEqual({ id: 42, source: 'archive', name: 'Ran from the screen', plateId: 2 });
+    expect(live?.printing).toBe(true);
+  });
+
+  it('is nothing at all when the printer names no archive', () => {
+    expect(copyableCurrentPrint(status({ subtask_name: 'Something' }))).toBeNull();
+    expect(copyableCurrentPrint(undefined)).toBeNull();
+  });
+
+  it('goes in front of the pending items', () => {
+    const pending = copyableItems([item({ id: 1 })]);
+
+    const withLive = withCurrentPrint(pending, status({ current_archive_id: 42, subtask_name: 'Live' }));
+
+    expect(withLive.map((entry) => entry.file.name)).toEqual(['Live', 'bracket.gcode.3mf']);
+  });
+
+  it('is NOT added twice when the queue already has the same archive', () => {
+    const rows = copyableItems([
+      item({ id: 1, library_file_id: null, archive_id: 42, archive_name: 'Already here', status: 'pending' }),
+    ]);
+
+    const withLive = withCurrentPrint(rows, status({ current_archive_id: 42, subtask_name: 'Live' }));
+
+    expect(withLive).toHaveLength(1);
+  });
+
+  it('is NOT added when the queue already knows something is printing', () => {
+    const rows = copyableItems([item({ id: 1, status: 'printing' })]);
+
+    const withLive = withCurrentPrint(rows, status({ current_archive_id: 42, subtask_name: 'Live' }));
+
+    expect(withLive).toHaveLength(1);
   });
 });
 
@@ -174,7 +225,7 @@ describe('the dialog', () => {
   });
 
   it('says how many items it had to leave out', async () => {
-    renderModal([item({ id: 1 }), item({ id: 2, library_file_id: null, archive_id: null })]);
+    renderModal([item({ id: 1 })], 1);
 
     expect(await screen.findByText(/1 item is not backed by a file/i)).toBeInTheDocument();
   });
