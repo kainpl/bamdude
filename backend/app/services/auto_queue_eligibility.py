@@ -178,22 +178,18 @@ def _count_override_color_matches(printer_id: int, overrides: list[dict]) -> int
     return matches
 
 
-async def find_eligible_printer(
-    db: AsyncSession,
-    item: AutoQueueItem,
-    busy_printers: set[int],
-    require_plate_clear: bool = True,
-) -> tuple[Printer | None, str | None]:
-    """Find an idle printer that satisfies the auto-queue item's requirements.
+async def printers_for_item(db: AsyncSession, item: AutoQueueItem) -> tuple[list[Printer], str, str]:
+    """Every printer this item is allowed to run on, before any readiness is asked.
 
-    The waiting_reason is a user-facing string describing why no printer
-    matched (e.g., ``"Waiting for filament: A1mini-01 (needs PETG); A1mini-02 (needs PLA)"``,
-    ``"Waiting for plate clear: A1mini-01"``, or ``"Busy: A1mini-01, A1mini-02"``).
-    Returns ``(None, None)`` only when ``target_model`` is missing.
+    Returns ``(printers, normalized_model, location_suffix)``.
+
+    ⚠️ **One source for "which printers can this job run on".** The matcher asks
+    it to rank candidates; :func:`offline_candidates_for` asks it to decide
+    which printer may be woken. Two queries would eventually disagree, and the
+    disagreement that matters is switching a printer on for a file that can
+    never legally run there — the job stays stuck and the printer now draws
+    power.
     """
-    if not item.target_model:
-        return None, None
-
     normalized_model = normalize_printer_model(item.target_model) or item.target_model
 
     # Filter active printers of the right model + location, with auto-distribute eligible.
@@ -227,7 +223,48 @@ async def find_eligible_printer(
             location_suffix = f" in {path_of(tree, item.target_location_id)}"
 
     result = await db.execute(query)
-    printers = list(result.scalars().all())
+    return list(result.scalars().all()), normalized_model, location_suffix
+
+
+async def offline_candidates_for(db: AsyncSession, item: AutoQueueItem, busy_printers: set[int]) -> list[Printer]:
+    """Printers this item could run on that are simply switched off.
+
+    ⚠️ **Being disconnected is the one readiness question the matcher uses as a
+    gate**, and it has to: routing matches the filament actually loaded, which
+    is live MQTT state, and a printer that is off reports none. So the gate
+    stays — what was missing is this: when nothing is eligible *because* the
+    candidates are off, somebody has to switch one on, or the item waits for
+    ever while the identical job pinned to a printer wakes it in one pass.
+
+    ⚠️ A printer **awaiting plate-clear acknowledgement is excluded**. Waking it
+    buys nothing: it boots into IDLE and is held by that gate anyway. The flag
+    is ours and persisted, so it is readable while the printer is still off.
+    """
+    printers, _model, _suffix = await printers_for_item(db, item)
+    from backend.app.services.printer_manager import printer_manager as _pm
+
+    return [
+        p
+        for p in printers
+        if p.id not in busy_printers and not _pm.is_connected(p.id) and not _pm.is_awaiting_plate_clear(p.id)
+    ]
+
+
+async def find_eligible_printer(
+    db: AsyncSession,
+    item: AutoQueueItem,
+    busy_printers: set[int],
+    require_plate_clear: bool = True,
+) -> tuple[Printer | None, str | None]:
+    """Find an idle printer that satisfies the auto-queue item's requirements.
+
+    The waiting_reason is a user-facing string describing why no printer
+    matched. Returns ``(None, None)`` only when ``target_model`` is missing.
+    """
+    if not item.target_model:
+        return None, None
+
+    printers, normalized_model, location_suffix = await printers_for_item(db, item)
 
     if not printers:
         return None, f"No active {normalized_model} printers{location_suffix} eligible"

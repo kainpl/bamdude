@@ -129,6 +129,92 @@ PUBLISH_WAIT_DEFAULT = 10.0
 _PUBLISH_POLL_INTERVAL = 0.5
 
 
+def _external_storage_check(state, printer) -> DiagnosticCheck:
+    """One answer for "can this printer keep the file it was sent".
+
+    Extracted so it can be exercised directly: the interesting cases are
+    the ones where it must NOT fail, and reaching them through the whole
+    diagnostic would mean building a printer, a connection and a state for
+    each.
+    """
+    # --- External storage (printer-side "Store sent files on external storage") ---
+    # Install step 4. The setting has two variants depending on
+    # firmware/slicer combo: on newer firmware the toggle lives on the
+    # printer (P2S 01.02 / BambuStudio 2.6+), on older versions it's
+    # purely a slicer-side preference.
+    #
+    # For the printer-side variant, `home_flag` bit 11 is pushed on every
+    # status report and parsed into state.store_to_sdcard (bambu_mqtt.py).
+    # That's the signal here — instant, no FTP I/O.
+    #
+    # For the slicer-side variant, the printer never hears about it and
+    # this check will pass even when the user is missing step 4. That gap
+    # is covered separately by the "no_3mf_available" archive-fallback
+    # banner. An FTP upload-and-verify probe was tried and rejected — the
+    # /cache directory is always writable regardless of either toggle, so
+    # the probe always passes and detects nothing.
+    #
+    # Skip entirely on models with no external-storage slot at all (A1
+    # and A1 Mini). They never set home_flag bit 11, so a naive read of
+    # `store_to_sdcard` would fall through to a false `fail` for every
+    # A1-series user (#1703).
+    #
+    # A second class of model HAS a slot but no reachable control to turn the
+    # option on: BambuStudio only renders the toggle for models declaring
+    # `support_save_remote_print_file_to_storage`, and P1P/P1S have no screen
+    # to set it from either — so `store_to_sdcard` stays False forever and the
+    # fail is unresolvable. Report `skip` with a reason the UI explains
+    # instead (upstream #2524). `has_remote_storage_toggle` resolves that from
+    # the mirrored BS configs + the printer's live capability push rather than
+    # a hardcoded model list, so it also covers A2L / X1E and reactivates by
+    # itself if a firmware starts reporting the capability.
+    model = getattr(printer, "model", None) if printer else None
+    model_has_slot = has_external_storage(model) if printer else True
+    store_to_sdcard = getattr(state, "store_to_sdcard", None) if state else None
+    if not model_has_slot or state is None or not state.connected:
+        return DiagnosticCheck(id="external_storage", status="skip")
+    elif (
+        store_to_sdcard is True
+        and getattr(state, "sdcard_state_seen", False)
+        and getattr(state, "sdcard_state", 0) == 0
+    ):
+        # ⚠️ **The toggle is not the answer on its own.** It says where the
+        # printer WOULD put a sent file; an empty slot says it cannot. Reading
+        # only the toggle passed a printer that had nowhere to write, and the
+        # operator was left with an archive card that never filled and a
+        # diagnostic that said everything was fine (upstream #2780).
+        #
+        # ⚠️ Gated on ``sdcard_state_seen``, because the field's default is 0
+        # and 0 is also NO_SDCARD — without that flag a printer that simply has
+        # not published its storage yet would read as a fault. Silence is not
+        # evidence; the branch below already refuses to guess for the same
+        # reason.
+        #
+        # ⚠️ Cannot fire on a P1, and that matters: there the toggle cannot be
+        # switched on at all, so ``store_to_sdcard`` is False and the
+        # unsupported-model skip below answers instead. Telling that operator to
+        # insert a card would promise a fix inserting one does not deliver
+        # (#2524). The two branches are mutually exclusive on the toggle, so
+        # this holds regardless of their order here.
+        return DiagnosticCheck(id="external_storage", status="fail", params={"reason": "no_card"})
+    elif store_to_sdcard is True:
+        return DiagnosticCheck(id="external_storage", status="pass")
+    elif store_to_sdcard is False and not has_remote_storage_toggle(
+        model, getattr(state, "print_option_support", None)
+    ):
+        return DiagnosticCheck(
+            id="external_storage",
+            status="skip",
+            params={"reason": "unsupported_model"},
+        )
+    elif store_to_sdcard is False:
+        return DiagnosticCheck(id="external_storage", status="fail")
+    else:
+        # State exists but the field was never populated — skip rather than
+        # report a false fail.
+        return DiagnosticCheck(id="external_storage", status="skip")
+
+
 async def run_connection_diagnostic(
     ip_address: str,
     *,
@@ -252,60 +338,7 @@ async def run_connection_diagnostic(
     else:
         checks.append(DiagnosticCheck(id="developer_mode", status="skip"))
 
-    # --- External storage (printer-side "Store sent files on external storage") ---
-    # Install step 4. The setting has two variants depending on
-    # firmware/slicer combo: on newer firmware the toggle lives on the
-    # printer (P2S 01.02 / BambuStudio 2.6+), on older versions it's
-    # purely a slicer-side preference.
-    #
-    # For the printer-side variant, `home_flag` bit 11 is pushed on every
-    # status report and parsed into state.store_to_sdcard (bambu_mqtt.py).
-    # That's the signal here — instant, no FTP I/O.
-    #
-    # For the slicer-side variant, the printer never hears about it and
-    # this check will pass even when the user is missing step 4. That gap
-    # is covered separately by the "no_3mf_available" archive-fallback
-    # banner. An FTP upload-and-verify probe was tried and rejected — the
-    # /cache directory is always writable regardless of either toggle, so
-    # the probe always passes and detects nothing.
-    #
-    # Skip entirely on models with no external-storage slot at all (A1
-    # and A1 Mini). They never set home_flag bit 11, so a naive read of
-    # `store_to_sdcard` would fall through to a false `fail` for every
-    # A1-series user (#1703).
-    #
-    # A second class of model HAS a slot but no reachable control to turn the
-    # option on: BambuStudio only renders the toggle for models declaring
-    # `support_save_remote_print_file_to_storage`, and P1P/P1S have no screen
-    # to set it from either — so `store_to_sdcard` stays False forever and the
-    # fail is unresolvable. Report `skip` with a reason the UI explains
-    # instead (upstream #2524). `has_remote_storage_toggle` resolves that from
-    # the mirrored BS configs + the printer's live capability push rather than
-    # a hardcoded model list, so it also covers A2L / X1E and reactivates by
-    # itself if a firmware starts reporting the capability.
-    model = getattr(printer, "model", None) if printer else None
-    model_has_slot = has_external_storage(model) if printer else True
-    store_to_sdcard = getattr(state, "store_to_sdcard", None) if state else None
-    if not model_has_slot or state is None or not state.connected:
-        checks.append(DiagnosticCheck(id="external_storage", status="skip"))
-    elif store_to_sdcard is True:
-        checks.append(DiagnosticCheck(id="external_storage", status="pass"))
-    elif store_to_sdcard is False and not has_remote_storage_toggle(
-        model, getattr(state, "print_option_support", None)
-    ):
-        checks.append(
-            DiagnosticCheck(
-                id="external_storage",
-                status="skip",
-                params={"reason": "unsupported_model"},
-            )
-        )
-    elif store_to_sdcard is False:
-        checks.append(DiagnosticCheck(id="external_storage", status="fail"))
-    else:
-        # State exists but the field was never populated — skip rather than
-        # report a false fail.
-        checks.append(DiagnosticCheck(id="external_storage", status="skip"))
+    checks.append(_external_storage_check(state, printer))
 
     # --- Printer is actually publishing on its report topic ---
     # The mqtt_auth check above only proves TCP + TLS + auth + SUBSCRIBE

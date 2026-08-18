@@ -921,6 +921,14 @@ class PrinterState:
     raw_data: dict = field(default_factory=dict)
     gcode_file: str | None = None
     subtask_id: str | None = None
+    # Scheme+path of the ``project_file`` dispatch that started the print now
+    # running: ``ftp://<name>`` is the card, ``brtc://emmc/<name>`` is internal
+    # storage. Cleared when the print ends — see ``_handle_request_message``.
+    current_project_url: str | None = None
+    # The same value, kept sticky for reporting only. The connection diagnostic
+    # runs *after* the print that prompted it, so the live field would already
+    # be empty by the time anyone asks.
+    last_project_url: str | None = None
     hms_errors: list = field(default_factory=list)  # List of HMSError
     kprofiles: list = field(default_factory=list)  # List of KProfile
     # BS ``DevStorage::SdcardState`` — four states, not a bool:
@@ -928,6 +936,12 @@ class PrinterState:
     # New-protocol printers report it in ``aux`` bits 12-13; legacy ones send a
     # ``sdcard`` bool (BS maps that to NORMAL / NO_SDCARD).
     sdcard_state: int = 0
+    # ⚠️ Whether ``sdcard_state`` above was ever actually reported. Its default
+    # is 0, which is also NO_SDCARD — so without this flag "the printer says
+    # there is no card" is indistinguishable from "the printer has not said".
+    # Anything that acts on an empty slot must check this first, or a printer
+    # that simply has not published yet reads as a fault.
+    sdcard_state_seen: bool = False
     # "A card we can actually write a print to", i.e. NORMAL only. ⚠️ This used
     # to be a substring test — ``"HAS_SDCARD" in value`` — so ABNORMAL and
     # READONLY both read as a healthy card, and the firmware-upload gate happily
@@ -2243,6 +2257,24 @@ class BambuMQTTClient:
             return
         command = print_data.get("command", "")
         if command == "project_file":
+            # ⚠️ **Which storage this print went to, from the printer's own
+            # dispatch.** ``ftp://<name>`` is the card, which FTPS on 990 serves;
+            # ``brtc://emmc/<name>`` is internal storage, which it does not. We
+            # write this field ourselves when WE dispatch, but a print launched
+            # from a slicer is the case that matters — that is where the answer
+            # is otherwise unknowable.
+            #
+            # ⚠️ Held for the CURRENT print and cleared when it ends, never kept
+            # as a standing fact about the printer. Plenty of prints never
+            # announce themselves here at all (started from the printer's screen,
+            # or picked up after a restart), and on the X1 family we cannot even
+            # subscribe to this topic — see ``_request_topic_supported``. A
+            # sticky "internal storage" reading would then answer for prints it
+            # never saw, on a printer whose files really are on the card.
+            url = print_data.get("url")
+            if isinstance(url, str) and url:
+                self.state.current_project_url = url
+                self.state.last_project_url = url
             if "ams_mapping" in print_data:
                 self._captured_ams_mapping = print_data["ams_mapping"]
                 logger.info(
@@ -5360,6 +5392,7 @@ class BambuMQTTClient:
                 # BS ``DevStorage::ParseV1_0``: the legacy bool is NORMAL or nothing.
                 self.state.sdcard_state = SDCARD_NORMAL if raw_sdcard else SDCARD_NONE
             self.state.sdcard = self.state.sdcard_state == SDCARD_NORMAL
+            self.state.sdcard_state_seen = True
 
         # New protocol: ``aux`` bits 12-13 carry the same four states
         # (BS ``m_storage->set_sdcard_state(get_flag_bits(aux, 12, 2))``).
@@ -5369,6 +5402,7 @@ class BambuMQTTClient:
         if _aux_bits is not None:
             self.state.sdcard_state = (_aux_bits >> 12) & 0x3
             self.state.sdcard = self.state.sdcard_state == SDCARD_NORMAL
+            self.state.sdcard_state_seen = True
             # BS ``m_has_timelapse_kit = get_flag_bits(aux, 26, 1)``. An add-on
             # that gives a machine somewhere to write a timelapse when its card
             # slot cannot — which is why it can excuse a missing SD card.
@@ -5901,6 +5935,11 @@ class BambuMQTTClient:
                 if self.state.hms_errors
                 else []
             )
+            # The storage answer belonged to the print that just ended. Left
+            # standing it would answer for the next one — which may well be a
+            # screen-started print this topic never announces, on a printer
+            # whose files really are on the card.
+            self.state.current_project_url = None
             self.on_print_complete(
                 {
                     "status": status,

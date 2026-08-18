@@ -47,7 +47,7 @@ from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.settings import Settings
 from backend.app.services.auto_queue_ams import compute_ams_mapping_for_printer
-from backend.app.services.auto_queue_eligibility import find_eligible_printer
+from backend.app.services.auto_queue_eligibility import find_eligible_printer, offline_candidates_for
 
 logger = logging.getLogger(__name__)
 
@@ -152,9 +152,13 @@ class AutoQueueScheduler:
             # concrete in the notification below — "4 jobs are waiting" is far
             # less useful than the name of one of them plus the reason.
             first_blocked: tuple[AutoQueueItem, str] | None = None
+            # At most one printer is woken per pass — see _wake_offline_printer.
+            woke_one = False
             for item in items:
                 printer, reason = await find_eligible_printer(db, item, busy_printers)
                 if printer is None:
+                    if not woke_one:
+                        woke_one = await self._wake_offline_printer(db, item, busy_printers)
                     # The reason has always been computed and stored on the row;
                     # it was never logged, which is why three support bundles
                     # from a farm whose "queue stopped moving" contained no
@@ -297,6 +301,90 @@ class AutoQueueScheduler:
             stmt = base.order_by(AutoQueueItem.position)
         result = await db.execute(stmt)
         return result.scalars().all()
+
+    # printer_id -> monotonic deadline before which we will not try to wake it
+    # again. See _wake_offline_printer for why one window covers both outcomes.
+    _wake_cooldowns: dict[int, float] = {}
+    _WAKE_COOLDOWN_SECONDS = 600.0
+
+    async def _wake_offline_printer(self, db, item, busy_printers: set[int]) -> bool:
+        """Switch on one printer this item could run on, if they are all off.
+
+        ⚠️ **The gap this closes.** A job aimed at a printer *class* with every
+        printer of that class switched off used to sit for ever: routing needs
+        live filament state, a printer that is off reports none, so no candidate
+        is eligible, so the item never reaches a per-printer queue — and the
+        per-printer queue is the only thing that powers a printer on. The same
+        file pinned to a specific printer wakes it within one pass.
+
+        ⚠️ **One printer per pass**, so a shelf of eight does not all come up at
+        once for one job. Several queued jobs bring several printers up over the
+        following minutes, which is the behaviour worth having.
+
+        ⚠️ **One cooldown covers success and failure alike**, unlike upstream's,
+        because we deliberately do *not* wait for the boot. Waiting would block
+        the distributor for minutes; instead the next pass simply finds the
+        printer connected and routes to it normally. That means success is not
+        observable here, so a single window is the honest rule: having asked a
+        plug to turn on, asking again 30 seconds later achieves nothing whether
+        it worked or not.
+
+        ⚠️ **A printer we failed to wake is NOT added to ``busy_printers``.** It
+        is off, not busy — labelling it busy would misdescribe it in every later
+        item's waiting reason, and an all-busy reason is treated as needing no
+        user action, so it would suppress the notification too.
+        """
+        import time as _time
+
+        from backend.app.models.smart_plug import SmartPlug
+        from backend.app.services.smart_plug_manager import smart_plug_manager
+
+        candidates = await offline_candidates_for(db, item, busy_printers)
+        if not candidates:
+            return False
+
+        now = _time.monotonic()
+        for printer in candidates:
+            # Expire on read, so a live entry can never be overwritten by a
+            # later success and a stale one costs nothing.
+            deadline = self._wake_cooldowns.get(printer.id)
+            if deadline is not None and deadline > now:
+                continue
+
+            plugs = (
+                (
+                    await db.execute(
+                        select(SmartPlug).where(
+                            SmartPlug.printer_id == printer.id,
+                            SmartPlug.enabled.is_(True),
+                            SmartPlug.auto_on.is_(True),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if not plugs:
+                continue
+
+            self._wake_cooldowns[printer.id] = now + self._WAKE_COOLDOWN_SECONDS
+            logger.info(
+                "Auto item %s has no online %s; powering on %s to receive it",
+                item.id,
+                item.target_model,
+                printer.name,
+            )
+            try:
+                for plug in plugs:
+                    service = await smart_plug_manager.get_service_for_plug(plug, db)
+                    await service.turn_on(plug)
+            except Exception:
+                logger.exception("Failed to power on %s for auto item %s", printer.name, item.id)
+                return False
+            # Deliberately not touching busy_printers, and not waiting: the next
+            # pass routes to it once it is up.
+            return True
+        return False
 
     async def _assign(
         self,
