@@ -12,6 +12,8 @@
 
 - **The auto-queue takes a batch too, and each file keeps its own target.** Dropping several files on the auto-queue panel now walks them through the Schedule dialog one at a time, showing only the auto-queue form — the panel already answered "which printer" by not having one. Each item's target model is set from that file's own slicing and cannot be changed, so two files sliced for two different machines keep two different targets in one drop.
 
+- **A file that does not say which printer it was sliced for is turned away at the drop.** Without that, nothing about it can be checked: not the target the auto-queue would wait on, not whether it matches the printer you dropped it on. It used to slip past both checks and get queued on a guess — waiting for a machine nobody chose, or printing on the wrong one. It is now refused by name, before any dialog opens, with the rest of the drop carrying on.
+
 - **The auto-queue form no longer offers a target the file cannot run on.** Choosing a model that disagreed with what the file was sliced for did not fail — it produced an item waiting for a printer that would never take it, with nothing on screen explaining the wait. Where the file's own model is known, it is now the only target offered.
 
 - **Drop as many files as you like on a printer or its queue.** They go into that printer's queue, one Schedule dialog per file with a `2 / 5` counter — the same run the library's bulk Schedule already uses. Every file gets its own dialog because plates, filament mapping and print options are exactly what differs between two files; carrying them over would be wrong rather than convenient.

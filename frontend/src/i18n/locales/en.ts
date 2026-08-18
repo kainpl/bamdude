@@ -898,6 +898,7 @@ export default {
     howToEnable: 'How to enable',
     incompatibleFile: 'This file was sliced for {{slicedFor}}, but this printer is a {{printerModel}}',
     dropRawGcode: '{{filename}} is a raw .gcode file — Bambu printers need a .gcode.3mf container. Re-export it from your slicer.',
+    dropNoSlicedForModel: '{{filename}} does not say which printer it was sliced for, so it cannot be matched to one — re-export it from your slicer.',
     dropNoGcodeInside: '{{filename}} has not been sliced — it holds a model, not printable G-code. Slice it first.',
     dropWrongFormat: '{{filename}} cannot be printed — only sliced .gcode.3mf files can.',
     dropToPrint: 'Drop to print',

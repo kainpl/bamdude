@@ -469,8 +469,18 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
             showToast(t('printers.dropNoGcodeInside', { filename: candidate.name }), 'error');
             continue;
           }
+          // ⚠️ No recorded model means nothing can be verified — not the
+          // target for the auto-queue, not the match against the printer this
+          // was dropped on. Refused here, before the dialog, rather than
+          // queued on a guess: the item would otherwise wait for a machine
+          // nobody chose, or print on the wrong one.
           const slicedFor = (result.metadata as Record<string, unknown>)?.sliced_for_model as string | undefined;
-          if (slicedFor && mapModelCode(queue.printer_model) && slicedFor.toLowerCase() !== mapModelCode(queue.printer_model).toLowerCase()) {
+          if (!slicedFor) {
+            if (result.outcome === 'created') await api.deleteLibraryFile(result.id).catch(() => {});
+            showToast(t('printers.dropNoSlicedForModel', { filename: candidate.name }), 'error');
+            continue;
+          }
+          if (mapModelCode(queue.printer_model) && slicedFor.toLowerCase() !== mapModelCode(queue.printer_model).toLowerCase()) {
             if (result.outcome === 'created') await api.deleteLibraryFile(result.id).catch(() => {});
             showToast(t('printers.incompatibleFile', { slicedFor, printerModel: mapModelCode(queue.printer_model) }), 'error');
             continue;

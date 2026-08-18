@@ -149,6 +149,17 @@ export function AutoQueuePanel() {
             showToast(t('printers.dropNoGcodeInside', { filename: candidate.name }), 'error');
             continue;
           }
+          // ⚠️ No recorded model means nothing can be verified — not the
+          // target for the auto-queue, not the match against the printer this
+          // was dropped on. Refused here, before the dialog, rather than
+          // queued on a guess: the item would otherwise wait for a machine
+          // nobody chose, or print on the wrong one.
+          const slicedFor = (result.metadata as Record<string, unknown>)?.sliced_for_model as string | undefined;
+          if (!slicedFor) {
+            if (result.outcome === 'created') await api.deleteLibraryFile(result.id).catch(() => {});
+            showToast(t('printers.dropNoSlicedForModel', { filename: candidate.name }), 'error');
+            continue;
+          }
           queued.push({ id: result.id, name: result.filename });
         } catch {
           showToast(t('common.uploadFailed'), 'error');
