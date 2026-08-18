@@ -26,7 +26,19 @@ permissions:
   contents: write
 
 jobs:
+  # ⚠️ The same gate the Docker images pass. Without it the installer was the
+  # one release artefact that could be built from a commit whose CI was red —
+  # and it is attached to the release, so it would be the copy people actually
+  # download. The manual-dispatch path passes it too: a dispatch on a red
+  # commit is no safer for being deliberate.
+  gate:
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/require-green-ci.yml
+
   build:
+    needs: gate
     runs-on: windows-latest
     timeout-minutes: 30
 

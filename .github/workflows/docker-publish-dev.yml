@@ -1,18 +1,33 @@
-name: Docker Publish :dev (rolling)
+name: Docker Publish :dev (manual)
 
-# Rolling :dev Docker tag — rebuilt on every push to the dev branch. Users
-# who pin `ghcr.io/kainpl/bamdude:dev` (or :dev on Docker Hub) always pull
-# the latest dev HEAD, which is convenient for bleeding-edge testers but
-# should NOT be used in production. Stable farms pin :latest or :X.Y.Z.
+# Publishes `:dev` from whatever the dev branch currently holds. MANUAL ONLY.
 #
-# See temp/release_guide.md section 4 for the user-facing description.
+# ⚠️ **It used to fire on every push to dev, and that was the hole.** Nothing
+# connected it to CI — different workflow, so `needs:` cannot reach across —
+# and the two ran in parallel. Measured on 2026-08-18: commit 32d42cff had a
+# RED CI run and its `:dev` image published anyway. The one tag aimed at
+# testers was the one tag no gate ever looked at.
+#
+# It was also pure waste at exactly the wrong moment. A release pushes its
+# commit to dev, which triggered a multi-arch QEMU build of an image nobody
+# wants — half an hour later the identical content ships as :X.Y.Z, and at
+# that moment dev == main anyway.
+#
+# `:dev` now moves when a **pre-release tag** is pushed (docker-publish-tag.yml
+# publishes :X.Y.ZbN + :dev), so it means "the latest beta" — tested, gated,
+# worth pinning — instead of "whatever was committed last". Every dev push is
+# still proved to build: ci.yml's Docker Build job builds the production image,
+# starts it and checks /health, the API and the static bundle. It just does not
+# publish it, which is the point.
+#
+# This button remains for the case the tag flow cannot serve: an image from the
+# current dev HEAD, on purpose, by a human.
+#
+# See temp/release_guide.md section 3.
 
 on:
-  push:
-    branches: [dev]
   workflow_dispatch:
-    # Manual button in the Actions UI — re-publish :dev without waiting for
-    # a new commit (useful after secret rotation, registry recovery, etc.).
+    # Manual button in the Actions UI.
 
 # Cancel an in-progress :dev build if a newer push arrives — old build's
 # output would get overwritten anyway, saves buildx worker time.
