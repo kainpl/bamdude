@@ -42,8 +42,10 @@ import {
   Upload,
   Ban,
   RotateCcw,
+  ListPlus,
 } from 'lucide-react';
 import { BatchActionDialog } from './Queue/BatchActionDialog';
+import { LibraryPickerModal } from './LibraryPickerModal';
 import { QueueSequencer } from './QueueSequencer';
 import type { SequencedFile } from './QueueSequencer';
 import { api, withStreamToken } from '../api/client';
@@ -125,6 +127,9 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
   // Files just dropped on this card, waiting to go through the Schedule dialog
   // one at a time. Same run the library's bulk Schedule uses.
   const [droppedForQueue, setDroppedForQueue] = useState<SequencedFile[] | null>(null);
+  // The same batch, chosen instead of dropped. Both end in `droppedForQueue`
+  // and the same per-file Schedule dialog — only the way in differs.
+  const [pickerOpen, setPickerOpen] = useState(false);
   const dragCounterRef = useRef(0);
 
   // Pull system time-format so ETA respects the user's 12h/24h choice.
@@ -518,6 +523,18 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
     </div>
   ) : null;
 
+  const libraryPicker = pickerOpen ? (
+    <LibraryPickerModal
+      printerModel={queue.printer_model}
+      targetName={queue.printer_name ?? `Printer #${queue.printer_id}`}
+      onCancel={() => setPickerOpen(false)}
+      onConfirm={(files) => {
+        setPickerOpen(false);
+        setDroppedForQueue(files);
+      }}
+    />
+  ) : null;
+
   const dropPrintModal = droppedForQueue ? (
     <QueueSequencer
       files={droppedForQueue}
@@ -602,6 +619,17 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
                 <Pause className="w-2.5 h-2.5" />
                 {t('queueCard.pausedPill')}
               </span>
+            )}
+            {/* Same permission as the drop zone this sits beside — both add
+                items to this queue, and only the gesture differs. */}
+            {canDrop && (
+              <button
+                onClick={() => setPickerOpen(true)}
+                className="p-1 rounded hover:bg-bambu-dark-tertiary transition-colors"
+                title={t('libraryPicker.open')}
+              >
+                <ListPlus className="w-4 h-4 text-bambu-gray" />
+              </button>
             )}
             {/* Queue pause/resume — available in every state, including
                 while a print is running. Pausing leaves the running print
@@ -942,6 +970,7 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
       </CardContent>
     </Card>
       {dropOverlay}
+      {libraryPicker}
       {dropPrintModal}
     </div>
   );

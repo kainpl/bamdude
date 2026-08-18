@@ -1,13 +1,14 @@
 import { useMemo, useRef, useState, type DragEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Loader2, Sparkles, Trash2, Upload, Zap, ChevronRight } from 'lucide-react';
+import { ListPlus, Loader2, Sparkles, Trash2, Upload, Zap, ChevronRight } from 'lucide-react';
 import { api } from '../../api/client';
 import type { AutoQueueItem } from '../../api/client';
 import { partitionDroppedFiles, dropRejectionKey } from '../../utils/printableDrop';
 import { isPrintable } from '../../lib/fileTags';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { LibraryPickerModal } from '../LibraryPickerModal';
 import { QueueSequencer } from '../QueueSequencer';
 import type { SequencedFile } from '../QueueSequencer';
 
@@ -34,6 +35,9 @@ export function AutoQueuePanel() {
   // Files just dropped on the panel, waiting to go through the Schedule dialog
   // one at a time — the same run the printer cards and the library use.
   const [droppedForQueue, setDroppedForQueue] = useState<SequencedFile[] | null>(null);
+  // The same batch, chosen instead of dropped. Both end in `droppedForQueue`
+  // and the same per-file Schedule dialog — only the way in differs.
+  const [pickerOpen, setPickerOpen] = useState(false);
   const dragCounterRef = useRef(0);
 
   const { data: items } = useQuery({
@@ -193,6 +197,17 @@ export function AutoQueuePanel() {
         <span className="text-xs text-bambu-gray">
           ({t('autoQueue.itemCount', { count: items?.length ?? 0 })})
         </span>
+        {/* Same permission as the drop zone this panel already is — both add
+            items to the auto-queue, and only the gesture differs. */}
+        {canDrop && (
+          <button
+            onClick={() => setPickerOpen(true)}
+            className="ml-auto p-1 rounded hover:bg-bambu-dark-tertiary transition-colors"
+            title={t('libraryPicker.open')}
+          >
+            <ListPlus className="w-4 h-4 text-bambu-gray" />
+          </button>
+        )}
       </div>
 
       {isEmpty && (
@@ -302,6 +317,18 @@ export function AutoQueuePanel() {
             )}
           </div>
         </div>
+      )}
+      {pickerOpen && (
+        <LibraryPickerModal
+          // No printer to match against — the auto-queue routes by each file's
+          // own model, so every sliced file with a recorded one is offered.
+          targetName={t('autoQueue.title')}
+          onCancel={() => setPickerOpen(false)}
+          onConfirm={(files) => {
+            setPickerOpen(false);
+            setDroppedForQueue(files);
+          }}
+        />
       )}
       {droppedForQueue && (
         <QueueSequencer

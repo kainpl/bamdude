@@ -3832,6 +3832,23 @@ export default {
     tagFilterClear: 'Скинути фільтр тегів',
   },
 
+  libraryPicker: {
+    open: 'Завантажити з бібліотеки',
+    title: 'Нагрузити чергу',
+    subtitle: 'Оберіть нарізані файли для {{target}}',
+    allFiles: 'Усі файли',
+    libraryRoot: 'Корінь бібліотеки',
+    searchPlaceholder: 'Пошук по всій бібліотеці',
+    selectedCount_one: 'Обрано {{count}} файл',
+    selectedCount_few: 'Обрано {{count}} файли',
+    selectedCount_many: 'Обрано {{count}} файлів',
+    selectedCount_other: 'Обрано {{count}} файлів',
+    confirm: 'Поставити в чергу',
+    noneForModel: 'У бібліотеці немає нічого, нарізаного під {{model}}.',
+    noneSliced: 'У бібліотеці ще немає нарізаних файлів.',
+    noMatch: 'Тут нічого не знайдено.',
+  },
+
   libraryTrash: {
     title: 'Кошик',
     headerButton: 'Кошик',

@@ -3822,6 +3822,21 @@ export default {
     tagFilterClear: 'Clear tag filter',
   },
 
+  libraryPicker: {
+    open: 'Load from library',
+    title: 'Load the queue',
+    subtitle: 'Pick sliced files to send to {{target}}',
+    allFiles: 'All files',
+    libraryRoot: 'Library root',
+    searchPlaceholder: 'Search the whole library',
+    selectedCount_one: '{{count}} file selected',
+    selectedCount_other: '{{count}} files selected',
+    confirm: 'Add to queue',
+    noneForModel: 'Nothing in the library is sliced for {{model}}.',
+    noneSliced: 'Nothing in the library is sliced yet.',
+    noMatch: 'Nothing here matches.',
+  },
+
   libraryTrash: {
     title: 'Trash',
     headerButton: 'Trash',

@@ -46,6 +46,7 @@ import {
   ArrowDown,
   MoveVertical,
   Layers,
+  ListPlus,
   Video,
   Search,
   Loader2,
@@ -127,6 +128,7 @@ import { ChamberLight } from '../components/icons/ChamberLight';
 import { PlateClearedIcon } from '../components/icons/PlateClearedIcon';
 import { SkipObjectsModal, SkipObjectsIcon } from '../components/SkipObjectsModal';
 import { FileUploadModal } from '../components/FileUploadModal';
+import { LibraryPickerModal } from '../components/LibraryPickerModal';
 import { QueueSequencer } from '../components/QueueSequencer';
 import type { SequencedFile } from '../components/QueueSequencer';
 import { PrintModal } from '../components/PrintModal';
@@ -1666,6 +1668,9 @@ function PrinterCard({
   // cannot all print at once, so the queue is the only coherent meaning, and
   // the files stay in the library because a queued item must outlive the drop.
   const [droppedForQueue, setDroppedForQueue] = useState<SequencedFile[] | null>(null);
+  // The same batch, chosen instead of dropped. Both end in `droppedForQueue`
+  // and the same per-file Schedule dialog — only the way in differs.
+  const [pickerOpen, setPickerOpen] = useState(false);
   // AMS drying popover state: which AMS unit has the popover open
   const [dryingPopoverAmsId, setDryingPopoverAmsId] = useState<number | null>(null);
   const [dryingPopoverModuleType, setDryingPopoverModuleType] = useState<string>('n3f');
@@ -3025,6 +3030,22 @@ function PrinterCard({
                     from the corner — same direction (downward) but the
                     visual origin is the corner, not the button's bottom. */}
                 <div className="absolute right-0 top-0 max-w-58 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg z-20 whitespace-nowrap">
+                  {/* Fill this printer's queue from the library. Gated on
+                      `queue:create`, not on the drop zone's `canDrop`: a drop
+                      is refused while the machine prints, but loading its queue
+                      is exactly what you do then. */}
+                  {hasPermission('queue:create') && (
+                    <button
+                      className="w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2"
+                      onClick={() => {
+                        setShowMenu(false);
+                        setPickerOpen(true);
+                      }}
+                    >
+                      <ListPlus className="w-4 h-4" />
+                      {t('libraryPicker.open')}
+                    </button>
+                  )}
                   {/* Info & Maintenance */}
                   <button
                     className="w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2"
@@ -5831,6 +5852,18 @@ function PrinterCard({
           onClose={() => setPrintAfterUpload(null)}
           onSuccess={() => setPrintAfterUpload(null)}
           cleanupLibraryAfterDispatch
+        />
+      )}
+
+      {pickerOpen && (
+        <LibraryPickerModal
+          printerModel={printer.model}
+          targetName={printer.name}
+          onCancel={() => setPickerOpen(false)}
+          onConfirm={(files) => {
+            setPickerOpen(false);
+            setDroppedForQueue(files);
+          }}
         />
       )}
 

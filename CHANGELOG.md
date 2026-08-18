@@ -10,6 +10,12 @@
 
     **You are always told.** The upload dialog says, per file, which of your library files was used instead and under what name, or that a file's missing contents were just restored — and a notification says the same as the dialog closes, so the answer does not vanish with it. Dropping files straight onto the file manager goes through the same dialog, so it behaves identically.
 
+- **Load a queue straight from your library.** A printer card, a per-printer queue and the auto-queue panel each open a file picker: the folder tree down the left, small cards on the right with a preview, the name, print time, filament and size. Tick as many as you like — **your ticks are kept as you move between folders and search**, so a batch assembled from three different folders is one selection, not three trips.
+
+    It shows only files that can actually run: sliced files, and on a printer only those sliced for that machine. Search covers the whole library rather than the folder you happen to have open.
+
+    Picking is all it does. The files then go through the usual Schedule dialog, one at a time with a `2 / 5` counter — plates, filament mapping, quantity and schedule stay per-file, because those are exactly what differs between two files.
+
 - **The auto-queue takes a batch too, and each file keeps its own target.** Dropping several files on the auto-queue panel now walks them through the Schedule dialog one at a time, showing only the auto-queue form — the panel already answered "which printer" by not having one. Each item's target model is set from that file's own slicing and cannot be changed, so two files sliced for two different machines keep two different targets in one drop.
 
 - **A file that does not say which printer it was sliced for is turned away at the drop.** Without that, nothing about it can be checked: not the target the auto-queue would wait on, not whether it matches the printer you dropped it on. It used to slip past both checks and get queued on a guess — waiting for a machine nobody chose, or printing on the wrong one. It is now refused by name, before any dialog opens, with the rest of the drop carrying on.
