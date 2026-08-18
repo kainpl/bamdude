@@ -148,8 +148,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
+      # ⚠️ 20, not 10. On 2026-08-18 the whole suite passed — 8702 tests — and
+      # the job still failed, because it finished in 601.71s against a 10-minute
+      # step timeout. Two seconds. The ceiling was set when the suite was
+      # smaller and had quietly become a coin toss on a green run, which is the
+      # worst kind of gate: it fails without naming anything. Per-test
+      # `--timeout=60` is what actually catches a hung test; this number only
+      # needs to be comfortably above however long the suite honestly takes.
       - name: Run tests
-        timeout-minutes: 10
+        timeout-minutes: 20
         run: |
           cd backend
           python -m pytest tests/ -v --tb=short --timeout=60 --timeout-method=thread -n auto
