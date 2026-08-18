@@ -10,6 +10,10 @@
 
     **You are always told.** The upload dialog says, per file, which of your library files was used instead and under what name, or that a file's missing contents were just restored — and a notification says the same as the dialog closes, so the answer does not vanish with it. Dropping files straight onto the file manager goes through the same dialog, so it behaves identically.
 
+- **The auto-queue takes a batch too, and each file keeps its own target.** Dropping several files on the auto-queue panel now walks them through the Schedule dialog one at a time, showing only the auto-queue form — the panel already answered "which printer" by not having one. Each item's target model is set from that file's own slicing and cannot be changed, so two files sliced for two different machines keep two different targets in one drop.
+
+- **The auto-queue form no longer offers a target the file cannot run on.** Choosing a model that disagreed with what the file was sliced for did not fail — it produced an item waiting for a printer that would never take it, with nothing on screen explaining the wait. Where the file's own model is known, it is now the only target offered.
+
 - **Drop as many files as you like on a printer or its queue.** They go into that printer's queue, one Schedule dialog per file with a `2 / 5` counter — the same run the library's bulk Schedule already uses. Every file gets its own dialog because plates, filament mapping and print options are exactly what differs between two files; carrying them over would be wrong rather than convenient.
 
     The dialog shows the printer you dropped on, ticked and fixed — it says where the print is going rather than leaving the question out, and there is no printer picker or auto-queue choice to make, because dropping on that card already answered both.

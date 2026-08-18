@@ -903,7 +903,6 @@ export default {
     howToEnable: 'Як увімкнути',
     incompatibleFile: 'Цей файл було нарізано для {{slicedFor}}, але цей принтер - {{printerModel}}',
     dropRawGcode: '{{filename}} — це сирий .gcode, а принтерам Bambu потрібен контейнер .gcode.3mf. Переекспортуйте зі слайсера.',
-    dropOneAtATime: '{{filename}} не взято — сюди можна класти по одному файлу.',
     dropNoGcodeInside: '{{filename}} не нарізаний — усередині модель, а не готовий G-code. Спершу наріжте його.',
     dropWrongFormat: '{{filename}} надрукувати не можна — приймаються лише нарізані файли .gcode.3mf.',
     dropToPrint: 'Перетягніть для друку',

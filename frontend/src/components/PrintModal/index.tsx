@@ -76,6 +76,7 @@ export function PrintModal({
   initialDispatchMode,
   lockDispatchMode,
   lockPrinterSelection,
+  lockAutoTarget,
 }: PrintModalProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -458,6 +459,17 @@ export function PrintModal({
 
   // Get sliced_for_model from archive or library file
   const slicedForModel = archiveDetails?.sliced_for_model || libraryFileDetails?.sliced_for_model || null;
+
+  // ⚠️ The file's model arrives asynchronously, so the target cannot be seeded
+  // from props — it is filled in when the details land. Only when pinned: a
+  // normal open leaves the empty "detect from the file" value, which is the
+  // long-standing behaviour and lets the backend decide.
+  useEffect(() => {
+    if (!lockAutoTarget || !slicedForModel) return;
+    setAutoModeOptions((prev) =>
+      prev.target_model === slicedForModel ? prev : { ...prev, target_model: slicedForModel },
+    );
+  }, [lockAutoTarget, slicedForModel]);
 
   // Check swap compatibility
   const swapCompatible = archiveDetails?.swap_compatible || libraryFileDetails?.swap_compatible || false;
@@ -1313,6 +1325,7 @@ export function PrintModal({
                 onChange={setAutoModeOptions}
                 printers={printers}
                 slicedForModel={slicedForModel}
+                locked={lockAutoTarget}
               />
             )}
 

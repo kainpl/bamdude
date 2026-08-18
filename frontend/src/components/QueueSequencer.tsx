@@ -25,6 +25,9 @@ interface QueueSequencerProps {
   initialDispatchMode?: 'specific' | 'auto';
   /** Hide the specific/auto toggle when the drop target already implies it. */
   lockDispatchMode?: boolean;
+  /** Pin each file's auto-queue target to its own ``sliced_for_model``. Per
+   *  file, not per run — two dropped files can be sliced for two machines. */
+  lockAutoTarget?: boolean;
 }
 
 /**
@@ -53,6 +56,7 @@ export function QueueSequencer({
   initialDispatchMode,
   lockDispatchMode,
   lockPrinterSelection,
+  lockAutoTarget,
 }: QueueSequencerProps) {
   const [index, setIndex] = useState(0);
 
@@ -76,6 +80,7 @@ export function QueueSequencer({
       initialDispatchMode={initialDispatchMode}
       lockDispatchMode={lockDispatchMode}
       lockPrinterSelection={lockPrinterSelection}
+      lockAutoTarget={lockAutoTarget}
       sequence={files.length > 1 ? { current: index + 1, total: files.length } : undefined}
       onSuccess={() => {
         queuedRef.current = true;

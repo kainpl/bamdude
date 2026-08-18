@@ -62,6 +62,17 @@ export interface PrintModalProps {
    *  untickable. Used by drops onto a printer or its queue, where the target
    *  chose the printer but the dialog should still say so. */
   lockPrinterSelection?: boolean;
+  /** Pin the auto-queue target to the file's own ``sliced_for_model`` and stop
+   *  the operator changing it.
+   *
+   *  ⚠️ Sets the target EXPLICITLY rather than leaving it empty. Empty means
+   *  "let the backend work it out from the 3MF", which usually lands on the
+   *  same answer — but the dialog then shows a blank where the constraint is,
+   *  and a run of ten dropped files would say nothing about what any of them is
+   *  waiting for. A file with no ``sliced_for_model`` keeps the empty
+   *  auto-detect value; there is nothing to pin, and inventing one would be
+   *  worse than deferring to the parse. */
+  lockAutoTarget?: boolean;
 }
 
 /**

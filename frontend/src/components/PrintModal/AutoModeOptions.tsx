@@ -11,6 +11,8 @@ interface AutoModeOptionsProps {
   printers: Printer[] | undefined;
   /** Suggested model from the sliced 3MF — pre-selects when target_model is null. */
   slicedForModel?: string | null;
+  /** The target came from the file, not the operator — show it, do not offer it. */
+  locked?: boolean;
 }
 
 /**
@@ -19,16 +21,27 @@ interface AutoModeOptionsProps {
  * to any matching idle printer; backend auto-extracts target_model and
  * required filaments from the 3MF when target_model is left empty.
  */
-export function AutoModeOptions({ options, onChange, printers, slicedForModel }: AutoModeOptionsProps) {
+export function AutoModeOptions({ options, onChange, printers, slicedForModel, locked = false }: AutoModeOptionsProps) {
   const { t } = useTranslation();
 
+  // ⚠️ A file sliced for one model must not offer another as its target.
+  // The auto-queue router filters on target_model at dispatch, so picking a
+  // model the file cannot run on does not fail — it produces an item that waits
+  // for a printer that will never take it, with nothing on screen saying why.
+  // When the file's own model is known, that is the only honest option; the
+  // empty "detect from the file" entry above already means the same thing.
+  //
+  // A file sliced for a model this farm does not own leaves the list empty, and
+  // that is the truthful answer rather than a menu of wrong ones.
   const availableModels = useMemo(() => {
     const models = new Set<string>();
     (printers ?? []).forEach((p) => {
       if (p.model) models.add(p.model);
     });
-    return [...models].sort();
-  }, [printers]);
+    const all = [...models].sort();
+    if (!slicedForModel) return all;
+    return all.filter((m) => m.toLowerCase() === slicedForModel.toLowerCase());
+  }, [printers, slicedForModel]);
 
 
   return (
@@ -46,7 +59,8 @@ export function AutoModeOptions({ options, onChange, printers, slicedForModel }:
         <select
           value={options.target_model ?? ''}
           onChange={(e) => onChange({ ...options, target_model: e.target.value || null })}
-          className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white px-2 py-1.5 text-sm"
+          disabled={locked}
+          className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white px-2 py-1.5 text-sm disabled:opacity-70 disabled:cursor-not-allowed"
         >
           <option value="">
             {slicedForModel

@@ -8,7 +8,8 @@ import { partitionDroppedFiles, dropRejectionKey } from '../../utils/printableDr
 import { isPrintable } from '../../lib/fileTags';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
-import { PrintModal } from '../PrintModal';
+import { QueueSequencer } from '../QueueSequencer';
+import type { SequencedFile } from '../QueueSequencer';
 
 /**
  * Top-of-page panel that surfaces pending auto-queue items — the router
@@ -30,7 +31,9 @@ export function AutoQueuePanel() {
   // router picks one at dispatch).
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [isDropUploading, setIsDropUploading] = useState(false);
-  const [printAfterUpload, setPrintAfterUpload] = useState<{ id: number; filename: string } | null>(null);
+  // Files just dropped on the panel, waiting to go through the Schedule dialog
+  // one at a time — the same run the printer cards and the library use.
+  const [droppedForQueue, setDroppedForQueue] = useState<SequencedFile[] | null>(null);
   const dragCounterRef = useRef(0);
 
   const { data: items } = useQuery({
@@ -127,34 +130,36 @@ export function AutoQueuePanel() {
     for (const { file: bad, rejection } of rejected) {
       showToast(t(dropRejectionKey(rejection), { filename: bad.name }), 'error');
     }
-    const file = candidates[0];
-    for (const extra of candidates.slice(1)) {
-      showToast(t('printers.dropOneAtATime', { filename: extra.name }), 'error');
-    }
-    if (!file) return;
+    if (candidates.length === 0) return;
 
     setIsDropUploading(true);
     try {
-      const result = await api.uploadLibraryFile(file, null);
-      if (result.outcome !== 'created') {
-        showToast(t('fileManager.dedupUsedExisting', { name: result.filename }), 'info');
+      // ⚠️ Every candidate, not just the first — this was the last drop zone
+      // still taking files[0]. Each goes through the same deduplication as any
+      // upload, so re-dropping a file the library has reuses that row.
+      const queued: SequencedFile[] = [];
+      for (const candidate of candidates) {
+        try {
+          const result = await api.uploadLibraryFile(candidate, null);
+          if (result.outcome !== 'created') {
+            showToast(t('fileManager.dedupUsedExisting', { name: result.filename }), 'info');
+          }
+          if (!isPrintable(result)) {
+            if (result.outcome === 'created') await api.deleteLibraryFile(result.id).catch(() => {});
+            showToast(t('printers.dropNoGcodeInside', { filename: candidate.name }), 'error');
+            continue;
+          }
+          queued.push({ id: result.id, name: result.filename });
+        } catch {
+          showToast(t('common.uploadFailed'), 'error');
+        }
       }
-      // ⚠️ The NAME cannot prove a 3MF holds sliced G-code — only the parse
-      // can, and the upload response carries its answer. A plain model .3mf
-      // passes the drop gate and would otherwise be queued unprintable.
-      if (!isPrintable(result)) {
-        if (result.outcome === 'created') await api.deleteLibraryFile(result.id).catch(() => {});
-        showToast(t('printers.dropNoGcodeInside', { filename: file.name }), 'error');
-        return;
-      }
-      // No printer compatibility check here — auto-queue router filters
-      // by sliced_for_model + target_model at dispatch time, and the
-      // operator picks target constraints in the modal anyway.
+      // ⚠️ Still NO sliced_for_model check against a printer here, and that is
+      // right: auto-queue has no target machine to compare against. The model
+      // constraint is instead pinned onto each item from its own file, below.
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-stats'] });
-      setPrintAfterUpload({ id: result.id, filename: result.filename });
-    } catch {
-      showToast(t('common.uploadFailed'), 'error');
+      if (queued.length > 0) setDroppedForQueue(queued);
     } finally {
       setIsDropUploading(false);
     }
@@ -287,16 +292,16 @@ export function AutoQueuePanel() {
           </div>
         </div>
       )}
-      {printAfterUpload && (
-        <PrintModal
-          mode="add-to-queue"
-          libraryFileId={printAfterUpload.id}
-          archiveName={printAfterUpload.filename}
+      {droppedForQueue && (
+        <QueueSequencer
+          files={droppedForQueue}
+          // The panel IS the auto-queue, so only that form is shown — and each
+          // item's target is its own file's model, fixed.
           initialDispatchMode="auto"
           lockDispatchMode
-          onClose={() => setPrintAfterUpload(null)}
-          onSuccess={() => {
-            setPrintAfterUpload(null);
+          lockAutoTarget
+          onDone={() => {
+            setDroppedForQueue(null);
             queryClient.invalidateQueries({ queryKey: ['auto-queue'] });
             queryClient.invalidateQueries({ queryKey: ['queue'] });
           }}
