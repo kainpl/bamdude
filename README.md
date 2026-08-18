@@ -267,7 +267,7 @@ The channel exists only on that newer generation, and BamDude decides by asking 
 - **One-click "Apply to project"** in print plan + BOM totals rows — writes plate count, parts count, and budget (filament + materials cost) into the project's target fields; project edit modal also pre-fills from the plan + shows a "From plan: N" hint to re-sync after changes
 - Link folders or individual files from the File Manager — **many-to-many** (a file or folder can belong to several projects at once)
 - Per-chip unlink (`×` on each project chip) for granular detach
-- **Duplicate a project** — copies the plan, the file links, the BOM and the targets under a new name, leaving the print history behind; you choose whether to carry the notes
+- **Duplicate a project** — copies the print plan, the file and folder links, the BOM, the targets, notes, tags, budget and cover under a new name, and leaves the print history behind. The copy always starts **active**, whatever the original's status, because duplicating one is how new work begins; sub-projects come along if you ask
 - Import/Export as ZIP or JSON
 
 </td>
