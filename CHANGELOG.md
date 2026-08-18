@@ -1,5 +1,19 @@
 ## [Unreleased]
 
+## [0.5.4] - 2026-08-18
+
+Image: `ghcr.io/kainpl/bamdude:0.5.4` / `kainpl/bamdude:0.5.4` (`:latest` tracks this).
+
+**The same file is never stored twice.** Send BamDude a file it already has — upload it, drop it on a printer, import it with a project, slice the same model again, send it from the slicer — and it uses the copy already in your library. It applies everywhere a file can arrive, including linked folders on a NAS, which were outside this entirely. You are told which of your files was used instead, whatever you were doing carries on, and duplicates that piled up before this existed are cleared into the trash once, on upgrade.
+
+**A farm can load many printers at once.** Drop a whole batch of files on a printer, on its queue or on the auto-queue and each one goes through the Schedule dialog in turn — before, four of five files vanished without a word. There is a file picker on those cards now too: browse the library, tick files across as many folders as you like, send the lot. And one printer's queue can be copied onto other printers of the same model, which is the difference between one dialog and forty.
+
+**The Telegram bot became somewhere you can actually work from.** Send it a file and print it. Skip a failed object from the notification that told you about it. Get the camera snapshot with pause, resume and stop under it. Its "Print from Library" list was showing unsliced models and hiding the files you could actually print — it now decides that by looking inside the file, not at its name.
+
+**Your printer's errors speak Ukrainian, and name the right part.** Bambu ships sixteen languages and Ukrainian is not one of them, so the whole catalogue — every code, for every machine — was translated. Along the way: descriptions now exist for every printer rather than the seven Bambu Studio packages, the text matches the machine that reported it instead of a community list from 2023, an error BamDude cannot name is shown anyway instead of hidden, and the title stops blaming the wrong module.
+
+Elsewhere, a run of things that were quietly wrong: the archive trash never deleted a single file in its life, a restart closed a running print as finished, a printer with any queue history could not be deleted at all, spools were written off as empty because the AMS reported a zero, and a command a printer had already carried out could be sent to it again hours later.
+
 ### Added
 
 - **The same file is never stored twice.** Send a file BamDude already has — upload it, post it through the API, drop it on a printer or a queue, import it with a project, slice the same model again, send it from the slicer — and it uses the copy already in your library instead of making another one. Not a refusal and not a warning badge: whatever you were doing carries on, with the file that is already there.

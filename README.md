@@ -216,6 +216,9 @@ The channel exists only on that newer generation, and BamDude decides by asking 
 
 ### Scheduling & Automation
 - Per-printer queues with status tracking (idle/printing/paused/error)
+- **Load a queue from the library** — a file picker on the printer card, the per-printer queue and the auto-queue: folder tree on the left, small cards on the right, and ticks that survive moving between folders, so a batch assembled from three folders is one selection. Only files that can actually run are offered — sliced, and on a printer only those sliced for that machine
+- **Copy one printer's queue onto other printers of the same model** — pick what and where, and the Schedule dialog opens once per item with every chosen printer pinned; filament is mapped per printer inside that one dialog, so three items across four printers is three dialogs, not twelve. A print started outside the queue counts as part of it
+- **Drop a batch of files** on a printer, its queue or the auto-queue — each file gets its own Schedule dialog with a `2 / 5` counter, and anything that cannot be printed says why, by name. On the auto-queue each item's target model comes from its own slicing and cannot be changed
 - **Queue organization** — group prints into collapsible batches, drag-reorder by grip handle, and sort the Printers page by ETA; the timeline shows only committed schedules
 - **Per-printer Maintenance Mode** — park a printer out of service (drops out of dispatch, scheduler, auto-drying, and metrics, and disconnects MQTT) without deleting it
 - **Archive a printer** — soft-retire a sold/decommissioned printer: it disappears from the Printers page, every picker, queues, dispatch, the scheduler, and MQTT, while its full print history is kept. Blocked while printing; cancels the printer's pending queue items. Restore or permanently delete it under Settings → Printing → Archived printers. Distinct from Maintenance Mode, which only parks a printer temporarily and keeps its card visible
@@ -225,6 +228,7 @@ The channel exists only on that newer generation, and BamDude decides by asking 
 - **Swap macro auto-execution** — `swap_mode_start` before print, `swap_mode_change_table` after print, with ACK + stg_cur completion tracking, queue pause on failure
 - **Quick Vibration Check toggle** — per-job toggle; when disabled, 3MF gcode post-processor comments out `M970` commands, recalculates MD5 sidecars, repacks archive
 - **Auto-Print G-code Injection** — per-job toggle that splices operator-defined snippets into the plate gcode at `; MACHINE_START_GCODE_END` (start) / EOF (end), with `{placeholder}` substitution from 3MF header (incl. PrusaSlicer→Bambu aliases). Snippets stored as per-printer-model JSON in settings; folded into the same single 3MF open/repack cycle as Quick Vibration Check so multi-plate 50+ MB files aren't unzipped twice
+- **MQTT recording to a file** — start and stop it from the printer's menu, keep it running with the tab closed, and download or attach it to a support bundle afterwards. What a printer actually says, without running a script beside BamDude
 - **G-code macros** — execute from printer menu, ACK-based MQTT confirmation, `stg_cur` completion tracking, real-time status on printer card
 - **Bulk firmware updates** — a console that takes a whole set of printers, groups them by model, fetches each model's firmware once into a shared store and fans the transfer out under a concurrency cap; printers that are mid-print are skipped rather than interrupted, and one failure does not abort the batch
 - Model-aware maintenance types with history tracking and Excel export
@@ -251,6 +255,7 @@ The channel exists only on that newer generation, and BamDude decides by asking 
 - STL / OBJ thumbnail generation — shaded surfaces with Lambertian lighting + transparent background so cards "float" on whatever theme is rendering them
 - Folder structure with drag-and-drop
 - Print directly or add to queue
+- **The same file is never stored twice** — every path a file can arrive by (upload, API, drop, project import, slicer output, Send-to-Printer, and linked NAS folders) checks the content hash first and reuses the library row that already holds those bytes. You are told which file was used instead; a row whose bytes went missing gets them back in place, keeping its name, folder, notes, tags, projects and print history. Restoring from the trash asks before it recreates a duplicate
 - Duplicate detection
 - **Trash bin with restore** — soft-delete with configurable retention (default 30 days), background sweeper hard-deletes past the window, opt-in scheduled auto-purge for old library files + archives; trash UIs render thumbnails and a unified split-button (trash + caret dropdown for purge-old)
 
@@ -262,6 +267,7 @@ The channel exists only on that newer generation, and BamDude decides by asking 
 - **One-click "Apply to project"** in print plan + BOM totals rows — writes plate count, parts count, and budget (filament + materials cost) into the project's target fields; project edit modal also pre-fills from the plan + shows a "From plan: N" hint to re-sync after changes
 - Link folders or individual files from the File Manager — **many-to-many** (a file or folder can belong to several projects at once)
 - Per-chip unlink (`×` on each project chip) for granular detach
+- **Duplicate a project** — copies the plan, the file links, the BOM and the targets under a new name, leaving the print history behind; you choose whether to carry the notes
 - Import/Export as ZIP or JSON
 
 </td>
