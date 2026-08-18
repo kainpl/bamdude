@@ -130,6 +130,38 @@ class LibraryPurgeRunResult:
         }
 
 
+async def _cancel_pending_queue_items(db: AsyncSession, library_file_id: int) -> None:
+    """Cancel pending queue items whose source file is on its way out.
+
+    A queue row that outlives its file cannot dispatch, and until now it was
+    left to find that out at the printer — days later, as "Library file not
+    found" — or, on the external branch below, was deleted outright with no
+    error and no history (upstream #2819, which had both faces of this).
+
+    ⚠️ **Only ``pending`` rows.** ``printing`` is a race the printer-side fail
+    path catches anyway, and completed / failed / cancelled rows are history:
+    rewriting those would edit the record of what actually happened.
+
+    Twin of ``archive_purge.ArchivePurgeService._cancel_pending_queue_items``,
+    which does the same for a trashed archive. Both leave the row visible with
+    a reason rather than removing it, because a job that vanished silently is
+    indistinguishable from one that was never queued.
+
+    Does not commit; the caller owns the transaction.
+    """
+    from backend.app.models.print_queue import PrintQueueItem
+
+    result = await db.execute(
+        select(PrintQueueItem).where(
+            PrintQueueItem.library_file_id == library_file_id,
+            PrintQueueItem.status == "pending",
+        )
+    )
+    for item in result.scalars().all():
+        item.status = "cancelled"
+        item.waiting_reason = "Source file deleted"
+
+
 class LibraryTrashService:
     """Manages the trash retention sweeper and admin-triggered bulk purges."""
 
@@ -581,6 +613,7 @@ class LibraryTrashService:
             await db.delete(file)
             return False
 
+        await _cancel_pending_queue_items(db, file.id)
         file.deleted_at = datetime.now(timezone.utc)
         if detach_folder:
             file.folder_id = None

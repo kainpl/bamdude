@@ -6,6 +6,12 @@
 
 ### Fixed
 
+- **A print finishing no longer closes somebody else's job.** BamDude found the job to close by printer and "currently printing" alone — nothing tied the completion to the job it belonged to. So any completion the printer sent, including its own calibration runs, closed whichever job was running. That job was marked finished while the printer was still working, left the queue into history, and **stopped the rest of its batch**, because a queue will not dispatch onto a printer it believes is busy. The completion is now checked against the file the job was sent with; when they disagree the job is left alone, and when there is nothing to check against it closes as before.
+
+- **A photo of a print that has no 3MF is filed with that print.** Prints started from a printer's own internal library arrive without a downloadable file, and for those the photo folder was worked out to be the data directory itself — so uploaded photos went to the top of your data folder. Worse, the automatic finish photo had its own idea of where to put them, so the two disagreed and neither could find the other's. Both now ask the same question and get the same answer.
+
+- **Deleting a library file no longer leaves its queued jobs to fail at the printer.** Jobs queued against a file that was then deleted either sat waiting to fail days later with "Library file not found", or — for files in a linked folder — disappeared with no error and no trace. They are now cancelled with a reason, and stay visible, the same as when the archive behind a job is deleted. Jobs already printing or finished are untouched.
+
 - **A manually installed BamDude could have a dead Virtual Printer and no way to tell.** The Virtual Printer listens on ports below 1024, which a service running as a normal user is not allowed to open without being granted the right. The install script has granted it for months; the systemd unit template shipped for manual installs never did. Everything else worked, so the only symptom was that no slicer could find the printer, and the only trace one line in the journal that reads exactly like an ordinary port conflict.
 
     The template now grants it, and the Virtual Printer's own diagnostic says so out loud: when a port below 1024 fails to open, it checks whether this service is even permitted to open one and tells you the line to add — for systemd or for Docker. It stays quiet when the ports are fine, on macOS and Windows where the permission does not exist, and on hosts that front those ports another way.

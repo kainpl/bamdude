@@ -38,6 +38,7 @@ from backend.app.services.design_settings import overrides_from_config
 from backend.app.services.filament_cost import default_rate_per_kg
 from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
+from backend.app.utils.archive_paths import photos_dir_for
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.safe_path import safe_join_under
 from backend.app.utils.threemf_tools import (
@@ -2521,8 +2522,7 @@ async def upload_photo(
         raise HTTPException(400, "File must be an image (.jpg, .jpeg, .png, .webp)")
 
     # Get archive directory
-    archive_dir = settings.base_dir / Path(archive.file_path).parent
-    photos_dir = archive_dir / "photos"
+    photos_dir = photos_dir_for(archive)
     photos_dir.mkdir(exist_ok=True)
 
     # Generate unique filename
@@ -2568,8 +2568,7 @@ async def get_photo(
     # (served to <img> tags). Without containment it FileResponse-served any
     # file the backend could read (``..%2f..%2fetc%2fpasswd``) — safe_join_under
     # rejects traversal with 400 (path-traversal hardening, GHSA-r2qv).
-    archive_dir = settings.base_dir / Path(archive.file_path).parent
-    photo_path = safe_join_under(archive_dir / "photos", filename)
+    photo_path = safe_join_under(photos_dir_for(archive), filename)
 
     if not photo_path.exists():
         raise HTTPException(404, "Photo not found")
@@ -2611,8 +2610,7 @@ async def delete_photo(
     # UUID-generated name in ``archive.photos``; safe_join_under is
     # defence-in-depth so a future change that drops the membership gate can't
     # reintroduce a traversal-delete.
-    archive_dir = settings.base_dir / Path(archive.file_path).parent
-    photo_path = safe_join_under(archive_dir / "photos", filename)
+    photo_path = safe_join_under(photos_dir_for(archive), filename)
     if photo_path.exists():
         photo_path.unlink()
 

@@ -4672,6 +4672,50 @@ async def on_finish_photo_moment(printer_id: int, data: dict):
         producer_done.set()
 
 
+async def _completion_belongs_to_item(db, queue_item, data: dict) -> bool:
+    """Whether this completion event is the one that closes *queue_item*.
+
+    ⚠️ **Nothing in the MQTT payload identifies a run.** The completion carries
+    a subtask name and no id, and the row is found by printer + ``status
+    ='printing'`` alone — so before this check, *any* completion delivered for a
+    printer closed whichever job was printing on it. The printer's own
+    calibration runs and the tail of a previous job both arrive that way.
+
+    The damage is not a wrong row in a list. A job closed like this is marked
+    completed while the printer is still working, leaves the queue into history,
+    and **strands the rest of its batch**: ``check_queue`` counts a printing row
+    as a busy printer, and nothing else ever closes one, so the queue stops
+    until somebody cancels by hand (upstream #2819 / #2829).
+
+    ⚠️ **Only a positive disagreement refuses.** No archive, no recorded name or
+    no subtask name in the payload is *unverifiable*, not *wrong* — and refusing
+    there would strand the row just as thoroughly, only for a different reason.
+    Comparison goes through :func:`_name_matches_subtask`, which already folds
+    the space/underscore substitution the firmware applies and tolerates the
+    printer truncating a long name; it learned that from our own X2D losing a
+    two-hour print on restart, and it is the reason this guard can be added
+    without repeating that lesson.
+    """
+    subtask = (data.get("subtask_name") or "").strip()
+    if not subtask or not queue_item.archive_id:
+        return True
+    from backend.app.models.archive import PrintArchive as _PAMatch
+    from backend.app.services.print_reconciliation import _name_matches_subtask
+
+    archive = await db.get(_PAMatch, queue_item.archive_id)
+    if archive is None or not (archive.print_name or archive.filename):
+        return True
+    if _name_matches_subtask(archive, subtask):
+        return True
+    logging.getLogger(__name__).warning(
+        "Completion for %r does not match queue item %s (dispatched as %r) — leaving the row alone",
+        subtask,
+        queue_item.id,
+        archive.print_name or archive.filename,
+    )
+    return False
+
+
 async def on_print_complete(printer_id: int, data: dict):
     """Handle print completion - update the archive status."""
     import time
@@ -5469,6 +5513,8 @@ async def on_print_complete(printer_id: int, data: dict):
                     [(i.id, i.archive_id, i.library_file_id) for i in printing_items],
                 )
             queue_item = printing_items[0] if printing_items else None
+            if queue_item is not None and not await _completion_belongs_to_item(db, queue_item, data):
+                queue_item = None
             if queue_item:
                 queue_status = data.get("status", "completed")
                 # MQTT sends "aborted" for cancelled prints; normalise to
@@ -6126,13 +6172,12 @@ async def on_print_complete(printer_id: int, data: dict):
 
             import uuid
             from datetime import datetime
-            from pathlib import Path
 
-            if archive.file_path:
-                archive_dir = app_settings.base_dir / Path(archive.file_path).parent
-            else:
-                logger.warning("[PHOTO-BG] Archive %s has no file_path, using fallback dir", archive_id)
-                archive_dir = app_settings.archive_dir / str(archive.id)
+            from backend.app.utils.archive_paths import archive_dir_for
+
+            if not archive.file_path:
+                logger.warning("[PHOTO-BG] Archive %s has no file_path, using the per-id folder", archive_id)
+            archive_dir = archive_dir_for(archive)
             photo_filename = None
 
             # Prefer the timelapse last-frame source when a timelapse was recording —
@@ -6383,14 +6428,9 @@ async def on_print_complete(printer_id: int, data: dict):
 
                             # Read finish photo bytes for image attachment (e.g. Pushover)
                             try:
-                                from pathlib import Path
+                                from backend.app.utils.archive_paths import photos_dir_for
 
-                                photo_path = (
-                                    app_settings.base_dir
-                                    / Path(archive.file_path).parent
-                                    / "photos"
-                                    / finish_photo_filename
-                                )
+                                photo_path = photos_dir_for(archive) / finish_photo_filename
                                 if photo_path.exists():
                                     photo_bytes = await asyncio.to_thread(photo_path.read_bytes)
                                     if len(photo_bytes) <= 2_500_000:

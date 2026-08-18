@@ -1450,6 +1450,8 @@ class TestAbortedStatusNormalisation:
         import asyncio
         from unittest.mock import AsyncMock, MagicMock, patch
 
+        from backend.app.models.archive import PrintArchive as _ArchiveForGuard
+
         item = await queue_item_factory(status="printing")
 
         # Build a mock session whose execute returns our item
@@ -1461,6 +1463,13 @@ class TestAbortedStatusNormalisation:
         mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(return_value=mock_result)
         mock_session.commit = AsyncMock()
+        # ⚠️ The completion guard reads the row's archive to check the event is
+        # the one that closes it. Hand it the real archive, and name the print
+        # in the payload below accordingly — a completion for some other print
+        # is now correctly refused, which is what this fixture used to rely on
+        # without meaning to.
+        archive = await db_session.get(_ArchiveForGuard, item.archive_id)
+        mock_session.get = AsyncMock(return_value=archive)
 
         tasks_before = set(asyncio.all_tasks())
 
@@ -1486,8 +1495,8 @@ class TestAbortedStatusNormalisation:
                 item.queue_id,  # queue_id == printer_id
                 {
                     "status": "aborted",
-                    "filename": "test.gcode",
-                    "subtask_name": "Test",
+                    "filename": archive.filename,
+                    "subtask_name": archive.print_name,
                     "timelapse_was_active": False,
                 },
             )
@@ -1546,6 +1555,8 @@ class TestAbortedStatusNormalisation:
         import asyncio
         from unittest.mock import AsyncMock, MagicMock, patch
 
+        from backend.app.models.archive import PrintArchive as _ArchiveForGuard
+
         item = await queue_item_factory(status="printing")
 
         mock_result = MagicMock()
@@ -1556,6 +1567,13 @@ class TestAbortedStatusNormalisation:
         mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(return_value=mock_result)
         mock_session.commit = AsyncMock()
+        # ⚠️ The completion guard reads the row's archive to check the event is
+        # the one that closes it. Hand it the real archive, and name the print
+        # in the payload below accordingly — a completion for some other print
+        # is now correctly refused, which is what this fixture used to rely on
+        # without meaning to.
+        archive = await db_session.get(_ArchiveForGuard, item.archive_id)
+        mock_session.get = AsyncMock(return_value=archive)
 
         tasks_before = set(asyncio.all_tasks())
 
@@ -1581,8 +1599,8 @@ class TestAbortedStatusNormalisation:
                 item.queue_id,  # queue_id == printer_id
                 {
                     "status": "completed",
-                    "filename": "test.gcode",
-                    "subtask_name": "Test",
+                    "filename": archive.filename,
+                    "subtask_name": archive.print_name,
                     "timelapse_was_active": False,
                 },
             )

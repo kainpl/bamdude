@@ -178,7 +178,40 @@ def _name_matches_subtask(archive: PrintArchive, live_subtask_name: str) -> bool
     live = _subtask_norm(live_subtask_name)
     if not live:
         return False
-    return _subtask_norm(archive.print_name or "") == live or _subtask_norm(archive.filename or "") == live
+    return any(
+        _norm_names_match(_subtask_norm(candidate or ""), live) for candidate in (archive.print_name, archive.filename)
+    )
+
+
+# How the printer marks a name it had to cut short. Observed by upstream on real
+# hardware at ~100 characters, but the cut-off is not a fixed count — a name with
+# multibyte characters came back at 98 — so match the marker, never a length.
+_TRUNCATION_MARKER = "..."
+
+
+def _norm_names_match(candidate: str, live: str) -> bool:
+    """Whether two already-normalised names describe the same print.
+
+    Equality is the normal case; :func:`_subtask_norm` has folded away the
+    space/underscore substitution and the sliced-file extension by the time this
+    is called.
+
+    ⚠️ **The printer also truncates a long name and marks the cut with `...`.**
+    A truncated echo has to count as a match, or every print with a long enough
+    name looks like a different print — and downstream that means a queue item
+    that is never closed and a printer whose queue silently stops (upstream
+    #2829). Either side can be the truncated one: the printer truncates what it
+    echoes, and an archive whose own name was recorded from an earlier truncated
+    echo carries the marker too.
+    """
+    if not candidate or not live:
+        return False
+    if candidate == live:
+        return True
+    for full, cut in ((candidate, live), (live, candidate)):
+        if cut.endswith(_TRUNCATION_MARKER) and full.startswith(cut[: -len(_TRUNCATION_MARKER)]):
+            return True
+    return False
 
 
 def _classify(live_state: str, *, file_match: bool, subtask_stale: bool = False) -> str:
