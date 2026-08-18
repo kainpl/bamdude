@@ -1,5 +1,17 @@
 ## [Unreleased]
 
+### Security
+
+- **Four dependency advisories closed.** A high-severity CPU-exhaustion flaw in `js-yaml` (CVE-2026-59870), an XSS in `dompurify` where removing an `IN_PLACE` hook left a detached subtree executable, a denial-of-service in `brace-expansion`, and an infinite loop in `nanoid`. All four are frontend build/runtime dependencies; `npm audit` now reports nothing.
+
+### Fixed
+
+- **The Windows installer can no longer be built from an untested commit.** Publishing a Docker image already refused unless CI was green for that exact commit, but the installer — the file people actually download from a release — skipped that check entirely. It now passes the same gate, which lives in one place instead of two so the two cannot drift apart.
+
+### Changed
+
+- **The `:dev` image now tracks the latest pre-release instead of the latest commit.** It used to be rebuilt on every push, by a workflow that ran alongside the tests rather than after them — so the one image aimed at testers was the one image nobody checked, and a commit with failing tests published it anyway. It is now published together with each beta, and passes the same green-CI gate as a stable release. Anyone pinning `:dev` gets fewer updates and tested ones.
+
 ## [0.5.4] - 2026-08-18
 
 Image: `ghcr.io/kainpl/bamdude:0.5.4` / `kainpl/bamdude:0.5.4` (`:latest` tracks this).

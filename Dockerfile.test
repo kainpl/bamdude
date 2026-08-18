@@ -1,5 +1,13 @@
 # Test image for running backend and frontend tests
-FROM python:3.13-slim AS backend-test
+#
+# ⚠️ **3.12, the same as everywhere else.** This said 3.13 for a while, which
+# meant the one suite that runs inside a container — the closest thing here to
+# "does it work when shipped" — was the only place testing a Python the product
+# never runs on. Production is `python:3.12-slim-trixie` (Dockerfile), CI pins
+# 3.12, `requires-python` floors at 3.12, and the Windows installer bundles
+# 3.12. A test runtime ahead of the shipped one can only do two things: pass
+# something that would fail for users, or fail something that works for them.
+FROM python:3.12-slim AS backend-test
 
 WORKDIR /app
 
