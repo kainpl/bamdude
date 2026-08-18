@@ -116,12 +116,21 @@ export function hasTag(tags: string[] | null | undefined, tag: string): boolean 
  * Does this file hold G-code a printer can actually run.
  *
  * ⚠️ **Called ``isSliced`` until 2026-08-18, and that name collided with the
- * data.** ``sliced`` is a real tag with its own meaning — provenance, "came out
- * of BamDude's slicer sidecar" — so the word named two different things, and
- * this predicate did not read the tag it was named after. It reads ``gcode``,
- * the content-derived answer (`sliced_gcode_in_3mf` looks inside the container;
- * the filename cannot be trusted). The vault invariant was already called
- * *printable-is-decided-by-content*, so the term was settled; the code caught up.
+ * data.** ``sliced`` is a real tag with its own meaning, and the two are drawn
+ * from different evidence:
+ *
+ * - ``gcode`` comes from **content** — ``sliced_gcode_in_3mf`` opens the
+ *   container and looks. This predicate reads that one.
+ * - ``sliced`` comes from **provenance** — ``source_type`` being ``sliced`` or
+ *   ``archive`` (our slicer sidecar, calibration assets, a file saved out of a
+ *   print archive, VP / SD-card imports that carry a source). It is a readiness
+ *   claim made from where a file came from, not from what is inside it.
+ *
+ * The sets do not coincide: a ``.gcode.3mf`` a user uploaded by hand carries
+ * ``gcode`` and NOT ``sliced``, because it has no ``source_type``. So the old
+ * name pointed at the narrower, differently-derived tag while reading the other
+ * — and printability is decided by content, which the vault invariant
+ * *printable-is-decided-by-content* had already settled. The code caught up.
  *
  * The tag keeps its name — it is a seeded row in ``library_tags`` with
  * ``code='sliced'``, and renaming it means a migration plus every operator's
