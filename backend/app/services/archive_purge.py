@@ -237,11 +237,26 @@ class ArchivePurgeService:
         for archive_id in ids:
             if await self.hard_delete_now(archive_id):
                 deleted += 1
-        # Defensive sweep — if delete_archive somehow left rows behind, drop
-        # the orphaned ``print_archives`` row so the sweeper doesn't get stuck
-        # re-processing it forever.
+        # Drop any row ``delete_archive`` left behind, so the sweeper cannot get
+        # stuck re-processing the same id every fifteen minutes forever.
+        #
+        # ⚠️ **This is a liveness guard, not a success signal — and it once
+        # hid the very failure it was written for.** From v0.4.2 until
+        # 2026-08-18 ``delete_archive`` refused every trashed archive and
+        # removed nothing; this statement quietly took the rows anyway, so the
+        # trash appeared to work while never freeing a byte. The honest reading
+        # is ``deleted`` below: when it comes back lower than ``len(ids)``, the
+        # on-disk cleanup did NOT run for the difference, and that is a bug to
+        # chase rather than a tidy-up that succeeded.
         await db.execute(delete(PrintArchive).where(PrintArchive.id.in_(ids), PrintArchive.deleted_at.isnot(None)))
         await db.commit()
+        if deleted < len(ids):
+            logger.warning(
+                "Archive trash sweeper: %d of %d archive(s) had their row removed without on-disk cleanup — "
+                "their files are still on disk; scripts/prune_orphan_archive_files.py can find them",
+                len(ids) - deleted,
+                len(ids),
+            )
         logger.info("Archive trash sweeper: hard-deleted %d archive(s) past %d-day retention", deleted, retention)
         return deleted
 

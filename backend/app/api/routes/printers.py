@@ -632,27 +632,20 @@ async def delete_printer(
         # a slow request, and a failure part-way leaves the archives it already
         # removed removed. That is the end state the caller asked for anyway,
         # and retrying finishes the job.
+        # ⚠️ **Trashed archives included, and there is no bulk fallback behind
+        # this loop.** A "defensive" statement mopping up whatever the service
+        # left is exactly what hid the archive-trash bug for four months: the
+        # rows vanished, so the feature looked like it worked while every file
+        # stayed on disk. If ``delete_archive`` ever stops removing a row, the
+        # test asserting none are left has to be the thing that says so.
+        # ``Printer.archives`` still cascades on ``db.delete(printer)`` below,
+        # so a stuck row cannot make the printer undeletable.
         archive_service = ArchiveService(db)
-        active_ids = (
-            (
-                await db.execute(
-                    select(PrintArchive.id).where(
-                        PrintArchive.printer_id == printer_id,
-                        PrintArchive.deleted_at.is_(None),
-                    )
-                )
-            )
-            .scalars()
-            .all()
+        archive_ids = (
+            (await db.execute(select(PrintArchive.id).where(PrintArchive.printer_id == printer_id))).scalars().all()
         )
-        for archive_id in active_ids:
+        for archive_id in archive_ids:
             await archive_service.delete_archive(archive_id)
-        # Whatever is left is already in the archive trash, and `delete_archive`
-        # declines to touch a trashed row. Those rows still cannot outlive the
-        # printer, so they go by statement — their files are left behind exactly
-        # as the trash sweeper leaves them today (see the vault note
-        # "Кошик архівів не видаляє файли").
-        await db.execute(sql_delete(PrintArchive).where(PrintArchive.printer_id == printer_id))
     else:
         # Orphan the archives instead of deleting them
         from sqlalchemy import update

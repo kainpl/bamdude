@@ -2987,8 +2987,19 @@ class ArchiveService:
         return {"materials": materials, "colors": colors, "tags": tags}
 
     async def delete_archive(self, archive_id: int) -> bool:
-        """Delete an archive and its files."""
-        archive = await self.get_archive(archive_id)
+        """Hard-delete an archive: its row, and its files on disk.
+
+        ⚠️ **``include_trashed=True`` is the whole of this function working at
+        all.** Every trash-side caller hands it an archive that is *already*
+        soft-deleted — ``hard_delete_now`` says so in its own docstring — and
+        ``get_archive`` drops rows with ``deleted_at`` by default. So from
+        ``fb448f9d`` (v0.4.2) until this was noticed, it answered ``False`` and
+        did nothing: the retention sweeper removed rows through its own fallback
+        statement and leaked every file, and "Empty trash" removed nothing at
+        all. A hard delete is by definition about a row on its way out; refusing
+        the ones already on their way out was backwards.
+        """
+        archive = await self.get_archive(archive_id, include_trashed=True)
         if not archive:
             return False
 

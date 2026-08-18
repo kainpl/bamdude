@@ -115,6 +115,12 @@
 
 ### Fixed
 
+- **The archive trash now actually deletes.** It never has. Emptying it reported *0 deleted* and removed nothing at all; **Delete permanently** on a single archive answered an error and left everything in place; and the 30-day retention sweeper removed the database rows while leaving every 3MF, preview, timelapse and photo on disk forever. So the one feature whose job is reclaiming space had, since it shipped in 0.4.2, reclaimed none — and the confirmation dialog was promising deletion "from disk" the whole time.
+
+    All three work now. Deleting an archive still only moves it to the trash, and restoring is unchanged.
+
+    **Files already left behind are still there.** BamDude will not go and delete them unasked — three months of leftovers is not something to clean up silently. `scripts/prune_orphan_archive_files.py` lists exactly what is no longer referenced and removes it only with `--apply`; run it without that flag first to see what it found.
+
 - **The Clear plate button is back on small printer cards.** On the compact (S) fleet view it stepped aside for the green **Clear Plate & Start Next** prompt — which only exists on a full-size card, so it made room for nothing and left a finished printer with no way to clear its plate without opening it. What decided it was the queue, not the machine: a printer with work waiting lost the button while an idle one kept it, which is why it read as "always there on one model, never on another".
 
 - **Deleting a printer no longer fails once it has queue history.** Removing a printer answered *500 Internal Server Error* whenever anything had ever been in its queue — not just work still waiting, any row at all, including prints finished weeks ago. The only way through was to clear the queue by hand first, and nothing on screen said so. Reported from a farm where one printer refused to go while two others deleted fine minutes apart.

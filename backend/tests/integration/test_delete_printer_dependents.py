@@ -171,6 +171,52 @@ async def test_the_archive_files_go_with_the_rows(async_client: AsyncClient, pri
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+async def test_an_archive_already_in_the_trash_goes_too(async_client: AsyncClient, printer_factory, db_session):
+    """Its files as well as its row.
+
+    ⚠️ There is deliberately no bulk statement behind the per-archive loop, so
+    this is the only thing asserting the rows actually go. A fallback sweep is
+    what let the archive trash look healthy for four months while it removed
+    nothing from disk.
+    """
+    from datetime import datetime, timezone
+
+    from backend.app.core.config import settings
+    from backend.app.models.archive import PrintArchive
+
+    printer = await printer_factory(name="Doomed six")
+    printer_id = printer.id
+    archive_dir = settings.archive_dir / "20260818_150000_trashed"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    threemf = archive_dir / "job.gcode.3mf"
+    threemf.write_bytes(b"trashed but still on disk")
+    db_session.add(
+        PrintArchive(
+            printer_id=printer_id,
+            file_path=str(threemf.relative_to(settings.base_dir)),
+            file_size=threemf.stat().st_size,
+            print_name="job",
+            filename="job.gcode.3mf",
+            status="completed",
+            deleted_at=datetime.now(timezone.utc),
+        )
+    )
+    await db_session.commit()
+
+    response = await async_client.delete(f"/api/v1/printers/{printer_id}?delete_archives=true")
+
+    assert response.status_code == 200, response.text
+    assert not threemf.exists()
+    assert not archive_dir.exists()
+    db_session.expire_all()
+    left = await db_session.execute(
+        select(func.count()).select_from(PrintArchive).where(PrintArchive.printer_id == printer_id)
+    )
+    assert left.scalar() == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 async def test_a_file_another_printer_still_points_at_survives(async_client: AsyncClient, printer_factory, db_session):
     """Disk storage is deduplicated by content hash, so one folder can back
     archives on several printers. Deleting one of those printers must not take
