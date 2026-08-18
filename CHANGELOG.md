@@ -8,7 +8,7 @@
 
     **A file whose contents went missing gets them back.** If BamDude still lists a file but the bytes are gone from disk, sending that same file again restores it in place — keeping its name, folder, notes, tags, projects and print history — rather than starting a fresh entry with none of that.
 
-    **You are always told.** The upload dialog says, per file, which of your library files was used instead and under what name, or that a file's missing contents were just restored.
+    **You are always told.** The upload dialog says, per file, which of your library files was used instead and under what name, or that a file's missing contents were just restored — and a notification says the same as the dialog closes, so the answer does not vanish with it. Dropping files straight onto the file manager goes through the same dialog, so it behaves identically.
 
 - **Restoring a file from the trash asks first if it would make a duplicate.** Everything else now refuses to store the same file twice, but taking a file back out of the trash was the one way left to end up with two copies — it simply put the file back, whatever else was in the library by then.
 

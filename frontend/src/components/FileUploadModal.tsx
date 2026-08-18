@@ -12,6 +12,7 @@ import {
   Image,
 } from 'lucide-react';
 import { api } from '../api/client';
+import { useToast } from '../contexts/ToastContext';
 import type { LibraryFileUploadResponse } from '../api/client';
 import { Button } from './Button';
 
@@ -53,6 +54,7 @@ interface FileUploadModalProps {
 
 export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept, initialFiles }: FileUploadModalProps) {
   const { t } = useTranslation();
+  const { showToast } = useToast();
   const [files, setFiles] = useState<UploadFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -90,6 +92,12 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
 
   const uploadFiles = async (filesToUpload: UploadFile[]) => {
     setIsUploading(true);
+    // Collected across the whole batch and announced once at the end. A toast
+    // per file would stack five deep on a five-file drop, and the modal already
+    // says which file was which on its own rows — the toast is for the case the
+    // modal is about to close on.
+    const reused: string[] = [];
+    let restoredCount = 0;
 
     for (const uf of filesToUpload) {
       if (uf.status !== 'pending') continue;
@@ -112,6 +120,8 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
             dedupOutcome: result.outcome === 'created' ? undefined : result.outcome,
             dedupName: result.filename,
           });
+          if (result.outcome === 'deduped') reused.push(result.filename);
+          if (result.outcome === 'restored') restoredCount += 1;
           const error = onFileUploaded?.(result);
           if (error) {
             setUploadError(error);
@@ -129,6 +139,17 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
     }
 
     setIsUploading(false);
+    // ⚠️ Before onUploadComplete / onClose: the modal closes itself when nothing
+    // failed, taking its per-row messages with it, and a substitution the user
+    // never saw reads as an upload that did nothing.
+    if (reused.length === 1) {
+      showToast(t('fileManager.dedupUsedExisting', { name: reused[0] }), 'info');
+    } else if (reused.length > 1) {
+      showToast(t('fileManager.dedupUsedExistingMany', { count: reused.length }), 'info');
+    }
+    if (restoredCount > 0) {
+      showToast(t('fileManager.dedupRestoredToast', { count: restoredCount }), 'info');
+    }
     onUploadComplete();
     // #1401: don't auto-close if any file ended with an error — the
     // user needs to see the rejection message (e.g. "raw .gcode
