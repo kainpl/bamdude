@@ -606,6 +606,9 @@ async def delete_printer(
 
     from backend.app.models.archive import PrintArchive
     from backend.app.models.maintenance import MaintenanceHistory, PrinterMaintenance
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.archive import ArchiveService
 
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     printer = result.scalar_one_or_none()
@@ -615,7 +618,40 @@ async def delete_printer(
     printer_manager.disconnect_printer(printer_id)
 
     if delete_archives:
-        # Delete all archives for this printer
+        # ⚠️ One at a time through ``ArchiveService``, not a bulk DELETE. The
+        # bulk statement dropped the rows and left every 3MF, thumbnail,
+        # timelapse, source model and photo on disk, permanently — the archive
+        # folder kept growing with each printer somebody removed, and only
+        # ``scripts/prune_orphan_archive_files.py`` could find it afterwards.
+        # ``delete_archive`` is the safety-checked path the trash sweeper uses:
+        # it refuses to rmtree outside the archive directory and detaches
+        # spool-usage history first. Looping it is the shape ``empty_trash``
+        # already has.
+        #
+        # ⚠️ It commits per archive, so a printer with a long history makes this
+        # a slow request, and a failure part-way leaves the archives it already
+        # removed removed. That is the end state the caller asked for anyway,
+        # and retrying finishes the job.
+        archive_service = ArchiveService(db)
+        active_ids = (
+            (
+                await db.execute(
+                    select(PrintArchive.id).where(
+                        PrintArchive.printer_id == printer_id,
+                        PrintArchive.deleted_at.is_(None),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for archive_id in active_ids:
+            await archive_service.delete_archive(archive_id)
+        # Whatever is left is already in the archive trash, and `delete_archive`
+        # declines to touch a trashed row. Those rows still cannot outlive the
+        # printer, so they go by statement — their files are left behind exactly
+        # as the trash sweeper leaves them today (see the vault note
+        # "Кошик архівів не видаляє файли").
         await db.execute(sql_delete(PrintArchive).where(PrintArchive.printer_id == printer_id))
     else:
         # Orphan the archives instead of deleting them
@@ -636,10 +672,85 @@ async def delete_printer(
         )
         await db.execute(sql_delete(PrinterMaintenance).where(PrinterMaintenance.printer_id == printer_id))
 
+    # ⚠️ The queue's ITEMS, before the queue itself. ``Printer.queue`` cascades
+    # to the ``printer_queues`` row, but ``PrinterQueue.items`` does not cascade
+    # — so on commit the ORM tries to de-associate them by nulling
+    # ``print_queue.queue_id``, which is NOT NULL, and the whole delete answers
+    # 500. That made a printer undeletable for as long as it had ANY queue row,
+    # completed ones included (reported 2026-08-17: printer 6 failed while 3 and
+    # 7 succeeded, minutes apart on one install).
+    #
+    # A bulk statement rather than an ORM cascade on the relationship: the
+    # relationship is ``lazy="dynamic"``, so cascading would load every item a
+    # long-lived queue ever held just to delete it row by row.
+    queue_ids = (await db.execute(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))).scalars().all()
+    if queue_ids:
+        await db.execute(sql_delete(PrintQueueItem).where(PrintQueueItem.queue_id.in_(queue_ids)))
+
+    # Everything whose FK already says it dies with the printer.
+    #
+    # ⚠️ **On SQLite it says nothing.** Foreign keys are not enforced there — we
+    # never issue ``PRAGMA foreign_keys=ON`` — so every ``ondelete="CASCADE"``
+    # aimed at ``printers.id`` is decorative on the default database, and these
+    # rows were simply left behind pointing at a printer that no longer exists.
+    # Postgres does enforce it and would have cleaned them up; doing it here
+    # makes both behave the same, which is the point.
+    #
+    # Nullable FKs are deliberately absent: a smart plug, a notification
+    # provider or a usage-history row survives its printer with ``printer_id``
+    # nulled, which is what ``ondelete="SET NULL"`` asks for and what the ORM
+    # already does.
+    for model in PRINTER_CASCADE_MODELS:
+        await db.execute(sql_delete(model).where(model.printer_id == printer_id))
+
     await db.delete(printer)
     await db.commit()
 
     return {"status": "deleted", "archives_deleted": delete_archives}
+
+
+def _printer_cascade_models() -> tuple[type, ...]:
+    """Models whose rows die with the printer, imported lazily.
+
+    Their tables all declare ``ondelete="CASCADE"`` on ``printer_id`` and carry
+    it NOT NULL, so a surviving row is not merely untidy — it is a row that
+    cannot be read back into anything. None of them has a relationship on
+    ``Printer`` to clean them up, which is exactly why they need naming here.
+
+    A drift guard in ``test_delete_printer_dependents`` fails when a new table
+    joins that description without being listed, because the alternative is
+    finding out from a 500 or from orphan rows nobody counted.
+    """
+    from backend.app.models.active_print_spoolman import ActivePrintSpoolman
+    from backend.app.models.ams_setting_audit import AmsSettingAudit
+    from backend.app.models.calibration_audit import CalibrationAudit
+    from backend.app.models.calibration_session import CalibrationSession
+    from backend.app.models.filament_calibration import FilamentCalibration
+    from backend.app.models.firmware import FirmwareBatchItem
+    from backend.app.models.printer_setting_audit import PrinterSettingAudit
+    from backend.app.models.slot_preset import SlotPresetMapping
+    from backend.app.models.spool_assignment import SpoolAssignment
+    from backend.app.models.spool_k_profile import SpoolKProfile
+    from backend.app.models.spoolman_k_profile import SpoolmanKProfile
+    from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+
+    return (
+        ActivePrintSpoolman,
+        AmsSettingAudit,
+        CalibrationAudit,
+        CalibrationSession,
+        FilamentCalibration,
+        FirmwareBatchItem,
+        PrinterSettingAudit,
+        SlotPresetMapping,
+        SpoolAssignment,
+        SpoolKProfile,
+        SpoolmanKProfile,
+        SpoolmanSlotAssignment,
+    )
+
+
+PRINTER_CASCADE_MODELS = _printer_cascade_models()
 
 
 async def resolve_current_archive_id(

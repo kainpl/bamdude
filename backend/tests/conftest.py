@@ -127,13 +127,21 @@ async def test_engine():
     engine = create_async_engine(TEST_DATABASE_URL, echo=False)
 
     # Import all models to register them
+    # ⚠️ Keep this in step with the block in ``core/database.py::init_db`` — it is
+    # the SAME registry, written twice, and a name missing here is a table the
+    # test database silently does not have. That cost a debugging round on the
+    # delete-printer fix: ``spoolman_slot_assignments`` and
+    # ``slot_preset_mappings`` were absent from the harness only, so a statement
+    # that is fine in production failed under test with "no such table".
     from backend.app.models import (
+        active_print_spoolman,
         ams_history,
         ams_label,
         api_key,
         archive,
         auth_ephemeral,
         auto_queue,
+        bug_report,
         calibration_audit,
         calibration_session,
         color_catalog,
@@ -145,24 +153,33 @@ async def test_engine():
         group,
         kprofile_note,
         library,
+        library_file_makerworld_meta,
         library_file_note,
         library_project_links,
+        local_preset,
+        location,
         long_lived_token,
+        macro,
         maintenance,
         notification,
         notification_template,
         oidc_provider,
+        orca_base_cache,
         print_options_preference,
         print_queue,
         printer,
         printer_location,
+        printer_queue,
+        printer_sensor_history,
         project,
+        project_bom,
         project_print_plan,
         settings,
         shopping_list,
         slicer_pipeline,
         slot_preset,
         smart_plug,
+        smart_plug_energy_snapshot,
         smart_plug_power_history,
         smart_sensor,
         smart_sensor_history,
@@ -173,6 +190,8 @@ async def test_engine():
         spool_k_profile,
         spool_usage_history,
         spoolman_k_profile,
+        spoolman_slot_assignment,
+        telegram_chat,
         user,
         user_email_pref,
         user_otp_code,
