@@ -68,3 +68,24 @@ class LibraryAutoPurgeStatus(BaseModel):
 class EmptyTrashResponse(BaseModel):
     deleted: int
     skipped_pinned: int = 0
+
+
+class TrashRestoreCheckRequest(BaseModel):
+    """Which trashed files the caller is about to restore."""
+
+    ids: list[int] = Field(default_factory=list)
+
+
+class TrashRestoreConflict(BaseModel):
+    """A trashed file whose content an active file already holds.
+
+    Restoring it would recreate the byte-identical pair every ingest path now
+    refuses to make, so the caller asks before doing it — and names the file
+    that is already there, because "this is a duplicate" is not actionable
+    without knowing of what.
+    """
+
+    id: int
+    filename: str
+    existing_id: int
+    existing_filename: str

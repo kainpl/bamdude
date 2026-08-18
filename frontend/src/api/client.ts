@@ -8105,8 +8105,19 @@ export const api = {
     }),
   listLibraryTrash: (limit: number = 100, offset: number = 0) =>
     request<LibraryTrashListResponse>(`/library/trash?limit=${limit}&offset=${offset}`),
-  restoreLibraryTrash: (fileId: number) =>
-    request<{ status: string; id: number }>(`/library/trash/${fileId}/restore`, { method: 'POST' }),
+  restoreLibraryTrash: (fileId: number, force: boolean = false) =>
+    request<{ status: string; id: number }>(
+      `/library/trash/${fileId}/restore${force ? '?force=true' : ''}`,
+      { method: 'POST' },
+    ),
+  // Which of these trashed files would recreate a byte-identical duplicate.
+  // Restoring is the one remaining way duplicates can come back, so a bulk
+  // restore asks once with the list rather than failing partway through.
+  checkLibraryTrashRestore: (ids: number[]) =>
+    request<TrashRestoreConflict[]>('/library/trash/restore-check', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    }),
   hardDeleteLibraryTrash: (fileId: number) =>
     request<{ status: string }>(`/library/trash/${fileId}`, { method: 'DELETE' }),
   emptyLibraryTrash: () =>
@@ -8839,6 +8850,13 @@ export interface LibraryTrashItem {
   created_by_username: string | null;
   deleted_at: string;
   auto_purge_at: string;
+}
+
+export interface TrashRestoreConflict {
+  id: number;
+  filename: string;
+  existing_id: number;
+  existing_filename: string;
 }
 
 export interface LibraryTrashListResponse {

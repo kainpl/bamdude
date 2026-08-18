@@ -5,6 +5,8 @@ import { useTranslation } from 'react-i18next';
 import { ArrowLeft, ImageOff, RotateCcw, Save, Trash2, Loader2 } from 'lucide-react';
 
 import { api } from '../api/client';
+import type { TrashRestoreConflict } from '../api/client';
+import { RestoreDuplicateDialog } from '../components/RestoreDuplicateDialog';
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { useAuth } from '../contexts/AuthContext';
@@ -40,6 +42,13 @@ export function LibraryTrashPage() {
   const { hasPermission } = useAuth();
   const [pending, setPending] = useState<PendingAction>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  // Restoring is the one remaining way byte-identical duplicates can come back,
+  // so every restore is checked first and asked about once, with the list.
+  const [restoreConflicts, setRestoreConflicts] = useState<{
+    ids: number[];
+    conflicts: TrashRestoreConflict[];
+  } | null>(null);
+  const [checkingRestore, setCheckingRestore] = useState(false);
 
   const isAdmin = hasPermission('library:purge');
 
@@ -78,18 +87,6 @@ export function LibraryTrashPage() {
       queryClient.invalidateQueries({ queryKey: ['library-trash'] });
     },
     onError: (e: Error) => showToast(e.message || t('libraryTrash.toast.retentionFailed'), 'error'),
-  });
-
-  const restoreMutation = useMutation({
-    mutationFn: (id: number) => api.restoreLibraryTrash(id),
-    onSuccess: () => {
-      showToast(t('libraryTrash.toast.restored'), 'success');
-      queryClient.invalidateQueries({ queryKey: ['library-trash'] });
-      queryClient.invalidateQueries({ queryKey: ['library-trash-count'] });
-      queryClient.invalidateQueries({ queryKey: ['library-files'] });
-      queryClient.invalidateQueries({ queryKey: ['library-folders'] });
-    },
-    onError: (e: Error) => showToast(e.message || t('libraryTrash.toast.restoreFailed'), 'error'),
   });
 
   const deleteMutation = useMutation({
@@ -135,9 +132,26 @@ export function LibraryTrashPage() {
   // Bulk restore / delete run the per-item endpoints in parallel — backend has
   // no bulk routes and trash sizes are typically dozens, so Promise.all is fine.
   const bulkRestoreMutation = useMutation({
-    mutationFn: (ids: number[]) => Promise.all(ids.map((id) => api.restoreLibraryTrash(id))),
-    onSuccess: (_, ids) => {
-      showToast(t('libraryTrash.toast.bulkRestored', { count: ids.length }), 'success');
+    // ⚠️ allSettled, not all: with the backend now refusing a restore that would
+    // recreate a duplicate, Promise.all would reject on the first refusal and
+    // leave the remaining requests in flight, unreported either way.
+    mutationFn: (ids: number[]) =>
+      Promise.allSettled(ids.map((id) => api.restoreLibraryTrash(id, true))),
+    onSuccess: (results, ids) => {
+      // ⚠️ allSettled never rejects, so a refusal would otherwise pass as
+      // success. Count what actually landed and say so.
+      const failed = results.filter((r) => r.status === 'rejected').length;
+      const restored = ids.length - failed;
+      if (failed > 0) {
+        showToast(t('libraryTrash.toast.restoredSomeFailed', { restored, failed }), 'error');
+      } else {
+        showToast(
+          restored === 1
+            ? t('libraryTrash.toast.restored')
+            : t('libraryTrash.toast.bulkRestored', { count: restored }),
+          'success',
+        );
+      }
       setSelected(new Set());
       queryClient.invalidateQueries({ queryKey: ['library-trash'] });
       queryClient.invalidateQueries({ queryKey: ['library-trash-count'] });
@@ -146,6 +160,25 @@ export function LibraryTrashPage() {
     },
     onError: (e: Error) => showToast(e.message || t('libraryTrash.toast.restoreFailed'), 'error'),
   });
+
+  /** Ask the backend which of these would recreate a duplicate, then act. */
+  const beginRestore = async (ids: number[]) => {
+    setCheckingRestore(true);
+    try {
+      const conflicts = await api.checkLibraryTrashRestore(ids);
+      if (conflicts.length === 0) {
+        bulkRestoreMutation.mutate(ids);
+        return;
+      }
+      setRestoreConflicts({ ids, conflicts });
+    } catch {
+      // The check is an extra courtesy, not a gate on the feature — if it fails,
+      // fall through to the restore itself rather than blocking the user.
+      bulkRestoreMutation.mutate(ids);
+    } finally {
+      setCheckingRestore(false);
+    }
+  };
 
   const bulkDeleteMutation = useMutation({
     mutationFn: (ids: number[]) => Promise.all(ids.map((id) => api.hardDeleteLibraryTrash(id))),
@@ -277,8 +310,8 @@ export function LibraryTrashPage() {
                 </span>
                 <Button
                   variant="secondary"
-                  onClick={() => bulkRestoreMutation.mutate(Array.from(selected))}
-                  disabled={bulkRestoreMutation.isPending}
+                  onClick={() => beginRestore(Array.from(selected))}
+                  disabled={bulkRestoreMutation.isPending || checkingRestore}
                 >
                   <RotateCcw className="w-4 h-4 mr-1" />
                   {t('libraryTrash.bulkRestore')}
@@ -380,8 +413,8 @@ export function LibraryTrashPage() {
                     )}
                     <td className="px-3 py-2 text-right whitespace-nowrap">
                       <button
-                        onClick={() => restoreMutation.mutate(item.id)}
-                        disabled={restoreMutation.isPending}
+                        onClick={() => beginRestore([item.id])}
+                        disabled={bulkRestoreMutation.isPending || checkingRestore}
                         className="inline-flex items-center gap-1 px-2 py-1 text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300"
                       >
                         <RotateCcw className="w-3.5 h-3.5" />
@@ -434,6 +467,24 @@ export function LibraryTrashPage() {
             {t('libraryTrash.backToFiles')}
           </Button>
         </div>
+      )}
+
+      {restoreConflicts && (
+        <RestoreDuplicateDialog
+          conflicts={restoreConflicts.conflicts}
+          cleanCount={restoreConflicts.ids.length - restoreConflicts.conflicts.length}
+          busy={bulkRestoreMutation.isPending}
+          onRestoreAll={() => {
+            bulkRestoreMutation.mutate(restoreConflicts.ids);
+            setRestoreConflicts(null);
+          }}
+          onSkipDuplicates={() => {
+            const conflicting = new Set(restoreConflicts.conflicts.map((c) => c.id));
+            bulkRestoreMutation.mutate(restoreConflicts.ids.filter((id) => !conflicting.has(id)));
+            setRestoreConflicts(null);
+          }}
+          onCancel={() => setRestoreConflicts(null)}
+        />
       )}
     </div>
   );

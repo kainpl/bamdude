@@ -33,8 +33,11 @@ from backend.app.schemas.library_trash import (
     PurgeResponse,
     TrashFile,
     TrashListResponse,
+    TrashRestoreCheckRequest,
+    TrashRestoreConflict,
     TrashSettings,
 )
+from backend.app.services.library_ingest import find_reusable_row
 from backend.app.services.library_trash import (
     MAX_RETENTION_DAYS,
     MIN_RETENTION_DAYS,
@@ -173,9 +176,33 @@ async def _load_trashed_file(
     return file
 
 
+async def _active_twin(db: AsyncSession, file: LibraryFile) -> LibraryFile | None:
+    """The active row already holding this trashed file's content, if any.
+
+    ⚠️ Restoring is the ONE way byte-identical duplicates can come back. Every
+    ingest path now refuses to create one, and m141 cleared out what had already
+    accumulated — but ``restore`` simply clears ``deleted_at``, so pulling a file
+    out of the trash while its twin is active recreates exactly the pair the rest
+    of this feature exists to prevent.
+
+    Asked through ``find_reusable_row`` rather than a query of its own: "is this
+    content already here" must keep having one answer. A row with no hash (old
+    external rows carried none) cannot be checked, and is never blocked — an
+    unanswerable question is not a conflict.
+    """
+    if not file.file_hash:
+        return None
+    reusable = await find_reusable_row(db, content_hash=file.file_hash)
+    if reusable is None:
+        return None
+    twin, _present = reusable
+    return twin if twin.id != file.id else None
+
+
 @router.post("/trash/{file_id}/restore")
 async def restore_from_trash(
     file_id: int,
+    force: bool = Query(False, description="Restore even when an active file already holds this content"),
     db: AsyncSession = Depends(get_db),
     auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
@@ -184,10 +211,69 @@ async def restore_from_trash(
         )
     ),
 ):
+    """Bring a trashed file back.
+
+    ⚠️ **409 when it would recreate a duplicate**, unless ``force``. This is the
+    only remaining way byte-identical rows can reappear; the caller is told which
+    file already holds the content so the question it asks can name it.
+    """
     user, can_modify_all = auth_result
     file = await _load_trashed_file(db, file_id, user, can_modify_all)
+
+    if not force:
+        twin = await _active_twin(db, file)
+        if twin is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "duplicate_of_active",
+                    "existing_id": twin.id,
+                    "existing_filename": twin.filename,
+                },
+            )
+
     await library_trash_service.restore(db, file)
     return {"status": "success", "id": file.id}
+
+
+@router.post("/trash/restore-check", response_model=list[TrashRestoreConflict])
+async def check_restore_conflicts(
+    data: TrashRestoreCheckRequest,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_DELETE_ALL,
+            Permission.LIBRARY_DELETE_OWN,
+        )
+    ),
+):
+    """Which of these trashed files would recreate a duplicate if restored.
+
+    Exists so a bulk restore can ask **once**, with the list, instead of failing
+    partway or interrogating the user per file. Writes nothing.
+
+    Ids the caller may not touch are skipped rather than raising: this answers a
+    question about a selection, and one unreadable row should not cost the
+    answer for the rest.
+    """
+    user, can_modify_all = auth_result
+    conflicts: list[TrashRestoreConflict] = []
+    for file_id in data.ids:
+        try:
+            file = await _load_trashed_file(db, file_id, user, can_modify_all)
+        except HTTPException:
+            continue
+        twin = await _active_twin(db, file)
+        if twin is not None:
+            conflicts.append(
+                TrashRestoreConflict(
+                    id=file.id,
+                    filename=file.filename,
+                    existing_id=twin.id,
+                    existing_filename=twin.filename,
+                )
+            )
+    return conflicts
 
 
 @router.delete("/trash/{file_id}")
