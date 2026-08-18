@@ -46,7 +46,7 @@ const mockFolders = [
 ];
 
 // Composite tag arrays mirror what the m036 backfill emits — the new
-// FileManager predicates (``isSliced`` / ``isSliceable``) read ``file_tags``,
+// FileManager predicates (``isPrintable`` / ``isSliceable``) read ``file_tags``,
 // not filename suffixes, so the test mocks have to carry the same shape the
 // API ships.
 const mockFiles = [

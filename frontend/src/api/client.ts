@@ -9078,6 +9078,10 @@ export interface LibraryFileUpdate {
 export interface LibraryFileUploadResponse {
   id: number;
   filename: string;
+  // Content-derived readiness. ``gcode`` means the container really holds
+  // sliced G-code — see ``isPrintable`` and the printable-is-decided-by-content
+  // rule. The backend has always sent this; the type simply never said so.
+  file_tags: string[];
   file_type: string;
   file_size: number;
   thumbnail_path: string | null;

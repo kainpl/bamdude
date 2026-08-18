@@ -50,6 +50,7 @@ import type { PrinterQueue, PrintQueueItem, Permission } from '../api/client';
 import { Card, CardContent } from './Card';
 import { useAuth } from '../contexts/AuthContext';
 import { partitionDroppedFiles, dropRejectionKey } from '../utils/printableDrop';
+import { isPrintable } from '../lib/fileTags';
 import { useToast } from '../contexts/ToastContext';
 import { formatETA, formatDuration } from '../utils/date';
 import { getBedTypeInfo } from '../utils/bedType';
@@ -459,13 +460,21 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
       if (result.outcome !== 'created') {
         showToast(t('fileManager.dedupUsedExisting', { name: result.filename }), 'info');
       }
+      // ⚠️ The NAME cannot prove a 3MF holds sliced G-code — only the parse
+      // can, and the upload response carries its answer. A plain model .3mf
+      // passes the drop gate and would otherwise be queued unprintable.
+      if (!isPrintable(result)) {
+        if (result.outcome === 'created') await api.deleteLibraryFile(result.id).catch(() => {});
+        showToast(t('printers.dropNoGcodeInside', { filename: file.name }), 'error');
+        return;
+      }
 
       // Compatibility check against printer model — abort + delete the
       // transient upload if mismatched, same UX as the printer-card flow.
       const slicedFor = (result.metadata as Record<string, unknown>)?.sliced_for_model as string | undefined;
       const printerModel = mapModelCode(queue.printer_model);
       if (slicedFor && printerModel && slicedFor.toLowerCase() !== printerModel.toLowerCase()) {
-        await api.deleteLibraryFile(result.id).catch(() => {});
+        if (result.outcome === 'created') await api.deleteLibraryFile(result.id).catch(() => {});
         showToast(
           t('printers.incompatibleFile', { slicedFor, printerModel }),
           'error',

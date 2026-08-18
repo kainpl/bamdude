@@ -105,7 +105,13 @@ type TFunction = (key: string, options?: Record<string, unknown>) => string;
  * metadata - a .3mf with total_layers or print_time is sliced (contains gcode),
  * while a raw source .3mf (CAD export) has neither.
  */
-function isSlicedFile(archive: { filename?: string | null; total_layers?: number | null; print_time_seconds?: number | null }): boolean {
+// Same question as ``lib/fileTags.isPrintable`` — does this hold G-code a
+// printer can run — asked of an archive, which has no ``file_tags`` to read and
+// so falls back to the name plus the layer/time evidence a slice leaves behind.
+// ⚠️ Was ``isSlicedFile``; "sliced" is a provenance TAG with its own meaning, so
+// one word named two things. The call sites already assigned this to
+// ``isGcodeFile``, which is how long the file had been disagreeing with itself.
+function isPrintableArchive(archive: { filename?: string | null; total_layers?: number | null; print_time_seconds?: number | null }): boolean {
   const filename = archive.filename;
   if (filename) {
     const lower = filename.toLowerCase();
@@ -430,7 +436,7 @@ function ArchiveCard({
     setContextMenu({ x: e.clientX, y: e.clientY });
   };
 
-  const isGcodeFile = isSlicedFile(archive);
+  const isGcodeFile = isPrintableArchive(archive);
 
   const contextMenuItems: ContextMenuItem[] = [
     // Retry download — only shown for fallback archives (file_path empty).
@@ -1038,17 +1044,17 @@ function ArchiveCard({
           {/* File type badge */}
           <span
             className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
-              isSlicedFile(archive)
+              isPrintableArchive(archive)
                 ? 'bg-bambu-green/20 text-bambu-green'
                 : 'bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400'
             }`}
             title={
-              isSlicedFile(archive)
+              isPrintableArchive(archive)
                 ? t('archives.card.slicedFile')
                 : t('archives.card.sourceFile')
             }
           >
-            {isSlicedFile(archive) ? t('archives.card.gcode') : t('archives.card.source')}
+            {isPrintableArchive(archive) ? t('archives.card.gcode') : t('archives.card.source')}
           </span>
           {archive.swap_compatible && (
             <span className="text-[10px] px-1 py-0.5 bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 rounded">SWAP</span>
@@ -1242,7 +1248,7 @@ function ArchiveCard({
 
         {/* Actions */}
         <div className="flex gap-1 mt-3">
-          {isSlicedFile(archive) ? (
+          {isPrintableArchive(archive) ? (
             // Sliced file - can print directly
             <>
               <Button
@@ -1900,7 +1906,7 @@ function ArchiveListRow({
     setContextMenu({ x: e.clientX, y: e.clientY });
   };
 
-  const isGcodeFile = isSlicedFile(archive);
+  const isGcodeFile = isPrintableArchive(archive);
 
   const contextMenuItems: ContextMenuItem[] = [
     ...(isGcodeFile ? [
@@ -2463,7 +2469,7 @@ function ArchiveListRow({
           {formatFileSize(archive.file_size)}
         </div>
         <div className="flex justify-end gap-1">
-          {isSlicedFile(archive) && (
+          {isPrintableArchive(archive) && (
             <Button
               variant="ghost"
               size="sm"

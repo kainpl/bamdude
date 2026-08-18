@@ -80,7 +80,7 @@ import { fileActivityAt, formatFileSize } from '../utils/file';
 import { FileTagBadges } from '../components/FileTagBadges';
 import { PlateObjectsPreviewModal } from '../components/PlateObjectsPreviewModal';
 import { SkipObjectsIcon } from '../components/SkipObjectsModal';
-import { getTagStyle, isSliced, isSliceable, isMultiPlate } from '../lib/fileTags';
+import { getTagStyle, isPrintable, isSliceable, isMultiPlate } from '../lib/fileTags';
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
 import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
 import { FileTagsPopover, type TagsPopoverAnchor } from '../components/FileTagsPopover';
@@ -916,7 +916,7 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
 
 // Slice-related predicates moved to ``lib/fileTags`` so FileCard /
 // FileListActions / ProjectDetailPage / bulk-action handlers all read
-// from the same ``file_tags`` source. ``isSliced(file)`` /
+// from the same ``file_tags`` source. ``isPrintable(file)`` /
 // ``isSliceable(file)`` / ``isMultiPlate(file)`` replace the two
 // filename-suffix helpers that used to live here.
 
@@ -1051,7 +1051,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
             }}
             className="z-[60] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 whitespace-nowrap"
           >
-            {isSliced(file) && (
+            {isPrintable(file) && (
               <>
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${hasPermission('printers:control') ? 'text-bambu-green hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
@@ -1430,7 +1430,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
               className="z-[60] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 whitespace-nowrap w-max max-w-[calc(100vw-16px)]"
               onClick={(e) => e.stopPropagation()}
             >
-              {onPrint && isSliced(file) && (
+              {onPrint && isPrintable(file) && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
                     hasPermission('printers:control') ? 'text-bambu-green hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
@@ -1443,7 +1443,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
                   {t('common.print')}
                 </button>
               )}
-              {onAddToQueue && isSliced(file) && (
+              {onAddToQueue && isPrintable(file) && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
                     hasPermission('queue:create') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
@@ -2276,12 +2276,12 @@ export function FileManagerPage() {
     : null;
 
   // Get sliced files from selection — predicate now reads from
-  // ``file_tags`` via the shared ``isSliced`` helper instead of a
+  // ``file_tags`` via the shared ``isPrintable`` helper instead of a
   // local filename-suffix scan, so bulk-print actions agree with the
   // per-row Print button on what counts as "printable".
   const selectedSlicedFiles = useMemo(() => {
     if (!files) return [];
-    return files.filter((f) => selectedFiles.includes(f.id) && isSliced(f));
+    return files.filter((f) => selectedFiles.includes(f.id) && isPrintable(f));
   }, [files, selectedFiles]);
 
   // Schedule one file from its own ⋮ menu — a run of length 1, which renders
@@ -3460,10 +3460,10 @@ export function FileManagerPage() {
                           overlay button (line 1029). MakerWorld imports and
                           unsliced project 3MFs deserve notes too. */}
                       <LibraryFileNotesButton fileId={file.id} initialCount={file.notes_count} variant="inline" />
-                      {/* Print + Schedule — gated on isSliced because they
+                      {/* Print + Schedule — gated on isPrintable because they
                           send G-code to a printer. Unsliced 3MFs go through
                           the slice modal first (separate button further down). */}
-                      {isSliced(file) && (
+                      {isPrintable(file) && (
                         <>
                           <button
                             onClick={() => hasPermission('printers:control') && setPrintFile(file)}

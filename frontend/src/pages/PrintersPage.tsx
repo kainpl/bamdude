@@ -121,6 +121,7 @@ import { PrinterSettingsModal } from '../components/PrinterSettingsModal';
 import { FilamentCalibrationModal } from '../components/FilamentCalibrationModal';
 import { CalibrationHistoryModal } from '../components/CalibrationHistoryModal';
 import { partitionDroppedFiles, dropRejectionFor, dropRejectionKey } from '../utils/printableDrop';
+import { isPrintable } from '../lib/fileTags';
 import { useToast } from '../contexts/ToastContext';
 import { ChamberLight } from '../components/icons/ChamberLight';
 import { PlateClearedIcon } from '../components/icons/PlateClearedIcon';
@@ -2745,12 +2746,20 @@ function PrinterCard({
       if (result.outcome !== 'created') {
         showToast(t('fileManager.dedupUsedExisting', { name: result.filename }), 'info');
       }
+      // ⚠️ The NAME cannot prove a 3MF holds sliced G-code — only the parse
+      // can, and the upload response carries its answer. A plain model .3mf
+      // passes the drop gate and would otherwise be queued unprintable.
+      if (!isPrintable(result)) {
+        if (result.outcome === 'created') await api.deleteLibraryFile(result.id).catch(() => {});
+        showToast(t('printers.dropNoGcodeInside', { filename: file.name }), 'error');
+        return;
+      }
 
       // Check printer compatibility if sliced_for_model is available in metadata
       const slicedFor = (result.metadata as Record<string, unknown>)?.sliced_for_model as string | undefined;
       const printerModel = mapModelCode(printer.model);
       if (slicedFor && printerModel && slicedFor.toLowerCase() !== printerModel.toLowerCase()) {
-        await api.deleteLibraryFile(result.id).catch(() => {});
+        if (result.outcome === 'created') await api.deleteLibraryFile(result.id).catch(() => {});
         showToast(
           t('printers.incompatibleFile', 'This file was sliced for {{slicedFor}}, but this printer is a {{printerModel}}', { slicedFor, printerModel }),
           'error'
@@ -5776,11 +5785,17 @@ function PrinterCard({
             if (rejection) return t(dropRejectionKey(rejection), { filename: file.name });
           }}
           onFileUploaded={(uploadedFile) => {
+            // ⚠️ Content, not name: a plain model .3mf passes the picker and
+            // would otherwise be sent to the printer unprintable.
+            if (!isPrintable(uploadedFile)) {
+              if (uploadedFile.outcome === 'created') api.deleteLibraryFile(uploadedFile.id).catch(() => {});
+              return t('printers.dropNoGcodeInside', { filename: uploadedFile.filename });
+            }
             // Check printer compatibility if sliced_for_model is available in metadata
             const slicedFor = (uploadedFile.metadata as Record<string, unknown>)?.sliced_for_model as string | undefined;
             const printerModel = mapModelCode(printer.model);
             if (slicedFor && printerModel && slicedFor.toLowerCase() !== printerModel.toLowerCase()) {
-              api.deleteLibraryFile(uploadedFile.id).catch(() => {});
+              if (uploadedFile.outcome === 'created') api.deleteLibraryFile(uploadedFile.id).catch(() => {});
               return t('printers.incompatibleFile', 'This file was sliced for {{slicedFor}}, but this printer is a {{printerModel}}', { slicedFor, printerModel });
             }
             setPrintAfterUpload({ id: uploadedFile.id, filename: uploadedFile.filename });

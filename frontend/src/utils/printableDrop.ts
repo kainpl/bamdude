@@ -37,7 +37,7 @@ export function dropRejectionFor(filename: string): DropRejection | null {
 
 /** i18n key for a rejection, so all three zones say the same thing. */
 export function dropRejectionKey(rejection: DropRejection): string {
-  return rejection === 'rawGcode' ? 'printers.dropRawGcode' : 'printers.dropNotPrintable';
+  return rejection === 'rawGcode' ? 'printers.dropRawGcode' : 'printers.dropWrongFormat';
 }
 
 /**

@@ -14,6 +14,10 @@
 
     **And they no longer accept a file the printer cannot print.** All three checked the filename the same way, in three separate copies of one line, and all three let a raw `.gcode` through — which BamDude then rejects on upload, because Bambu printers in network mode only read the `.gcode.3mf` container and a raw `.gcode` fails at the printer half a minute after you press Print. The rule now lives in one place, matches what the server actually accepts, and says so at the moment you drop the file rather than after. A fourth copy, in the printer card's "upload and print" dialog, went the same way — its file picker had been offering `.gcode` too.
 
+    **A model that has not been sliced is turned away too**, and this one the filename cannot answer: a `.3mf` may hold a finished print or a bare model, and only looking inside tells you which. BamDude now checks what the file actually contains before queueing it, instead of sending the printer something it cannot read.
+
+    **And a mismatched printer model says so**, as it already did on the printer card — the per-printer queue checks it the same way.
+
     Dropping something already in your library says so here as well, the same as uploading it does.
 
 - **Restoring a file from the trash asks first if it would make a duplicate.** Everything else now refuses to store the same file twice, but taking a file back out of the trash was the one way left to end up with two copies — it simply put the file back, whatever else was in the library by then.

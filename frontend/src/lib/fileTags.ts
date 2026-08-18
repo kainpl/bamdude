@@ -112,17 +112,32 @@ export function hasTag(tags: string[] | null | undefined, tag: string): boolean 
 }
 
 // Sliced file — has the ``gcode`` tag (raw .gcode OR .gcode.3mf).
-export function isSliced(file: { file_tags?: string[] | null }): boolean {
+/**
+ * Does this file hold G-code a printer can actually run.
+ *
+ * ⚠️ **Called ``isSliced`` until 2026-08-18, and that name collided with the
+ * data.** ``sliced`` is a real tag with its own meaning — provenance, "came out
+ * of BamDude's slicer sidecar" — so the word named two different things, and
+ * this predicate did not read the tag it was named after. It reads ``gcode``,
+ * the content-derived answer (`sliced_gcode_in_3mf` looks inside the container;
+ * the filename cannot be trusted). The vault invariant was already called
+ * *printable-is-decided-by-content*, so the term was settled; the code caught up.
+ *
+ * The tag keeps its name — it is a seeded row in ``library_tags`` with
+ * ``code='sliced'``, and renaming it means a migration plus every operator's
+ * saved filter.
+ */
+export function isPrintable(file: { file_tags?: string[] | null }): boolean {
   return hasTag(file.file_tags, 'gcode');
 }
 
 // Sliceable model — has a semantic-group tag the slicer can consume
 // AND is NOT already sliced. Post-m037 the relevant tags are ``project``
 // (unsliced .3mf) and ``geometry`` (STL / OBJ / STEP / STP). The
-// ``isSliced`` short-circuit handles sliced .gcode.3mf (carries both
+// ``isPrintable`` short-circuit handles sliced .gcode.3mf (carries both
 // ``gcode`` + ``3mf`` — bailing here keeps the predicate symmetric).
 export function isSliceable(file: { file_tags?: string[] | null }): boolean {
-  if (isSliced(file)) return false;
+  if (isPrintable(file)) return false;
   return hasTag(file.file_tags, 'project') || hasTag(file.file_tags, 'geometry');
 }
 

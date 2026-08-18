@@ -5,6 +5,7 @@ import { Loader2, Sparkles, Trash2, Upload, Zap, ChevronRight } from 'lucide-rea
 import { api } from '../../api/client';
 import type { AutoQueueItem } from '../../api/client';
 import { partitionDroppedFiles, dropRejectionKey } from '../../utils/printableDrop';
+import { isPrintable } from '../../lib/fileTags';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { PrintModal } from '../PrintModal';
@@ -137,6 +138,14 @@ export function AutoQueuePanel() {
       const result = await api.uploadLibraryFile(file, null);
       if (result.outcome !== 'created') {
         showToast(t('fileManager.dedupUsedExisting', { name: result.filename }), 'info');
+      }
+      // ⚠️ The NAME cannot prove a 3MF holds sliced G-code — only the parse
+      // can, and the upload response carries its answer. A plain model .3mf
+      // passes the drop gate and would otherwise be queued unprintable.
+      if (!isPrintable(result)) {
+        if (result.outcome === 'created') await api.deleteLibraryFile(result.id).catch(() => {});
+        showToast(t('printers.dropNoGcodeInside', { filename: file.name }), 'error');
+        return;
       }
       // No printer compatibility check here — auto-queue router filters
       // by sliced_for_model + target_model at dispatch time, and the

@@ -57,7 +57,7 @@ import { PrintModal } from '../components/PrintModal';
 // Project edit modal (reused from ProjectsPage)
 import { ProjectModal } from './ProjectsPage';
 import { getCurrencySymbol } from '../utils/currency';
-import { isSliced } from '../lib/fileTags';
+import { isPrintable } from '../lib/fileTags';
 
 function formatFilament(grams: number): string {
   if (grams >= 1000) {
@@ -1144,7 +1144,7 @@ export function ProjectDetailPage() {
                   const isFirst = idx === 0;
                   const isLast = idx === printPlan.items.length - 1;
                   const file = filesById.get(item.library_file_id);
-                  const printable = file ? isSliced(file) : false;
+                  const printable = file ? isPrintable(file) : false;
                   return (
                     <div
                       key={item.id}
