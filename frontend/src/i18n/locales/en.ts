@@ -1743,6 +1743,13 @@ export default {
         pickDevice: 'Choose a paired sensor…',
         noFreeDevices: 'Every paired sensor has already been added. Pair another one above.',
         nameLabel: 'Name',
+        boundTo: 'Where its readings belong',
+        boundToLocation: 'A place',
+        boundToPrinter: 'A printer',
+        boundToLocationHint:
+          'The readings appear on that location group, above the printers standing in it.',
+        boundToPrinterHint: 'The readings appear on that printer’s card, and nowhere else.',
+        pickPrinter: 'Choose a printer…',
         unbindTitle: 'Remove {{name}} from the list?',
         unbindBody:
           'It stays on the Zigbee network and keeps its settings, so adding it again restores what it had. Taking it off the network is a separate action, in the coordinator card above, and needs the device pairing again by hand.',

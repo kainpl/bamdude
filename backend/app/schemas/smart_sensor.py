@@ -18,6 +18,10 @@ class SmartSensorCreate(BaseModel):
     # The place it stands in — the same entity a printer points at, so a sensor
     # and the printers around it can be asked about together.
     location_id: int | None = None
+    # ⚠️ Or the printer it belongs TO — an enclosure probe, a door contact.
+    # Exclusive with ``location_id``: the route clears whichever was not sent.
+    # See ``SmartSensor`` for why they cannot both hold.
+    printer_id: int | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -28,6 +32,7 @@ class SmartSensorCreate(BaseModel):
 class SmartSensorUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     location_id: int | None = None
+    printer_id: int | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -40,6 +45,10 @@ class SmartSensorOut(BaseModel):
     name: str
     location_id: int | None = None
     location: PrinterLocationOut | None = None
+    printer_id: int | None = None
+    # The printer's name, so a sensor list can say what it is bound to without
+    # a second request per row.
+    printer_name: str | None = None
     zigbee_ieee: str
     created_at: datetime
 

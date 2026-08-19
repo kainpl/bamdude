@@ -31,6 +31,13 @@ export function SensorFormModal({ sensor, initialDevice, onClose }: Props) {
   // so it is a starting point rather than an answer.
   const [name, setName] = useState<string>(sensor?.name ?? initialDevice?.name ?? initialDevice?.model ?? '');
   const [locationId, setLocationId] = useState<number | null>(sensor?.location?.id ?? null);
+  const [printerId, setPrinterId] = useState<number | null>(sensor?.printer_id ?? null);
+  // Which question this sensor answers. A sensor already bound to a printer
+  // opens on that side; everything else opens on the place, which is what the
+  // binding has always been and what a room thermometer wants.
+  const [boundTo, setBoundTo] = useState<'location' | 'printer'>(
+    sensor?.printer_id != null ? 'printer' : 'location',
+  );
 
   const { data: deviceList } = useQuery({
     queryKey: ['zigbee-devices'],
@@ -40,6 +47,11 @@ export function SensorFormModal({ sensor, initialDevice, onClose }: Props) {
 
   const free = (deviceList?.devices ?? []).filter((d) => d.kind === 'sensor' && !d.adopted);
 
+  const { data: printers } = useQuery({
+    queryKey: ['printers'],
+    queryFn: api.getPrinters,
+  });
+
   const done = () => {
     queryClient.invalidateQueries({ queryKey: ['zigbee-sensors'] });
     // Adoption flips `adopted` in the paired list, so that cache is stale too.
@@ -47,11 +59,20 @@ export function SensorFormModal({ sensor, initialDevice, onClose }: Props) {
     onClose();
   };
 
+  // ⚠️ BOTH keys are always sent, and the unchosen one as null. The two are
+  // exclusive, so leaving the other out would keep an old binding alive beside
+  // the new one — the backend clears it either way, but a payload that says
+  // only half of what the dialog shows is how that stops being true.
+  const binding = {
+    location_id: boundTo === 'location' ? locationId : null,
+    printer_id: boundTo === 'printer' ? printerId : null,
+  };
+
   const save = useMutation({
     mutationFn: () =>
       sensor
-        ? api.updateZigbeeSensor(sensor.id, { name: name.trim(), location_id: locationId })
-        : api.adoptZigbeeSensor({ zigbee_ieee: ieee, name: name.trim(), location_id: locationId }),
+        ? api.updateZigbeeSensor(sensor.id, { name: name.trim(), ...binding })
+        : api.adoptZigbeeSensor({ zigbee_ieee: ieee, name: name.trim(), ...binding }),
     onSuccess: done,
   });
 
@@ -105,8 +126,55 @@ export function SensorFormModal({ sensor, initialDevice, onClose }: Props) {
         </div>
 
         <div>
-          <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.locationGroup')}</label>
-          <PrinterLocationSelect value={locationId} onChange={setLocationId} allowCreate />
+          <label className="block text-sm text-bambu-gray mb-1">{t('settings.zigbee.sensors.boundTo')}</label>
+          {/* A choice, not a guess. An enclosure probe belongs to one machine
+              and a room thermometer to the room; the hardware is identical, so
+              only the operator knows which. Where the reading is drawn follows
+              from this and nothing else. */}
+          <div className="flex gap-1 mb-2" role="radiogroup" aria-label={t('settings.zigbee.sensors.boundTo')}>
+            {(['location', 'printer'] as const).map((option) => (
+              <button
+                key={option}
+                type="button"
+                role="radio"
+                aria-checked={boundTo === option}
+                onClick={() => setBoundTo(option)}
+                className={`flex-1 px-3 py-1.5 rounded-lg text-sm transition-colors ${
+                  boundTo === option
+                    ? 'bg-bambu-green text-white'
+                    : 'bg-bambu-dark text-bambu-gray hover:text-white'
+                }`}
+              >
+                {t(`settings.zigbee.sensors.boundTo${option === 'location' ? 'Location' : 'Printer'}`)}
+              </button>
+            ))}
+          </div>
+
+          {boundTo === 'location' ? (
+            <PrinterLocationSelect value={locationId} onChange={setLocationId} allowCreate />
+          ) : (
+            <select
+              id="sensor-printer"
+              aria-label={t('settings.zigbee.sensors.boundToPrinter')}
+              className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white"
+              value={printerId ?? ''}
+              onChange={(e) => setPrinterId(e.target.value === '' ? null : Number(e.target.value))}
+            >
+              <option value="">{t('settings.zigbee.sensors.pickPrinter')}</option>
+              {(printers ?? []).map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          )}
+          <p className="text-xs text-bambu-gray mt-1">
+            {t(
+              boundTo === 'location'
+                ? 'settings.zigbee.sensors.boundToLocationHint'
+                : 'settings.zigbee.sensors.boundToPrinterHint',
+            )}
+          </p>
         </div>
 
         <div className="flex justify-end gap-2">

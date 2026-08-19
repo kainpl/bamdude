@@ -54,7 +54,11 @@ export function SensorCard({
         <div className="min-w-0">
           <p className="text-white truncate">{sensor.name}</p>
           <p className="text-xs text-bambu-gray truncate">
-            {[sensor.location?.name, sensor.model || sensor.ieee].filter(Boolean).join(' · ')}
+            {/* Whichever binding it has — they are exclusive, so at most one
+                of the two is ever a string. */}
+            {[sensor.printer_name ?? sensor.location?.name, sensor.model || sensor.ieee]
+              .filter(Boolean)
+              .join(' · ')}
           </p>
         </div>
 

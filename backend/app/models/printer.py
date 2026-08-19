@@ -107,6 +107,10 @@ class Printer(Base):
     # Relationships
     archives: Mapped[list["PrintArchive"]] = relationship(back_populates="printer", cascade="all, delete-orphan")
     smart_plugs: Mapped[list["SmartPlug"]] = relationship(back_populates="printer")
+    # No cascade on either of these two: a plug and a sensor are physical
+    # hardware that outlive the printer they were wired to, so deleting the
+    # printer unbinds them rather than deleting them.
+    smart_sensors: Mapped[list["SmartSensor"]] = relationship(back_populates="printer")
     notification_providers: Mapped[list["NotificationProvider"]] = relationship(back_populates="printer")
     maintenance_items: Mapped[list["PrinterMaintenance"]] = relationship(
         back_populates="printer", cascade="all, delete-orphan"
@@ -126,3 +130,4 @@ from backend.app.models.maintenance import PrinterMaintenance  # noqa: E402
 from backend.app.models.notification import NotificationProvider  # noqa: E402
 from backend.app.models.printer_sensor_history import PrinterSensorHistory  # noqa: E402, F401
 from backend.app.models.smart_plug import SmartPlug  # noqa: E402
+from backend.app.models.smart_sensor import SmartSensor  # noqa: E402

@@ -16,6 +16,10 @@
 
     It is the renderer OrcaSlicer draws its own preview with. **The existing viewer stays the default and is one click away** — the new one has no play/pause animation, no Export PNG, no light theme and no download progress yet, so it is an option rather than a replacement until those land. The switch sits in the corner of the preview and is remembered per browser.
 
+- **A sensor can now belong to a printer instead of a room.** A Zigbee sensor has always been pinned to a location, which is the right answer for a thermometer measuring the workshop and the wrong one for an enclosure probe or a door contact taped to one machine — those readings were shown on the location's header, above every printer standing in it, as though the whole room were at 48 °C. The sensor's settings now ask which of the two it is, and the readings follow: bound to a place they stay on that group's header as before, bound to a printer they appear on that printer's card, with the same click-through to the chart.
+
+    The two are **exclusive** — choosing one releases the other — because they answer the same question, and a printer already has a location. Nothing moves on upgrade: every sensor keeps the place it had. Alerts name the printer for a sensor bound to one, so "enclosure over 50 °C" says which machine. Deleting a printer leaves its sensors unbound rather than deleting them; the hardware outlives the machine it was taped to.
+
 - **Telegram can now aim a job at a room, not just at a printer model.** "Any P1S" is a useful answer on a one-room farm and a poor one when the P1S you meant is upstairs. Choosing a model in the bot now offers the places that actually hold one, and the job is routed there — the same location filter the print dialog has had, reaching the shelves inside a workshop you pick. The step is skipped entirely when there is nothing to choose between, so a farm with no locations set up sees no extra tap.
 
 ### Fixed

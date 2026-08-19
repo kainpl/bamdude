@@ -62,3 +62,22 @@ export function sensorsForGroup(
       return byDistance !== 0 ? byDistance : compareLocationNames(a.name, b.name);
     });
 }
+
+/**
+ * The sensors a printer's card shows: the ones bound to that machine.
+ *
+ * No ancestor walk and no location fallback. A sensor bound to a place belongs
+ * to the place — it already appears on that group's header, and repeating it on
+ * every card standing in the room would say the enclosure reads what the room
+ * reads. Binding to the printer is the operator saying otherwise, and it is the
+ * only thing that puts a sensor here.
+ */
+export function sensorsForPrinter(sensors: ZigbeeSensor[], printerId: number): ZigbeeSensor[] {
+  return sensors
+    .filter((sensor) => sensor.printer_id === printerId)
+    // Same rule as the group header: a live sensor with nothing to say gets no
+    // chip, an absent one keeps its chip, because its readings are empty
+    // BECAUSE it is absent and a dead sensor must not look like no sensor.
+    .filter((sensor) => !sensor.present || roomReadings(sensor).length > 0)
+    .sort((a, b) => compareLocationNames(a.name, b.name));
+}

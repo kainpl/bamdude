@@ -2710,7 +2710,12 @@ export interface SensorMeasurement {
 export interface ZigbeeSensor {
   id: number;
   name: string;
+  /** Where this reading belongs, when the answer is a room or a shelf. */
   location: PrinterLocation | null;
+  /** ...or the machine it is taped to. Exclusive with `location` -- the
+   *  operator picks one, and setting either clears the other. */
+  printer_id: number | null;
+  printer_name: string | null;
   ieee: string;
   nwk: number | null;
   manufacturer: string | null;
@@ -6786,13 +6791,23 @@ export const api = {
   // re-issues them to the device, which is the whole point.
   clearDeviceSettings: (ieee: string) =>
     request<DeviceSettings>(`/zigbee/devices/${encodeURIComponent(ieee)}/settings`, { method: 'DELETE' }),
-  adoptZigbeeSensor: (payload: { zigbee_ieee: string; name: string; location_id: number | null }) =>
+  adoptZigbeeSensor: (payload: {
+    zigbee_ieee: string;
+    name: string;
+    location_id: number | null;
+    printer_id?: number | null;
+  }) =>
     request<{ id: number; name: string }>('/zigbee/sensors', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
   // `location_id: null` clears the place; omitting the key leaves it alone.
-  updateZigbeeSensor: (id: number, payload: { name?: string; location_id?: number | null }) =>
+  // Sending `printer_id` binds to that printer INSTEAD, clearing the place --
+  // the two are exclusive, and the backend is what enforces it.
+  updateZigbeeSensor: (
+    id: number,
+    payload: { name?: string; location_id?: number | null; printer_id?: number | null },
+  ) =>
     request<{ id: number; name: string }>(`/zigbee/sensors/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(payload),

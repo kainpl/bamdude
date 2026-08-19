@@ -30,6 +30,8 @@ function existing(over: Partial<ZigbeeSensor> = {}): ZigbeeSensor {
     id: 7,
     name: 'Майстерня',
     location: null,
+    printer_id: null,
+    printer_name: null,
     ieee: 'aa:bb',
     nwk: 1,
     manufacturer: null,
@@ -47,6 +49,10 @@ describe('SensorFormModal', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.spyOn(api, 'getPrinterLocations').mockResolvedValue({ locations: [] });
+    vi.spyOn(api, 'getPrinters').mockResolvedValue([
+      { id: 3, name: 'X1C' },
+      { id: 4, name: 'P1S' },
+    ] as never);
   });
 
   it('offers only paired sensors nobody has added', async () => {
@@ -88,7 +94,63 @@ describe('SensorFormModal', () => {
         zigbee_ieee: 'aa:bb:cc:dd:ee:ff:00:11',
         name: 'Bench',
         location_id: null,
+        // ⚠️ Sent, and sent as null. Both sides always travel, so a payload can
+        // never say only half of what the dialog shows.
+        printer_id: null,
       }),
+    );
+  });
+
+  it('binds to the chosen printer, and clears the place doing it', async () => {
+    const update = vi.spyOn(api, 'updateZigbeeSensor').mockResolvedValue({ id: 7, name: 'Майстерня' });
+
+    render(
+      <SensorFormModal
+        sensor={existing({ location: { id: 9, name: 'Shop', parent_id: null } as never })}
+        initialDevice={null}
+        onClose={() => {}}
+      />,
+    );
+
+    await userEvent.click(await screen.findByRole('radio', { name: /a printer/i }));
+    await userEvent.selectOptions(screen.getByLabelText(/a printer/i), '4');
+    await userEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith(7, {
+        name: 'Майстерня',
+        printer_id: 4,
+        // ⚠️ The whole point of the choice: the place the sensor used to have
+        // is released, not kept beside the printer.
+        location_id: null,
+      }),
+    );
+  });
+
+  it('opens on the side the sensor is already bound to', async () => {
+    render(
+      <SensorFormModal sensor={existing({ printer_id: 3, printer_name: 'X1C' })} initialDevice={null} onClose={() => {}} />,
+    );
+
+    expect(await screen.findByRole('radio', { name: /a printer/i })).toHaveAttribute('aria-checked', 'true');
+    // The list arrives with the printers query, so the preselection is only
+    // visible once there is an option to select.
+    await screen.findByRole('option', { name: 'X1C' });
+    expect(screen.getByLabelText(/a printer/i)).toHaveValue('3');
+  });
+
+  it('going back to a place releases the printer', async () => {
+    const update = vi.spyOn(api, 'updateZigbeeSensor').mockResolvedValue({ id: 7, name: 'Майстерня' });
+
+    render(
+      <SensorFormModal sensor={existing({ printer_id: 3, printer_name: 'X1C' })} initialDevice={null} onClose={() => {}} />,
+    );
+
+    await userEvent.click(await screen.findByRole('radio', { name: /a place/i }));
+    await userEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith(7, { name: 'Майстерня', location_id: null, printer_id: null }),
     );
   });
 

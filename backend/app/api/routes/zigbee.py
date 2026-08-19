@@ -484,6 +484,11 @@ async def list_sensors(
             "name": row.name,
             # The place, resolved -- one shape for a location everywhere.
             "location": PrinterLocationOut.from_location(row.location),
+            # ⚠️ Or the printer it belongs to, exclusive with the place above.
+            # Both are sent so the settings list can show which binding was
+            # chosen without asking a second time.
+            "printer_id": row.printer_id,
+            "printer_name": row.printer.name if row.printer else None,
             "ieee": ieee,
             "present": device is not None,
         }
@@ -700,14 +705,64 @@ async def adopt_sensor(
     if existing.scalar_one_or_none() is not None:
         raise HTTPException(status_code=409, detail="This sensor has already been added.")
 
-    if payload.location_id is not None and await db.get(PrinterLocation, payload.location_id) is None:
-        raise HTTPException(status_code=422, detail="No such location.")
-
-    sensor = SmartSensor(name=payload.name.strip(), location_id=payload.location_id, zigbee_ieee=ieee)
+    sensor = SmartSensor(name=payload.name.strip(), zigbee_ieee=ieee)
+    await _bind_sensor(
+        db,
+        sensor,
+        location_id=payload.location_id,
+        printer_id=payload.printer_id,
+        set_location=True,
+        set_printer=True,
+    )
     db.add(sensor)
     await db.commit()
     await db.refresh(sensor)
-    return sensor
+    return _sensor_out(sensor)
+
+
+async def _bind_sensor(db, sensor, *, location_id, printer_id, set_location: bool, set_printer: bool) -> None:
+    """Point a sensor at a place or at a printer, never at both.
+
+    ⚠️ Exclusive by construction rather than by a check that could be forgotten:
+    setting either side clears the other. The two answer the same question —
+    where this reading belongs — and a printer already has a location, so a
+    sensor holding both could claim a place its printer is not in and appear in
+    two lists at once.
+
+    ``set_location`` / ``set_printer`` say whether the caller mentioned the
+    field at all, so an update that touches neither leaves the binding alone,
+    and one that sends an explicit null unbinds.
+    """
+    from backend.app.models.printer import Printer
+
+    if set_printer and printer_id is not None:
+        if await db.get(Printer, printer_id) is None:
+            raise HTTPException(status_code=422, detail="No such printer.")
+        sensor.printer_id = printer_id
+        sensor.location_id = None
+        return
+    if set_location and location_id is not None:
+        if await db.get(PrinterLocation, location_id) is None:
+            raise HTTPException(status_code=422, detail="No such location.")
+        sensor.location_id = location_id
+        sensor.printer_id = None
+        return
+    # Explicit nulls: unbind whichever side was named.
+    if set_printer:
+        sensor.printer_id = None
+    if set_location:
+        sensor.location_id = None
+
+
+def _sensor_out(sensor) -> SmartSensorOut:
+    """Serialise a sensor, naming the printer it is bound to.
+
+    Read off the eager-loaded relationship, so a sensor list costs no extra
+    query per row.
+    """
+    payload = SmartSensorOut.model_validate(sensor, from_attributes=True)
+    payload.printer_name = sensor.printer.name if sensor.printer else None
+    return payload
 
 
 @router.patch("/sensors/{sensor_id}", response_model=SmartSensorOut)
@@ -730,13 +785,17 @@ async def rename_sensor(
     # once given a place can never become placeless.
     if "name" in payload.model_fields_set and payload.name is not None:
         sensor.name = payload.name.strip()
-    if "location_id" in payload.model_fields_set:
-        if payload.location_id is not None and await db.get(PrinterLocation, payload.location_id) is None:
-            raise HTTPException(status_code=422, detail="No such location.")
-        sensor.location_id = payload.location_id
+    await _bind_sensor(
+        db,
+        sensor,
+        location_id=payload.location_id,
+        printer_id=payload.printer_id,
+        set_location="location_id" in payload.model_fields_set,
+        set_printer="printer_id" in payload.model_fields_set,
+    )
     await db.commit()
     await db.refresh(sensor)
-    return sensor
+    return _sensor_out(sensor)
 
 
 @router.delete("/sensors/{sensor_id}")

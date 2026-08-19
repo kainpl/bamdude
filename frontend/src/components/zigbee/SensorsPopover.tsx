@@ -101,7 +101,9 @@ function SensorRow({ sensor, onChart }: { sensor: ZigbeeSensor; onChart: () => v
     <div className="flex items-center justify-between gap-2 py-2 px-3 hover:bg-bambu-dark-tertiary rounded-lg transition-colors">
       <div className="min-w-0">
         <p className="text-sm text-white font-medium truncate">{sensor.name}</p>
-        <p className="text-xs text-bambu-gray truncate">{sensor.location?.path || ''}</p>
+        {/* Where it belongs — a place or the machine it is taped to. The two
+            are exclusive, so at most one of them is ever a string. */}
+        <p className="text-xs text-bambu-gray truncate">{sensor.printer_name ?? sensor.location?.path ?? ''}</p>
 
         {!sensor.present ? (
           // Its measurements are empty BECAUSE it is absent — the quantity list

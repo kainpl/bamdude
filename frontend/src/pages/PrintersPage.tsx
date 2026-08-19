@@ -167,6 +167,7 @@ import { getColorName, parseFilamentColor, isLightColor, resolveMultiColorName }
 import { formatSpoolDisplayName, DEFAULT_SPOOL_DISPLAY_TEMPLATE } from '../utils/spoolName';
 import { groupByLocation } from '../utils/locationGroups';
 import { LocationConditions } from '../components/zigbee/LocationConditions';
+import { PrinterConditions } from '../components/zigbee/PrinterConditions';
 import { AirductModal } from '../components/AirductModal';
 import { TemperatureModal } from '../components/TemperatureModal';
 import { MotionModal } from '../components/MotionModal';
@@ -5688,6 +5689,14 @@ function PrinterCard({
             )}
           </div>
         )}
+
+        {/* This printer's own sensors — an enclosure probe, a door contact.
+            Below the plug because both answer "what is around the machine",
+            and a sensor bound to a PLACE is deliberately not here: it already
+            shows on that group's header, and repeating it on every card in the
+            room would claim the enclosure reads what the room reads. Expanded
+            only, like the plug row above it. */}
+        {viewMode === 'expanded' && <PrinterConditions printerId={printer.id} />}
 
         {/* Archive summary — counter line mirrors QueueCard footer, links
             to the archive filtered by this printer. Sits above the action
