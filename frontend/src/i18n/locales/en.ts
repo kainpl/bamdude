@@ -739,6 +739,10 @@ export default {
     },
     // Filaments section
     filaments: 'Filaments',
+    externalSpool: {
+      hide: 'Hide external spool',
+      show: 'Show external spool',
+    },
     // Camera
     openCameraOverlay: 'Open camera overlay',
     openCameraWindow: 'Open camera in new window',
