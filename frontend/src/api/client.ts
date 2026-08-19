@@ -2543,6 +2543,10 @@ export interface CloudDevice {
 
 // Smart Plug types
 export interface SmartPlug {
+  /** Whether this is the plug the printer card treats as that machine's power.
+   * Decided by the backend so every surface that switches a printer agrees;
+   * never re-derive it here. False for plugs with no printer. */
+  is_main_plug?: boolean;
   id: number;
   name: string;
   plug_type: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest' | 'zigbee';

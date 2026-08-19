@@ -38,6 +38,12 @@
 
     The chamber control on the printer card is unchanged: it already bounds itself from each printer's own reported limits, which is a better answer than one number for the whole farm, and stays that way. The flat ceiling exists only where there is no printer to ask — the filament map is shared by every machine, and a per-print override is entered before a printer is chosen.
 
+- **The printer card's Power row now finds the plug that actually powers the printer.** Which plug filled it was decided by nothing — whichever row the database happened to return first. On a printer with an enclosure fan added before its outlet, the card showed the fan's name with "--" for watts, offered to switch the printer off by cutting the fan, and pushed the metered outlet down to the small button row. The candidates are now ranked: it has to be switchable at all, then marked as powering the printer, then enabled, then visible on the card, then reporting watts, with the lowest id settling a true tie.
+
+    A plug hidden from the card is **ranked down, not excluded** — otherwise a printer whose only plug has that box unticked would lose its Power row and its on/off button entirely.
+
+    **The "power on the offline printers" list had the same fault, and worse:** it picked whichever plug came last, with no ordering at all, and that list sends a real on/off command. Both surfaces now ask the same ranking, so they cannot name different plugs for the same printer.
+
 - **A Git backup can now be restored, not just written.** The Git backup was push-only — there was no equivalent of the local backup's Restore button, so recovering meant hand-downloading JSON files out of the repository. Pick a commit, see what it contains, choose which of print archives / spool inventory / settings / K-profiles to bring back, and restore. Missing entries are added; existing ones are left alone unless you ask for overwrite.
 
     **A restore never reuses the backup's internal ids.** Those are just row counters, so an id from a backup taken weeks ago very likely belongs to something unrelated today. Rows are matched on what actually identifies them — a spool by its tag, an archive by its content or its name and start time — and the links between them are rewritten to match. Restoring the same backup twice updates rather than duplicating.

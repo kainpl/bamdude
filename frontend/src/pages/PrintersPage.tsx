@@ -8556,11 +8556,17 @@ export function PrintersPage() {
   // stable across renders when ``smartPlugs`` doesn't change — without this,
   // the fallback ``|| {}`` allocates a fresh object every render and would
   // trigger downstream effects/memos that depend on the map identity.
+  // ⚠️ The plug the BACKEND calls this printer's power, not whichever row came
+  // last. This map feeds the "power on the offline printers" list, which sends
+  // a real on/off command — so picking arbitrarily could switch an enclosure
+  // fan instead of the printer, or aim at an MQTT plug that cannot be switched
+  // at all. `is_main_plug` is ranked server-side by the same code the card's
+  // Power row uses; a second ranking here would be a second answer.
   const smartPlugByPrinter = useMemo(
     () =>
       smartPlugs?.reduce(
         (acc, plug) => {
-          if (plug.printer_id) {
+          if (plug.printer_id && plug.is_main_plug) {
             acc[plug.printer_id] = plug;
           }
           return acc;

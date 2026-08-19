@@ -225,6 +225,12 @@ class SmartPlugUpdate(BaseModel):
 
 class SmartPlugResponse(SmartPlugBase):
     id: int
+    # ⚠️ Whether this is the plug the printer card treats as the machine's power
+    # — computed by ``_main_plug_rank``, never by the client. Anything that
+    # switches a printer on or off must agree with the card's own Power row, and
+    # a second ranking written in TypeScript is a second answer waiting to
+    # drift. False on every plug with no printer.
+    is_main_plug: bool = False
     last_state: str | None = None
     last_checked: datetime | None = None
     auto_off_executed: bool = False  # True when auto-off was triggered after print
