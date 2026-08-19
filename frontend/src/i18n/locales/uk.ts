@@ -4458,7 +4458,9 @@ export default {
     rollup: {
       title: 'Цей проєкт і все, що під ним',
       progress: 'Прогрес дерева',
-      acrossTree: 'по {{count}} підпроєкту',
+      acrossTree_one: 'по {{count}} підпроєкту',
+      acrossTree_few: 'по {{count}} підпроєктах',
+      acrossTree_many: 'по {{count}} підпроєктах',
       acrossTree_other: 'по {{count}} підпроєктах',
     },
     notFound: 'Проєкт не знайдено',

@@ -24,6 +24,7 @@ import {
 import { CalibrationModeControl } from '../PrintModal/CalibrationModeControl';
 import { autoCalibrationCaps } from '../../utils/printerCapabilities';
 import { useToast } from '../../contexts/ToastContext';
+import { MAX_CHAMBER_TEMP_C } from '../../utils/printer';
 
 // Sentinel for the "System (slicer fallback)" pseudo-user. Real user ids
 // start at 1, so 0 is safe to mean "the per-model system row (user_id IS
@@ -405,7 +406,7 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
       ...prev,
       print_options: {
         ...prev.print_options,
-        preheat_chamber_target_override: Math.max(0, Math.min(60, parsed)),
+        preheat_chamber_target_override: Math.max(0, Math.min(MAX_CHAMBER_TEMP_C, parsed)),
       },
     }));
   };
@@ -543,7 +544,7 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
               <input
                 type="number"
                 min={0}
-                max={60}
+                max={MAX_CHAMBER_TEMP_C}
                 step={1}
                 value={data.print_options.preheat_chamber_target_override ?? ''}
                 onChange={(e) => setPreheatTarget(e.target.value)}

@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, PlainSerializer, model_validator
 
 from backend.app.schemas.calibration_mode import CalibrationMode
 from backend.app.schemas.timelapse import TimelapseStorage
+from backend.app.utils.temperature_limits import MAX_CHAMBER_TEMP_C
 
 
 # Custom serializer to ensure UTC datetimes have Z suffix
@@ -52,7 +53,7 @@ class PrintQueueItemCreate(BaseModel):
     # preheat_enabled setting; 'on' / 'off' force the decision. The chamber target
     # falls through: this override → max(filament-map[loaded tray]) → 0.
     preheat_override: Literal["inherit", "on", "off"] = "inherit"
-    preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=60)
+    preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=MAX_CHAMBER_TEMP_C)
     # Batch: create N identical items sharing a batch_id (1..50)
     quantity: int = Field(default=1, ge=1, le=50)
     # Project to associate the resulting archive with (when triggered from project view)
@@ -83,7 +84,7 @@ class PrintQueueItemUpdate(BaseModel):
     selected_macro_ids: list[int] | None = None
     gcode_injection: bool | None = None
     preheat_override: Literal["inherit", "on", "off"] | None = None
-    preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=60)
+    preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=MAX_CHAMBER_TEMP_C)
     # H2C dual-nozzle-rack slicer pick (#1780). The slicer's per-filament
     # physical nozzle position IDs — an opaque list[int] BambuStudio sends in
     # its project_file MQTT body; replayed to the printer verbatim on dispatch.
@@ -226,7 +227,7 @@ class PrintQueueBulkUpdate(BaseModel):
     selected_macro_ids: list[int] | None = None
     gcode_injection: bool | None = None
     preheat_override: Literal["inherit", "on", "off"] | None = None
-    preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=60)
+    preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=MAX_CHAMBER_TEMP_C)
 
 
 class PrintQueueBulkUpdateResponse(BaseModel):

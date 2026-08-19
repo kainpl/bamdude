@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from backend.app.schemas.calibration_mode import CalibrationMode
 from backend.app.schemas.timelapse import TimelapseStorage
+from backend.app.utils.temperature_limits import MAX_CHAMBER_TEMP_C
 
 
 class PrintOptionsToggles(BaseModel):
@@ -38,7 +39,7 @@ class PrintOptionsToggles(BaseModel):
     preheat_override: Literal["inherit", "on", "off"] = "inherit"
     # Optional explicit chamber-target override (°C, 0–60). None keeps the
     # per-filament-type derivation.
-    preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=60)
+    preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=MAX_CHAMBER_TEMP_C)
 
 
 class SwapMacrosPref(BaseModel):

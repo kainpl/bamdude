@@ -4423,7 +4423,7 @@ export default {
     rollup: {
       title: 'This project and everything under it',
       progress: 'Tree progress',
-      acrossTree: 'across {{count}} sub-project',
+      acrossTree_one: 'across {{count}} sub-project',
       acrossTree_other: 'across {{count}} sub-projects',
     },
     notFound: 'Project not found',
