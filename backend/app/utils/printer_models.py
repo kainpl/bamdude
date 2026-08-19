@@ -476,3 +476,23 @@ def normalize_printer_model(raw_model: str | None) -> str | None:
     # Strip "Bambu Lab " prefix for unknown models
     stripped = raw_model.replace("Bambu Lab ", "").strip()
     return stripped or None
+
+
+def normalize_model_name(raw: str | None) -> str | None:
+    """Normalize any spelling of a printer model to its short name.
+
+    ⚠️ **Internal codes are resolved FIRST, and the order is the whole point.**
+    ``normalize_printer_model`` returns unknown input unchanged rather than
+    None, so an ``normalize_printer_model(x) or normalize_printer_model_id(x)``
+    chain never reaches the code map: "C12" is not in the name map, comes back
+    as "C12" — truthy — and the second branch is dead. A queue item targeting
+    that code then matches no printer row and waits for ever, saying only "No
+    active C12 printers eligible". Running the code map first is a no-op for
+    every input that is not a code (upstream `a9b57ccd`).
+
+    Still returns the input unchanged when neither map knows it — a model we
+    have never seen is not a reason to lose the operator's answer.
+    """
+    if not raw:
+        return None
+    return normalize_printer_model(normalize_printer_model_id(raw) or raw) or raw

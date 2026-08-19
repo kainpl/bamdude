@@ -54,6 +54,7 @@ from backend.app.services.auto_queue_eligibility import find_eligible_printer
 from backend.app.services.auto_queue_threemf import extract_auto_queue_requirements
 from backend.app.services.filament_requirements import overrides_for_plate
 from backend.app.services.library_helpers import project_for_library_file
+from backend.app.utils.printer_models import normalize_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -263,7 +264,11 @@ async def add_to_auto_queue(
     pos_offset = 0
     for plate_id in plate_ids:
         # Per-plate 3MF auto-extraction (fall back to provided values when given)
-        target_model = data.target_model
+        # Normalised on the way in so the stored value is the short name the
+        # rest of the app compares and displays. Routing normalises again when
+        # it reads (that is what covers rows written by telegram and the VP),
+        # but a row that keeps "C12" shows "C12" everywhere it is named.
+        target_model = normalize_model_name(data.target_model)
         required_types = data.required_filament_types
         print_time = None
         if file_path is not None and file_path.exists():
@@ -444,6 +449,8 @@ async def update_auto_queue_item(
         elif key in ("bed_levelling", "flow_cali"):
             # No *_mode column on auto-queue — store the bool mirror only.
             value = mode_to_bool(value)
+        elif key == "target_model" and value is not None:
+            value = normalize_model_name(value)
         setattr(item, key, value)
 
     await db.commit()

@@ -285,10 +285,12 @@ async def get_available_filaments(
 
     Used by the frontend to offer filament override options for model-based queue assignment.
     """
-    from backend.app.utils.printer_models import normalize_printer_model, normalize_printer_model_id
+    from backend.app.utils.printer_models import normalize_model_name
 
-    # Normalize model name
-    normalized_model = normalize_printer_model(model) or normalize_printer_model_id(model) or model
+    # One helper, because the or-chain this replaces had a dead second branch:
+    # ``normalize_printer_model`` returns an unknown code unchanged, so the code
+    # map was never reached and an internal code found no printers at all.
+    normalized_model = normalize_model_name(model) or model
 
     query = (
         select(Printer)

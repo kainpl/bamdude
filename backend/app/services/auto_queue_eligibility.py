@@ -53,7 +53,7 @@ from backend.app.services.auto_queue_ams import _normalize_color_for_compare
 from backend.app.services.print_scheduler import _canonical_filament_type, scheduler
 from backend.app.services.printer_location_service import load_tree, path_of, subtree_ids
 from backend.app.services.printer_manager import printer_manager
-from backend.app.utils.printer_models import normalize_printer_model
+from backend.app.utils.printer_models import normalize_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +190,12 @@ async def printers_for_item(db: AsyncSession, item: AutoQueueItem) -> tuple[list
     never legally run there — the job stays stuck and the printer now draws
     power.
     """
-    normalized_model = normalize_printer_model(item.target_model) or item.target_model
+    # ⚠️ ``normalize_model_name``, not ``normalize_printer_model``: the latter
+    # hands an internal code straight back, so an item targeting "C12" matched
+    # no printer row and waited for ever behind "No active C12 printers
+    # eligible". Normalising HERE covers every creator — the route, telegram,
+    # the virtual printer — rather than each of them separately.
+    normalized_model = normalize_model_name(item.target_model) or item.target_model
 
     # Filter active printers of the right model + location, with auto-distribute eligible.
     query = (
