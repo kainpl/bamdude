@@ -1028,6 +1028,15 @@ class VirtualPrinterInstance:
                             nozzle_mapping_json = json.dumps(raw_nozzle_mapping)
 
                 queue_item_ids: list[int] = []
+                # ⚠️ No ``created_by_id`` here, and that is the answer rather
+                # than a gap. A VirtualPrinter carries no owner, and the obvious
+                # substitute is wrong rather than incomplete: one admin
+                # typically configures the VP while everyone slices through it,
+                # so crediting these to that admin would make the "added by"
+                # column lie and drop other people's jobs into their queue.
+                # Every other path that builds a queue item DOES set it —
+                # ``queue:read_own`` filters on it — so a missing value here has
+                # to stay a deliberate, documented one.
                 for offset, plate_id in enumerate(plate_ids, start=1):
                     queue_item = PrintQueueItem(
                         queue_id=queue.id,

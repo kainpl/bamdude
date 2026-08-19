@@ -8376,11 +8376,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(options),
     }),
-  addLibraryFilesToQueue: (fileIds: number[]) =>
-    request<AddToQueueResponse>('/library/files/add-to-queue', {
-      method: 'POST',
-      body: JSON.stringify({ file_ids: fileIds }),
-    }),
   printLibraryFile: (
     fileId: number,
     printerId: number,
@@ -9314,25 +9309,6 @@ export interface BatchThumbnailResponse {
   succeeded: number;
   failed: number;
   results: BatchThumbnailResult[];
-}
-
-// Library Queue types
-export interface AddToQueueResult {
-  file_id: number;
-  filename: string;
-  queue_item_id: number;
-  archive_id: number;
-}
-
-export interface AddToQueueError {
-  file_id: number;
-  filename: string;
-  error: string;
-}
-
-export interface AddToQueueResponse {
-  added: AddToQueueResult[];
-  errors: AddToQueueError[];
 }
 
 // Discovery types
