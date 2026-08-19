@@ -1161,6 +1161,9 @@ export default {
     list: {
       name: 'Назва',
       printer: 'Принтер',
+      cost: 'Вартість',
+      energy: 'Енергія',
+      filament: 'Філамент',
       date: 'Дата',
       size: 'Розмір',
       actions: 'Дії',

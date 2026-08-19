@@ -1159,6 +1159,9 @@ export default {
     list: {
       name: 'Name',
       printer: 'Printer',
+      cost: 'Cost',
+      energy: 'Energy',
+      filament: 'Filament',
       date: 'Date',
       size: 'Size',
       actions: 'Actions',
