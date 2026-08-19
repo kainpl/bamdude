@@ -2698,6 +2698,9 @@ export default {
     dockerImagePullBeta: 'Бета-теги не підтягуються через `:latest`. Постав явний бета-tag у docker-compose.yml, потім pull + recreate:',
     dockerSourceBuildTitle: 'Source-build встановлення (склонували репо)',
     dockerSourceBuildHint: 'Checkout потрібного тегу, ребілд з вихідників, recreate:',
+    composeDirLabel: 'Тека з compose-файлом (на хості)',
+    composeDirHint:
+      'Де лежить docker-compose.yml. Використовується лише як префікс до команд вище, щоб їх можна було вставити звідки завгодно. Визначається автоматично, де це можливо — задайте BAMDUDE_COMPOSE_DIR або впишіть тут, якщо здогадка хибна.',
     installUpdate: 'Встановити оновлення',
     latestVersionRunning: 'Ви використовуєте останню версію',
     failedToCheckUpdates: 'Не вдалося перевірити оновлення: {{error}}',

@@ -1734,6 +1734,9 @@ export interface AppSettings {
   mqtt_use_tls: boolean;
   // External URL for notifications
   external_url: string;
+  /** Host directory holding docker-compose.yml. ⚠️ Never read by BamDude —
+   *  it only appears in the Settings update instructions. */
+  docker_compose_dir: string;
   // Home Assistant integration
   ha_enabled: boolean;
   ha_url: string;
@@ -4106,6 +4109,9 @@ export interface UpdateCheckResult {
   is_windows_installer?: boolean;
   update_method?: 'docker' | 'git' | 'ha_addon' | 'windows_installer';
   installer_download_url?: string | null;
+  /** ⚠️ A GUESS, and a prefill only — never the saved setting. Read the saved
+   *  `docker_compose_dir` from settings; fall back to this when it is empty. */
+  compose_dir_detected?: string | null;
 }
 
 export interface UpdateStatus {

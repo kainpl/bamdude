@@ -2689,6 +2689,9 @@ export default {
     dockerImagePullBeta: 'Beta tags are not pulled by `:latest`. Edit your docker-compose.yml to pin the beta image tag, then pull + recreate:',
     dockerSourceBuildTitle: 'Source-build install (you cloned the repo)',
     dockerSourceBuildHint: 'Checkout the target tag, rebuild from source, recreate:',
+    composeDirLabel: 'Compose directory (on the host)',
+    composeDirHint:
+      'Where docker-compose.yml lives. Used only to prefix the commands above, so you can paste them from anywhere. Detected automatically where possible — set BAMDUDE_COMPOSE_DIR or fill this in when the guess is wrong.',
     installUpdate: 'Install Update',
     latestVersionRunning: "You're running the latest version",
     failedToCheckUpdates: 'Failed to check for updates: {{error}}',

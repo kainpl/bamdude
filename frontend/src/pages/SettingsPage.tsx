@@ -10,6 +10,7 @@ import { formatDateOnly, type DateFormat } from '../utils/date';
 import { getCurrencySymbol, SUPPORTED_CURRENCIES } from '../utils/currency';
 import type { AppSettings, AppSettingsUpdate, APIKey, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, Macro, MacroCreate, MacroUpdate, ZigbeeDevice } from '../api/client';
 import { Card, CardContent, CardHeader } from '../components/Card';
+import { CopyButton } from '../components/CopyButton';
 import { Button } from '../components/Button';
 import { LdapUserPicker } from '../components/LdapUserPicker';
 import { ZigbeeCoordinatorCard } from '../components/zigbee/ZigbeeCoordinatorCard';
@@ -1121,6 +1122,20 @@ export function SettingsPage() {
       setLocalSettings(prev => (prev ? { ...prev, ...adopted } : prev));
     }
   }, [settings, localSettings]);
+
+  // The compose directory the update commands are prefixed with: the operator's
+  // saved value first, the container's guess only as a fallback. ⚠️ Never the
+  // other way round — clearing the field has to mean "use the guess", not
+  // "resurrect what I just cleared".
+  const composeDir = (settings?.docker_compose_dir || updateCheck?.compose_dir_detected || '').trim();
+  // ⚠️ Double-quoted, because a path can contain spaces. The backend refuses a
+  // trailing backslash for exactly this reason — it would escape the closing
+  // quote and swallow the rest of the line.
+  const composeCdPrefix = composeDir ? `cd "${composeDir}" && ` : '';
+  const [composeDirInput, setComposeDirInput] = useState('');
+  useEffect(() => {
+    setComposeDirInput(settings?.docker_compose_dir ?? '');
+  }, [settings?.docker_compose_dir]);
 
   const updateMutation = useMutation({
     mutationFn: api.updateSettings,
@@ -2648,9 +2663,15 @@ export function SettingsPage() {
                               ? t('settings.dockerImagePullBeta')
                               : t('settings.dockerImagePullStable')}
                           </p>
-                          <code className="block text-xs bg-bambu-dark p-2 rounded text-bambu-green font-mono whitespace-pre-wrap break-all">
-                            {`# docker-compose.yml\nimage: kainpl/bamdude:${updateCheck.is_prerelease ? updateCheck.latest_version : (updateCheck.latest_version ?? 'latest')}\n\n# then\ndocker compose pull && docker compose up -d`}
-                          </code>
+                          <div className="relative">
+                            <code className="block text-xs bg-bambu-dark p-2 pr-9 rounded text-bambu-green font-mono whitespace-pre-wrap break-all">
+                              {`# docker-compose.yml\nimage: kainpl/bamdude:${updateCheck.is_prerelease ? updateCheck.latest_version : (updateCheck.latest_version ?? 'latest')}\n\n# then\n${composeCdPrefix}docker compose pull && docker compose up -d`}
+                            </code>
+                            <CopyButton
+                              value={`${composeCdPrefix}docker compose pull && docker compose up -d`}
+                              className="absolute top-1 right-1 p-1 rounded hover:bg-bambu-dark-tertiary text-bambu-gray hover:text-white transition-colors"
+                            />
+                          </div>
                         </div>
 
                         {/* Source-build path — less common but supported */}
@@ -2661,9 +2682,36 @@ export function SettingsPage() {
                           <p className="text-xs text-bambu-gray mb-2">
                             {t('settings.dockerSourceBuildHint')}
                           </p>
-                          <code className="block text-xs bg-bambu-dark p-2 rounded text-bambu-green font-mono whitespace-pre-wrap break-all">
-                            {`git fetch origin --tags --prune --force\ngit checkout v${updateCheck.latest_version ?? '<tag>'}\ndocker compose build --pull\ndocker compose up -d`}
-                          </code>
+                          <div className="relative">
+                            <code className="block text-xs bg-bambu-dark p-2 pr-9 rounded text-bambu-green font-mono whitespace-pre-wrap break-all">
+                              {`${composeCdPrefix}git fetch origin --tags --prune --force\ngit checkout v${updateCheck.latest_version ?? '<tag>'}\ndocker compose build --pull\ndocker compose up -d`}
+                            </code>
+                            <CopyButton
+                              value={`${composeCdPrefix}git fetch origin --tags --prune --force && git checkout v${updateCheck.latest_version ?? '<tag>'} && docker compose build --pull && docker compose up -d`}
+                              className="absolute top-1 right-1 p-1 rounded hover:bg-bambu-dark-tertiary text-bambu-gray hover:text-white transition-colors"
+                            />
+                          </div>
+                          {/* The one place the operator can fix a wrong guess,
+                              and the only place the field exists at all — it
+                              means nothing outside these instructions. */}
+                          <div className="mt-2">
+                            <label className="block text-xs text-bambu-gray mb-1">
+                              {t('settings.composeDirLabel')}
+                            </label>
+                            <input
+                              type="text"
+                              value={composeDirInput}
+                              onChange={(e) => setComposeDirInput(e.target.value)}
+                              onBlur={() => {
+                                const next = composeDirInput.trim();
+                                if (next === (settings?.docker_compose_dir ?? '')) return;
+                                updateMutation.mutate({ docker_compose_dir: next });
+                              }}
+                              placeholder={updateCheck.compose_dir_detected || '/opt/bamdude'}
+                              className="w-full px-3 py-1.5 text-xs bg-bambu-dark border border-bambu-dark-tertiary rounded text-white font-mono focus:border-bambu-green focus:outline-none"
+                            />
+                            <p className="text-[11px] text-bambu-gray mt-1">{t('settings.composeDirHint')}</p>
+                          </div>
                         </div>
                       </div>
                     ) : updateCheck?.is_windows_installer ? (

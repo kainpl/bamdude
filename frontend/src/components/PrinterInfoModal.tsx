@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, Copy, Check, Signal, Cable } from 'lucide-react';
+import { X, Signal, Cable } from 'lucide-react';
 import { Card, CardContent } from './Card';
+import { CopyButton } from './CopyButton';
 import { useQuery } from '@tanstack/react-query';
 import { formatDateTime, type TimeFormat, type DateFormat } from '../utils/date';
 import { api, macrosApi } from '../api/client';
@@ -13,59 +14,6 @@ interface PrinterInfoModalProps {
   status?: PrinterStatus;
   totalPrintHours?: number;
   onClose: () => void;
-}
-
-function CopyButton({ value }: { value: string }) {
-  const { t } = useTranslation();
-  const [copied, setCopied] = useState(false);
-
-  // navigator.clipboard.writeText is gated by the secure-context requirement
-  // (HTTPS or localhost). On the typical bare-IP HTTP LAN deployment shape
-  // navigator.clipboard is undefined; without the legacy fallback the copy
-  // silently fails and the icon never flips to the tick (#1174). Mirror the
-  // off-screen-textarea + document.execCommand('copy') path that the camera
-  // tokens panel already uses for the same scenario.
-  const handleCopy = async () => {
-    let succeeded = false;
-    if (navigator.clipboard && window.isSecureContext) {
-      try {
-        await navigator.clipboard.writeText(value);
-        succeeded = true;
-      } catch {
-        // Fall through to legacy path below.
-      }
-    }
-    if (!succeeded) {
-      const textarea = document.createElement('textarea');
-      textarea.value = value;
-      textarea.setAttribute('readonly', '');
-      textarea.style.position = 'fixed';
-      textarea.style.opacity = '0';
-      textarea.style.pointerEvents = 'none';
-      document.body.appendChild(textarea);
-      try {
-        textarea.select();
-        succeeded = document.execCommand('copy');
-      } catch {
-        succeeded = false;
-      } finally {
-        document.body.removeChild(textarea);
-      }
-    }
-    if (!succeeded) return;
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  return (
-    <button
-      onClick={handleCopy}
-      className="ml-2 p-1 rounded hover:bg-bambu-dark-tertiary text-bambu-gray hover:text-white transition-colors"
-      title={copied ? t('printers.copied') : t('printers.copyToClipboard')}
-    >
-      {copied ? <Check className="w-3.5 h-3.5 text-bambu-green" /> : <Copy className="w-3.5 h-3.5" />}
-    </button>
-  );
 }
 
 export function PrinterInfoModal({ printer, status, totalPrintHours, onClose }: PrinterInfoModalProps) {

@@ -1,4 +1,5 @@
 import json
+import re
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -13,6 +14,16 @@ from pydantic import BaseModel, Field, field_validator
 # setting belongs here** — or, if it must be reachable on the public internet, on
 # the stricter OIDC guard instead.
 LAN_SERVICE_URL_SETTINGS = ("ha_url", "obico_ml_url", "orcaslicer_api_url", "bambu_studio_api_url")
+
+# ⚠️ ``docker_compose_dir`` is unusual among the string settings: BamDude never
+# consumes it. It is interpolated into a shell command that the Settings page
+# invites the operator to copy and paste into a root-capable terminal. A value
+# like ``/opt/bamdude; rm -rf /`` would render as a perfectly plausible-looking
+# update command, so anyone holding ``settings:update`` could hand every admin a
+# destructive one-liner to run. Restricting it to characters that occur in real
+# paths removes that entirely.
+_COMPOSE_DIR_ALLOWED = re.compile(r"^[\w \-./\\:~]+$")
+_COMPOSE_DIR_MAX_LEN = 512
 
 
 class AppSettings(BaseModel):
@@ -322,6 +333,12 @@ class AppSettings(BaseModel):
     mqtt_use_tls: bool = Field(default=False, description="Use TLS/SSL encryption for MQTT connection")
 
     # External URL for notifications
+    # Where the compose file lives on the host, for the update instructions.
+    # Never read by BamDude itself — see the validator on the update schema.
+    docker_compose_dir: str = Field(
+        default="", description="Host directory holding docker-compose.yml, shown in the update command"
+    )
+
     external_url: str = Field(
         default="", description="External URL where BamDude is accessible (for notification images)"
     )
@@ -640,6 +657,7 @@ class AppSettingsUpdate(BaseModel):
     mqtt_topic_prefix: str | None = None
     mqtt_use_tls: bool | None = None
     external_url: str | None = None
+    docker_compose_dir: str | None = None
     ha_enabled: bool | None = None
     ha_url: str | None = None
     ha_token: str | None = None
@@ -703,6 +721,36 @@ class AppSettingsUpdate(BaseModel):
 
         assert_safe_lan_service_url(v, label=info.field_name)
         return v
+
+    @field_validator("docker_compose_dir")
+    @classmethod
+    def validate_docker_compose_dir(cls, v: str | None) -> str | None:
+        """Keep the copy-and-paste update command free of shell injection.
+
+        ⚠️ Validated on the WRITE path only. Doing it on the read schema as well
+        would mean a single bad row — however it got there — 500s the entire
+        settings GET and takes the app down with it, which is a worse outcome
+        than rendering a string that has to be pasted into a shell by hand
+        before it does anything at all.
+        """
+        if v is None or not v.strip():
+            return v
+        candidate = v.strip()
+        if len(candidate) > _COMPOSE_DIR_MAX_LEN:
+            raise ValueError(f"Compose directory must be at most {_COMPOSE_DIR_MAX_LEN} characters")
+        if not _COMPOSE_DIR_ALLOWED.match(candidate):
+            raise ValueError(
+                "Compose directory may only contain path characters (letters, digits, space, and - _ . / \\ : ~)"
+            )
+        # ⚠️ A trailing backslash is the one survivor that would still break the
+        # frontend's double-quoting: `cd "/opt/bam dude\"` escapes the closing
+        # quote and swallows the rest of the line. Harmless — the shell just
+        # waits for a terminator rather than running anything — but the operator
+        # would be left staring at a continuation prompt, so refuse it here
+        # rather than shipping a command that cannot work.
+        if candidate.endswith("\\"):
+            raise ValueError("Compose directory must not end with a backslash")
+        return candidate
 
     @field_validator("gcode_snippets")
     @classmethod
