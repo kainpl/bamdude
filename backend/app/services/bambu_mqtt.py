@@ -263,6 +263,17 @@ def a2l_lite_wire_ids(ams_id: int, tray_id: int) -> tuple[int, int, int] | None:
 # low numbers — index 1 means the rack, physical ID 1 means the fixed hotend.
 # Nothing below may pass a value from one namespace to the other untranslated;
 # doing exactly that is what the upstream bug was.
+# AMS ``dry_status`` phases in which a reported ``dry_time`` of 0 is NOT the end
+# of a cycle (BS ``DevAms::DryStatus``): Checking, Drying, Cooling.
+#
+# ⚠️ Deliberately NOT BS's ``AmsIsDrying()``, which answers a different question
+# — "should the UI show this unit as drying" — and therefore counts Error(5) and
+# CannotStopHeatOutofControl(6) while excluding Cooling(3). Ours is "has the
+# cycle ENDED", and for that Stopping(4), Error(5) and a stuck heater are all
+# endings, while cooling down is not one yet. Off(0) and PrdTesting(7) are not
+# live phases either.
+_ACTIVE_DRY_STATUSES = frozenset({1, 2, 3})
+
 _RACK_NOZZLE_IDS = frozenset(range(16, 22))
 
 # BambuStudio dispatches a fixed-length nozzle_mapping on rack models: one
@@ -4004,6 +4015,32 @@ class BambuMQTTClient:
 
         self.state.raw_data["ams"] = merged_ams
 
+        # ⚠️ Derived BEFORE the falling-edge detector below, which reads
+        # ``dry_status`` to tell a finished cycle from a transient zero. It
+        # used to sit further down, where the detector could not see it.
+        # Extract drying status from info hex string and dry_sf_reason per AMS unit
+        # BambuStudio DevFilaSystem.cpp parses info bits:
+        #   dry_status     = get_flag_bits(info, 4, 4)   // bits 4-7
+        #   dry_sub_status = get_flag_bits(info, 22, 4)  // bits 22-25
+        for ams_unit in merged_ams:
+            info = ams_unit.get("info")
+            if info is not None:
+                try:
+                    info_val = int(str(info), 16)
+                    ams_unit["dry_status"] = (info_val >> 4) & 0xF
+                    ams_unit["dry_sub_status"] = (info_val >> 22) & 0xF
+                except (ValueError, TypeError):
+                    pass  # Skip unparseable info values
+            # dry_sf_reason is a per-unit array of cannot-dry reason codes
+            if "dry_sf_reason" in ams_unit:
+                sf_reason = ams_unit["dry_sf_reason"]
+                if isinstance(sf_reason, list):
+                    ams_unit["dry_sf_reason"] = [
+                        int(r) for r in sf_reason if isinstance(r, int) or (isinstance(r, str) and r.isdigit())
+                    ]
+                else:
+                    ams_unit["dry_sf_reason"] = []
+
         # Detect AMS drying-complete falling edge per-unit (#1349). When an
         # AMS's ``dry_time`` transitions from >0 to 0 the cycle just
         # finished — fire the callback so smart-plug auto-off-after-drying
@@ -4030,6 +4067,27 @@ class BambuMQTTClient:
                     current = int(raw_dry_time)
                 except (TypeError, ValueError):
                     continue
+                # ⚠️ A ``dry_time`` of 0 means "finished" only when the unit
+                # is not also reporting a live phase. Between accepting the
+                # command and settling its countdown the firmware publishes one
+                # transient zero while the AMS is still Checking — upstream
+                # #2759 caught a 720 → 0 → 719 sequence one minute into a
+                # 12-hour cycle. Taken at face value that dropped the cached
+                # target (so the badge fell back to guessing, and a PLA cycle
+                # read "PETG @ 65°C") and fired on_drying_complete, which is
+                # what schedules smart-plug auto-off — power cut one minute
+                # into a twelve-hour dry.
+                if current == 0 and ams_unit.get("dry_status") in _ACTIVE_DRY_STATUSES:
+                    # Leave the remembered value alone, exactly as the absent-
+                    # dry_time skip above does: whichever push ends the cycle
+                    # for real must still see a non-zero previous.
+                    logger.debug(
+                        "[%s] AMS %d reported dry_time 0 in phase %s - cycle still live, ignoring",
+                        self.serial_number,
+                        ams_id,
+                        ams_unit.get("dry_status"),
+                    )
+                    continue
                 previous = self._previous_dry_times.get(ams_id, 0)
                 self._previous_dry_times[ams_id] = current
                 if previous > 0 and current == 0:
@@ -4049,6 +4107,12 @@ class BambuMQTTClient:
             for ams_unit in merged_ams:
                 raw_dry = ams_unit.get("dry_time")
                 if raw_dry is None:
+                    continue
+                # ⚠️ Gated on the phase for the same reason as the edge above,
+                # and it matters MORE here: dropping the cache is what left the
+                # badge guessing the filament from tray 1 for the remaining
+                # eleven hours of the cycle.
+                if ams_unit.get("dry_status") in _ACTIVE_DRY_STATUSES:
                     continue
                 try:
                     if int(raw_dry) == 0:
@@ -4093,32 +4157,6 @@ class BambuMQTTClient:
             self.state.raw_data["ams_extruder_map"] = ams_extruder_map
             self.state.ams_extruder_map = ams_extruder_map
             logger.debug("[%s] ams_extruder_map: %s", self.serial_number, ams_extruder_map)
-
-        # Extract drying status from info hex string and dry_sf_reason per AMS unit
-        # BambuStudio DevFilaSystem.cpp parses info bits:
-        #   dry_status     = get_flag_bits(info, 4, 4)   // bits 4-7
-        #   dry_sub_status = get_flag_bits(info, 22, 4)  // bits 22-25
-        for ams_unit in merged_ams:
-            info = ams_unit.get("info")
-            if info is not None:
-                try:
-                    info_val = int(str(info), 16)
-                    ams_unit["dry_status"] = (info_val >> 4) & 0xF
-                    ams_unit["dry_sub_status"] = (info_val >> 22) & 0xF
-                except (ValueError, TypeError):
-                    pass  # Skip unparseable info values
-            # dry_sf_reason is a per-unit array of cannot-dry reason codes
-            if "dry_sf_reason" in ams_unit:
-                sf_reason = ams_unit["dry_sf_reason"]
-                if isinstance(sf_reason, list):
-                    ams_unit["dry_sf_reason"] = [
-                        int(r) for r in sf_reason if isinstance(r, int) or (isinstance(r, str) and r.isdigit())
-                    ]
-                else:
-                    ams_unit["dry_sf_reason"] = []
-
-        # Persist updated drying fields back to raw_data
-        self.state.raw_data["ams"] = merged_ams
 
         # Create a hash of relevant AMS data to detect changes.
         #

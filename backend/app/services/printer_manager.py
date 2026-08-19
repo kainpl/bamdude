@@ -349,6 +349,47 @@ def drying_screen_only(model: str | None) -> bool:
     return model.strip().upper() in _DRYING_SCREEN_ONLY_MODELS
 
 
+def uniform_tray_drying_hint(loaded_trays: list[tuple[str, object]]) -> tuple[str | None, int | None]:
+    """Guess a running cycle's filament and target temperature from the trays.
+
+    Bambu never echoes back which filament or temperature a drying cycle is
+    running, so the badge normally reads the target cached when we sent the
+    command. This is the fallback for when there is no record — drying started
+    in a previous backend lifetime, or from the printer's own screen.
+
+    ⚠️ It answers only when every loaded tray holds the SAME filament type. On a
+    mixed unit the first tray is evidence of nothing: an AMS holding two PETG
+    and two PLA spools, drying PLA at the 45 °C the user picked, was labelled
+    "PETG @ 65°C" purely because slot 1 happened to hold PETG. Saying nothing
+    and letting the badge show the countdown alone beats naming a temperature
+    the cycle is not using.
+
+    ⚠️ The temperature comes from the first slot that carries one, not from slot
+    1 — a third-party spool in slot 1 has no RFID value, and giving up there
+    threw away the answer the identical Bambu spool in slot 2 was holding.
+
+    Args:
+        loaded_trays: ``(tray_type, drying_temp)`` per tray, in slot order.
+            Empty slots (falsy ``tray_type``) are ignored; ``drying_temp`` is
+            the RFID-recommended value and may be missing or unparseable.
+
+    Returns:
+        ``(filament, temp)``, either of which may be None.
+    """
+    types = {str(tray_type) for tray_type, _ in loaded_trays if tray_type}
+    if len(types) != 1:
+        return None, None
+    filament = next(iter(types))
+    for tray_type, drying_temp in loaded_trays:
+        if not tray_type or not drying_temp:
+            continue
+        try:
+            return filament, int(drying_temp)
+        except (TypeError, ValueError):
+            continue
+    return filament, None
+
+
 def supports_drying(model: str | None, firmware: str | None) -> bool:
     """Check if a printer model supports AMS drying commands.
 
@@ -1749,7 +1790,8 @@ def printer_state_to_dict(
             # Active-cycle filament + target temperature for the drying badge.
             # Bambu doesn't echo the chosen filament/temp on the per-tick AMS
             # push, so prefer the cached target from the last send_drying_command;
-            # fall back to the first loaded tray's tray_type + RFID drying_temp.
+            # fall back to the loaded trays, but only when they agree on a
+            # filament type — see uniform_tray_drying_hint.
             ams_id_int = int(ams_data.get("id", 0))
             target = (drying_targets or {}).get(ams_id_int)
             dry_target_temp: int | None = None
@@ -1765,16 +1807,13 @@ def printer_state_to_dict(
                 if fil_val:
                     dry_filament = str(fil_val)
             if dry_target_temp is None or not dry_filament:
-                for tray in trays:
-                    if tray.get("tray_type"):
-                        if not dry_filament:
-                            dry_filament = str(tray["tray_type"])
-                        if dry_target_temp is None and tray.get("drying_temp"):
-                            try:
-                                dry_target_temp = int(tray["drying_temp"])
-                            except (TypeError, ValueError):
-                                pass
-                        break
+                hint_filament, hint_temp = uniform_tray_drying_hint(
+                    [(tray.get("tray_type") or "", tray.get("drying_temp")) for tray in trays]
+                )
+                if not dry_filament:
+                    dry_filament = hint_filament
+                if dry_target_temp is None:
+                    dry_target_temp = hint_temp
 
             ams_units.append(
                 {

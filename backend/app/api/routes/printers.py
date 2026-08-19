@@ -78,6 +78,7 @@ from backend.app.services.printer_manager import (
     supports_chamber_temp,
     supports_drying,
     supports_drying_while_printing,
+    uniform_tray_drying_hint,
 )
 from backend.app.utils.filament_ids import filament_id_to_setting_id
 from backend.app.utils.http import build_content_disposition
@@ -932,7 +933,8 @@ async def get_printer_status(
             is_ams_ht = len(trays) == 1
 
             # Active-cycle filament + target temperature for the drying badge
-            # (cache first, then first-loaded-tray fallback — see printer_manager).
+            # (cache first, then the loaded trays when they agree on a filament
+            # type — see uniform_tray_drying_hint in printer_manager).
             ams_id_int = int(ams_data.get("id", 0))
             target = drying_targets.get(ams_id_int) or {}
             dry_target_temp: int | None = None
@@ -947,16 +949,13 @@ async def get_printer_status(
             if target_fil_val:
                 dry_filament = str(target_fil_val)
             if dry_target_temp is None or not dry_filament:
-                for tray in trays:
-                    if tray.tray_type:
-                        if not dry_filament:
-                            dry_filament = str(tray.tray_type)
-                        if dry_target_temp is None and tray.drying_temp:
-                            try:
-                                dry_target_temp = int(tray.drying_temp)
-                            except (TypeError, ValueError):
-                                pass
-                        break
+                hint_filament, hint_temp = uniform_tray_drying_hint(
+                    [(tray.tray_type or "", tray.drying_temp) for tray in trays]
+                )
+                if not dry_filament:
+                    dry_filament = hint_filament
+                if dry_target_temp is None:
+                    dry_target_temp = hint_temp
 
             ams_units.append(
                 AMSUnit(
