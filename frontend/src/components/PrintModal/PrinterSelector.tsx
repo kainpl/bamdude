@@ -18,6 +18,7 @@ import {
   colorsAreSimilar,
   autoMatchFilament,
   filterFilamentsByNozzle,
+  filamentTypesCompatible,
 } from '../../utils/amsHelpers';
 import type { PrinterSelectorProps } from './types';
 import type { PrinterMappingResult, PerPrinterConfig } from '../../hooks/useMultiPrinterFilamentMapping';
@@ -114,7 +115,7 @@ function InlineMappingEditor({
     // Determine status
     let status: 'match' | 'type_only' | 'mismatch' = 'mismatch';
     if (loaded) {
-      const typeMatch = loaded.type?.toUpperCase() === req.type?.toUpperCase();
+      const typeMatch = filamentTypesCompatible(loaded.type, req.type);
       const colorMatch =
         normalizeColorForCompare(loaded.color) === normalizeColorForCompare(req.color) ||
         colorsAreSimilar(loaded.color, req.color);
