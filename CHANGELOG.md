@@ -34,6 +34,10 @@
 
     The chamber control on the printer card is unchanged: it already bounds itself from each printer's own reported limits, which is a better answer than one number for the whole farm, and stays that way. The flat ceiling exists only where there is no printer to ask — the filament map is shared by every machine, and a per-print override is entered before a printer is chosen.
 
+- **A job that never starts now says the AMS was drying.** Sending a job to a printer with AMS units mid-drying could fail silently: the file uploaded, the printer accepted it and then just sat there. BamDude waited, re-uploaded the whole file twice more, and finally gave up with advice about the printer's screen and its SD card — while the actual obstacle had been on screen the whole time. The drying units are now named in the failure, and logged from the **first** failed attempt rather than only after the retries are spent, so a support bundle shows the connection straight away.
+
+    The message names two possibilities rather than asserting one: some printers refuse to begin a print while an AMS is in a drying cycle, and an AMS drying without its external power supply can leave too little power for the start-of-print calibration. **Nothing is stopped automatically** — this hardware can dry right through a print, so tearing down a cycle before every job would throw away drying the machine was happy to run.
+
 - **Auto-drying no longer re-arms into a threshold it can never reach.** An AMS armed five twelve-hour drying cycles inside four hours, one of them six seconds after the previous one ended, and none ran more than a couple of hours.
 
     Two things combine. The firmware ends a cycle when it decides the filament is dry rather than when the clock runs out, and reports nothing wrong doing it — that part is the AMS doing its job. The loop was ours: **an AMS reads a higher humidity while it is warm than once it has cooled**, so with the threshold set inside that band the reading at the moment a cycle ended was always still above it, and the next pass started another twelve hours.

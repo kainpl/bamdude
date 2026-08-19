@@ -205,6 +205,33 @@ _AUTO_DRY_REARM_COOLDOWN_SECONDS = 30 * 60
 _AUTO_DRY_MAX_UNPRODUCTIVE_CYCLES = 2
 
 
+def _drying_ams_ids(status) -> list[int]:
+    """AMS unit ids running a drying cycle, per the firmware's own telemetry.
+
+    ``dry_time`` is minutes remaining, so >0 is the printer stating that a cycle
+    is active. Used by the dispatch watchdog to say *why* a print never started.
+
+    ⚠️ A DIAGNOSTIC, not a gate, and deliberately not wired to stop drying before
+    dispatch. The hardware this was reported on supports drying **through** a
+    print (see ``supports_drying_while_printing``), so drying is not
+    incompatible with printing in general; what was observed is one printer
+    refusing to *begin* a job while two AMS units were drying, one of them
+    without its external PSU. Until it is known whether the obstacle is the
+    drying or the power budget (``dry_sf_reason`` 1 / 8), acting on this would
+    tear down cycles the machine is perfectly happy to continue.
+    """
+    ids: list[int] = []
+    for unit in (getattr(status, "raw_data", None) or {}).get("ams") or []:
+        if not isinstance(unit, dict):
+            continue
+        try:
+            if int(unit.get("dry_time") or 0) > 0:
+                ids.append(int(unit.get("id", 0)))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
 class PrintScheduler:
     """Background scheduler that processes the print queue."""
 
@@ -2147,10 +2174,16 @@ class PrintScheduler:
             state["ended_at"] = time.monotonic()
 
     def _sync_drying_state(self):
-        """Sync in-memory drying state with actual printer status.
+        """Drop what is no longer true: printers that have stopped drying, and
+        claims on cycles that have ended.
 
-        Handles backend restart - if a printer is drying but we don't know about it,
-        update our state. If we think it's drying but it's not, clear it.
+        ⚠️ One direction only — it prunes, it never adds. The docstring used to
+        claim it handled the backend-restart case by adopting a cycle it found
+        running; it does not, and must not. Adoption of ``_drying_in_progress``
+        happens in the arm loop, where a running cycle is observed in context;
+        ``_armed_dry_cycles`` is never adopted at all, because after a restart we
+        cannot prove a running cycle is ours and would rather leave a manual dry
+        alone than stop it.
         """
         to_remove = []
         for pid in self._drying_in_progress:
@@ -2846,6 +2879,10 @@ class PrintScheduler:
         """
         deadline = time.monotonic() + timeout
         last_status = None  # Captured for #1150 gcode_file discriminator on timeout
+        # ⚠️ Latched, not read at the end: drying can finish, or be stopped by
+        # the user, part-way through the dispatch window. What matters is the
+        # state the printer was in when it declined to start.
+        drying_ams_ids: list[int] = []
         while time.monotonic() < deadline:
             await asyncio.sleep(poll_interval)
             status = printer_manager.get_status(printer_id)
@@ -2857,6 +2894,7 @@ class PrintScheduler:
                 scheduler._release_dispatch_hold(printer_id)
                 return
             last_status = status
+            drying_ams_ids = drying_ams_ids or _drying_ams_ids(status)
             if status.state in _ACTIVE_PRINT_STATES:
                 # Printer is actively processing the job. We do NOT accept
                 # arbitrary state transitions: a printer going FINISH → IDLE
@@ -2873,6 +2911,17 @@ class PrintScheduler:
                 # hasn't flipped yet (#1157 release).
                 scheduler._release_dispatch_hold(printer_id)
                 return
+
+        # Logged on EVERY failed window, not only the last attempt, so a support
+        # bundle shows the correlation from the first one rather than only after
+        # the retry budget is spent.
+        if drying_ams_ids:
+            logger.info(
+                "Queue item %s: printer %d never started while AMS %s drying - this may be why",
+                queue_item_id,
+                printer_id,
+                ", ".join(str(i) for i in drying_ams_ids),
+            )
 
         if swap_start_fired:
             logger.error(
@@ -2903,11 +2952,31 @@ class PrintScheduler:
                     from backend.app.services.queue_counters import set_queue_error, update_queue_counters
 
                     item.status = "failed"
-                    item.error_message = (
-                        f"The printer accepted the file but never started printing, after "
-                        f"{item.dispatch_attempts} attempts. Check the printer's screen for a prompt or "
-                        f"error, confirm its SD card is readable, and start the job again."
-                    )
+                    if drying_ams_ids:
+                        # ⚠️ The generic message below sent the reporter looking
+                        # at the SD card while the actual obstacle — AMS units in
+                        # a drying cycle — was on screen the whole time. Name
+                        # what was observed and let the operator judge it: we do
+                        # not stop the cycle ourselves, because on this hardware
+                        # drying can run alongside a print and stopping it may
+                        # not be the fix. Both possibilities are named rather
+                        # than one asserted.
+                        units = ", ".join(f"AMS {i}" for i in drying_ams_ids)
+                        item.error_message = (
+                            f"The printer accepted the file but never started printing, after "
+                            f"{item.dispatch_attempts} attempts. {units} "
+                            f"{'was' if len(drying_ams_ids) == 1 else 'were'} drying throughout - some "
+                            f"printers refuse to begin a print while an AMS is in a drying cycle, and an "
+                            f"AMS drying without its external power supply can also leave too little "
+                            f"power for the start-of-print calibration. Stop the drying, or connect the "
+                            f"AMS power supply, and start the job again."
+                        )
+                    else:
+                        item.error_message = (
+                            f"The printer accepted the file but never started printing, after "
+                            f"{item.dispatch_attempts} attempts. Check the printer's screen for a prompt "
+                            f"or error, confirm its SD card is readable, and start the job again."
+                        )
                     item.completed_at = datetime.now(timezone.utc)
                     await set_queue_error(db, item.queue_id, failed_item_id=item.id)
                     await update_queue_counters(db, item.queue_id)
