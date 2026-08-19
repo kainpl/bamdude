@@ -65,12 +65,20 @@ class TestPatchProcessSupportSettings:
         assert result["layer_height"] == "0.20"
         assert result["name"] == "0.20mm Standard @BBL H2D"
 
-    def test_source_supports_off_beats_preset_supports_on(self):
-        # Symmetric: a source with supports explicitly disabled must win
-        # over a process preset that happens to have supports on. Rare in
-        # practice (Bambu's presets ship off) but the semantic is "source
-        # wins" regardless of direction — a user who exported without
-        # supports doesn't want a preset accidentally re-enabling them.
+    def test_a_preset_that_enables_supports_is_not_stripped_by_the_source(self):
+        """⚠️ The carry is ONE-WAY, and this test used to assert the opposite.
+
+        "Source wins in both directions" sounds symmetric and is not: a
+        downloaded model nearly always ships ``enable_support: 0``, so slicing
+        one against a custom preset that deliberately enabled supports stripped
+        them straight back out — the preset said on and normal(auto), the slice
+        came back disabled and tree(auto).
+
+        Nothing is lost by refusing the off direction. Every preset Bambu ships
+        has supports off, so a preset that has them ON is a deliberate choice by
+        whoever wrote it; a file that WANTS supports still gets them, along with
+        its slot assignments.
+        """
         source = _make_3mf(
             {
                 "enable_support": "0",
@@ -80,9 +88,19 @@ class TestPatchProcessSupportSettings:
         )
         preset = json.dumps({"enable_support": "1", "support_filament": "2", "support_interface_filament": "2"})
         result = json.loads(_patch_process_support_settings(preset, source))
-        assert result["enable_support"] == "0"
-        assert result["support_filament"] == "0"
-        assert result["support_interface_filament"] == "0"
+        assert result["enable_support"] == "1"
+        assert result["support_filament"] == "2"
+        assert result["support_interface_filament"] == "2"
+
+    def test_a_source_that_never_mentions_supports_changes_nothing(self):
+        """No declaration is no intent to act on."""
+        source = _make_3mf({"layer_height": "0.2"})
+        preset = json.dumps({"enable_support": "1", "support_type": "normal(auto)"})
+
+        result = json.loads(_patch_process_support_settings(preset, source))
+
+        assert result["enable_support"] == "1"
+        assert result["support_type"] == "normal(auto)"
 
     def test_only_patches_keys_present_in_source(self):
         # Source with a partial support config (e.g. legacy 3MFs from an

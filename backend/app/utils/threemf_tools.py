@@ -26,6 +26,25 @@ DEFAULT_FILAMENT_DIAMETER = 1.75  # mm
 DEFAULT_FILAMENT_DENSITY = 1.24  # g/cm³ (PLA)
 
 
+# BambuStudio serialises bool config options as string "1"/"0" in
+# project_settings.config, but forks and older versions occasionally write real
+# booleans or ints — so accept anything that is not unambiguously falsy.
+#
+# ⚠️ A MISSING key counts as off: a 3MF that never declares ``enable_support``
+# gives no support intent to act on.
+_SUPPORTS_DISABLED_VALUES = (False, 0, "0", "false", "False", "", None)
+
+
+def supports_enabled_in_config(cfg: dict[str, object]) -> bool:
+    """Whether a 3MF's ``project_settings.config`` has supports switched on.
+
+    Shared by everyone who reads support intent out of a source file, so they
+    agree on what "on" means: the slot extractor here and the slice route's
+    process-preset carry-over.
+    """
+    return cfg.get("enable_support") not in _SUPPORTS_DISABLED_VALUES
+
+
 def parse_gcode_layer_filament_usage(gcode_content: str) -> dict[int, dict[int, float]]:
     """Parse G-code to extract per-layer, per-filament cumulative extrusion in mm.
 
@@ -1007,12 +1026,7 @@ def extract_support_filament_slots_from_3mf(zf: zipfile.ZipFile) -> set[int]:
         return set()
     if not isinstance(cfg, dict):
         return set()
-    # BambuStudio serialises bool config options as string "1"/"0" in
-    # project_settings.config, but forks / older versions occasionally
-    # write real booleans or ints — accept anything that isn't
-    # unambiguously falsy.
-    enable = cfg.get("enable_support")
-    if enable in (False, 0, "0", "false", "False", "", None):
+    if not supports_enabled_in_config(cfg):
         return set()
     out: set[int] = set()
     for key in ("support_filament", "support_interface_filament"):

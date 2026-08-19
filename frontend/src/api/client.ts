@@ -2227,6 +2227,15 @@ export interface SliceRequest {
   filament_presets?: PresetRef[];
   plate?: number;
   export_3mf?: boolean;
+  /** Run the slicer's auto-arrange pass, repositioning objects on the bed.
+   * Unions with the automatic cross-nozzle-class arrange rather than
+   * replacing it — an unticked box cannot switch that one off. */
+  arrange?: boolean;
+  /** Run the slicer's auto-orientation pass, rotating each object onto its
+   * best-scoring orientation. User-driven only; nothing turns it on by
+   * itself, since rotating a deliberately laid-out model is not a change to
+   * make silently. */
+  orient?: boolean;
   // Per-job slicer override. When the user has both OrcaSlicer and
   // BambuStudio sidecars configured, the SliceModal exposes a radio so the
   // slicer can be picked per source file. Falls back to the global

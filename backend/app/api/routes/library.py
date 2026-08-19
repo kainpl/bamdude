@@ -95,6 +95,7 @@ from backend.app.utils.threemf_tools import (
     extract_embedded_presets_from_3mf,
     extract_nozzle_mapping_from_3mf,
     extract_project_filaments_from_3mf,
+    supports_enabled_in_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -2502,9 +2503,31 @@ def _patch_process_support_settings(process_json: str, source_3mf_bytes: bytes) 
     if not isinstance(process_cfg, dict):
         return process_json
 
-    for key in _SOURCE_PROCESS_SUPPORT_KEYS_TO_PRESERVE:
-        if key in src_cfg:
-            process_cfg[key] = src_cfg[key]
+    # ⚠️ The carry is ONE-WAY: a source can switch supports ON, never off.
+    #
+    # The original rule was "source wins in both directions", and the off
+    # direction is the one nobody asked for: a downloaded model nearly always
+    # ships ``enable_support: 0``, so slicing one against a custom preset that
+    # deliberately enabled supports stripped them straight back out — the
+    # preset said on and normal(auto), the slice came back disabled and
+    # tree(auto).
+    #
+    # Nothing is lost by not carrying the off direction. Every preset Bambu
+    # ships has supports off, so a preset that has them ON is a deliberate
+    # choice by whoever wrote it, and a file that wants supports still gets
+    # them along with its slot assignments.
+    if not supports_enabled_in_config(src_cfg):
+        return process_json
+
+    carried = {key: src_cfg[key] for key in _SOURCE_PROCESS_SUPPORT_KEYS_TO_PRESERVE if key in src_cfg}
+    process_cfg.update(carried)
+    # Logged because this is the one layer of the process JSON the user cannot
+    # see coming: the slice dialog shows the picked preset's values, so a
+    # carried key silently disagrees with what was on screen.
+    logger.info(
+        "Carried support settings from the source 3MF onto the process preset: %s",
+        dict(sorted(carried.items())),
+    )
 
     return json.dumps(process_cfg)
 
@@ -2829,6 +2852,11 @@ async def _run_slicer_with_fallback(
             )
             cross_class_arrange = True
 
+    # ⚠️ UNION, not replacement: the cross-class case is a correctness measure
+    # (the source's coordinate layout lands in the target's dead zone without
+    # it), and a user who did not tick the box must not switch it off.
+    arrange = cross_class_arrange or request.arrange
+
     # SliceModal submits a filament pick per slot, but each plate uses only a
     # subset. A heterogeneous unused-slot default trips BS's loaded-filament
     # temp-spread validator (exit 194) even though the plate's G-code never
@@ -2842,7 +2870,21 @@ async def _run_slicer_with_fallback(
     # ``--slice 0 --arrange`` would consolidate every plate onto one bed
     # (arrange is project-wide). Slice each plate with --arrange and merge the
     # per-plate outputs instead. Same-class slice-all uses the native path.
-    use_cross_class_slice_all = cross_class_arrange and request.plate == 0 and request.export_3mf
+    # ⚠️ Keyed on the ARRANGE flag itself, not on the cross-class decision: the
+    # project-wide collapse belongs to --arrange, so a user who ticks the box on
+    # a same-class slice-all needs the same per-plate treatment.
+    use_cross_class_slice_all = arrange and request.plate == 0 and request.export_3mf
+
+    # ⚠️ Arrange is PROJECT-WIDE, so one ``--slice 0 --arrange`` call consolidates
+    # every plate onto a single bed. The per-plate loop below is what makes
+    # arrange safe for a slice-all; the paths that cannot loop — embedded
+    # settings, and the crash fallback — must therefore not send it, or a
+    # multi-plate project silently comes back as one plate.
+    arrange_single_call = arrange and not (request.plate == 0 and request.export_3mf)
+    if arrange and not arrange_single_call and not use_cross_class_slice_all:
+        logger.info(
+            "Slice-all with arrange: not forwarding --arrange on a single-call path (it would merge the plates)"
+        )
 
     try:
         try:
@@ -2857,6 +2899,8 @@ async def _run_slicer_with_fallback(
                     model_filename=model_filename,
                     plate=request.plate,
                     export_3mf=request.export_3mf,
+                    arrange=arrange_single_call,
+                    orient=request.orient,
                     bed_type=request.bed_type,
                     request_id=progress_request_id,
                     on_progress=progress_callback,
@@ -2902,6 +2946,7 @@ async def _run_slicer_with_fallback(
                         plate=plate_num,
                         export_3mf=True,
                         arrange=True,
+                        orient=request.orient,
                         request_id=progress_request_id,
                         on_progress=plate_cb,
                     )
@@ -2926,7 +2971,8 @@ async def _run_slicer_with_fallback(
                     filament_profile_jsons=filament_jsons,
                     plate=request.plate,
                     export_3mf=request.export_3mf,
-                    arrange=cross_class_arrange,
+                    arrange=arrange,
+                    orient=request.orient,
                     bed_type=request.bed_type,
                     request_id=progress_request_id,
                     on_progress=progress_callback,
@@ -2966,6 +3012,8 @@ async def _run_slicer_with_fallback(
                 model_filename=model_filename,
                 plate=request.plate,
                 export_3mf=request.export_3mf,
+                arrange=arrange_single_call,
+                orient=request.orient,
                 bed_type=request.bed_type,
                 request_id=progress_request_id,
                 on_progress=progress_callback,

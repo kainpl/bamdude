@@ -81,6 +81,23 @@ class SliceRequest(BaseModel):
         default=False,
         description="If true, request a 3MF response with embedded G-code instead of raw G-code.",
     )
+    arrange: bool = Field(
+        default=False,
+        description=(
+            "Run the slicer's auto-arrange pass, repositioning objects on the bed before slicing. "
+            "Off by default; unions with the automatic cross-nozzle-class arrange rather than "
+            "replacing it."
+        ),
+    )
+    orient: bool = Field(
+        default=False,
+        description=(
+            "Run the slicer's auto-orientation pass: score candidate rotations (overhang area, "
+            "contour, unprintability) and rotate each object onto the best one. Off by default and "
+            "user-driven only — rotating a deliberately laid-out model is not a change to make "
+            "silently."
+        ),
+    )
     # Bed plate override (sidecar maps to ``--curr-bed-type``). Mirrors the
     use_embedded_settings: bool = Field(
         default=False,

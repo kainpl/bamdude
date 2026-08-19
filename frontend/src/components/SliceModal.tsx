@@ -521,6 +521,11 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // offered when the picked printer matches the design's target model — see
   // canUseEmbedded below.
   const [useEmbedded, setUseEmbedded] = useState(false);
+  // Per-slice layout passes, both off by default. They act on the loaded
+  // geometry rather than on the print config, so they apply on every slice
+  // path — picked presets, embedded settings and the crash fallback alike.
+  const [autoArrange, setAutoArrange] = useState(false);
+  const [autoOrient, setAutoOrient] = useState(false);
 
   // Process settings the designer changed away from the stock preset (#2622),
   // carried onto the picked process profile so a cross-printer re-slice keeps
@@ -677,6 +682,10 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
         // The preset refs above are still sent (the backend validator requires
         // them) but go unused when this flag is set — the slicer falls back on
         // the file's embedded project_settings.config instead.
+        // Sent only when on: the backend omits the sidecar form field entirely
+        // for an off flag, because a literal "false" is truthy over multipart.
+        ...(autoArrange ? { arrange: true } : {}),
+        ...(autoOrient ? { orient: true } : {}),
         ...(useEmbedded && canUseEmbedded ? { use_embedded_settings: true } : {}),
         // Carried design settings are patched onto the resolved process JSON,
         // which the embedded-settings path never sends — so the two are
@@ -1093,6 +1102,37 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
               {/* "Slice as designed" (upstream #2611): honour the file's embedded
                   settings instead of the picked process/filament. Offered only
                   when the picked printer matches the design's target. */}
+              {/* Layout passes the slicer runs on the geometry before slicing.
+                  Off by default: both move the user's objects, and arrange in
+                  particular is applied automatically on a cross-nozzle-class
+                  re-slice, so the box unions with that rather than governing
+                  it. */}
+              <label className="flex items-start gap-2 text-sm text-bambu-gray cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={autoArrange}
+                  onChange={(e) => setAutoArrange(e.target.checked)}
+                  disabled={isEnqueuing}
+                  className="mt-0.5 cursor-pointer"
+                />
+                <span>
+                  {t('slice.autoArrange')}
+                  <span className="block text-xs text-bambu-gray/70">{t('slice.autoArrangeHint')}</span>
+                </span>
+              </label>
+              <label className="flex items-start gap-2 text-sm text-bambu-gray cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={autoOrient}
+                  onChange={(e) => setAutoOrient(e.target.checked)}
+                  disabled={isEnqueuing}
+                  className="mt-0.5 cursor-pointer"
+                />
+                <span>
+                  {t('slice.autoOrient')}
+                  <span className="block text-xs text-bambu-gray/70">{t('slice.autoOrientHint')}</span>
+                </span>
+              </label>
               {canUseEmbedded && (
                 <label className="flex items-start gap-2 text-sm text-bambu-gray cursor-pointer select-none">
                   <input

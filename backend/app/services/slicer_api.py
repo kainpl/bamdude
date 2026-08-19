@@ -649,6 +649,7 @@ class SlicerApiService:
         plate: int | None = None,
         export_3mf: bool = False,
         arrange: bool = False,
+        orient: bool = False,
         bed_type: str | None = None,
         request_id: str | None = None,
         on_progress: Callable[[dict], None] | None = None,
@@ -700,11 +701,7 @@ class SlicerApiService:
             data["plate"] = str(plate)
         if export_3mf:
             data["exportType"] = "3mf"
-        if arrange:
-            # Sidecar reads truthy strings as True; cross-nozzle-class re-slices
-            # (#1493) need --arrange so BS repositions objects for the target
-            # bed instead of inheriting the source printer's coordinate layout.
-            data["arrange"] = "true"
+        _add_layout_flags(data, arrange=arrange, orient=orient)
         if bed_type is not None:
             # Sidecar's ``SlicingSettings.bedType`` → ``--curr-bed-type`` CLI
             # arg. Empty string falls back to slicer-internal default, so we
@@ -729,11 +726,21 @@ class SlicerApiService:
         model_filename: str,
         plate: int | None = None,
         export_3mf: bool = False,
+        arrange: bool = False,
+        orient: bool = False,
         bed_type: str | None = None,
         request_id: str | None = None,
         on_progress: Callable[[dict], None] | None = None,
     ) -> SliceResult:
         """``POST /slice`` with only the model file and no profile triplet.
+
+        ⚠️ ``arrange`` / ``orient`` mean the same here as on
+        ``slice_with_profiles``: they are CLI actions applied to the loaded
+        geometry, independent of where the print config came from. Both paths
+        accept them so a per-slice choice survives the embedded-settings route
+        and the segfault fallback. The filament-discovery preview leaves them
+        off — moving objects there would change nothing about which slots the
+        plate consumes.
 
         For 3MF inputs this lets the slicer fall back on the file's embedded
         ``Metadata/project_settings.config``. Used as a fallback when
@@ -757,6 +764,7 @@ class SlicerApiService:
             data["plate"] = str(plate)
         if export_3mf:
             data["exportType"] = "3mf"
+        _add_layout_flags(data, arrange=arrange, orient=orient)
         if bed_type is not None:
             data["bedType"] = bed_type
         if request_id is not None:
@@ -765,6 +773,31 @@ class SlicerApiService:
         _log_slice_request(model_filename, model_bytes, plate=plate, profiles=0)
         response = await self._post_slice(files=files, data=data, request_id=request_id, on_progress=on_progress)
         return _handle_slice_response(response, export_3mf=export_3mf, model_size_bytes=len(model_bytes))
+
+
+def _add_layout_flags(data: dict[str, str], *, arrange: bool, orient: bool) -> None:
+    """Set the sidecar's ``arrange`` / ``orient`` form fields, but only when on.
+
+    ⚠️ An off flag is expressed by OMITTING the field. The sidecar branches on
+    ``settings.arrange !== undefined``, and multipart fields arrive as strings —
+    where ``"false"`` is truthy in JavaScript. Sending ``"false"`` would
+    therefore turn the flag ON.
+
+    Omission also keeps the wire payload of default-off callers byte-identical
+    to what it was before these parameters existed.
+
+    ``arrange`` repositions objects on the bed; cross-nozzle-class re-slices
+    need it so the slicer lays the plate out for the target bed instead of
+    inheriting the source printer's coordinates. ``orient`` runs the CLI's
+    auto-orientation pass, which scores candidate rotations and turns each
+    object onto the best one. ⚠️ Both are user-driven — nothing turns ``orient``
+    on by itself, because rotating a deliberately-laid-out model is not a change
+    to make silently.
+    """
+    if arrange:
+        data["arrange"] = "true"
+    if orient:
+        data["orient"] = "true"
 
 
 def _safe_int(value: str | None) -> int:
