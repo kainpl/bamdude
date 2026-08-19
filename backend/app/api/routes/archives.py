@@ -209,7 +209,15 @@ async def list_archives(
     hide_duplicates: bool = Query(False),
     tag: str | None = Query(None),
     kind: str | None = Query(None, description="'calibration' or 'regular' — filters by PrintArchive.is_calibration"),
-    sort_by: str = Query("date-desc"),
+    sort_by: str = Query(
+        "date-desc",
+        description=(
+            "date/name/size/printer-{asc,desc}, or what the print consumed: "
+            "cost/energy/filament/duration-{asc,desc}. Unknown values fall back "
+            "to date-desc rather than erroring — a stale bookmark should still "
+            "open the page."
+        ),
+    ),
     page: int = Query(1, ge=1),
     per_page: int = Query(24, ge=1, le=200),
     all: bool = Query(False, description="When true, skip pagination and return every matching row"),

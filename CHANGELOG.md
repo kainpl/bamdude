@@ -22,6 +22,10 @@
 
     **The rack display grows with the printer card.** Its six chips were a fixed size while everything around them scaled.
 
+- **Paging the archive list can no longer repeat or skip a print.** Rows that share whatever you sorted by had no fixed order between one page and the next, so sorting a farm's history by printer — a dozen values across hundreds of prints — could show the same archive twice and quietly leave another out. Ties are now broken by a stable key.
+
+- **The archive list sorts by what a print actually cost.** Cost, energy, filament used and real print duration join date, name, size and printer. Prints with nothing recorded for the chosen column — an external print has no cost, a printer with no smart plug no energy — are held at the end whichever direction you sort, rather than filling the first screen with blanks.
+
 - **Staggered start no longer lets the whole farm heat at once.** Clearing the plates on eleven printers set to "two at a time" started all eleven inside two seconds — enough to trip the mains. A printer that has just been sent a job still reports the *previous* print as finished for the eight to thirty seconds it takes to upload the file and begin, and the stagger was reading that as "this one is done" and handing the slot straight back. Each dispatch freed the slots the dispatches before it had taken, so the limit was never reached. The slot is now held until the printer is actually seen starting — and released as before once it does, or after three minutes if a print never begins.
 
 

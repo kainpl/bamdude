@@ -1888,6 +1888,25 @@ class ProjectPageParser:
             return False
 
 
+# Sorts over what the print actually consumed. Kept as a table rather than an
+# if/elif chain because the route validates against the same keys — one place
+# to add a column, and no way for the two to drift.
+#
+# ⚠️ ``actual_time_seconds``, not ``print_time_seconds``: the first is what the
+# print really took, the second is the slicer's estimate. Sorting a farm's
+# history by "longest print" should answer with reality.
+_MEASURED_SORTS: dict[str, tuple[object, str]] = {
+    "cost-desc": (PrintArchive.cost, "desc"),
+    "cost-asc": (PrintArchive.cost, "asc"),
+    "energy-desc": (PrintArchive.energy_kwh, "desc"),
+    "energy-asc": (PrintArchive.energy_kwh, "asc"),
+    "filament-desc": (PrintArchive.filament_used_grams, "desc"),
+    "filament-asc": (PrintArchive.filament_used_grams, "asc"),
+    "duration-desc": (PrintArchive.actual_time_seconds, "desc"),
+    "duration-asc": (PrintArchive.actual_time_seconds, "asc"),
+}
+
+
 class ArchiveService:
     """Service for archiving print jobs."""
 
@@ -2925,6 +2944,19 @@ class ArchiveService:
             order_clause = PrintArchive.file_size.desc()
         elif sort_by == "size-asc":
             order_clause = PrintArchive.file_size.asc()
+        elif sort_by in _MEASURED_SORTS:
+            # What the print actually cost: money, energy, filament, time.
+            #
+            # ⚠️ **Empty values are held LAST in BOTH directions.** These columns
+            # are routinely NULL — an external print has no cost, a printer with
+            # no smart plug has no energy, a running print has no duration — and
+            # the two backends disagree about where NULL sorts: PostgreSQL puts
+            # it high, SQLite low. Left alone, the same click would open on a
+            # screenful of blanks on one backend and on data on the other.
+            # ``is_(None)`` as the leading key expresses that in plain SQL,
+            # which both dialects order identically (False < True).
+            column, direction = _MEASURED_SORTS[sort_by]
+            order_clause = column.is_(None), (column.asc() if direction == "asc" else column.desc())
         elif sort_by in ("printer-asc", "printer-desc"):
             # A correlated subquery rather than a join: an archive can have no
             # printer at all (an external print, or one whose printer was
@@ -2937,6 +2969,15 @@ class ArchiveService:
             printer_sort = func.coalesce(printer_name, PrintArchive.sliced_for_model, "")
             order_clause = printer_sort.asc() if sort_by == "printer-asc" else printer_sort.desc()
 
+        # ⚠️ **A stable tiebreak, and it is load-bearing because this list
+        # PAGES.** Rows sharing a sort key have no defined order between two
+        # queries, so paging a low-cardinality sort — by printer across a farm
+        # of twelve, or by a cost every failed print left NULL — could repeat
+        # one archive on page 2 and skip another entirely. ``id`` is unique and
+        # never NULL, so it always orders the ties.
+        order_clauses = list(order_clause) if isinstance(order_clause, tuple) else [order_clause]
+        order_clauses.append(PrintArchive.id.desc())
+
         # Total count (same filters, no limit/offset)
         count_query = select(func.count()).select_from(PrintArchive).where(*filters)
         total = (await self.db.execute(count_query)).scalar() or 0
@@ -2946,7 +2987,7 @@ class ArchiveService:
             select(PrintArchive)
             .options(selectinload(PrintArchive.project), selectinload(PrintArchive.created_by))
             .where(*filters)
-            .order_by(order_clause)
+            .order_by(*order_clauses)
             .offset(offset)
         )
         if limit is not None:
