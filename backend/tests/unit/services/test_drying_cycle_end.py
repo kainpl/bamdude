@@ -19,6 +19,7 @@ decoding to dry_status 2 (Drying) four seconds later.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -148,3 +149,48 @@ class TestGuessingFromTheTrays:
 
     def test_an_unparseable_temperature_falls_through_to_the_next_slot(self):
         assert uniform_tray_drying_hint([("PLA", "warm"), ("PLA", 45)]) == ("PLA", 45)
+
+
+class TestTheRequestTopicReachesTheCapture:
+    """⚠️ The request topic carries every command travelling TO the printer,
+    Bambu Studio's included — and it used to return before the logging block, so
+    a capture could show only what the printer said, never what it was told.
+    That is why "what does Studio actually put in the drying command?" had no
+    answer from a user's own log.
+    """
+
+    def test_a_command_on_the_request_topic_is_recorded(self, client):
+        client.enable_logging(True)
+
+        client._on_message(
+            None,
+            None,
+            SimpleNamespace(
+                topic=client.topic_publish,
+                payload=b'{"print": {"command": "ams_filament_setting", "sequence_id": "1"}}',
+            ),
+        )
+
+        entries = client.get_logs()
+        assert len(entries) == 1
+        assert entries[0].topic == client.topic_publish
+
+    def test_it_is_filed_as_outbound(self):
+        """Grouped with our own commands rather than with printer telemetry —
+        the direction is about where the message was going, not who saw it."""
+        import inspect
+
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        source = inspect.getsource(BambuMQTTClient._on_message)
+        block = source[source.index("if msg.topic == self.topic_publish:") :]
+        assert 'direction="out"' in block[: block.index("self._handle_request_message")]
+
+    def test_nothing_is_recorded_while_logging_is_off(self, client):
+        client._on_message(
+            None,
+            None,
+            SimpleNamespace(topic=client.topic_publish, payload=b'{"print": {"command": "gcode_line"}}'),
+        )
+
+        assert client.get_logs() == []

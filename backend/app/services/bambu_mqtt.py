@@ -2364,6 +2364,24 @@ class BambuMQTTClient:
 
             # Intercept request-topic messages (print commands from slicer/BamDude)
             if msg.topic == self.topic_publish:
+                # ⚠️ Recorded BEFORE the early return. This topic carries every
+                # command travelling *to* the printer, Bambu Studio's included,
+                # and it used to be the one thing an MQTT capture could never
+                # show — so "what does Studio actually put in that command?" had
+                # no answer from a user's log. Filed as "out" so the direction
+                # filter groups it with our own commands rather than with
+                # printer telemetry; anything we send lands twice, once on
+                # publish and once on the broker's echo, and that pair is itself
+                # evidence the command reached the broker.
+                if self._logging_enabled:
+                    self._message_log.append(
+                        MQTTLogEntry(
+                            timestamp=datetime.now(timezone.utc).isoformat(),
+                            topic=msg.topic,
+                            direction="out",
+                            payload=payload,
+                        )
+                    )
                 self._handle_request_message(payload)
                 return
 
