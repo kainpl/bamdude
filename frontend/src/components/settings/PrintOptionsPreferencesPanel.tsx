@@ -19,7 +19,7 @@ import {
   type Printer,
   type PrintOptionsPreferenceAdminEntry,
   type PrintOptionsPreferenceData,
-  type UserResponse,
+  type UserSlim,
 } from '../../api/client';
 import { CalibrationModeControl } from '../PrintModal/CalibrationModeControl';
 import { autoCalibrationCaps } from '../../utils/printerCapabilities';
@@ -103,9 +103,12 @@ export function PrintOptionsPreferencesPanel() {
     return merged;
   }, [adminEntries, systemRows, t]);
 
+  // Only names are rendered here — the picker and the copy-to dropdown — so
+  // the slim listing is enough. Its own cache key: the full listing owns
+  // 'users' and the two shapes would clobber each other.
   const { data: users } = useQuery({
-    queryKey: ['users'],
-    queryFn: api.getUsers,
+    queryKey: ['users-slim'],
+    queryFn: api.getUsersSlim,
   });
 
   const { data: printers } = useQuery({
@@ -283,7 +286,7 @@ function summariseOptions(
 interface EditDialogProps {
   mode: 'edit' | 'add';
   existingEntries: PrintOptionsPreferenceAdminEntry[];
-  users: UserResponse[];
+  users: UserSlim[];
   availableModels: string[];
   initialEntry: PrintOptionsPreferenceAdminEntry | null;
   onClose: () => void;
@@ -614,7 +617,7 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
 
 interface CopyDialogProps {
   src: PrintOptionsPreferenceAdminEntry;
-  users: UserResponse[];
+  users: UserSlim[];
   availableModels: string[];
   onClose: () => void;
 }

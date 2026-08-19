@@ -6,6 +6,7 @@ from sqlalchemy.orm import selectinload
 from backend.app.api.routes.settings import get_external_login_url
 from backend.app.core.auth import (
     RequireAdmin,
+    RequireAnyPermission,
     RequirePermission,
     get_current_user_optional,
     get_password_hash,
@@ -24,7 +25,14 @@ from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.models.user_otp_code import UserOTPCode
 from backend.app.models.user_totp import UserTOTP
-from backend.app.schemas.auth import ChangePasswordRequest, GroupBrief, UserCreate, UserResponse, UserUpdate
+from backend.app.schemas.auth import (
+    ChangePasswordRequest,
+    GroupBrief,
+    UserCreate,
+    UserResponse,
+    UserSlim,
+    UserUpdate,
+)
 from backend.app.services.email_service import (
     create_welcome_email_from_template,
     generate_secure_password,
@@ -169,6 +177,34 @@ async def create_user(
             # Don't fail user creation if email fails
 
     return _user_to_response(new_user)
+
+
+@router.get("/slim", response_model=list[UserSlim])
+async def list_users_slim(
+    _: User | None = RequireAnyPermission(Permission.USERS_READ_SLIM, Permission.USERS_READ),
+    db: AsyncSession = Depends(get_db),
+):
+    """List users as ``{id, username}`` only.
+
+    Exists so an API key — or a group that should not see emails, roles and
+    permission sets — can turn the ``created_by_id`` values it already gets
+    back from archives, stats and the queue into names. Without it the only
+    user listing is the administrative one, so an operator granted
+    ``stats:filter_by_user`` but not ``users:read`` got an empty filter with no
+    indication why.
+
+    ``USERS_READ`` is accepted alongside ``USERS_READ_SLIM`` because it is
+    strictly broader; groups that already hold it keep working without a
+    permission backfill. For API keys only the slim permission resolves (the
+    full one is unmapped = administrative), so a key reaches this and not the
+    listing above.
+
+    ⚠️ Declared before ``/{user_id}`` on purpose: FastAPI matches in
+    declaration order, and the reverse order would parse "slim" as the int
+    path parameter and answer 422.
+    """
+    result = await db.execute(select(User.id, User.username).order_by(User.username))
+    return [UserSlim(id=row.id, username=row.username) for row in result.all()]
 
 
 @router.get("/{user_id}", response_model=UserResponse)

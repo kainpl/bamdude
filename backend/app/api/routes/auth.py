@@ -24,6 +24,7 @@ from backend.app.core.auth import (
     RequirePermission,
     _is_token_fresh,
     _validate_api_key,
+    apikey_effective_permissions,
     authenticate_user,
     authenticate_user_by_email,
     create_access_token,
@@ -36,6 +37,7 @@ from backend.app.core.auth import (
     has_any_admin,
     is_jti_revoked,
     refresh_cookie_secure_flag,
+    resolve_apikey_owner,
     resolve_session_max_hours,
     revoke_all_refresh_tokens_for_user,
     revoke_jti,
@@ -45,7 +47,7 @@ from backend.app.core.auth import (
 )
 from backend.app.core.database import get_db
 from backend.app.core.oidc_env import env_bool
-from backend.app.core.permissions import ALL_PERMISSIONS, DEFAULT_GROUPS
+from backend.app.core.permissions import DEFAULT_GROUPS
 from backend.app.models.group import Group
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
@@ -169,17 +171,48 @@ def _clear_refresh_cookie(response: Response, request: Request) -> None:
     )
 
 
-def _api_key_to_user_response(api_key) -> UserResponse:
-    """Create a synthetic admin UserResponse for a valid API key."""
+async def _api_key_to_user_response(db: AsyncSession, api_key) -> UserResponse:
+    """What ``/auth/me`` tells a caller holding an API key.
+
+    ⚠️ This used to answer with a synthetic administrator: ``id=0``,
+    ``role="admin"``, ``is_admin=True`` and every permission in the enum. That
+    was wrong in both directions. A key cannot perform administrative
+    operations at all — the gate denies every permission outside the scope
+    allowlist — so a client building its UI from this response (which is
+    exactly what a native client does) rendered admin actions that 403 on use,
+    and had no way to learn the id its own prints are filed under.
+
+    Now: identity comes from the key's owner, and ``permissions`` is the set
+    the key can genuinely exercise. ``is_admin`` is always False because no key
+    reaches an administrative route regardless of who owns it.
+
+    Legacy keys predating per-user ownership (``user_id IS NULL``) have no
+    identity to report, so they keep ``id=0`` and the ``api-key:`` username —
+    but they stop claiming admin. ``created_at`` describes the credential in
+    both branches, unchanged.
+    """
+    # ⚠️ The same resolution the permission gate uses, so what is reported here
+    # and what is enforced there cannot drift — including the 403 when the
+    # owner has been deactivated, which makes the key dead rather than
+    # anonymous.
+    owner = await resolve_apikey_owner(db, api_key)
     return UserResponse(
-        id=0,
-        username=f"api-key:{api_key.key_prefix}",
+        id=owner.id if owner else 0,
+        username=owner.username if owner else f"api-key:{api_key.key_prefix}",
+        # Withheld on purpose: the owner's email is not needed to resolve
+        # identity, and this response is reachable by anyone holding the key.
         email=None,
-        role="admin",
+        # Deprecated free-text field; "user" is the existing value meaning "not
+        # an admin". Inventing an "api_key" role here would put a third value
+        # into a field callers compare against string literals.
+        role="user",
         is_active=True,
-        is_admin=True,
+        is_admin=False,
+        auth_source=getattr(owner, "auth_source", "local") if owner else "local",
+        # The key is not a group member — listing the owner's groups would
+        # imply capabilities the key does not inherit.
         groups=[],
-        permissions=sorted(ALL_PERMISSIONS),
+        permissions=apikey_effective_permissions(api_key, owner),
         created_at=api_key.created_at.isoformat(),
     )
 
@@ -741,8 +774,9 @@ async def get_current_user_info(
     """Get current user information.
 
     Accepts JWT tokens (via Authorization: Bearer header) and API keys
-    (via X-API-Key header or Authorization: Bearer bb_xxx).
-    API keys return a synthetic admin user with all permissions.
+    (via X-API-Key header or Authorization: Bearer bb_xxx). API keys report
+    their owner's identity and the permissions the key can actually exercise —
+    see ``_api_key_to_user_response``.
     """
     import jwt
     from jwt.exceptions import PyJWTError as JWTError
@@ -751,7 +785,7 @@ async def get_current_user_info(
     if x_api_key:
         api_key = await _validate_api_key(db, x_api_key)
         if api_key:
-            return _api_key_to_user_response(api_key)
+            return await _api_key_to_user_response(db, api_key)
 
     # Check for Bearer token (could be JWT or API key)
     if credentials is not None:
@@ -760,7 +794,7 @@ async def get_current_user_info(
         if token.startswith("bb_"):
             api_key = await _validate_api_key(db, token)
             if api_key:
-                return _api_key_to_user_response(api_key)
+                return await _api_key_to_user_response(db, api_key)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid API key",

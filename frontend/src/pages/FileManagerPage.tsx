@@ -1935,10 +1935,13 @@ export function FileManagerPage() {
     queryFn: () => api.getLibraryStats(),
   });
 
-  // Get users for the username filter autocomplete
+  // Get users for the username filter autocomplete. The slim listing, not the
+  // full one: only the name is rendered, and the full listing is admin-gated —
+  // an operator who may filter by user but not administer them got an empty
+  // datalist with no indication why.
   const { data: users } = useQuery({
-    queryKey: ['users'],
-    queryFn: () => api.getUsers(),
+    queryKey: ['users-slim'],
+    queryFn: api.getUsersSlim,
   });
 
   // Get unique file types for filter dropdown

@@ -20,9 +20,18 @@
 
     The two are **exclusive** — choosing one releases the other — because they answer the same question, and a printer already has a location. Nothing moves on upgrade: every sensor keeps the place it had. Alerts name the printer for a sensor bound to one, so "enclosure over 50 °C" says which machine. Deleting a printer leaves its sensors unbound rather than deleting them; the hardware outlives the machine it was taped to.
 
+- **An API key can now resolve the user ids it already sees into names.** Archives, the queue and statistics report ownership as a numeric id and accept it as a filter, but the only user listing carries emails, roles, group membership and full permission sets — so it is administrative, and nothing could turn an id into a name. A new `GET /users/slim` returns `{id, username}` and nothing else. It grants no data a key could not already reach: `?created_by_id=N` was always honoured for every N; what was missing was a way to address the filter. Operators get the new permission too — an operator allowed to filter history by user but not to administer users saw an empty filter with no explanation.
+
 - **Telegram can now aim a job at a room, not just at a printer model.** "Any P1S" is a useful answer on a one-room farm and a poor one when the P1S you meant is upstairs. Choosing a model in the bot now offers the places that actually hold one, and the job is routed there — the same location filter the print dialog has had, reaching the shelves inside a workshop you pick. The step is skipped entirely when there is nothing to choose between, so a farm with no locations set up sees no extra tap.
 
 ### Fixed
+
+- **An API key no longer out-ranks the person it belongs to.** A key's abilities were decided entirely by the tick-boxes set when it was minted. Those are chosen by whoever may create keys — admin-only in the default groups, but grantable to a custom group — so such a user could mint themselves a key with printer control and act through it beyond their own permissions. A key is now confined to the intersection: its own scopes **and** what its owner may do. Keys created before per-user ownership existed have no owner to check against and are unaffected.
+
+    **Deactivating a user now kills their keys.** Their credentials kept working at full authority, on every route including the webhook API. That API was also the way around the new check — it reaches its scopes by a different path — so it is checked there explicitly: the same key refused printer control on the normal route can no longer stop a print through the webhook.
+
+- **`/auth/me` told an API key it was an administrator.** It answered with a synthetic account: id 0, the admin role, and every permission in the system. None of it was true — a key cannot reach an administrative route at all — so a client building its interface from that response drew buttons that fail on use, and had no way to learn the id its own prints are filed under. It now reports the key's owner, and exactly the permissions that key can actually exercise. A key with no owner still gets an anonymous identity, minus the claim to be an admin.
+
 
 - **A slice that came back without the printer's start G-code is now refused instead of printed.** That block is where a Bambu printer's AMS load and its preparation-stage announcements live. Without it a job still dispatches, still heats the bed and still moves the toolhead — it just extrudes nothing, reports no stage, and sits at layer 0, which is indistinguishable from a print that has not started yet. Nothing downstream can tell those apart, so the check is on the bytes the slicer just handed back, and the error names the actual fix: rebuild the slicer sidecar image.
 

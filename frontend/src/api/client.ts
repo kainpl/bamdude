@@ -4519,6 +4519,18 @@ export interface UserResponse {
   created_at: string;
 }
 
+/** Just enough to resolve a user id to a display name (`GET /users/slim`).
+ *
+ * ⚠️ Deliberately narrower than `UserResponse`, and that narrowness is the
+ * contract: the full listing is admin-gated because it carries emails, roles,
+ * group membership and permission sets, while this one is reachable by anyone
+ * who may read status. Prefer it wherever only a name is rendered.
+ */
+export interface UserSlim {
+  id: number;
+  username: string;
+}
+
 /** One match from GET /auth/ldap/search — surfaced in the admin UI when
  *  the admin manually onboards LDAP users (upstream Bambuddy #1298). */
 export interface LDAPSearchResult {
@@ -5226,6 +5238,11 @@ export const api = {
 
   // Users
   getUsers: () => request<UserResponse[]>('/users/'),
+  // ⚠️ Cache this under its own react-query key ('users-slim'). The full
+  // listing owns 'users', and the two shapes would clobber each other —
+  // whichever resolved last would win, and a consumer reading `email` off a
+  // slim row gets undefined rather than an error.
+  getUsersSlim: () => request<UserSlim[]>('/users/slim'),
   getUser: (id: number) => request<UserResponse>(`/users/${id}`),
   createUser: (data: UserCreate) =>
     request<UserResponse>('/users/', {
