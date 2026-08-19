@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { X, ExternalLink, Box, Code2, Cog, Loader2, Layers, Check, Maximize2, Minimize2 } from 'lucide-react';
 import { ModelViewer } from './ModelViewer';
-import { GcodeViewer } from './GcodeViewer';
+import { GcodePreview } from './GcodePreview';
 import { Button } from './Button';
 import { api } from '../api/client';
 import { openInSlicer, type SlicerType } from '../utils/slicer';
@@ -758,7 +758,7 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
                       {t('modelViewer.pickPlatePrompt', { defaultValue: 'Pick a plate from the panel above to preview it.' })}
                     </div>
                   ) : (
-                    <GcodeViewer
+                    <GcodePreview
                       gcodeUrl={api.getLibraryFileGcodeUrl(libraryFileId!, selectedPlateId)}
                       buildVolume={capabilities.build_volume}
                       filamentColors={capabilities.filament_colors}
@@ -772,7 +772,7 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
                 </div>
               </div>
             ) : (
-              <GcodeViewer
+              <GcodePreview
                 gcodeUrl={isLibrary ? api.getLibraryFileGcodeUrl(libraryFileId!) : api.getArchiveGcode(archiveId!)}
                 buildVolume={capabilities.build_volume}
                 filamentColors={capabilities.filament_colors}

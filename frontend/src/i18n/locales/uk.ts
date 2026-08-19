@@ -6373,6 +6373,17 @@ export default {
     exportPngTitle: 'Зберегти поточний вигляд як PNG',
     start: 'Старт',
     end: 'Кінець',
+    // Об'ємний рендерер (GcodeToolpathViewer) і перемикач між двома.
+    rendererClassic: 'Класичний',
+    rendererToolpath: 'Обʼємний',
+    switchToClassic: 'Перемкнути на класичний рендерер',
+    switchToToolpath: 'Перемкнути на рендерер слайсера',
+    notSliced: 'Цей файл ще не нарізано.',
+    loadFailed: 'Не вдалося завантажити G-код цього файлу.',
+    showTravel: 'Переміщення',
+    filamentSlot: 'Філамент {{n}}',
+    topLayer: 'Верхній шар',
+    bottomLayer: 'Нижній шар',
   },
 
   // Maintenance type descriptions (built-in)

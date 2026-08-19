@@ -6,7 +6,10 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist', 'coverage']),
+  // src/lib/vendor holds files copied verbatim from upstream projects.
+  // Acting on findings there makes them impossible to re-copy on the next
+  // release, which is the whole point of vendoring rather than forking.
+  globalIgnores(['dist', 'coverage', 'src/lib/vendor']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

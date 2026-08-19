@@ -8,11 +8,16 @@
 
 - **Each plate of a multi-plate file can be printed a different number of times.** One shared Quantity field could only say "three of everything" — one plate of brackets and three of the clip that keeps breaking meant queueing each plate as its own submission and keeping the counts in your head. Select the plates, set a count on each, queue once. A single plate is unchanged: the Quantity field is still the answer, and the per-plate control only appears once a second plate is selected.
 
+- **A second G-code preview, drawn the way the slicer draws it.** The existing preview draws each move as a screen-space line — a line has no thickness in the scene, so it cannot hide the layer behind it, which is why a print came out stringy and shimmered where layers crossed. The new one builds a solid prism per extrusion, so the print occludes itself, and can colour by **feature** (wall, infill, support, bridge), by layer height or by line width instead of only by filament. The legend entries are switches: hiding supports removes them, so you can see what they were covering.
+
+    It is the renderer OrcaSlicer draws its own preview with. **The existing viewer stays the default and is one click away** — the new one has no play/pause animation, no Export PNG, no light theme and no download progress yet, so it is an option rather than a replacement until those land. The switch sits in the corner of the preview and is remembered per browser.
+
 - **Telegram can now aim a job at a room, not just at a printer model.** "Any P1S" is a useful answer on a one-room farm and a poor one when the P1S you meant is upstairs. Choosing a model in the bot now offers the places that actually hold one, and the job is routed there — the same location filter the print dialog has had, reaching the shelves inside a workshop you pick. The step is skipped entirely when there is nothing to choose between, so a farm with no locations set up sees no extra tap.
 
 ### Fixed
 
 - **Staggered start no longer lets the whole farm heat at once.** Clearing the plates on eleven printers set to "two at a time" started all eleven inside two seconds — enough to trip the mains. A printer that has just been sent a job still reports the *previous* print as finished for the eight to thirty seconds it takes to upload the file and begin, and the stagger was reading that as "this one is done" and handing the slot straight back. Each dispatch freed the slots the dispatches before it had taken, so the limit was never reached. The slot is now held until the printer is actually seen starting — and released as before once it does, or after three minutes if a print never begins.
+
 
 - **A job aimed at a printer model named the way Bambu names it no longer waits for ever.** Bambu's own files call a P1S "C12" and an X2D "N6", and those codes reach BamDude from the sliced file and from the API. The queue compared such a code against the printer list without translating it, matched nothing, and said "No active C12 printers eligible" — which reads like you named a machine you don't own. The translation now happens where the question is asked, so it holds for jobs created from the web, from Telegram and from the virtual printer alike.
 

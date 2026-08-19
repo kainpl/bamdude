@@ -6340,6 +6340,17 @@ export default {
     exportPngTitle: 'Save current view as PNG',
     start: 'Start',
     end: 'End',
+    // The solid renderer (GcodeToolpathViewer) and the switch between the two.
+    rendererClassic: 'Classic',
+    rendererToolpath: 'Solid',
+    switchToClassic: 'Switch to the classic renderer',
+    switchToToolpath: 'Switch to the slicer renderer',
+    notSliced: 'This file has not been sliced yet.',
+    loadFailed: 'Could not load the G-code for this file.',
+    showTravel: 'Travel moves',
+    filamentSlot: 'Filament {{n}}',
+    topLayer: 'Top layer',
+    bottomLayer: 'Bottom layer',
   },
 
   // Maintenance type descriptions (built-in)

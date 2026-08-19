@@ -29,7 +29,7 @@ import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
 import { ModelViewer } from './ModelViewer';
-import { GcodeViewer } from './GcodeViewer';
+import { GcodePreview } from './GcodePreview';
 import type { PlateMetadata } from '../types/plates';
 import { useToast } from '../contexts/ToastContext';
 import { formatFileSize } from '../utils/file';
@@ -238,7 +238,7 @@ function PrinterFileViewerModal({ printerId, filePath, filename, onClose }: Prin
               </div>
             </div>
           ) : activeTab === 'gcode' && hasGcode ? (
-            <GcodeViewer
+            <GcodePreview
               gcodeUrl={api.getPrinterFileGcodeUrl(printerId, filePath)}
               className="w-full h-full"
             />
