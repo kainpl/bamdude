@@ -137,16 +137,30 @@ def _nozzle_mismatch_message(sliced_nozzle: float | None, installed: list[float]
     )
 
 
+# How long a stagger slot is held for a printer that has been dispatched to but
+# is still reporting the previous print's state. Measured on the farm where this
+# went wrong: dispatch to ``on_print_start`` took 8-28 s across eleven printers.
+# The value matches ``PrintScheduler._dispatch_max_hold`` deliberately — both
+# answer "how long may a printer take to acknowledge a command we sent", and two
+# numbers for one question drift apart.
+_DISPATCH_SETTLE_SECONDS = 180.0
+
+
 class _StaggerSlot:
     """Tracks a printer that recently started and is heating up."""
 
-    __slots__ = ("printer_id", "started_at", "temp_reached_at", "interval_seconds")
+    __slots__ = ("printer_id", "started_at", "temp_reached_at", "interval_seconds", "saw_active")
 
     def __init__(self, printer_id: int, interval_seconds: int):
         self.printer_id = printer_id
         self.started_at = time.monotonic()
         self.temp_reached_at: float | None = None
         self.interval_seconds = interval_seconds  # per-printer or system default
+        # Whether the printer has been seen actually running the print this slot
+        # was taken for. Until then its reported state still describes the
+        # PREVIOUS print, and reading a terminal state there as "this one is
+        # over" releases the slot before the bed has even begun to heat.
+        self.saw_active = False
 
 
 def _timelapse_storage_full(printer_id: int) -> bool:
@@ -1256,7 +1270,27 @@ class PrintScheduler:
 
             # Check if the printer is still printing - if not, slot is done
             state = printer_manager.get_status(slot.printer_id)
-            if state and state.state not in ("RUNNING", "PREPARE", "IDLE", "PAUSE"):
+            live = state.state if state else None
+            if live in ("RUNNING", "PREPARE", "PAUSE"):
+                # From here on its state describes THIS print, so a terminal
+                # state below really does mean the slot's work is over.
+                slot.saw_active = True
+
+            if state and live not in ("RUNNING", "PREPARE", "IDLE", "PAUSE"):
+                # ⚠️ A printer that has been dispatched to but has not started
+                # yet still reports the PREVIOUS print's terminal state —
+                # FINISH for seconds to half a minute while the file uploads and
+                # the start command lands. Releasing the slot on that reading is
+                # how eleven beds came on at once on a farm configured for two:
+                # every acquire re-ran this cleanup, evicted the printers still
+                # showing FINISH, and found the slots free again (2026-08-19).
+                #
+                # Bounded by the same window ``_dispatch_holds`` allows a printer
+                # to catch up, so a dispatch that never starts cannot hold a slot
+                # for ever.
+                if not slot.saw_active and now - slot.started_at < _DISPATCH_SETTLE_SECONDS:
+                    active.append(slot)
+                    continue
                 # Printer finished/failed/offline - don't hold the slot
                 if slot.temp_reached_at is not None:
                     if now - slot.temp_reached_at < iv:

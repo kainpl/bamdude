@@ -6,6 +6,8 @@
 
 ### Fixed
 
+- **Staggered start no longer lets the whole farm heat at once.** Clearing the plates on eleven printers set to "two at a time" started all eleven inside two seconds — enough to trip the mains. A printer that has just been sent a job still reports the *previous* print as finished for the eight to thirty seconds it takes to upload the file and begin, and the stagger was reading that as "this one is done" and handing the slot straight back. Each dispatch freed the slots the dispatches before it had taken, so the limit was never reached. The slot is now held until the printer is actually seen starting — and released as before once it does, or after three minutes if a print never begins.
+
 - **You are told when a print will run the spool out.** BamDude worked this out only inside the print dialog — so a job the queue dispatched on its own, which never opens one, started and emptied a spool with nothing said. It now checks at dispatch and says so: a toast for whoever has a tab open, and a notification for whoever does not.
 
     **It warns; it does not stop the print.** Finishing a spool mid-plate and swapping it is ordinary farm work, and refusing to dispatch would stop work you meant to do. The message says the print has started anyway.
