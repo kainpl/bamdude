@@ -6,6 +6,10 @@
 
 ### Added
 
+- **A master project now adds up everything beneath it.** Sub-projects existed — the column and the list were there — but a parent's figures only ever covered its own prints, and nothing outside the API could set a parent in the first place. The project dialog gets a parent picker, and a project with sub-projects gets a second card covering the whole tree: jobs, parts, time, filament and progress against every target in it added together. Its own card keeps its own meaning, so nothing you already nested is restated.
+
+    **Two things that could quietly break a tree are fixed.** A project could be put inside its own grandchild — refusing only "itself" left the loop two clicks away — and deleting a project in the middle dropped its sub-projects out to the top level instead of moving them up to its parent.
+
 - **Each plate of a multi-plate file can be printed a different number of times.** One shared Quantity field could only say "three of everything" — one plate of brackets and three of the clip that keeps breaking meant queueing each plate as its own submission and keeping the counts in your head. Select the plates, set a count on each, queue once. A single plate is unchanged: the Quantity field is still the answer, and the per-plate control only appears once a second plate is selected.
 
 - **A second G-code preview, drawn the way the slicer draws it.** The existing preview draws each move as a screen-space line — a line has no thickness in the scene, so it cannot hide the layer behind it, which is why a print came out stringy and shimmered where layers crossed. The new one builds a solid prism per extrusion, so the print occludes itself, and can colour by **feature** (wall, infill, support, bridge), by layer height or by line width instead of only by filament. The legend entries are switches: hiding supports removes them, so you can see what they were covering.

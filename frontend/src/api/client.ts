@@ -1236,6 +1236,10 @@ export interface Project {
   created_at: string;
   updated_at: string;
   stats?: ProjectStats;
+  /** Everything under this project, its own prints included. Present only when
+   *  it actually has sub-projects — a second figure rather than a widening of
+   *  `stats`, whose meaning is unchanged. */
+  rollup_stats?: ProjectStats | null;
 }
 
 export interface ProjectAttachment {
@@ -1279,6 +1283,10 @@ export interface ProjectListItem {
   archives: ArchivePreview[];
   url: string | null;
   cover_image_filename: string | null;
+  /** Nesting, so the grid can group and the parent picker can rule out a
+   *  loop before the server has to. */
+  parent_id: number | null;
+  is_template: boolean;
 }
 
 export interface ProjectCreate {

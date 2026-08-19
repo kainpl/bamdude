@@ -56,9 +56,14 @@ interface ProjectModalProps {
   isLoading: boolean;
   currencySymbol: string;
   t: TFunction;
+  /** Everything that could be a parent. The project being edited and its own
+   *  descendants are filtered out by the caller — the server refuses a loop
+   *  anyway, but offering one in the list invites an error for no reason. */
+  parentOptions?: { id: number; name: string }[];
 }
 
-export function ProjectModal({ project, onClose, onSave, isLoading, currencySymbol, t }: ProjectModalProps) {
+export function ProjectModal({ project, onClose, onSave, isLoading, currencySymbol, t, parentOptions = [] }: ProjectModalProps) {
+  const [parentId, setParentId] = useState<number | null>(project?.parent_id ?? null);
   const [name, setName] = useState(project?.name || '');
   const [description, setDescription] = useState(project?.description || '');
   const [color, setColor] = useState(project?.color || PROJECT_COLORS[0]);
@@ -176,6 +181,9 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
       // Pydantic accepts null to clear the URL; "" would fail the http(s) check.
       // Use undefined for create (omit) and null for edit-with-cleared-value.
       url: project ? (trimmedUrl || null) : (trimmedUrl || undefined),
+      // 0 is how this API says "no parent" — null would read as "leave alone",
+      // which is what an untouched field already means.
+      ...(parentId !== (project?.parent_id ?? null) && { parent_id: parentId ?? 0 }),
       ...(project && { status }),
     });
   };
@@ -413,6 +421,25 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
               </select>
             </div>
           </div>
+
+          {parentOptions.length > 0 && (
+            <div>
+              <label className="block text-sm font-medium text-white mb-1">
+                {t('projects.parentProject')}
+              </label>
+              <select
+                value={parentId ?? ''}
+                onChange={(e) => setParentId(e.target.value ? parseInt(e.target.value, 10) : null)}
+                className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white focus:outline-none focus:border-bambu-green"
+              >
+                <option value="">{t('projects.parentNone')}</option>
+                {parentOptions.map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>{candidate.name}</option>
+                ))}
+              </select>
+              <p className="text-xs text-bambu-gray mt-1">{t('projects.parentHint')}</p>
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-white mb-1">
@@ -1022,6 +1049,35 @@ export function ProjectsPage() {
     ? allProjects
     : allProjects?.filter((p) => p.status === statusFilter);
 
+  /** Projects that may be chosen as a parent.
+   *
+   *  ⚠️ The one being edited AND its descendants are excluded. The server
+   *  refuses a loop either way, but offering one here invites an error for no
+   *  reason — and on a deep tree "why is this greyed out" is a worse question
+   *  than never seeing the option. Templates are excluded too: a template is a
+   *  shape to copy, not a place to file work under.
+   */
+  const parentOptions = useMemo(() => {
+    if (!allProjects) return [];
+    const banned = new Set<number>();
+    if (editingProject) {
+      banned.add(editingProject.id);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const candidate of allProjects) {
+          if (candidate.parent_id != null && banned.has(candidate.parent_id) && !banned.has(candidate.id)) {
+            banned.add(candidate.id);
+            grew = true;
+          }
+        }
+      }
+    }
+    return allProjects
+      .filter((candidate) => !candidate.is_template && !banned.has(candidate.id))
+      .map((candidate) => ({ id: candidate.id, name: candidate.name }));
+  }, [allProjects, editingProject]);
+
   const createMutation = useMutation({
     mutationFn: (data: ProjectCreate) => api.createProject(data),
     onSuccess: () => {
@@ -1400,6 +1456,7 @@ export function ProjectsPage() {
           isLoading={createMutation.isPending || updateMutation.isPending}
           currencySymbol={currencySymbol}
           t={t}
+          parentOptions={parentOptions}
         />
       )}
     </div>

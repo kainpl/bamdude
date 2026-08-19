@@ -4312,6 +4312,9 @@ export default {
 
   // Projects
   projects: {
+    parentProject: 'Parent project',
+    parentNone: 'None — a top-level project',
+    parentHint: 'Filing this under another project rolls its figures up into that one.',
     title: 'Projects',
     subtitle: 'Organize and track your 3D printing projects',
     newProject: 'New Project',
@@ -4417,6 +4420,12 @@ export default {
 
   // Project detail page
   projectDetail: {
+    rollup: {
+      title: 'This project and everything under it',
+      progress: 'Tree progress',
+      acrossTree: 'across {{count}} sub-project',
+      acrossTree_other: 'across {{count}} sub-projects',
+    },
     notFound: 'Project not found',
     backToProjects: 'Back to Projects',
     export: 'Export',

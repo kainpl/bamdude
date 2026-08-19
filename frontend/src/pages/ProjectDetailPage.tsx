@@ -931,6 +931,53 @@ export function ProjectDetailPage() {
       )}
 
       {/* Sub-projects */}
+      {/* The whole tree, this project's own prints included.
+          ⚠️ A SECOND card, deliberately: the one above keeps meaning "this
+          project", and nesting has been settable over the API all along, so
+          widening it would have restated the history of anyone already using
+          it. Present only when there are sub-projects — otherwise the two
+          cards would say the same numbers, which reads as a bug. */}
+      {project.rollup_stats && (
+        <div>
+          <h2 className="text-lg font-semibold text-white flex items-center gap-2 mb-3">
+            <FolderTree className="w-5 h-5" />
+            {t('projectDetail.rollup.title')}
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <StatCard
+              icon={Package}
+              label={t('projectDetail.stats.printJobs')}
+              value={project.rollup_stats.total_archives}
+              subValue={t('projectDetail.stats.partsPrinted', { count: project.rollup_stats.completed_prints })}
+              color="text-bambu-green"
+            />
+            <StatCard
+              icon={Clock}
+              label={t('projectDetail.stats.printTime')}
+              value={formatDurationFromHours(project.rollup_stats.total_print_time_hours)}
+              color="text-yellow-600 dark:text-yellow-400"
+            />
+            <StatCard
+              icon={Printer}
+              label={t('projectDetail.stats.filamentUsed')}
+              value={formatFilament(project.rollup_stats.total_filament_grams)}
+              color="text-purple-600 dark:text-purple-400"
+            />
+            <StatCard
+              icon={FolderTree}
+              label={t('projectDetail.rollup.progress')}
+              value={
+                project.rollup_stats.progress_percent != null
+                  ? `${project.rollup_stats.progress_percent}%`
+                  : '—'
+              }
+              subValue={t('projectDetail.rollup.acrossTree', { count: project.children?.length ?? 0 })}
+              color="text-bambu-blue"
+            />
+          </div>
+        </div>
+      )}
+
       {project.children && project.children.length > 0 && (
         <Card>
           <CardContent className="p-4">

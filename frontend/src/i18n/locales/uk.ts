@@ -4345,6 +4345,9 @@ export default {
 
   // Projects
   projects: {
+    parentProject: 'Батьківський проєкт',
+    parentNone: 'Немає — проєкт верхнього рівня',
+    parentHint: 'Підпорядкування іншому проєкту зводить показники цього в нього.',
     title: 'Проєкти',
     subtitle: 'Організуйте та відстежуйте ваші проєкти 3D-друку',
     newProject: 'Новий проєкт',
@@ -4452,6 +4455,12 @@ export default {
 
   // Project detail page
   projectDetail: {
+    rollup: {
+      title: 'Цей проєкт і все, що під ним',
+      progress: 'Прогрес дерева',
+      acrossTree: 'по {{count}} підпроєкту',
+      acrossTree_other: 'по {{count}} підпроєктах',
+    },
     notFound: 'Проєкт не знайдено',
     backToProjects: 'Повернутися до проєктів',
     export: 'Експорт',
