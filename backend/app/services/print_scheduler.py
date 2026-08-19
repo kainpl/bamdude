@@ -188,6 +188,23 @@ def _timelapse_storage_full(printer_id: int) -> bool:
 _DRYING_CLAIM_GRACE_SECONDS = 120.0
 
 
+# Auto-drying re-arm guards.
+#
+# ⚠️ An AMS reports HIGHER relative humidity while it is warm than once it has
+# cooled — upstream #2770 measured an AMS 2 Pro at 10-13% cold against 15-20%
+# throughout every cycle. A threshold set inside that band therefore cannot be
+# satisfied while the box is hot, and the firmware ends a cycle whenever it
+# decides the filament is dry rather than when the clock runs out. So the next
+# pass sees dry_time 0 with the reading still above the threshold and arms
+# another cycle: five 12-hour cycles inside four hours, one of them six seconds
+# after the previous ended.
+#
+# The cooldown stops the six-second re-arm; the unproductive-cycle cap stops the
+# loop. ⚠️ Neither may ever stop a RUNNING cycle — both only gate starting one.
+_AUTO_DRY_REARM_COOLDOWN_SECONDS = 30 * 60
+_AUTO_DRY_MAX_UNPRODUCTIVE_CYCLES = 2
+
+
 class PrintScheduler:
     """Background scheduler that processes the print queue."""
 
@@ -225,7 +242,25 @@ class PrintScheduler:
         # same machine. The consequence is deliberate — after a restart we
         # cannot prove a running cycle is ours, so we leave it alone rather
         # than risk stopping somebody's manual dry.
-        self._auto_dried_units: dict[tuple[int, int], float] = {}
+        self._armed_dry_cycles: dict[tuple[int, int], float] = {}
+        # ⚠️ A DIFFERENT question from the claim above, and the two must not be
+        # merged however alike the keys look. ``_armed_dry_cycles`` answers "is
+        # the cycle on this unit ours, right now" and is swept the moment the
+        # cycle ends. This answers "what has drying achieved on this unit", and
+        # deliberately OUTLIVES the cycle — that is the whole point of a
+        # cooldown. Merging them would let a stale judgement authorise stopping
+        # a manual dry started later on the same unit, which is exactly the
+        # defect the claim exists to prevent.
+        #
+        # Entries exist only between arming a cycle and the humidity finally
+        # coming down, so the steady state is an empty dict. Fields:
+        #   running           — a cycle we armed is on the firmware
+        #   ended_at          — monotonic when we observed that cycle end
+        #   unproductive      — consecutive armed cycles that ended with the
+        #                       reading still above the threshold
+        #   best_end_humidity — the lowest reading any cycle here has ended at
+        #   suspended         — we have stopped arming this unit, and said so
+        self._dry_unit_history: dict[tuple[int, int], dict[str, object]] = {}
         # Staggered start: rolling slots for electrical load management
         self._stagger_slots: list[_StaggerSlot] = []
         # Serialises check+register in ``acquire_stagger_slot`` so multiple
@@ -1870,9 +1905,14 @@ class PrintScheduler:
                 # duration; auto-drying is only ever stopped when a print is dispatched to
                 # the printer (see _stop_drying). We still record first-seen time so a
                 # restart-orphaned dry has a start timestamp.
+                unit_key = (pid, ams_id)
+                unit_state = self._dry_unit_history.get(unit_key)
+
                 if dry_time > 0:
                     if pid not in self._drying_in_progress:
                         self._drying_in_progress[pid] = time.monotonic()
+                    if unit_state is not None:
+                        unit_state["running"] = True
                     logger.debug(
                         "Auto-drying: printer %d AMS %d - drying in progress (%dm left, humidity %s%%) - letting it run",
                         pid,
@@ -1882,8 +1922,69 @@ class PrintScheduler:
                     )
                     continue
 
-                # Humidity below threshold - no need to start drying
+                # Nothing is drying here. Close out a cycle we armed
+                # ourselves and judge whether it achieved anything.
+                #
+                # ⚠️ "Achieved anything" is measured against the LOWEST reading
+                # any cycle on this unit has ended at — not against the
+                # threshold, and not against the previous cycle. A genuinely wet
+                # spool in a humid room comes down slowly (40, 37, 35) and must
+                # be allowed to keep going for as long as it is still coming
+                # down, however far the threshold still is. What must not
+                # continue is a cycle ending exactly where the last one did,
+                # which is the reported signature: 15, 15, 16, 15, for ever.
+                # Comparing against the running minimum rather than the previous
+                # end is what stops a sensor oscillating by a point between two
+                # values from reading as progress every other cycle.
+                if unit_state is not None and unit_state.pop("running", False):
+                    unit_state["ended_at"] = time.monotonic()
+                    if humidity is not None and humidity > humidity_threshold:
+                        best = unit_state.get("best_end_humidity")
+                        if isinstance(best, int) and humidity < best:
+                            unproductive = 0
+                        else:
+                            unproductive = int(unit_state.get("unproductive", 0)) + 1
+                        if not isinstance(best, int) or humidity < best:
+                            unit_state["best_end_humidity"] = humidity
+                        unit_state["unproductive"] = unproductive
+                        logger.info(
+                            "Auto-drying: printer %d AMS %d - cycle ended with humidity still %d%% > "
+                            "threshold %d%% (best so far %s%%, %d unproductive in a row)",
+                            pid,
+                            ams_id,
+                            humidity,
+                            humidity_threshold,
+                            unit_state.get("best_end_humidity"),
+                            unproductive,
+                        )
+
+                # Humidity below threshold - no need to start drying. This is
+                # also the only thing that lifts a suspension: the reading we
+                # gave up on has come down, so auto-drying works again here.
+                #
+                # ⚠️ Clear the JUDGEMENT, keep the CLOCK. Dropping the whole
+                # entry would drop ``ended_at`` with it, and with that the
+                # cooldown — so a unit a point or two above the threshold, whose
+                # reading dips below it as the AMS cools and comes back once
+                # warm, would wipe its own history and re-arm immediately. That
+                # oscillation is the very thing the cooldown exists to ride out,
+                # and it is worst at exactly the margin that makes a unit dry
+                # repeatedly. (Upstream shipped the pop and repaired it in a
+                # later fix; we start from the repaired behaviour.)
                 if humidity is None or humidity <= humidity_threshold:
+                    if unit_state is not None:
+                        if unit_state.get("suspended"):
+                            logger.info(
+                                "Auto-drying: printer %d AMS %d - humidity %s%% is back at or below the "
+                                "%d%% threshold, resuming automatic drying",
+                                pid,
+                                ams_id,
+                                humidity,
+                                humidity_threshold,
+                            )
+                        unit_state.pop("suspended", None)
+                        unit_state.pop("unproductive", None)
+                        unit_state.pop("best_end_humidity", None)
                     logger.debug(
                         "Auto-drying: printer %d AMS %d skipped - humidity %s <= threshold %d",
                         pid,
@@ -1892,6 +1993,47 @@ class PrintScheduler:
                         humidity_threshold,
                     )
                     continue
+
+                if unit_state is not None:
+                    if unit_state.get("suspended"):
+                        logger.debug(
+                            "Auto-drying: printer %d AMS %d skipped - suspended, %d cycles left humidity "
+                            "above the %d%% threshold",
+                            pid,
+                            ams_id,
+                            int(unit_state.get("unproductive", 0)),
+                            humidity_threshold,
+                        )
+                        continue
+
+                    if int(unit_state.get("unproductive", 0)) >= _AUTO_DRY_MAX_UNPRODUCTIVE_CYCLES:
+                        unit_state["suspended"] = True
+                        logger.warning(
+                            "Auto-drying: printer %d AMS %d - suspending automatic drying. %d cycles in a "
+                            "row ended with humidity at %d%%, still above the %d%% threshold. The AMS reads "
+                            "higher while it is warm, so a threshold in that range can never be reached and "
+                            "re-arming would loop. Raise the threshold or dry the spools off the printer.",
+                            pid,
+                            ams_id,
+                            int(unit_state.get("unproductive", 0)),
+                            humidity,
+                            humidity_threshold,
+                        )
+                        await self._notify_auto_drying_suspended(
+                            db, pid, ams_id, humidity, humidity_threshold, int(unit_state.get("unproductive", 0))
+                        )
+                        continue
+
+                    ended_at = unit_state.get("ended_at")
+                    if isinstance(ended_at, float) and time.monotonic() - ended_at < _AUTO_DRY_REARM_COOLDOWN_SECONDS:
+                        logger.debug(
+                            "Auto-drying: printer %d AMS %d skipped - cooling off for %ds after the last "
+                            "cycle before the humidity reading is worth acting on",
+                            pid,
+                            ams_id,
+                            _AUTO_DRY_REARM_COOLDOWN_SECONDS,
+                        )
+                        continue
 
                 # Check cannot-dry reasons (power constraints etc.) — surface
                 # the first human-readable blocker so support logs actually tell
@@ -1943,7 +2085,66 @@ class PrintScheduler:
                 )
                 if success:
                     self._drying_in_progress[pid] = time.monotonic()
-                    self._auto_dried_units[(pid, ams_id)] = time.monotonic()
+                    self._armed_dry_cycles[(pid, ams_id)] = time.monotonic()
+                    armed = self._dry_unit_history.setdefault(
+                        unit_key, {"unproductive": 0, "suspended": False, "ended_at": None}
+                    )
+                    armed["running"] = True
+
+    async def _notify_auto_drying_suspended(
+        self,
+        db: AsyncSession,
+        printer_id: int,
+        ams_id: int,
+        humidity: int,
+        threshold: int,
+        cycles: int,
+    ) -> None:
+        """Tell the user auto-drying has given up on one AMS unit.
+
+        Fires once per suspension — the caller sets ``suspended`` before calling
+        and every later pass short-circuits on it — because the whole point is
+        that BamDude has STOPPED acting. Somebody whose printer sits in another
+        building needs that to reach them, and the humidity alarm they are
+        already getting says the opposite of what happened here.
+
+        ⚠️ Never raises: a notification provider being down must not stop the
+        suspension itself from taking effect.
+        """
+        result = await db.execute(select(Printer.name).where(Printer.id == printer_id))
+        printer_name = result.scalar_one_or_none() or f"Printer {printer_id}"
+        ams_label = f"HT-{chr(65 + (ams_id - 128))}" if ams_id >= 128 else f"AMS-{chr(65 + ams_id)}"
+        try:
+            await notification_service.on_ams_drying_suspended(
+                printer_id,
+                printer_name,
+                ams_label,
+                float(humidity),
+                float(threshold),
+                cycles,
+                db,
+            )
+        except Exception as e:  # noqa: BLE001 - see the docstring
+            logger.warning("Failed to send auto-drying suspended notification: %s", e)
+
+    def forget_auto_dry_cycle(self, printer_id: int, ams_id: int) -> None:
+        """Stop judging the drying cycle currently on this AMS unit.
+
+        ⚠️ The unproductive-cycle counter exists to notice that *drying* is not
+        moving the humidity reading. A cycle that ended because somebody sent a
+        stop says nothing about that — it was cut short before it had a chance —
+        so counting it would suspend auto-drying for a reason that has nothing to
+        do with the loop the counter is there to break. Left uncalled, an install
+        that dries between queue jobs would suspend its own auto-drying after two
+        prints interrupted a dry: exactly the install queue-drying exists for.
+
+        The rest of the unit's history is kept — the cooldown before re-arming
+        still applies, and an earlier count still stands.
+        """
+        state = self._dry_unit_history.get((printer_id, ams_id))
+        if state is not None:
+            state.pop("running", None)
+            state["ended_at"] = time.monotonic()
 
     def _sync_drying_state(self):
         """Sync in-memory drying state with actual printer status.
@@ -1970,7 +2171,7 @@ class PrintScheduler:
         # only there would outlive the cycle it describes and later authorise
         # stopping a manual dry on the same unit.
         now = time.monotonic()
-        for (pid, ams_id), armed_at in list(self._auto_dried_units.items()):
+        for (pid, ams_id), armed_at in list(self._armed_dry_cycles.items()):
             # ⚠️ A fresh claim is left alone. ``dry_time`` does not appear in
             # the printer's report the instant the command lands, and unlike
             # ``_drying_in_progress`` a claim is never re-adopted — dropping one
@@ -1981,19 +2182,25 @@ class PrintScheduler:
             if state is None:
                 # A printer we can no longer see says nothing about what its AMS
                 # units are doing, so its claims go too.
-                self._auto_dried_units.pop((pid, ams_id), None)
+                self._armed_dry_cycles.pop((pid, ams_id), None)
                 continue
             still_drying = any(
                 int(ams.get("id", 0)) == ams_id and int(ams.get("dry_time") or 0) > 0
                 for ams in state.raw_data.get("ams", [])
             )
             if not still_drying:
-                self._auto_dried_units.pop((pid, ams_id), None)
+                self._armed_dry_cycles.pop((pid, ams_id), None)
+
+        # A printer that has gone away entirely takes its per-AMS drying history
+        # with it, so a printer deleted and re-added does not inherit a
+        # suspension it never earned.
+        for key in [k for k in self._dry_unit_history if printer_manager.get_status(k[0]) is None]:
+            self._dry_unit_history.pop(key, None)
 
     async def _stop_drying(self, printer_id: int):
         """Stop the drying cycles WE armed on a printer.
 
-        ⚠️ Scoped to ``_auto_dried_units``. It used to send a stop to every AMS
+        ⚠️ Scoped to ``_armed_dry_cycles``. It used to send a stop to every AMS
         reporting ``dry_time > 0``, so one auto-dried unit was enough to kill a
         cycle the operator had started by hand on a different unit of the same
         printer. That also contradicted the contract ``_sync_drying_state``
@@ -2017,7 +2224,7 @@ class PrintScheduler:
             dry_time = int(ams_data.get("dry_time") or 0)
             if dry_time > 0:
                 ams_id = int(ams_data.get("id", 0))
-                if (printer_id, ams_id) not in self._auto_dried_units:
+                if (printer_id, ams_id) not in self._armed_dry_cycles:
                     logger.debug(
                         "Auto-drying: leaving printer %d AMS %d alone - not a cycle we started",
                         printer_id,
@@ -2030,6 +2237,7 @@ class PrintScheduler:
                     ams_id,
                 )
                 printer_manager.send_drying_command(printer_id, ams_id, 0, 0, mode=0)
+                self.forget_auto_dry_cycle(printer_id, ams_id)
         self._drying_in_progress.pop(printer_id, None)
 
     async def _get_smart_plugs(self, db: AsyncSession, printer_id: int) -> list[SmartPlug]:

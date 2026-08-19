@@ -3314,6 +3314,7 @@ export interface NotificationProvider {
   // AMS environmental alarms (regular AMS)
   on_ams_humidity_high: boolean;
   on_ams_temperature_high: boolean;
+  on_ams_drying_suspended: boolean;
   // AMS-HT environmental alarms
   on_ams_ht_humidity_high: boolean;
   on_ams_ht_temperature_high: boolean;
@@ -3381,6 +3382,7 @@ export interface NotificationProviderCreate {
   // AMS environmental alarms (regular AMS)
   on_ams_humidity_high?: boolean;
   on_ams_temperature_high?: boolean;
+  on_ams_drying_suspended?: boolean;
   // AMS-HT environmental alarms
   on_ams_ht_humidity_high?: boolean;
   on_ams_ht_temperature_high?: boolean;
@@ -3442,6 +3444,7 @@ export interface NotificationProviderUpdate {
   // AMS environmental alarms (regular AMS)
   on_ams_humidity_high?: boolean;
   on_ams_temperature_high?: boolean;
+  on_ams_drying_suspended?: boolean;
   // AMS-HT environmental alarms
   on_ams_ht_humidity_high?: boolean;
   on_ams_ht_temperature_high?: boolean;

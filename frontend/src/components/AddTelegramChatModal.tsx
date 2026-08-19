@@ -151,6 +151,7 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
     ams_temperature_high: 'notifications.amsTemperatureHigh',
     ams_ht_humidity_high: 'notifications.amsHtHumidityHigh',
     ams_ht_temperature_high: 'notifications.amsHtTemperatureHigh',
+    ams_drying_suspended: 'notifications.amsDryingSuspended',
     sensor_above_max: 'notifications.sensorAboveMax',
     sensor_below_min: 'notifications.sensorBelowMin',
     sensor_back_in_range: 'notifications.sensorBackInRange',

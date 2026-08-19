@@ -83,6 +83,11 @@ class NotificationProvider(Base):
     # Event triggers - AMS environmental alarms (regular AMS with 4 slots)
     on_ams_humidity_high = Column(Boolean, default=False)  # AMS humidity above threshold
     on_ams_temperature_high = Column(Boolean, default=False)  # AMS temperature above threshold
+    # ⚠️ Defaults TRUE, unlike its neighbours. It fires at most once per AMS
+    # unit, and only to say BamDude has STOPPED doing something it was doing
+    # before — silence there reads as "still drying", which is exactly how the
+    # reported re-arm loop cost two days.
+    on_ams_drying_suspended = Column(Boolean, default=True)  # auto-drying gave up on a unit
 
     # Event triggers - AMS-HT environmental alarms (single slot heated AMS)
     on_ams_ht_humidity_high = Column(Boolean, default=False)  # AMS-HT humidity above threshold

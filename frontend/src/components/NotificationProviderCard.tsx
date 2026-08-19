@@ -280,6 +280,10 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                             <span
                                 className="px-2 py-0.5 bg-amber-100 dark:bg-amber-600/20 text-amber-700 dark:text-amber-300 text-xs rounded">{t('notifications.amsHtTemp')}</span>
                         )}
+                        {!isTelegram && provider.on_ams_drying_suspended && (
+                            <span
+                                className="px-2 py-0.5 bg-rose-100 dark:bg-rose-600/20 text-rose-700 dark:text-rose-300 text-xs rounded">{t('notifications.amsDryingSuspendedBadge')}</span>
+                        )}
                         {!isTelegram && provider.on_bed_cooled && (
                             <span
                                 className="px-2 py-0.5 bg-teal-100 dark:bg-teal-500/20 text-teal-700 dark:text-teal-400 text-xs rounded">{t('notifications.bedCooled')}</span>
@@ -591,6 +595,17 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                                     <Toggle
                                         checked={provider.on_ams_temperature_high ?? false}
                                         onChange={(checked) => updateMutation.mutate({on_ams_temperature_high: checked})}
+                                    />
+                                </div>
+
+                                <div className="flex items-center justify-between">
+                                    <div>
+                                        <p className="text-sm text-white">{t('notifications.amsDryingSuspended')}</p>
+                                        <p className="text-xs text-bambu-gray">{t('notifications.amsDryingSuspendedDescription')}</p>
+                                    </div>
+                                    <Toggle
+                                        checked={provider.on_ams_drying_suspended ?? false}
+                                        onChange={(checked) => updateMutation.mutate({on_ams_drying_suspended: checked})}
                                     />
                                 </div>
                             </div>

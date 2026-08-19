@@ -173,7 +173,7 @@ def _claim(scheduler, *printer_ids: int) -> None:
     """
     for printer_id in printer_ids:
         for ams_id in (0, 1, 128):
-            scheduler._auto_dried_units[(printer_id, ams_id)] = 0.0
+            scheduler._armed_dry_cycles[(printer_id, ams_id)] = 0.0
 
 
 class TestSyncDryingState:

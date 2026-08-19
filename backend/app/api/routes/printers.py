@@ -2520,6 +2520,15 @@ async def stop_drying(
     success = printer_manager.send_drying_command(printer_id, ams_id, temp=0, duration=0, mode=0)
     if not success:
         raise HTTPException(400, "Printer not connected")
+    # ⚠️ A cycle somebody stopped by hand says nothing about whether DRYING is
+    # able to move this unit's humidity, so it must not count towards the
+    # unproductive-cycle cap — it was cut short before it had a chance. Without
+    # this, two prints (or two impatient operators) interrupting a dry would
+    # suspend auto-drying on the unit. The cooldown before re-arming still
+    # applies.
+    from backend.app.services.print_scheduler import scheduler as print_scheduler
+
+    print_scheduler.forget_auto_dry_cycle(printer_id, ams_id)
     return {"status": "drying_stopped", "ams_id": ams_id}
 
 

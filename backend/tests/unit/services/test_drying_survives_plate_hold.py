@@ -224,7 +224,7 @@ class TestOnlyOurOwnCyclesAreStopped:
         mock_pm.get_status.return_value = state
         scheduler._drying_in_progress = {1: 0.0}
         if ours is not None:
-            scheduler._auto_dried_units = {(1, ours): 0.0}
+            scheduler._armed_dry_cycles = {(1, ours): 0.0}
 
     @pytest.mark.asyncio
     @patch("backend.app.services.print_scheduler.printer_manager")
@@ -254,12 +254,12 @@ class TestOnlyOurOwnCyclesAreStopped:
         manual dry started later on the same unit."""
         import time as _time
 
-        scheduler._auto_dried_units = {(1, 0): _time.monotonic() - 3600}
+        scheduler._armed_dry_cycles = {(1, 0): _time.monotonic() - 3600}
         mock_pm.get_status.return_value = _state("IDLE")  # AMS 0 reports dry_time 0
 
         scheduler._sync_drying_state()
 
-        assert scheduler._auto_dried_units == {}
+        assert scheduler._armed_dry_cycles == {}
 
     @pytest.mark.asyncio
     @patch("backend.app.services.print_scheduler.printer_manager")
@@ -269,12 +269,12 @@ class TestOnlyOurOwnCyclesAreStopped:
         in that window would be lost for the whole cycle."""
         import time as _time
 
-        scheduler._auto_dried_units = {(1, 0): _time.monotonic()}
+        scheduler._armed_dry_cycles = {(1, 0): _time.monotonic()}
         mock_pm.get_status.return_value = _state("IDLE")
 
         scheduler._sync_drying_state()
 
-        assert (1, 0) in scheduler._auto_dried_units
+        assert (1, 0) in scheduler._armed_dry_cycles
 
 
 class TestQueueDryingBlockFinallyMeansSomething:

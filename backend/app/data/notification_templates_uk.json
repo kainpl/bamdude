@@ -74,6 +74,11 @@
     "title_template": "Попередження вологості AMS",
     "body_template": "{printer} {ams_label}: Вологість {humidity}% перевищує поріг {threshold}%"
   },
+  "ams_drying_suspended": {
+    "name": "Автосушіння призупинено",
+    "title_template": "Автосушіння зупинено",
+    "body_template": "{printer} {ams_label}: {cycles} циклів сушіння поспіль завершились на {humidity}%, що все ще вище порога {threshold}%. Теплий AMS показує вищу вологість, ніж холодний, тож цього порога тут не досягти. Автоматичне сушіння для цього юніта призупинено, доки показник не спаде."
+  },
   "ams_temperature_high": {
     "name": "Висока температура AMS",
     "title_template": "Попередження температури AMS",
