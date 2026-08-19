@@ -1575,6 +1575,7 @@ class BambuMQTTClient:
         on_finish_photo_moment: Callable[[dict], None] | None = None,
         on_assignment_verified: Callable[[int, int, bool, dict], None] | None = None,
         on_skipped_objects_changed: Callable[[list], None] | None = None,
+        on_tray_change: Callable[[int, int], None] | None = None,
     ):
         self.ip_address = ip_address
         self.serial_number = serial_number
@@ -1623,6 +1624,12 @@ class BambuMQTTClient:
         # historic fire-and-forget silence that made the AMS/Studio hand-off feel
         # random. See ``_check_assignment_verifications``.
         self.on_assignment_verified = on_assignment_verified
+        # Fired for every entry appended to ``state.tray_change_log`` so main.py
+        # can mirror it into ``active_print_sessions``. The in-memory log dies
+        # with the process, and a long print outliving a restart would otherwise
+        # lose the segment boundaries the usage tracker splits on.
+        # Receives ``(global_tray_id, layer_num)``.
+        self.on_tray_change = on_tray_change
         # Pending read-back verifications, keyed by ``(ams_id, tray_id)``. Each
         # value is the desired end-state we just pushed plus a monotonic deadline.
         # Populated by ``register_assignment_verification``, drained by
@@ -3709,6 +3716,8 @@ class BambuMQTTClient:
                             tn,
                             self.state.layer_num,
                         )
+                        if self.on_tray_change:
+                            self.on_tray_change(tn, self.state.layer_num)
                     self.state.last_loaded_tray = self.state.tray_now
 
                 logger.debug("[%s] tray_now updated: %s", self.serial_number, self.state.tray_now)

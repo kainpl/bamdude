@@ -84,10 +84,14 @@ def _mock_db_sequential(responses):
         idx = call_count[0]
         call_count[0] += 1
         result = MagicMock()
-        if idx < len(responses):
-            result.scalar_one_or_none.return_value = responses[idx]
-        else:
-            result.scalar_one_or_none.return_value = None
+        response = responses[idx] if idx < len(responses) else None
+        result.scalar_one_or_none.return_value = response
+        # The queue-item lookup reads `.scalars().first()` — it must tolerate a
+        # re-print pointing a second queue item at the same archive, where
+        # `scalar_one_or_none` would raise and cost the print all of its usage
+        # tracking. Both shapes answer with the same row so a test's response
+        # list stays a plain "one per query" sequence.
+        result.scalars.return_value.first.return_value = response
         # For cost aggregation queries that use .scalar() instead of .scalar_one_or_none()
         result.scalar.return_value = None
         return result
@@ -1631,11 +1635,15 @@ class TestMqttMappingIntegration:
         assign_red = _make_assignment(spool_id=3, ams_id=128, tray_id=0)
         archive = _make_archive(archive_id=12)
 
-        # db: archive, then 3 pairs of (assignment, spool)
-        # No queue lookup because MQTT mapping is found first
+        # db: archive, the queue lookup (nothing — this print came from the
+        # printer, not the queue), then 3 pairs of (assignment, spool).
+        # The queue is asked FIRST now: AMS filament backup rewrites the live
+        # `mapping` field to the substitute tray, so a dispatched mapping, where
+        # one exists, outranks it.
         db = _mock_db_sequential(
             [
                 archive,
+                None,
                 assign_white,
                 spool_white,
                 assign_black,

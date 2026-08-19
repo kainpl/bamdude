@@ -134,6 +134,7 @@ async def test_engine():
     # ``slot_preset_mappings`` were absent from the harness only, so a statement
     # that is fine in production failed under test with "no such table".
     from backend.app.models import (
+        active_print_session,
         active_print_spoolman,
         ams_history,
         ams_label,

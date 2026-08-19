@@ -714,6 +714,7 @@ def _printer_cascade_models() -> tuple[type, ...]:
     joins that description without being listed, because the alternative is
     finding out from a 500 or from orphan rows nobody counted.
     """
+    from backend.app.models.active_print_session import ActivePrintSession
     from backend.app.models.active_print_spoolman import ActivePrintSpoolman
     from backend.app.models.ams_setting_audit import AmsSettingAudit
     from backend.app.models.calibration_audit import CalibrationAudit
@@ -728,6 +729,7 @@ def _printer_cascade_models() -> tuple[type, ...]:
     from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 
     return (
+        ActivePrintSession,
         ActivePrintSpoolman,
         AmsSettingAudit,
         CalibrationAudit,

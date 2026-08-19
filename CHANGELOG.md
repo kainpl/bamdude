@@ -8,6 +8,14 @@
 
 - **Staggered start no longer lets the whole farm heat at once.** Clearing the plates on eleven printers set to "two at a time" started all eleven inside two seconds — enough to trip the mains. A printer that has just been sent a job still reports the *previous* print as finished for the eight to thirty seconds it takes to upload the file and begin, and the stagger was reading that as "this one is done" and handing the slot straight back. Each dispatch freed the slots the dispatches before it had taken, so the limit was never reached. The slot is now held until the printer is actually seen starting — and released as before once it does, or after three minutes if a print never begins.
 
+- **Filament is now charged to the spool that actually printed it.** When a spool runs out mid-print and the AMS switches to a backup slot, the printer starts reporting the *substitute* tray as the one in use. BamDude read that at the end of the print, so the whole job was deducted from the spool that only finished it, and the spool that ran dry was deducted nothing. It now believes the assignment the print was dispatched with, and splits the weight across the trays that fed it.
+
+    **Restarting BamDude mid-print no longer loses the answer.** Everything needed to work this out — which slot fed which layers, which spools were in the AMS at the start — was held in memory only, so a restart during a long print threw it away and left the end of the print guessing. It is now written down as the print runs, and picked back up when BamDude comes up again.
+
+    **A slot that empties during a print no longer unlinks its spool.** The spool is still in the machine, just consumed; forgetting it left nothing to charge the last stretch of the print to. A spool you actually take out is still unlinked, once the printer is idle.
+
+    **Per-layer figures are read from the plate that ran.** On a multi-plate file the first plate stored in the file was measured, which is not always the one printed — so a partial or cancelled print could be deducted against a different plate's filament entirely. Affected both the built-in inventory and Spoolman.
+
 - **You are told when a print will run the spool out.** BamDude worked this out only inside the print dialog — so a job the queue dispatched on its own, which never opens one, started and emptied a spool with nothing said. It now checks at dispatch and says so: a toast for whoever has a tab open, and a notification for whoever does not.
 
     **It warns; it does not stop the print.** Finishing a spool mid-plate and swapping it is ordinary farm work, and refusing to dispatch would stop work you meant to do. The message says the print has started anyway.

@@ -154,11 +154,31 @@ def mm_to_grams(
     return volume_cm3 * density_g_cm3
 
 
-def extract_layer_filament_usage_from_3mf(file_path: Path) -> dict[int, dict[int, float]] | None:
+def extract_layer_filament_usage_from_3mf(
+    file_path: Path, plate_id: int | None = None
+) -> dict[int, dict[int, float]] | None:
     """Extract per-layer filament usage from a 3MF file's embedded G-code.
+
+    ⚠️ **Pass the plate.** This used to take ``gcode_files[0]`` — the first
+    ``.gcode`` member in whatever order the ZIP happens to store them — with a
+    comment saying "typically only one per 3MF export". On a multi-plate file
+    that is simply untrue, and a Bambu Studio export can store plate 2 first, so
+    the per-layer figures were measured against a plate the printer never ran.
+    Both inventory backends consume this, so partial-usage tracking and the
+    Spoolman debit were wrong together and in the same direction (upstream
+    `454457a0`).
+
+    ⚠️ This is the same family as the ``plate_number`` inertness that made Skip
+    Objects cancel the wrong part: identifying a plate by position rather than
+    by name, and failing silently onto plate 1.
+
+    Falls back to the lowest-numbered plate when no id is given or the named one
+    is absent — deterministic, unlike ZIP order, and the same plate the rest of
+    the code means by "the first one".
 
     Args:
         file_path: Path to the 3MF file
+        plate_id: 1-based plate the print actually used
 
     Returns:
         Dictionary mapping layers to filament usage, or None if parsing fails.
@@ -166,13 +186,23 @@ def extract_layer_filament_usage_from_3mf(file_path: Path) -> dict[int, dict[int
     """
     try:
         with zipfile.ZipFile(file_path, "r") as zf:
-            # Find G-code file(s) - usually plate_1.gcode or Metadata/plate_1.gcode
             gcode_files = [f for f in zf.namelist() if f.endswith(".gcode")]
             if not gcode_files:
                 return None
 
-            # Use the first G-code file (typically only one per 3MF export)
-            gcode_path = gcode_files[0]
+            gcode_path = None
+            if plate_id:
+                wanted = f"plate_{int(plate_id)}.gcode"
+                gcode_path = next((f for f in gcode_files if f.endswith(wanted)), None)
+            if gcode_path is None:
+                # Lowest plate number, then name, so the answer never depends on
+                # how the archive was written.
+                def _plate_no(name: str) -> tuple[int, str]:
+                    stem = name.rsplit("/", 1)[-1]
+                    digits = "".join(c for c in stem if c.isdigit())
+                    return (int(digits) if digits else 1 << 30, name)
+
+                gcode_path = sorted(gcode_files, key=_plate_no)[0]
             gcode_content = zf.read(gcode_path).decode("utf-8", errors="ignore")
 
             return parse_gcode_layer_filament_usage(gcode_content)

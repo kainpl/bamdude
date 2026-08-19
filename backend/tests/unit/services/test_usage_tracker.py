@@ -54,6 +54,23 @@ class TestActualFilamentGrams:
         assert actual_filament_grams("completed", tracked_grams=0.0, estimate=None) == 0.0
 
 
+def _no_queue_item():
+    """A queue lookup that finds nothing.
+
+    Read with ``.scalars().first()``, not ``.scalar_one_or_none()`` — a re-print
+    points a second queue item at the same archive, and raising there would cost
+    the print all of its usage tracking.
+    """
+    return MagicMock(scalars=MagicMock(return_value=MagicMock(first=MagicMock(return_value=None))))
+
+
+def _queue_item(ams_mapping: str):
+    """A queue lookup that finds the mapping the print was dispatched with."""
+    item = MagicMock()
+    item.ams_mapping = ams_mapping
+    return MagicMock(scalars=MagicMock(return_value=MagicMock(first=MagicMock(return_value=item))))
+
+
 def _make_spool(*, id=1, label_weight=1000, weight_used=0, tag_uid=None, tray_uuid=None):
     """Create a mock Spool object."""
     spool = MagicMock()
@@ -245,7 +262,7 @@ class TestTrackFrom3MF:
         db.execute = AsyncMock(
             side_effect=[
                 MagicMock(scalar_one_or_none=MagicMock(return_value=archive)),
-                MagicMock(scalar_one_or_none=MagicMock(return_value=None)),
+                _no_queue_item(),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=assignment)),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=spool)),
             ]
@@ -291,7 +308,7 @@ class TestTrackFrom3MF:
         db.execute = AsyncMock(
             side_effect=[
                 MagicMock(scalar_one_or_none=MagicMock(return_value=archive)),
-                MagicMock(scalar_one_or_none=MagicMock(return_value=None)),
+                _no_queue_item(),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=assignment)),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=spool)),
             ]
@@ -336,7 +353,7 @@ class TestTrackFrom3MF:
         db.execute = AsyncMock(
             side_effect=[
                 MagicMock(scalar_one_or_none=MagicMock(return_value=archive)),
-                MagicMock(scalar_one_or_none=MagicMock(return_value=None)),
+                _no_queue_item(),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=assignment)),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=spool)),
             ]
@@ -378,7 +395,7 @@ class TestTrackFrom3MF:
         db.execute = AsyncMock(
             side_effect=[
                 MagicMock(scalar_one_or_none=MagicMock(return_value=archive)),
-                MagicMock(scalar_one_or_none=MagicMock(return_value=None)),
+                _no_queue_item(),
             ]
         )
 
@@ -419,7 +436,7 @@ class TestTrackFrom3MF:
         db.execute = AsyncMock(
             side_effect=[
                 MagicMock(scalar_one_or_none=MagicMock(return_value=archive)),
-                MagicMock(scalar_one_or_none=MagicMock(return_value=None)),
+                _no_queue_item(),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=assignment)),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=spool)),
             ]
@@ -449,6 +466,63 @@ class TestTrackFrom3MF:
         assert len(results) == 1
         assert results[0]["ams_id"] == 1
         assert results[0]["tray_id"] == 0
+
+    @pytest.mark.asyncio
+    async def test_the_dispatched_mapping_outranks_the_live_one(self):
+        """AMS filament backup rewrites the printer's live ``mapping`` field.
+
+        A spool runs dry, the AMS switches to a backup tray, and from then on
+        ``mapping`` names the substitute. Read at completion it charges the whole
+        print to the spool that only finished it, while the one that actually
+        emptied is charged nothing. The queue item's copy is the mapping the
+        print was dispatched with, so it is the one to believe.
+        """
+        # Dispatched to global tray 0 (AMS 0 tray 0); the printer now says 5.
+        spool = _make_spool(id=7)
+        assignment = _make_assignment(spool_id=7, ams_id=0, tray_id=0)
+        archive = MagicMock()
+        archive.file_path = "archives/test.3mf"
+        archive.plate_index = None
+
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[
+                MagicMock(scalar_one_or_none=MagicMock(return_value=archive)),
+                _queue_item("[0]"),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=assignment)),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=spool)),
+            ]
+        )
+
+        state = _make_printer_state([], tray_now=5)
+        state.raw_data["mapping"] = [5]
+        state.tray_change_log = []
+        pm = _make_printer_manager(state)
+        filament_usage = [{"slot_id": 1, "used_g": 40.0, "type": "PLA", "color": "#00FF00"}]
+
+        with (
+            patch("backend.app.core.config.settings") as mock_settings,
+            patch("backend.app.utils.threemf_tools.extract_filament_usage_from_3mf", return_value=filament_usage),
+        ):
+            mock_path = MagicMock()
+            mock_path.exists.return_value = True
+            mock_settings.base_dir.__truediv__ = MagicMock(return_value=mock_path)
+
+            results = await _track_from_3mf(
+                printer_id=1,
+                archive_id=10,
+                status="completed",
+                print_name="test",
+                handled_trays=set(),
+                printer_manager=pm,
+                db=db,
+            )
+
+        assert len(results) == 1
+        # AMS 0 tray 0 — the dispatched tray, not the substitute (which would be
+        # global 5 → AMS 1 tray 1).
+        assert (results[0]["ams_id"], results[0]["tray_id"]) == (0, 0)
+        assert results[0]["spool_id"] == 7
 
 
 class TestSpoolAssignmentSnapshot:
@@ -517,7 +591,7 @@ class TestSpoolAssignmentSnapshot:
         db.execute = AsyncMock(
             side_effect=[
                 MagicMock(scalar_one_or_none=MagicMock(return_value=archive)),
-                MagicMock(scalar_one_or_none=MagicMock(return_value=None)),
+                _no_queue_item(),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=spool)),
             ]
         )
@@ -561,7 +635,7 @@ class TestSpoolAssignmentSnapshot:
         db.execute = AsyncMock(
             side_effect=[
                 MagicMock(scalar_one_or_none=MagicMock(return_value=archive)),
-                MagicMock(scalar_one_or_none=MagicMock(return_value=None)),
+                _no_queue_item(),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=assignment)),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=spool)),
             ]
@@ -711,7 +785,7 @@ class TestSpoolAssignmentSnapshot:
         db.execute = AsyncMock(
             side_effect=[
                 MagicMock(scalar_one_or_none=MagicMock(return_value=archive)),
-                MagicMock(scalar_one_or_none=MagicMock(return_value=None)),
+                _no_queue_item(),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=None)),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=spool)),
                 # Cost-update block re-selects the archive to mutate cost.

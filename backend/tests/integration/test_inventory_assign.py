@@ -781,3 +781,99 @@ class TestAssignSpoolEmptySlotPreConfig:
 
         # Fingerprint was already set — re-fire path skipped
         mock_client.ams_set_filament_setting.assert_not_called()
+
+
+class TestARunoutIsNotASpoolRemoval:
+    """A slot that empties mid-print is a runout, not somebody taking the spool out.
+
+    The spool is still physically in the AMS, just consumed. Unlinking it there
+    loses the only record of which spool fed the print, so the completion path
+    has nothing to charge the runout segment to — and with AMS filament backup
+    the whole print then lands on the substitute spool (upstream `454457a0`).
+    """
+
+    async def _push(self, printer_id: int, ams_data: list, printer_state: str):
+        from backend.app.main import on_ams_change
+
+        status = _make_mock_status(ams_data=ams_data)
+        status.state = printer_state
+
+        with (
+            patch("backend.app.main.printer_manager") as mock_pm_main,
+            patch("backend.app.services.printer_manager.printer_manager") as mock_pm_inv,
+            patch("backend.app.main.mqtt_relay") as mock_relay,
+            patch("backend.app.main.ws_manager") as mock_ws,
+        ):
+            mock_pm_main.get_printer.return_value = MagicMock(name="X1C", serial_number="00M00A391800004")
+            mock_pm_main.get_status.return_value = status
+            mock_pm_main.get_client.return_value = MagicMock()
+            mock_pm_main.get_model.return_value = "X1C"
+            mock_pm_inv.get_status.return_value = status
+            mock_relay.on_ams_change = AsyncMock()
+            mock_ws.send_printer_status = AsyncMock()
+            mock_ws.broadcast = AsyncMock()
+
+            await on_ams_change(printer_id, ams_data)
+
+    async def _assignment_for(self, db_session: AsyncSession, printer_id: int):
+        from sqlalchemy import select
+
+        from backend.app.models.spool_assignment import SpoolAssignment
+
+        result = await db_session.execute(select(SpoolAssignment).where(SpoolAssignment.printer_id == printer_id))
+        return result.scalars().all()
+
+    async def _assigned_printer(self, printer_factory, spool_factory, db_session):
+        from backend.app.models.spool_assignment import SpoolAssignment
+
+        printer = await printer_factory(name="X1C")
+        spool = await spool_factory(material="PLA")
+        db_session.add(
+            SpoolAssignment(
+                spool_id=spool.id,
+                printer_id=printer.id,
+                ams_id=0,
+                tray_id=0,
+                fingerprint_color="FF0000FF",
+                fingerprint_type="PLA",
+            )
+        )
+        await db_session.commit()
+        return printer
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_link_survives_a_slot_vanishing_mid_print(
+        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
+    ):
+        printer = await self._assigned_printer(printer_factory, spool_factory, db_session)
+
+        # AMS 0 now reports only tray 1 — the assigned slot is gone from the push.
+        await self._push(printer.id, [{"id": 0, "tray": [{"id": 1, "tray_type": "PETG"}]}], "RUNNING")
+
+        assert len(await self._assignment_for(db_session, printer.id)) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_paused_print_counts_as_running(
+        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
+    ):
+        """A runout usually pauses the printer — the state most likely to be seen."""
+        printer = await self._assigned_printer(printer_factory, spool_factory, db_session)
+
+        await self._push(printer.id, [{"id": 0, "tray": [{"id": 1, "tray_type": "PETG"}]}], "PAUSE")
+
+        assert len(await self._assignment_for(db_session, printer.id)) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_an_idle_printer_still_unlinks_an_empty_slot(
+        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
+    ):
+        """The guard defers the decision, it does not cancel it: with no print
+        running an empty slot really is a spool that was taken out."""
+        printer = await self._assigned_printer(printer_factory, spool_factory, db_session)
+
+        await self._push(printer.id, [{"id": 0, "tray": [{"id": 1, "tray_type": "PETG"}]}], "IDLE")
+
+        assert await self._assignment_for(db_session, printer.id) == []

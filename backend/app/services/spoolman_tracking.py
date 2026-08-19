@@ -326,7 +326,9 @@ async def store_print_data(
         filament_usage = extract_filament_usage_from_3mf(full_path, effective_plate_id) or None
 
         # Parse G-code for per-layer filament usage (for accurate partial usage tracking)
-        layer_usage = extract_layer_filament_usage_from_3mf(full_path)
+        # Same plate the whole-print figure above is scoped to — the per-layer
+        # numbers were measured against whichever plate the ZIP stored first.
+        layer_usage = extract_layer_filament_usage_from_3mf(full_path, effective_plate_id)
         if layer_usage:
             # Convert int keys to string for JSON serialization
             layer_usage_json = {str(k): v for k, v in layer_usage.items()}

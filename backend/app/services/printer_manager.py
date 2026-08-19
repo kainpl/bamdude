@@ -552,6 +552,7 @@ class PrinterManager:
         # drying cycle. Receives ``(printer_id, ams_id)``.
         self._on_drying_complete: Callable[[int, int], None] | None = None
         self._on_assignment_verified: Callable[[int, int, int, bool, dict], None] | None = None
+        self._on_tray_change: Callable[[int, int, int], None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         # Track who started the current print (Issue #206)
         self._current_print_user: dict[int, dict] = {}  # {printer_id: {"user_id": int, "username": str}}
@@ -738,6 +739,15 @@ class PrinterManager:
         """
         self._on_assignment_verified = callback
 
+    def set_tray_change_callback(self, callback: Callable[[int, int, int], None]):
+        """Set callback for mid-print tray changes.
+
+        Receives ``(printer_id, global_tray_id, layer_num)`` for every entry
+        appended to the printer's tray-change log, so it can be persisted for
+        the completion-time weight split.
+        """
+        self._on_tray_change = callback
+
     def _schedule_async(self, coro):
         """Schedule an async coroutine from a sync context.
 
@@ -810,6 +820,10 @@ class PrinterManager:
             if self._on_assignment_verified:
                 self._schedule_async(self._on_assignment_verified(printer_id, ams_id, tray_id, verified, detail))
 
+        def on_tray_change(tray_global: int, layer_num: int):
+            if self._on_tray_change:
+                self._schedule_async(self._on_tray_change(printer_id, tray_global, layer_num))
+
         def on_macro_complete(macro_name: str, status: str):
             self._schedule_async(self._broadcast_macro_complete(printer_id, macro_name, status))
 
@@ -851,6 +865,7 @@ class PrinterManager:
             on_finish_photo_moment=on_finish_photo_moment,
             on_assignment_verified=on_assignment_verified,
             on_skipped_objects_changed=on_skipped_objects_changed,
+            on_tray_change=on_tray_change,
         )
 
         # Carry print-tracking state across the client recreation so a

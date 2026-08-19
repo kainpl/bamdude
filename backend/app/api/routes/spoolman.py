@@ -297,6 +297,13 @@ async def sync_printer_ams(
     slot_changes: list[tuple[int, int, int]] = []  # (ams_id, tray_id, spoolman_spool_id)
     empty_slots: list[tuple[int, int]] = []  # (ams_id, tray_id) now empty
 
+    # ⚠️ A slot that reports empty while the printer is RUNNING/PAUSE is a
+    # filament runout, not a spool somebody removed: the spool is still in the
+    # bay, just consumed. This ledger is how a tag-less spool is resolved at
+    # completion, so dropping the row mid-print loses the runout segment's usage
+    # entirely. The next sync with the printer idle still clears it.
+    printing_now = (getattr(state, "state", "") or "").upper() in ("RUNNING", "PAUSE")
+
     for ams_unit in ams_units:
         if not isinstance(ams_unit, dict):
             continue
@@ -311,7 +318,8 @@ async def sync_printer_ams(
             tray_id_raw = int(tray_data.get("id", 0))
             tray = client.parse_ams_tray(ams_id, tray_data)
             if not tray:
-                empty_slots.append((ams_id, tray_id_raw))
+                if not printing_now:
+                    empty_slots.append((ams_id, tray_id_raw))
                 continue
 
             spool_tag = (
@@ -491,6 +499,13 @@ async def sync_all_printers(
         if not state or not state.raw_data:
             continue
 
+        # ⚠️ A slot that reports empty while the printer is RUNNING/PAUSE is a
+        # filament runout, not a spool somebody removed: the spool is still in the
+        # bay, just consumed. This ledger is how a tag-less spool is resolved at
+        # completion, so dropping the row mid-print loses the runout segment's usage
+        # entirely. The next sync with the printer idle still clears it.
+        printing_now = (getattr(state, "state", "") or "").upper() in ("RUNNING", "PAUSE")
+
         ams_data = state.raw_data.get("ams")
         if not ams_data:
             continue
@@ -530,7 +545,8 @@ async def sync_all_printers(
                 tray_id_raw = int(tray_data.get("id", 0))
                 tray = client.parse_ams_tray(ams_id, tray_data)
                 if not tray:
-                    all_empty_slots.append((printer.id, ams_id, tray_id_raw))
+                    if not printing_now:
+                        all_empty_slots.append((printer.id, ams_id, tray_id_raw))
                     continue
 
                 spool_tag = (
