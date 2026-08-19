@@ -1908,6 +1908,12 @@ export interface OverlayStatus {
   layer_num: number | null;
   total_layers: number | null;
   stg_cur_name: string | null;
+  /** ⚠️ An ALLOW-LIST, not the printer's temperature dict: that one doubles as
+   *  the MQTT client's working memory and carries derived flags and private
+   *  timestamps. An overlay token is a narrower grant than a login, so it gets
+   *  exactly what the overlay draws. Chamber keys are absent on models with no
+   *  real chamber sensor. */
+  temperatures: Record<string, number>;
   time_format: 'system' | '12h' | '24h';
 }
 

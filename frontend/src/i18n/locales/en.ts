@@ -3262,6 +3262,38 @@ export default {
   // Stream overlay
   streamOverlay: {
     title: 'Stream Overlay',
+    builder: {
+      title: 'Streaming Overlay',
+      description:
+        'Build the URL for a streaming overlay \u2014 a full-screen camera view with live print data drawn over it, for OBS, a wall display, or any browser source. Pick the fields you want and copy the URL.',
+      printer: 'Printer',
+      size: 'Text size',
+      sizeSmall: 'Small',
+      sizeMedium: 'Medium',
+      sizeLarge: 'Large',
+      fps: 'Frame rate',
+      fpsHint: 'A1 and P1 cameras top out around 5 fps whatever you ask for.',
+      token: 'Streaming Overlay token (optional)',
+      tokenHint:
+        'Only needed when login is enabled: OBS has no session of its own. Create one above with the Streaming Overlay scope.',
+      tokenWarning:
+        'This URL contains a token \u2014 anyone who can read it can watch the stream and see the file name. Revoke the token to cut it off.',
+      fields: 'Fields to show',
+      fieldPrinter: 'Printer name',
+      fieldFilename: 'File name',
+      fieldStatus: 'Status',
+      fieldProgress: 'Progress bar',
+      fieldLayers: 'Layer count',
+      fieldEta: 'Time remaining and ETA',
+      fieldCamera: 'Camera feed',
+      chamberHint:
+        'Chamber temperature only appears on models with a real chamber sensor \u2014 P1 and A1 printers report a meaningless value, so it is left out there.',
+      urlTitle: 'Overlay URL',
+      open: 'Open',
+      showPreview: 'Show preview',
+      hidePreview: 'Hide preview',
+      previewTitle: 'Overlay preview',
+    },
     invalidPrinterId: 'Invalid printer ID',
     cameraStream: 'Camera stream',
     progress: 'Progress',

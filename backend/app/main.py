@@ -8553,6 +8553,22 @@ async def security_headers_middleware(request, call_next):
     if not _TRUSTED_FRAME_ORIGINS:
         response.headers["X-Frame-Options"] = "SAMEORIGIN"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # ⚠️ The streaming overlay is embedded SAME-ORIGIN by the URL builder's
+    # preview in Settings. Every SPA route otherwise sends
+    # ``frame-ancestors 'none'``, which is stricter than the SAMEORIGIN in
+    # ``X-Frame-Options`` beside it and refuses even a same-origin frame — the
+    # preview showed the browser's "another site has embedded it" page instead
+    # of the overlay.
+    #
+    # ``'self'`` only permits a framer on THIS origin, which is BamDude's own
+    # UI, so a clickjacking page on another host is blocked exactly as before.
+    # (The overlay draws status over a camera feed and has no interactive
+    # element to bait a click into, even from a same-origin framer.)
+    # Cross-origin embedding — Home Assistant on another port — remains what
+    # ``TRUSTED_FRAME_ORIGINS`` is for, and ``_frame_ancestors`` already folds
+    # that allowlist in. Every other path keeps ``'none'``.
+    embeddable_same_origin = request.url.path.startswith("/overlay/")
+
     if request.url.path in ("/docs", "/redoc", "/docs/oauth2-redirect"):
         # FastAPI's built-in Swagger UI / ReDoc pages load assets from
         # cdn.jsdelivr.net and bootstrap with an inline <script>, so the
@@ -8579,7 +8595,7 @@ async def security_headers_middleware(request, call_next):
             "font-src 'self' data:; "
             "object-src 'none'; "
             "base-uri 'self'; "
-            "frame-src 'self' http: https:; " + _frame_ancestors("'none'")
+            "frame-src 'self' http: https:; " + _frame_ancestors("'self'" if embeddable_same_origin else "'none'")
         )
     if request.url.scheme == "https":
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"

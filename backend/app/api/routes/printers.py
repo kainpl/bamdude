@@ -65,6 +65,7 @@ from backend.app.services.printer_files.factory import transport_for
 from backend.app.services.printer_location_service import load_tree, subtree_ids
 from backend.app.services.printer_manager import (
     _airduct_fans,
+    display_temperatures,
     drying_screen_only,
     find_ams_unit,
     first_drying_blocking_reason,
@@ -1263,6 +1264,7 @@ async def get_overlay_status(
             "layer_num": None,
             "total_layers": None,
             "stg_cur_name": None,
+            "temperatures": {},
             "time_format": time_format,
         }
 
@@ -1279,6 +1281,9 @@ async def get_overlay_status(
         "layer_num": state.layer_num,
         "total_layers": state.total_layers,
         "stg_cur_name": get_derived_status_name(state, printer.model),
+        # Nozzle / bed / chamber readings for the overlay's temperature fields.
+        # Filtered rather than passed through — see display_temperatures.
+        "temperatures": display_temperatures(state.temperatures, printer.model),
         "time_format": time_format,
     }
 

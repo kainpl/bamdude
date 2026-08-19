@@ -349,6 +349,50 @@ def drying_screen_only(model: str | None) -> bool:
     return model.strip().upper() in _DRYING_SCREEN_ONLY_MODELS
 
 
+# Temperature keys the UI actually draws. ⚠️ ``state.temperatures`` is also
+# WORKING MEMORY: it carries private bookkeeping (``_nozzle_target_set_time``)
+# and derived flags (``nozzle_heating``) that no consumer outside this module
+# should see. The full-status path hands out the whole dict to logged-in
+# callers; the streaming overlay gets only this list, because an overlay token
+# is a narrower grant than a login and must not pick up fields by accident as
+# the dict grows.
+DISPLAY_TEMPERATURE_KEYS = (
+    "nozzle",
+    "nozzle_target",
+    "nozzle_2",
+    "nozzle_2_target",
+    "bed",
+    "bed_target",
+    "chamber",
+    "chamber_target",
+)
+
+
+def display_temperatures(temperatures: dict | None, model: str | None) -> dict[str, float]:
+    """Filter ``state.temperatures`` down to the readings a viewer is shown.
+
+    ⚠️ Drops chamber readings on models without a real chamber sensor — P1P,
+    P1S, A1 and A1 mini all report a meaningless ``chamber_temper`` — matching
+    what ``printer_state_to_dict`` already does for the full status payload. The
+    overlay must never put a measurement on screen that does not exist.
+    """
+    if not temperatures:
+        return {}
+    allow_chamber = supports_chamber_temp(model)
+    out: dict[str, float] = {}
+    for key in DISPLAY_TEMPERATURE_KEYS:
+        if key.startswith("chamber") and not allow_chamber:
+            continue
+        value = temperatures.get(key)
+        if value is None:
+            continue
+        try:
+            out[key] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def uniform_tray_drying_hint(loaded_trays: list[tuple[str, object]]) -> tuple[str | None, int | None]:
     """Guess a running cycle's filament and target temperature from the trays.
 

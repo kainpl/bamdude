@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Archive, MapPin, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles } from 'lucide-react';
+import { Loader2, Archive, MapPin, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles, MonitorPlay } from 'lucide-react';
 import { availableEngines, hasEngineChoice, resolveEngine, type SliceEngineId } from '../lib/sliceEngines';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -25,6 +25,7 @@ import { ConfirmModal } from '../components/ConfirmModal';
 import { GcodeEditor } from '../components/GcodeEditor';
 import { CreateUserAdvancedAuthModal } from '../components/CreateUserAdvancedAuthModal';
 import CameraTokensPanel from '../components/settings/CameraTokensPanel';
+import { StreamOverlayBuilder } from '../components/StreamOverlayBuilder';
 import { SpoolmanSettings } from '../components/SpoolmanSettings';
 import { SpoolDisplayNameSettings } from '../components/SpoolDisplayNameSettings';
 import { ArchiveCleanupSettingsBlock } from '../components/ArchiveCleanupSettingsBlock';
@@ -5182,6 +5183,21 @@ export function SettingsPage() {
               </CardHeader>
               <CardContent>
                 <CameraTokensPanel />
+              </CardContent>
+            </Card>
+
+            {/* Streaming-overlay URL builder. Sits under the camera tokens it
+                usually needs — an overlay on a login-enabled deployment is a
+                token plus a URL, and both are made here. */}
+            <Card className="mt-6">
+              <CardHeader>
+                <h3 className="text-base font-semibold text-white flex items-center gap-2" id="card-stream-overlay">
+                  <MonitorPlay className="w-4 h-4 text-bambu-green" />
+                  {t('streamOverlay.builder.title')}
+                </h3>
+              </CardHeader>
+              <CardContent>
+                <StreamOverlayBuilder />
               </CardContent>
             </Card>
           </div>

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Layers, Clock, Timer, Printer } from 'lucide-react';
+import { Layers, Clock, Timer, Printer, Flame, Square, Box } from 'lucide-react';
 import { api, ApiError, withStreamToken } from '../api/client';
 import { formatDuration, formatETA, type TimeFormat } from '../utils/date';
 
@@ -34,6 +34,9 @@ interface OverlayConfig {
   showFilename: boolean;
   showStatus: boolean;
   showPrinter: boolean;
+  showNozzle: boolean;
+  showBed: boolean;
+  showChamber: boolean;
 }
 
 function parseConfig(params: URLSearchParams): OverlayConfig {
@@ -57,6 +60,12 @@ function parseConfig(params: URLSearchParams): OverlayConfig {
     showFilename: show.includes('filename'),
     showStatus: show.includes('status'),
     showPrinter: show.includes('printer'),
+    // ⚠️ Absent from the default set on purpose: temperatures are opt-in, so
+    // every overlay URL already pasted into an OBS scene keeps looking exactly
+    // the same after upgrading.
+    showNozzle: show.includes('nozzle'),
+    showBed: show.includes('bed'),
+    showChamber: show.includes('chamber'),
   };
 }
 
@@ -73,6 +82,47 @@ function getStatusText(status: { state: string | null; stg_cur_name?: string | n
     case 'IDLE': return t('streamOverlay.status.idle');
     default: return status.state || t('streamOverlay.status.unknown');
   }
+}
+
+// Reads one reading out of either status shape. The token-authed overlay feed
+// types temperatures as Record<string, number>; the logged-in PrinterStatus
+// types it as a named object that also carries `*_heating` booleans. Narrowing
+// here lets one render path serve both without casting.
+function readTemp(temps: Record<string, unknown>, key: string): number | null {
+  const value = temps[key];
+  return typeof value === 'number' ? value : null;
+}
+
+interface TempReadingProps {
+  icon: React.ReactNode;
+  label: string;
+  current: number;
+  target: number | null;
+  sizes: ReturnType<typeof getSizeClasses>;
+}
+
+// One "Nozzle 220°C" reading. ⚠️ The target is appended only while it is set
+// and still differs from the current value, so a hotend that has reached
+// temperature reads "220°C" for the rest of the print instead of the noisier
+// "220 / 220°C" — 219.6 against a target of 220 rounds to the same number, and
+// repeating it says nothing.
+function TempReading({ icon, label, current, target, sizes }: TempReadingProps) {
+  const heating = target != null && target > 0 && Math.round(target) !== Math.round(current);
+  return (
+    <div className={`flex items-center ${sizes.gap} text-white/70`}>
+      {icon}
+      <span className={sizes.text}>
+        <span className="mr-1">{label}</span>
+        <span className="text-white">{Math.round(current)}°C</span>
+        {heating && (
+          <>
+            <span className="mx-1">/</span>
+            <span>{Math.round(target)}°C</span>
+          </>
+        )}
+      </span>
+    </div>
+  );
 }
 
 function getSizeClasses(size: OverlaySize) {
@@ -171,6 +221,65 @@ export function StreamOverlayPage() {
     [kiosk, overlay, printerData],
   );
   const status = kiosk ? overlay : statusData;
+
+  // Temperature readings the URL asked for, in a fixed order, skipping any the
+  // printer does not report. Labels reuse printers.heaterHistory.* so the
+  // naming matches the heater chart rather than inventing a second vocabulary
+  // for the same three things.
+  const temps: Record<string, unknown> = (status?.temperatures ?? {}) as Record<string, unknown>;
+  const tempReadings: {
+    key: string;
+    icon: React.ReactNode;
+    label: string;
+    current: number;
+    target: number | null;
+  }[] = [];
+  if (config.showNozzle) {
+    const nozzle = readTemp(temps, 'nozzle');
+    const nozzle2 = readTemp(temps, 'nozzle_2');
+    if (nozzle != null) {
+      tempReadings.push({
+        key: 'nozzle',
+        icon: <Flame className={sizes.icon} />,
+        label: t('printers.heaterHistory.nozzle'),
+        current: nozzle,
+        target: readTemp(temps, 'nozzle_target'),
+      });
+    }
+    if (nozzle2 != null) {
+      tempReadings.push({
+        key: 'nozzle_2',
+        icon: <Flame className={sizes.icon} />,
+        label: t('printers.heaterHistory.nozzle2'),
+        current: nozzle2,
+        target: readTemp(temps, 'nozzle_2_target'),
+      });
+    }
+  }
+  if (config.showBed) {
+    const bed = readTemp(temps, 'bed');
+    if (bed != null) {
+      tempReadings.push({
+        key: 'bed',
+        icon: <Square className={sizes.icon} />,
+        label: t('printers.heaterHistory.bed'),
+        current: bed,
+        target: readTemp(temps, 'bed_target'),
+      });
+    }
+  }
+  if (config.showChamber) {
+    const chamber = readTemp(temps, 'chamber');
+    if (chamber != null) {
+      tempReadings.push({
+        key: 'chamber',
+        icon: <Box className={sizes.icon} />,
+        label: t('printers.heaterHistory.chamber'),
+        current: chamber,
+        target: readTemp(temps, 'chamber_target'),
+      });
+    }
+  }
   const timeFormat: TimeFormat = (kiosk ? overlay?.time_format : settings?.time_format) || 'system';
 
   // WebSocket for real-time updates
@@ -375,6 +484,27 @@ export function StreamOverlayPage() {
                   </div>
                 </>
               )}
+            </div>
+          )}
+
+          {/* Temperatures. ⚠️ Rendered whether or not a print is running — a
+              preheating or cooling printer is exactly when these are worth
+              watching. Each reading appears only when the printer reports it,
+              so a single-nozzle machine shows one nozzle, and a model without a
+              chamber sensor shows no chamber row even with `chamber` in
+              ?show= (the backend omits the reading entirely for those). */}
+          {tempReadings.length > 0 && (
+            <div className={`flex items-center ${sizes.gap} flex-wrap mt-2`}>
+              {tempReadings.map((reading) => (
+                <TempReading
+                  key={reading.key}
+                  icon={reading.icon}
+                  label={reading.label}
+                  current={reading.current}
+                  target={reading.target}
+                  sizes={sizes}
+                />
+              ))}
             </div>
           )}
 
