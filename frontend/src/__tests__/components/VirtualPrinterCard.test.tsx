@@ -140,3 +140,46 @@ describe('VirtualPrinterCard - auto-dispatch toggle', () => {
     });
   });
 });
+
+describe('VirtualPrinterCard - collapsed header layout', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  /** The metadata group: name, mode, model, target, and the two addresses. */
+  function metadataGroup(container: HTMLElement): HTMLElement {
+    return container.querySelector('.flex-wrap') as HTMLElement;
+  }
+
+  it('lets the metadata wrap instead of widening the row', async () => {
+    // ⚠️ Every item in this row used to be flex-shrink-0, so nothing could
+    // give and the row was as wide as its contents — which Card does not clip,
+    // so the last address and the enable toggle painted outside the border.
+    const printer = createMockPrinter({
+      name: 'Printer at 192.168.10.240',
+      bind_ip: '192.168.10.5',
+      remote_interface_ip: '192.168.20.5',
+    });
+    const { container } = render(<VirtualPrinterCard printer={printer} models={models} />);
+
+    await waitFor(() => expect(screen.getByText('192.168.20.5')).toBeInTheDocument());
+
+    const group = metadataGroup(container);
+    expect(group).not.toBeNull();
+    expect(group.className).toContain('flex-1');
+    // ⚠️ min-w-0 is what makes `truncate` able to engage at all: a flex item
+    // defaults to min-width:auto and cannot shrink below its own text.
+    expect(group.className).toContain('min-w-0');
+  });
+
+  it('keeps both addresses rather than truncating one away', async () => {
+    // These are the values an operator opened this page to check, so hiding
+    // one behind an ellipsis would trade the bug for a quieter one.
+    const printer = createMockPrinter({
+      bind_ip: '192.168.10.5',
+      remote_interface_ip: '192.168.20.5',
+    });
+    render(<VirtualPrinterCard printer={printer} models={models} />);
+
+    await waitFor(() => expect(screen.getByText('192.168.10.5')).toBeInTheDocument());
+    expect(screen.getByText('192.168.20.5')).toBeInTheDocument();
+  });
+});

@@ -10,7 +10,10 @@ interface CardProps extends HTMLAttributes<HTMLDivElement> {
 export function Card({ children, className = '', onClick, onContextMenu, ...rest }: CardProps) {
   return (
     <div
-      className={`bg-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary card-shadow ${className}`}
+      // ⚠️ Conditional on an onClick actually being passed. A card that does
+      // nothing must not advertise itself as clickable, and most of them do
+      // nothing.
+      className={`bg-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary card-shadow ${onClick ? 'cursor-pointer' : ''} ${className}`}
       onClick={onClick}
       onContextMenu={onContextMenu}
       {...rest}

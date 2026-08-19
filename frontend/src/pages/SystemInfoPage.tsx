@@ -224,8 +224,11 @@ export function SystemInfoPage() {
 
   return (
     <div className="p-4 md:p-6 space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+      {/* Header. Same stacking as the Spool Inventory header — fewer buttons,
+          so it only just overflows at 390px, but the overflow is the same.
+          ``items-start`` keeps the action at its own width while stacked
+          instead of stretching it across the page. */}
+      <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="flex items-center gap-3">
             <Info className="w-6 h-6 text-bambu-green" />

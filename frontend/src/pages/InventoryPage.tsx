@@ -1538,8 +1538,13 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
 
   return (
     <div className="p-4 md:p-6 space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+      {/* Header. ⚠️ Stacks below sm and the actions wrap: the buttons side by
+          side are ~600px and nothing in that row can shrink, so on a phone the
+          header pushed past the viewport and took the WHOLE PAGE with it —
+          <main> is the scroll container, so everything inside it panned
+          sideways. Identical at >=640px. Same pattern the Statistics, Settings
+          and Archives headers use, and the filter bar further down this page. */}
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="flex items-center gap-3">
             <Disc3 className="w-6 h-6 text-bambu-green" />
@@ -1547,7 +1552,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           </div>
           <p className="text-sm text-bambu-gray">{t('inventory.noSpools').split('.')[0] ? '' : ''}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {/* Bulk edit — internal inventory only (not Spoolman mode). Opens a
               modal that lets the user pick which of the filtered spools to edit
               and which fields to change. */}
