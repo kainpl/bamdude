@@ -47,9 +47,35 @@ function formatElapsed(seconds: number): string {
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
 
-export function BugReportBubble() {
+interface BugReportBubbleProps {
+  /**
+   * Render the floating disc in the bottom-right corner. False when the
+   * trigger lives somewhere else — the compact header does this, so the panel
+   * still mounts here while the button that opens it sits in the header.
+   *
+   * ⚠️ The panel deliberately stays at the Layout root rather than moving into
+   * the header with its button: the header is `fixed z-40` and therefore its
+   * own stacking context, so a `z-50` panel nested inside it would be capped
+   * at the header's level and end up underneath every ordinary z-50 modal.
+   */
+  showTrigger?: boolean;
+  /** Controlled open state. Falls back to internal state when omitted. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}
+
+export function BugReportBubble({ showTrigger = true, open, onOpenChange }: BugReportBubbleProps = {}) {
   const { t } = useTranslation();
-  const [isOpen, setIsOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const isControlled = open !== undefined;
+  const isOpen = isControlled ? open : internalOpen;
+  const setIsOpen = useCallback(
+    (next: boolean) => {
+      if (!isControlled) setInternalOpen(next);
+      onOpenChange?.(next);
+    },
+    [isControlled, onOpenChange],
+  );
   const [viewState, setViewState] = useState<ViewState>('form');
   const [description, setDescription] = useState('');
   const [email, setEmail] = useState('');
@@ -109,8 +135,12 @@ export function BugReportBubble() {
     return () => clearTimeout(timer);
   }, [viewState, elapsedSeconds]);
 
-  const handleOpen = () => {
-    setIsOpen(true);
+  // ⚠️ Reset ON OPEN rather than in the click handler: the panel now has two
+  // possible triggers — the floating disc here, and the compact header's
+  // button, which only flips the controlled flag — and a stale half-filled
+  // form reappearing for one of them would be a nasty little inconsistency.
+  useEffect(() => {
+    if (!isOpen) return;
     setViewState('form');
     setDescription('');
     setEmail('');
@@ -120,7 +150,9 @@ export function BugReportBubble() {
     setErrorMessage('');
     setElapsedSeconds(0);
     setWasDebug(false);
-  };
+  }, [isOpen]);
+
+  const handleOpen = () => setIsOpen(true);
 
   const handleClose = () => {
     setIsOpen(false);
@@ -216,20 +248,23 @@ export function BugReportBubble() {
 
   return (
     <>
-      {/* Floating bubble */}
-      <button
-        onClick={handleOpen}
-        className="fixed bottom-4 right-4 z-40 w-12 h-12 rounded-full bg-red-500 hover:bg-red-600 text-white shadow-lg hover:shadow-xl transition-all duration-200 hover:scale-110 flex items-center justify-center"
-        title={t('bugReport.title')}
-      >
-        <Bug className="w-5 h-5" />
-      </button>
+      {/* Floating bubble. Absent below the sidebar-compact breakpoint, where
+          the compact header carries the trigger instead — see Layout. */}
+      {showTrigger && (
+        <button
+          onClick={handleOpen}
+          className="fixed bottom-4 right-4 z-40 w-12 h-12 rounded-full bg-red-500 hover:bg-red-600 text-white shadow-lg hover:shadow-xl transition-all duration-200 hover:scale-110 flex items-center justify-center"
+          title={t('bugReport.title')}
+        >
+          <Bug className="w-5 h-5" />
+        </button>
+      )}
 
       {/* Slide-in panel anchored to bottom-right */}
       {isOpen && (
         <div
           id="bug-report-modal"
-          className="fixed bottom-20 right-4 z-50 w-full max-w-md"
+          className="fixed bottom-20 right-4 left-4 z-50 w-auto max-w-md ml-auto"
           onPaste={handlePaste}
         >
           <div

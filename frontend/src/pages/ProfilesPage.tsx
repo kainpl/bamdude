@@ -350,7 +350,10 @@ function ScrollToTop() {
   return (
     <button
       onClick={scrollToTop}
-      className="fixed bottom-6 right-6 p-3 bg-bambu-green hover:bg-bambu-green-light text-white rounded-full shadow-lg shadow-bambu-green/25 transition-all z-40"
+      // ⚠️ bottom-24, not bottom-6: at 24px this sat under the bug-report
+      // bubble (16–64px from both edges), covering most of it. Both are z-40,
+      // so which one you could actually click came down to DOM order.
+      className="fixed bottom-24 right-6 p-3 bg-bambu-green hover:bg-bambu-green-light text-white rounded-full shadow-lg shadow-bambu-green/25 transition-all z-40"
       aria-label="Scroll to top"
     >
       <ArrowUp className="w-5 h-5" />

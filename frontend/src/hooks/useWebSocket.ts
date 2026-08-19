@@ -87,16 +87,16 @@ export function useWebSocket() {
     const processNext = () => {
       const message = messageQueueRef.current.shift();
       if (message) {
-        // Use requestAnimationFrame to yield to the browser
-        requestAnimationFrame(() => {
-          handleMessageRef.current(message);
-          // Small delay between messages to prevent overwhelming the browser
-          if (messageQueueRef.current.length > 0) {
-            setTimeout(processNext, 16); // ~60fps
-          } else {
-            processingRef.current = false;
-          }
-        });
+        handleMessageRef.current(message);
+        // Small delay between messages to prevent overwhelming the browser.
+        // ⚠️ This setTimeout IS the yield. A requestAnimationFrame around the
+        // handler used to sit here too, and it stalled the whole queue in a
+        // hidden tab — see the note on the status writes below.
+        if (messageQueueRef.current.length > 0) {
+          setTimeout(processNext, 16); // ~60fps
+        } else {
+          processingRef.current = false;
+        }
       } else {
         processingRef.current = false;
       }
@@ -252,7 +252,21 @@ export function useWebSocket() {
     wsRef.current = ws;
   }, [processMessageQueue, setIsConnected]);
 
-  // Throttled printer status update - coalesces rapid updates per printer
+  // Throttled printer status update - coalesces rapid updates per printer.
+  //
+  // ⚠️ These cache writes used to happen inside a requestAnimationFrame. A
+  // hidden tab gets no rendering opportunities, so the browser HOLDS queued
+  // frame callbacks rather than merely throttling them: the socket stayed
+  // open, messages kept arriving, and every write parked in a pending frame
+  // until the tab was shown again — at which point they all ran at once. That
+  // froze the tab-title progress (it reads this key and nothing else) and
+  // stalled every other live view.
+  //
+  // The 100ms coalescing below is what prevented the original render cascade;
+  // the frame callback only ever deferred each write by ~16ms, so it is gone.
+  // ⚠️ NOT made visibility-aware instead: a frame scheduled just before the
+  // tab was hidden would fire after the writes that took the hidden path, and
+  // clobber newer status with older.
   const throttledPrinterStatusUpdate = useCallback((printerId: number, data: Record<string, unknown>) => {
     // Merge with any pending data for this printer
     const existing = pendingPrinterStatus.current.get(printerId) || {};
@@ -266,19 +280,17 @@ export function useWebSocket() {
         printerStatusTimeoutRef.current = null;
 
         // Apply all pending updates
-        requestAnimationFrame(() => {
-          updates.forEach((statusData, id) => {
-            queryClient.setQueryData(
-              ['printerStatus', id],
-              (old: Record<string, unknown> | undefined) => {
-                const merged = { ...old, ...statusData };
-                if (merged.wifi_signal == null && old?.wifi_signal != null) {
-                  merged.wifi_signal = old.wifi_signal;
-                }
-                return merged;
+        updates.forEach((statusData, id) => {
+          queryClient.setQueryData(
+            ['printerStatus', id],
+            (old: Record<string, unknown> | undefined) => {
+              const merged = { ...old, ...statusData };
+              if (merged.wifi_signal == null && old?.wifi_signal != null) {
+                merged.wifi_signal = old.wifi_signal;
               }
-            );
-          });
+              return merged;
+            }
+          );
         });
       }, 100); // Update at most every 100ms
     }
@@ -299,13 +311,15 @@ export function useWebSocket() {
       pendingInvalidations.current.clear();
       invalidationTimeoutRef.current = null;
 
-      // Invalidate queries one at a time with delays to prevent freeze
+      // Invalidate queries one at a time with delays to prevent freeze.
+      // ⚠️ The 500ms stagger is the anti-cascade measure. A frame callback
+      // around each invalidation used to sit inside it and stalled these
+      // refreshes in a hidden tab, for the same reason as the status writes
+      // above.
       let delay = 0;
       keys.forEach((key) => {
         setTimeout(() => {
-          requestAnimationFrame(() => {
-            queryClient.invalidateQueries({ queryKey: [key] });
-          });
+          queryClient.invalidateQueries({ queryKey: [key] });
         }, delay);
         delay += 500; // 500ms between each invalidation
       });
