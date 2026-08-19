@@ -38,6 +38,12 @@
 
     The chamber control on the printer card is unchanged: it already bounds itself from each printer's own reported limits, which is a better answer than one number for the whole farm, and stays that way. The flat ceiling exists only where there is no printer to ask — the filament map is shared by every machine, and a per-print override is entered before a printer is chosen.
 
+- **The slicer sidecar's model size limit is now adjustable, and it runs on ARM64.** A large multi-colour project could be turned away as too big with no way to raise the ceiling short of editing the container — the limit existed inside the sidecar but nothing passed a value in. It is now `MAX_MODEL_UPLOAD_MB` in the sidecar's `.env`, defaulting to 512 MB as before. A reverse-proxy body limit is neither the cause nor the cure: the cap lives inside the sidecar.
+
+    ARM64 hosts get an experimental `docker-compose.arm64.yml` override that runs the amd64 images under emulation. It needs QEMU set up on the host first, and it is slower here than the same trick would be elsewhere, because BamDude builds the sidecars rather than pulling ready-made images — so the emulation applies to the build too. A separate x86_64 machine is still the better answer if you have one.
+
+    The README and compose file now warn about the trap both share: `--profile` belongs on **every** command. A bare `docker compose build` or `up -d` skips profile-gated services **silently** — it reports success, the old container keeps serving, and nothing changes however many times you repeat it.
+
 - **The inventory's colour column sorts by colour.** The swatch column ignored clicks on its header entirely, and the combined swatch-and-name column sorted alphabetically by name — which files a titanium grey under T and a burgundy under B, an order nobody scanning a row of swatches can follow. It now sorts by family in rainbow order, then browns, then neutrals light to dark, with hue running inside each family.
 
     Sorting straight by hue was the obvious answer and it does not work: a near-neutral still has a hue and it can be anything, so a titanium grey lands among the blues, a warm grey next to the reds, and brown splits the oranges in half. Neutrals order by lightness because their hue is noise. The families come from the same classifier that names a colour the catalog does not know, so the Color and Color Name columns cannot disagree about what counts as brown.
