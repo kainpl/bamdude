@@ -24,6 +24,11 @@ from backend.app.core.database import async_session
 from backend.app.core.websocket import ws_manager
 from backend.app.models.library import LibraryFile
 from backend.app.models.printer import Printer
+
+# ⚠️ Module scope on purpose: the ``finally`` below calls into this, and a
+# dispatch that dies before reaching the local import would raise NameError
+# from inside the cleanup — masking the real exception.
+from backend.app.services import preheat as preheat_service
 from backend.app.services.archive import ArchiveService
 from backend.app.services.bambu_ftp import (
     delete_file_async,
@@ -843,6 +848,33 @@ class BackgroundDispatchService:
             project_id=project_id,
             cleanup_library_after_dispatch=cleanup_library_after_dispatch,
         )
+
+    def cancel_dispatch_for_queue_item(self, queue_item_id: int) -> bool:
+        """Tell an in-flight dispatch that its queue item no longer wants to print.
+
+        ⚠️ Stopping an item only writes ``status`` to the database, and a
+        dispatch coroutine parked in ``asyncio.sleep`` cannot see that. During
+        the preheat stage there is no print to stop either — the stop command
+        goes to an idle printer — so without this the heaters ran for the rest
+        of ``preheat_max_wait_seconds`` + ``preheat_soak_seconds`` and the
+        printer stayed claimed, blocking every other queued item behind a print
+        that was not happening.
+
+        Synchronous and lock-free on purpose: the callers are HTTP routes on
+        the request path, and the flag is read by the dispatch's own
+        cancel-check. Returns whether a live job was signalled.
+        """
+        signalled = False
+        for state in list(self._active_jobs.values()):
+            if state.job.queue_item_id == queue_item_id:
+                self._cancel_requested_job_ids.add(state.job.id)
+                logger.info(
+                    "Cancel requested for dispatch job %s - its queue item %s was stopped",
+                    state.job.id,
+                    queue_item_id,
+                )
+                signalled = True
+        return signalled
 
     async def cancel_job(self, job_id: int) -> dict[str, Any]:
         """Cancel a queued dispatch job.
@@ -1694,6 +1726,9 @@ class BackgroundDispatchService:
                 if started:
                     # Confirmed send: the entry is now the printer's to resolve.
                     _unconfirmed_expected_print = None
+                    # The print owns the heaters from here; preheat must not
+                    # undo its own work on the way out.
+                    preheat_service.clear_pin(job.printer_id)
 
                 if not started:
                     await self._cleanup_sd_card_file(
@@ -1797,6 +1832,11 @@ class BackgroundDispatchService:
                 if _unconfirmed_expected_print is not None:
                     withdraw_expected_print(*_unconfirmed_expected_print)
                     _unconfirmed_expected_print = None
+                # Same "every exit path" argument: a dispatch that dies after
+                # preheat ran left the machine heating for a print that was
+                # never going to happen. Nothing switched it off, because
+                # nothing knew it was on. A no-op once the print has started.
+                preheat_service.rollback(job.printer_id)
                 # Patched-3MF temp dir must clean up on every exit path —
                 # cancel mid-upload otherwise leaks the temp into /tmp until
                 # process restart.
@@ -2299,6 +2339,9 @@ class BackgroundDispatchService:
                 if started:
                     # Confirmed send: the entry is now the printer's to resolve.
                     _unconfirmed_expected_print = None
+                    # The print owns the heaters from here; preheat must not
+                    # undo its own work on the way out.
+                    preheat_service.clear_pin(job.printer_id)
 
                 if not started:
                     await self._cleanup_sd_card_file(
@@ -2433,6 +2476,11 @@ class BackgroundDispatchService:
                 if _unconfirmed_expected_print is not None:
                     withdraw_expected_print(*_unconfirmed_expected_print)
                     _unconfirmed_expected_print = None
+                # Same "every exit path" argument: a dispatch that dies after
+                # preheat ran left the machine heating for a print that was
+                # never going to happen. Nothing switched it off, because
+                # nothing knew it was on. A no-op once the print has started.
+                preheat_service.rollback(job.printer_id)
                 # Patched-3MF temp dir must clean up on every exit path —
                 # cancel mid-upload otherwise leaks the temp into /tmp until
                 # process restart.

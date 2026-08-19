@@ -26,6 +26,7 @@ from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.schemas.calibration_mode import derive_mode
+from backend.app.services import chamber_history
 from backend.app.services.notification_service import notification_service
 from backend.app.services.printer_manager import (
     first_drying_blocking_reason,
@@ -1789,6 +1790,13 @@ class PrintScheduler:
 
         # Update drying state from printer status (handles backend restart)
         self._sync_drying_state()
+        # One chamber reading per tick, so preheat can credit a soak that has
+        # already happened instead of repeating it. Recording only — nothing
+        # here heats or cools. See services/chamber_history.py.
+        try:
+            chamber_history.sample_all(printer_manager.get_all_statuses())
+        except Exception as exc:  # noqa: BLE001 - an observation must never wedge the queue
+            logger.warning("Queue: chamber sampling failed: %s", exc)
 
         # Find printers with scheduled items (for queue drying mode)
         printers_with_scheduled: set[int] = set()

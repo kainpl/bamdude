@@ -38,6 +38,20 @@
 
     The chamber control on the printer card is unchanged: it already bounds itself from each printer's own reported limits, which is a better answer than one number for the whole farm, and stays that way. The flat ceiling exists only where there is no printer to ask — the filament map is shared by every machine, and a per-print override is entered before a printer is chosen.
 
+- **Back-to-back prints no longer re-soak a chamber that never cooled.** Two ASA plates in a row each paid a full heat-soak from cold, even when the print that just finished had left the chamber at temperature. BamDude now watches each printer's chamber and credits the time it has already spent at temperature against the soak, shortening it or skipping it entirely.
+
+    It errs towards soaking. Nothing is credited when there is no recent reading, when the readings have a gap in them, or when the chamber is below target right now — crediting a soak that did not happen starts a print on a cold chamber, which is a warped part, while refusing to credit one that did costs some minutes. A brief dip does not count as cooling either: an enclosed chamber cannot lose and regain several degrees in a minute, so a short low reading is a door opening or sensor noise. A dip that lasts is real, and the credit restarts from it.
+
+    Only for printers that can actually read their chamber. Where there is no sensor the soak **is** the measurement, and crediting against a reading nobody took would start the print cold.
+
+- **A stopped job no longer leaves the printer heating.** Three ways the preheat stage could keep a machine hot for a print that was never going to run:
+
+    Stopping a queue item while it was preheating did not reach the job. There is no print to stop yet at that point, so the stop command went to an idle printer, the item was marked cancelled, and the heaters carried on for the rest of the wait and soak — with the printer still counted as busy, holding up everything queued behind it. Stopping now reaches the job itself.
+
+    A dispatch that failed after preheating — a failed upload, an unexpected error — left the bed, chamber and airduct as preheat had set them, because nothing had recorded that it set them. They are now undone on the way out, and left alone once the print has actually started and owns them.
+
+    A print that needs a warm chamber but whose file names no bed temperature used to skip preheat altogether and start cold. Files exported from OrcaSlicer routinely name none. The bed is the chamber's heating element on these machines, so it is now heated to drive the chamber. A bed temperature in the file still wins, and a print with no chamber requirement is still skipped — no bed temperature is invented for the print's own sake.
+
 - **Bambu Cloud's CAPTCHA is now explained instead of repeated.** Trying to connect could produce "We need you to confirm you are not a robot" as an error toast, with no CAPTCHA anywhere to answer and nothing to click. That sentence is Bambu's, not ours: their anti-abuse layer had flagged the network and was answering the sign-in with a challenge BamDude did not recognise, so it simply passed their wording through — leaving you to conclude your password was wrong.
 
     The sign-in page now shows a panel that stays on screen and says the three things you had no way to find out: your credentials are not the problem, the block is tied to your public IP address rather than your account, and it clears by itself within a few hours. It carries a one-click route to **Use access token instead**, which is the only thing that works while the challenge lasts. Further sign-in attempts are held back for a few minutes as well — repeated tries are exactly what deepens the block. Signing in with a token is never held back: it is the way out.

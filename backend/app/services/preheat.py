@@ -47,6 +47,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from backend.app.services import chamber_history
 from backend.app.services.printer_manager import (
     printer_manager,
     supports_airduct,
@@ -87,6 +88,56 @@ DEFAULT_PREHEAT_FILAMENT_TARGETS: dict[str, int] = {
 _BED_TOLERANCE = 2.0  # °C — floating-point + heater hysteresis slack
 _CHAMBER_TOLERANCE = 2.0
 _POLL_INTERVAL = 3.0  # seconds — frequent enough for responsive logging + cancel
+
+
+# Bed temperature used to drive the chamber when the file names none of its
+# own. The bed is the chamber's heating element on these machines, so this is a
+# chamber setting wearing a bed's clothes — it is not a print surface
+# temperature and never reaches the print, which issues its own M140/M190 at
+# start. 90 °C is high enough to move an enclosed chamber in reasonable time and
+# is also the threshold aftermarket bed-linked chamber heaters switch on at.
+_CHAMBER_HEATING_BED_FLOOR = 90
+
+# What preheat actually published, per printer: a subset of
+# {"bed", "chamber", "airduct"}.
+#
+# ⚠️ A dispatch that dies after this stage — a failed upload, a stopped item, an
+# exception — used to leave the machine heating for a print that was never going
+# to happen. Nothing switched the heaters off, because nothing knew they were
+# on. Recorded here and unwound by :func:`rollback`; cleared by the caller once
+# the print has actually started, at which point the print owns the heaters.
+_pinned: dict[int, set[str]] = {}
+
+
+def rollback(printer_id: int) -> None:
+    """Undo the heating preheat asked for, when the print is not going to run.
+
+    ⚠️ Best-effort and never raises: this runs on the failure path, often inside
+    an ``except``/``finally``, and an exception here would mask the real one.
+    """
+    pinned = _pinned.pop(printer_id, set())
+    if not pinned:
+        return
+    client = printer_manager.get_client(printer_id)
+    if client is None:
+        logger.warning("Preheat rollback skipped on printer %s - no client to send it to", printer_id)
+        return
+    for what in sorted(pinned):
+        try:
+            if what == "bed":
+                client.set_bed_temperature(0)
+            elif what == "chamber":
+                client.set_chamber_temperature(0)
+            elif what == "airduct":
+                client.set_airduct_mode("cooling")
+        except Exception as exc:  # noqa: BLE001 - see the docstring
+            logger.warning("Preheat rollback of %s failed on printer %s: %s", what, printer_id, exc)
+    logger.info("Preheat rollback on printer %s - undid %s", printer_id, ", ".join(sorted(pinned)))
+
+
+def clear_pin(printer_id: int) -> None:
+    """Forget what preheat sent — the print has started and owns the heaters now."""
+    _pinned.pop(printer_id, None)
 
 
 async def _get_setting_str(db: AsyncSession, key: str) -> str | None:
@@ -246,8 +297,27 @@ async def preheat_and_soak(
 
     bed_target = int(archive.bed_temperature) if archive and archive.bed_temperature else 0
     if bed_target <= 0:
-        logger.info("Preheat skipped for printer %s — archive has no bed_temperature metadata", printer.id)
-        return
+        # ⚠️ A print that WANTS a chamber must not be skipped for want of a bed
+        # temperature. Orca-exported 3MFs routinely carry no bed value, and
+        # skipping meant those prints started with a cold chamber — the exact
+        # thing this stage exists to prevent. The bed is the chamber's heating
+        # element on these machines, so it gets the floor below.
+        #
+        # A parsed bed temperature still wins, and a print with NO chamber
+        # requirement is still skipped: no bed temperature is invented for the
+        # print's own sake. Preheat's bed target is transient regardless — the
+        # print's own gcode issues its M140/M190 at start.
+        if chamber_target <= 0:
+            logger.info("Preheat skipped for printer %s — archive has no bed_temperature metadata", printer.id)
+            return
+        bed_target = _CHAMBER_HEATING_BED_FLOOR
+        logger.info(
+            "Preheat on printer %s — no bed_temperature in the file, heating the bed to %d°C to drive the "
+            "chamber to %d°C",
+            printer.id,
+            bed_target,
+            chamber_target,
+        )
 
     client = printer_manager.get_client(printer.id)
     if client is None:
@@ -276,6 +346,7 @@ async def preheat_and_soak(
 
     try:
         client.set_bed_temperature(bed_target)
+        _pinned.setdefault(printer.id, set()).add("bed")
     except Exception as exc:  # noqa: BLE001 — best-effort
         logger.warning("Preheat bed M140 failed on printer %s: %s", printer.id, exc)
         return
@@ -291,12 +362,18 @@ async def preheat_and_soak(
         if current_airduct != desired_id:
             try:
                 client.set_airduct_mode(desired_airduct)
+                if desired_airduct == "heating":
+                    # Only the heating flip is ours to undo — putting the flap
+                    # back to cooling IS the rollback, so recording a cooling
+                    # set would make the rollback a no-op that looks done.
+                    _pinned.setdefault(printer.id, set()).add("airduct")
             except Exception as exc:  # noqa: BLE001 — best-effort
                 logger.warning("Preheat airduct %s mode failed on printer %s: %s", desired_airduct, printer.id, exc)
 
     if do_chamber and has_heater:
         try:
             client.set_chamber_temperature(chamber_target)
+            _pinned.setdefault(printer.id, set()).add("chamber")
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.warning("Preheat chamber set_ctt failed on printer %s: %s", printer.id, exc)
 
@@ -354,6 +431,25 @@ async def preheat_and_soak(
             break
 
         await asyncio.sleep(_POLL_INTERVAL)
+
+    # Credit the soak the chamber has already had. Back-to-back prints in a
+    # chamber-heated material used to pay a full soak from a chamber that never
+    # cooled; ``chamber_history`` knows how long it has been at temperature.
+    #
+    # ⚠️ Only when there is a sensor to have watched it. On a model that cannot
+    # read its chamber the soak IS the measurement, and crediting against a
+    # reading nobody took would start the print cold.
+    if do_chamber and has_sensor and soak_seconds > 0:
+        credited = chamber_history.soak_remaining(printer.id, float(chamber_target), soak_seconds)
+        if credited < soak_seconds:
+            logger.info(
+                "Preheat soak on printer %s shortened %ds → %ds — the chamber has already been at %d°C",
+                printer.id,
+                soak_seconds,
+                credited,
+                chamber_target,
+            )
+        soak_seconds = credited
 
     # Soak — chunked so a cancel aborts within one poll interval instead of after
     # the full hold.
