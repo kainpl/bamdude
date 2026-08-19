@@ -5860,7 +5860,9 @@ export default {
     enterNewToken: 'Введіть новий токен для оновлення',
     tokenHintGitHub: 'Fine-grained token з дозволом Contents: Read and write',
     tokenHintGitLab: 'Personal access token з правами api або write_repository',
-    tokenHintGitea: 'Personal access token з правом repo read/write (працює і для Gitea, і для Forgejo)',
+    tokenHintGitea: 'Personal access token з правом write:repository.',
+    tokenHintForgejo:
+      'Personal access token з правом write:repository. Достатньо токена, обмеженого лише цим репозиторієм.',
     branch: 'Гілка',
     manualOnly: 'Тільки вручну',
     hourly: 'Щогодини',

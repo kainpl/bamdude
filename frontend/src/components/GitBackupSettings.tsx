@@ -44,6 +44,18 @@ import { formatDateTime as fmtDateTime, formatRelativeTime, type DateFormat, typ
 
 type GitProvider = 'github' | 'gitlab' | 'gitea' | 'forgejo';
 
+// Each provider names its scopes differently, so one shared hint could only
+// ever be right for one of them. Forgejo's is not Gitea's despite the shared
+// API: a Forgejo v15 token limited to a single repository is enough for a
+// backup, and saying so is the whole point of #2775 — that token 403s on
+// /user, and we used to reject it for that.
+const PROVIDER_TOKEN_HINT_I18N_KEY: Record<GitProvider, string> = {
+  github: 'backup.tokenHintGitHub',
+  gitlab: 'backup.tokenHintGitLab',
+  gitea: 'backup.tokenHintGitea',
+  forgejo: 'backup.tokenHintForgejo',
+};
+
 /**
  * Wrapper that returns ``-`` for null and threads the user's date/time
  * preferences through. Replaces the old local helper that called
@@ -620,11 +632,7 @@ export function GitBackupSettings() {
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   />
                   <p className="text-xs text-bambu-gray mt-1">
-                    {provider === 'github'
-                      ? t('backup.tokenHintGitHub')
-                      : provider === 'gitlab'
-                        ? t('backup.tokenHintGitLab')
-                        : t('backup.tokenHintGitea')}
+                    {t(PROVIDER_TOKEN_HINT_I18N_KEY[provider])}
                   </p>
                 </div>
 

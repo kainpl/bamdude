@@ -24,6 +24,10 @@
 
 ### Fixed
 
+- **A Forgejo token limited to one repository is now accepted.** The connection test asked `/user` who the token belonged to before asking whether it could reach the repository, and treated a refusal there as fatal — but a Forgejo v15 repository-scoped token, the kind Forgejo itself recommends, carries no permission to read `/user` at all. So the safest token you could mint was the one BamDude rejected, while it reached its own repository perfectly well, which is all a backup needs. Only an outright "this token is invalid" from that probe still ends the check; everything else now falls through to the repository, which answers the real question.
+
+    The messages got sharper along the way: a repository that answers "not found" now names `write:repository` and the scoped-to-another-repository case, and mentions a possibly-invalid token only when the token's identity was never confirmed. And the hint under the token field is per provider — one shared line was GitHub's advice shown to Gitea, Forgejo and GitLab users, naming a setting their instance does not have.
+
 - **Ukrainian text on spool labels printed as rows of black squares.** Labels were drawn with PDF's built-in typefaces, which carry no Cyrillic at all — and instead of failing, those typefaces quietly substitute a symbol font whose stand-in character is a filled square. A spool named «Чорний матовий» stored on «Полиця 3» therefore came off the printer as `■■■■■■ ■■■■■■■` and `■■■■■■ 3`, on every template and in both inventory modes, with nothing wrong in the log and Latin names completely unaffected — which is why it went unnoticed for as long as it did. Labels now use a bundled typeface that covers Cyrillic and Greek alongside Latin.
 
     The replacement was picked to match the old one's letter widths, so none of the existing layouts move: a name that fitted on a 40 × 30 mm label before still fits, and nothing starts truncating a character earlier than it used to.

@@ -5829,7 +5829,9 @@ export default {
     enterNewToken: 'Enter new token to update',
     tokenHintGitHub: 'Fine-grained token with Contents read/write permission',
     tokenHintGitLab: 'Personal Access Token with api or write_repository scope',
-    tokenHintGitea: 'Personal Access Token with repo read/write scope (works for Gitea + Forgejo)',
+    tokenHintGitea: 'Personal Access Token with the write:repository scope.',
+    tokenHintForgejo:
+      'Personal Access Token with the write:repository scope. A token limited to this one repository is enough.',
     branch: 'Branch',
     manualOnly: 'Manual only',
     hourly: 'Hourly',

@@ -1394,28 +1394,84 @@ class TestForgejoTestConnection:
         assert client.get.call_count == 1  # only /user was called
 
     @pytest.mark.asyncio
-    async def test_zero_scope_token_403_on_user_returns_scope_hint(self):
-        """A 403 from /user (v15+ zero-scope token) returns a clear message without hitting the repo."""
+    async def test_a_repository_scoped_token_connects(self):
+        """⚠️ 403 on /user is the SIGNATURE of the token Forgejo recommends.
+
+        A v15 token limited to one repository can only carry read/write:issue
+        and read/write:repository, so it cannot read /user at all. This test
+        used to assert the opposite — that such a 403 ends the check with a
+        "no read:user scope" message — which rejected a token that reaches its
+        own repository perfectly well, and that is all a backup needs (#2775).
+        """
         client = AsyncMock()
-        client.get = AsyncMock(return_value=_make_mock_response(403, {}))
+        client.get = AsyncMock(
+            side_effect=[
+                _make_mock_response(403, {}),
+                _make_mock_response(200, {"full_name": "owner/repo", "permissions": {"push": True, "pull": True}}),
+            ]
+        )
 
         result = await self.backend.test_connection(self.repo_url, self.token, client)
 
-        assert result["success"] is False
-        assert "read:user scope" in result["message"]
-        assert client.get.call_count == 1
+        assert result["success"] is True
+        assert result["repo_name"] == "owner/repo"
+        assert client.get.call_count == 2, "the repo call must still be made"
 
     @pytest.mark.asyncio
-    async def test_unexpected_user_status_returns_status_code(self):
-        """A non-200/401/403 response from /user (e.g. 429, 5xx) surfaces the status code."""
+    async def test_a_transient_user_status_does_not_block_the_repo_call(self):
+        """Same reversal for 429/5xx: /user is a probe, not a gate.
+
+        Only its 401 is conclusive. Anything else is a question about /user,
+        not about whether this token can reach this repository — and the repo
+        call answers that directly.
+        """
         client = AsyncMock()
-        client.get = AsyncMock(return_value=_make_mock_response(429, {}))
+        client.get = AsyncMock(
+            side_effect=[
+                _make_mock_response(429, {}),
+                _make_mock_response(200, {"full_name": "owner/repo", "permissions": {"push": True, "pull": True}}),
+            ]
+        )
+
+        result = await self.backend.test_connection(self.repo_url, self.token, client)
+
+        assert result["success"] is True
+        assert client.get.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_the_repo_calls_own_401_names_the_token(self):
+        """Otherwise it surfaces as a generic "API error: 401" and sends the
+        operator looking at the repository when the token is what is wrong."""
+        client = AsyncMock()
+        client.get = AsyncMock(
+            side_effect=[
+                _make_mock_response(403, {}),
+                _make_mock_response(401, {}),
+            ]
+        )
 
         result = await self.backend.test_connection(self.repo_url, self.token, client)
 
         assert result["success"] is False
-        assert "429" in result["message"]
-        assert client.get.call_count == 1
+        assert result["message"] == "Invalid access token"
+
+    @pytest.mark.asyncio
+    async def test_a_404_after_an_unconfirmed_identity_keeps_the_token_on_the_list(self):
+        """With /user never answering 200 the token itself is still a suspect,
+        and the message has to say so — the confirmed case rules it out."""
+        client = AsyncMock()
+        client.get = AsyncMock(
+            side_effect=[
+                _make_mock_response(403, {}),
+                _make_mock_response(404, {}),
+            ]
+        )
+
+        result = await self.backend.test_connection(self.repo_url, self.token, client)
+
+        assert result["success"] is False
+        assert "may also be invalid or expired" in result["message"]
+        assert "write:repository" in result["message"]
 
     @pytest.mark.asyncio
     async def test_repo_404_after_valid_token_surfaces_v15_scope_hint(self):
@@ -1432,6 +1488,10 @@ class TestForgejoTestConnection:
         assert result["success"] is False
         assert "v15" in result["message"]
         assert "scope" in result["message"]
+        assert "write:repository" in result["message"]
+        # ⚠️ /user answered 200, so the token is NOT a suspect here. Naming it
+        # anyway is what makes an error message stop being read.
+        assert "may also be invalid" not in result["message"]
 
     @pytest.mark.asyncio
     async def test_token_lacks_push_permission_returns_failed(self):
