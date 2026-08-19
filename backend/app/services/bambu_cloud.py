@@ -125,6 +125,108 @@ def _detect_cloudflare_challenge(response) -> str | None:
     return None
 
 
+# Bambu's own anti-abuse layer — distinct from the Cloudflare edge above —
+# answers a request it has flagged with HTTP 418 and a challenge body:
+#
+#     {"captchaId": "...", "error": "We need you to confirm you are not a robot"}
+#
+# The flag is keyed to the source IP and covers the region as a whole: the same
+# 418 turns up on the login endpoint and on the design-service endpoints the
+# MakerWorld import uses. It clears on its own after a few hours of quiet
+# traffic, and there is no server-side solve — a CAPTCHA is designed to be
+# unanswerable without a real browser, and the challenge id is of no use to us
+# because we have nowhere to render the widget.
+#
+# ⚠️ It arrives as perfectly well-formed JSON, so ``_detect_cloudflare_challenge``
+# above never fires on it, and the generic error path then lifted Bambu's own
+# sentence out of ``error`` and showed it as a bare toast — "We need you to
+# confirm you are not a robot", with no challenge, no explanation and nothing to
+# click. Reported as a BamDude bug, understandably.
+_CAPTCHA_HTTP_STATUS = 418
+
+# Markers that identify a 418 as the CAPTCHA challenge rather than some other
+# refusal. ``captchaId`` is the reliable one; the wording is matched too because
+# Bambu has shipped the challenge under more than one phrasing.
+_CAPTCHA_BODY_MARKERS = ("captchaid", "captcha", "robot")
+
+CAPTCHA_USER_MESSAGE = (
+    "Bambu Cloud is challenging this network with a CAPTCHA before it will accept a sign-in, "
+    "and there is no way to answer it from BamDude. Your email and password are not the "
+    "problem. The block is tied to your public IP address and normally clears by itself within "
+    "a few hours — retrying repeatedly extends it. To sign in now, use 'Use access token "
+    "instead' and paste a token taken from a browser session."
+)
+
+# How long to stop sending sign-in requests to a Bambu region after it answered
+# with a CAPTCHA challenge. Four attempts in eighteen seconds is exactly the
+# traffic pattern that deepens the block: every extra request is more evidence
+# for the thing that flagged us. Five minutes is short against the hours the
+# block itself lasts — the point is not to wait it out here, only to stop us
+# making it worse while the user reads the explanation.
+_CAPTCHA_COOLOFF_SECONDS = 300.0
+
+# API base URL -> monotonic time its cool-off expires. ⚠️ Keyed by base URL
+# because the block lives at the edge in front of ONE region: being challenged
+# on api.bambulab.com says nothing about api.bambulab.cn.
+_captcha_blocked_until: dict[str, float] = {}
+
+
+def is_captcha_challenge(response) -> bool:
+    """Whether Bambu answered with an anti-abuse CAPTCHA challenge.
+
+    ⚠️ Requires the 418 status **and** a challenge marker in the body, so a bare
+    418 is not reported to the user as "solve a CAPTCHA" — that would send them
+    looking for a widget that was never there, which is the exact confusion this
+    exists to end. A caller that wants to say something about an unmarked 418
+    must handle it itself.
+
+    Shared by the Bambu Cloud and MakerWorld services: same edge, same body.
+    """
+    try:
+        status = int(getattr(response, "status_code", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    if status != _CAPTCHA_HTTP_STATUS:
+        return False
+    try:
+        data = response.json()
+    except Exception:
+        data = None
+    if isinstance(data, dict):
+        # Field *names* count as well as their text: the challenge is identified
+        # by carrying a ``captchaId`` at all, whatever that field says.
+        parts = [str(key) for key in data]
+        parts += [str(data[key]) for key in ("captchaId", "error", "message", "detail") if data.get(key)]
+        haystack = " ".join(parts).lower()
+    else:
+        # Not JSON, or not an object — fall back to the raw body so a challenge
+        # served as HTML is still recognised rather than reported as an
+        # unexplained failure.
+        try:
+            haystack = (response.text or "").lower()
+        except Exception:
+            return False
+    return any(marker in haystack for marker in _CAPTCHA_BODY_MARKERS)
+
+
+def captcha_cooloff_active(base_url: str) -> bool:
+    """Whether sign-in requests to ``base_url`` are still held back after a
+    challenge. Expired entries are dropped on the way past, so the map cannot
+    grow past one entry per region."""
+    deadline = _captcha_blocked_until.get(base_url)
+    if deadline is None:
+        return False
+    if time.monotonic() >= deadline:
+        del _captcha_blocked_until[base_url]
+        return False
+    return True
+
+
+def note_captcha_challenge(base_url: str) -> None:
+    """Start the cool-off for ``base_url`` after a challenge was seen."""
+    _captcha_blocked_until[base_url] = time.monotonic() + _CAPTCHA_COOLOFF_SECONDS
+
+
 # Default ``version`` query param for the ``/v1/iot-service/api/slicer/setting``
 # endpoint subtree — the plural GET for the list, the singular GET/DELETE for a
 # specific preset by setting_id, and the POST for create all require it. Without
@@ -319,12 +421,62 @@ class BambuCloudService:
             headers["Authorization"] = f"Bearer {self.access_token}"
         return headers
 
+    def _captcha_refusal(self) -> dict:
+        """The result every sign-in call returns while Bambu is challenging us.
+
+        ⚠️ ``reason`` is what lets the UI tell this apart from a wrong password
+        and render the explanation beside the access-token route, instead of
+        flashing Bambu's own one-liner as a toast that then disappears.
+        """
+        return {
+            "success": False,
+            "needs_verification": False,
+            "reason": "captcha",
+            "message": CAPTCHA_USER_MESSAGE,
+        }
+
+    def _captcha_cooloff_holds(self, origin: str | None = None) -> bool:
+        """Whether to refuse a sign-in locally because Bambu just challenged us.
+
+        ⚠️ Keyed by the origin the call actually goes to. The TOTP step talks to
+        ``bambulab.com`` while everything else talks to ``api.bambulab.com``, and
+        a challenge seen on one must not strand somebody halfway through a
+        two-factor sign-in on the other.
+        """
+        origin = origin or self.base_url
+        if not captcha_cooloff_active(origin):
+            return False
+        logger.warning(
+            "Bambu Cloud is challenging this network with a CAPTCHA - not sending the sign-in to %s. "
+            "The challenge cannot be answered from BamDude and normally clears within a few hours.",
+            origin,
+        )
+        return True
+
+    def _note_captcha(self, response, origin: str | None = None) -> bool:
+        """Record and log a CAPTCHA challenge. Returns whether it was one."""
+        if not is_captcha_challenge(response):
+            return False
+        origin = origin or self.base_url
+        logger.warning(
+            "Bambu Cloud is challenging this network with a CAPTCHA (HTTP %s from %s). Sign-in cannot "
+            "complete until the challenge clears; pausing sign-in requests for %.0fs so retries do not "
+            "extend the block.",
+            response.status_code,
+            origin,
+            _CAPTCHA_COOLOFF_SECONDS,
+        )
+        note_captcha_challenge(origin)
+        return True
+
     async def login_request(self, email: str, password: str) -> dict:
         """
         Initiate login - this will trigger either email verification or TOTP prompt.
 
         Returns dict with login status, verification type, and tfaKey if needed.
         """
+        if self._captcha_cooloff_holds():
+            return self._captcha_refusal()
         try:
             response = await self._client.post(
                 f"{self.base_url}/v1/user-service/user/login",
@@ -334,6 +486,9 @@ class BambuCloudService:
                     "password": password,
                 },
             )
+
+            if self._note_captcha(response):
+                return self._captcha_refusal()
 
             try:
                 data = response.json()
@@ -393,6 +548,8 @@ class BambuCloudService:
         """
         Complete login with email verification code.
         """
+        if self._captcha_cooloff_holds():
+            return self._captcha_refusal()
         try:
             response = await self._client.post(
                 f"{self.base_url}/v1/user-service/user/login",
@@ -402,6 +559,9 @@ class BambuCloudService:
                     "code": code,
                 },
             )
+
+            if self._note_captcha(response):
+                return self._captcha_refusal()
 
             try:
                 data = response.json()
@@ -479,6 +639,13 @@ class BambuCloudService:
             web_origin = "https://bambulab.cn" if "bambulab.cn" in self.base_url else "https://bambulab.com"
             tfa_url = f"{web_origin}/api/sign-in/tfa"
 
+            # ⚠️ Keyed on the web origin, not on ``self.base_url``. This step is
+            # the only one that talks to bambulab.com, and a challenge seen on
+            # api.bambulab.com must not strand somebody halfway through a
+            # two-factor sign-in here.
+            if self._captcha_cooloff_holds(web_origin):
+                return self._captcha_refusal()
+
             # #2696: the web origin is CSRF-protected (double submit). Without
             # both halves the endpoint 403s before it ever evaluates the code,
             # which surfaced as a permanent, misleading "Invalid code" whatever
@@ -515,6 +682,9 @@ class BambuCloudService:
             logger.debug(
                 f"TOTP verify response: status={response.status_code}, body={response.text[:200] if response.text else '(empty)'}"
             )
+
+            if self._note_captcha(response, web_origin):
+                return self._captcha_refusal()
 
             # Handle empty response
             if not response.text or not response.text.strip():

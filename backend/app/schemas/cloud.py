@@ -30,6 +30,12 @@ class CloudLoginResponse(BaseModel):
     message: str
     verification_type: str | None = None  # "email" or "totp"
     tfa_key: str | None = None  # Key needed for TOTP verification
+    # ⚠️ What makes a failure actionable rather than just a sentence. "captcha"
+    # means Bambu's anti-abuse layer is challenging this network: the password
+    # is not the problem, nothing here can answer the challenge, and the UI
+    # should show a persistent panel with the access-token route rather than a
+    # toast that names something the user cannot act on and then vanishes.
+    reason: str | None = None
 
 
 class CloudAuthStatus(BaseModel):

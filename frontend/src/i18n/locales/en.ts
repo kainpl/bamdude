@@ -3368,6 +3368,8 @@ export default {
       verifyButton: 'Verify',
       setTokenButton: 'Set Token',
       useToken: 'Use access token instead',
+      captchaTitle: 'Bambu Cloud is asking for a CAPTCHA',
+      captchaBody: 'Bambu is challenging your network before it will accept a sign-in, and the challenge cannot be answered from BamDude. Your email and password are not the problem. The block is tied to your public IP address and normally clears by itself within a few hours — retrying repeatedly makes it last longer. To sign in now, use an access token from a browser session instead.',
       useEmail: 'Login with email instead',
       toast: {
         loggedIn: 'Logged in successfully',
@@ -4747,6 +4749,11 @@ export default {
         name: 'File-transfer connection timed out',
         cause: 'BamDude could not reach the printer\'s file-transfer port (FTPS 990). The port is blocked, or the printer is off or on another subnet.',
         fix: 'Make sure nothing blocks port 990 between BamDude and the printer, and that both are on the same network.',
+      },
+      'bambu-cloud-captcha': {
+        name: 'Bambu Cloud is asking for a CAPTCHA',
+        cause: 'The Bambu anti-abuse layer is challenging this network, so no Bambu Cloud sign-in can complete. It is tied to the public IP address, not to your account or this installation.',
+        fix: 'Wait — it normally clears within a few hours, and repeated sign-in attempts prolong it. To connect meanwhile, sign in with an access token taken from a browser session.',
       },
       'ftp-ssl-error': {
         name: 'Secure file-transfer handshake failed',
