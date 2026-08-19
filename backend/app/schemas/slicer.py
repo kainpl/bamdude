@@ -1,6 +1,6 @@
 """Pydantic schemas for slice requests (Phase 1 of 0.5.x slicer cycle)."""
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -80,6 +80,18 @@ class SliceRequest(BaseModel):
     export_3mf: bool = Field(
         default=False,
         description="If true, request a 3MF response with embedded G-code instead of raw G-code.",
+    )
+    process_overrides: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "The user's own process-setting edits from the slice dialog's settings panel, as a "
+            "sparse ``{option_key: value}`` map (layer height, wall count, supports, speeds — "
+            "OrcaSlicer's process parameter set). Written into the process JSON AFTER the "
+            "source's support settings and the designer's carried tweaks, so an explicit choice "
+            "here wins over both. Values are normalised to the string forms a process preset "
+            "stores; keys that are not valid config keys are dropped rather than failing the "
+            "slice. None/empty leaves the picked preset untouched."
+        ),
     )
     arrange: bool = Field(
         default=False,

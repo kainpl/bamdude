@@ -364,6 +364,18 @@ class AppSettings(BaseModel):
     )
 
     # Preferred slicer application (server-side / API sidecar slicer)
+    # Where slicing RUNS. ⚠️ Orthogonal to ``preferred_slicer``, which only says
+    # which slicer BINARY the sidecar drives: an execution site is not a binary
+    # choice. Kept as its own key so the two never have to encode impossible
+    # combinations.
+    #
+    # Only "sidecar" is implemented today; the slice dialog offers a per-job
+    # choice once more than one engine exists, and hides the control entirely
+    # while there is only one.
+    slice_engine: str = Field(
+        default="sidecar",
+        description="Default execution site for slicing: 'sidecar' (server-side API).",
+    )
     preferred_slicer: str = Field(
         default="bambu_studio",
         description="Slicer used for the server-side API / sidecar: 'bambu_studio' or 'orcaslicer'",
@@ -635,6 +647,7 @@ class AppSettingsUpdate(BaseModel):
     library_all_files_recursive: bool | None = None
     firmware_batch_concurrency: int | None = None
     camera_view_mode: str | None = None
+    slice_engine: str | None = None
     preferred_slicer: str | None = None
     open_in_slicer: str | None = None
     use_slicer_api: bool | None = None

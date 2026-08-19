@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Archive, MapPin, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles } from 'lucide-react';
+import { availableEngines, hasEngineChoice, resolveEngine, type SliceEngineId } from '../lib/sliceEngines';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, macrosApi } from '../api/client';
@@ -1253,6 +1254,7 @@ export function SettingsPage() {
       Number(baseline.library_disk_warning_gb ?? 5) !== Number(localSettings.library_disk_warning_gb ?? 5) ||
       (baseline.library_all_files_recursive ?? false) !== (localSettings.library_all_files_recursive ?? false) ||
       (baseline.camera_view_mode ?? 'window') !== (localSettings.camera_view_mode ?? 'window') ||
+      resolveEngine(baseline.slice_engine) !== resolveEngine(localSettings.slice_engine) ||
       (baseline.preferred_slicer ?? 'bambu_studio') !== (localSettings.preferred_slicer ?? 'bambu_studio') ||
       (baseline.open_in_slicer ?? null) !== (localSettings.open_in_slicer ?? null) ||
       (baseline.use_slicer_api ?? false) !== (localSettings.use_slicer_api ?? false) ||
@@ -1347,6 +1349,7 @@ export function SettingsPage() {
         library_disk_warning_gb: localSettings.library_disk_warning_gb,
         library_all_files_recursive: localSettings.library_all_files_recursive,
         camera_view_mode: localSettings.camera_view_mode,
+        slice_engine: localSettings.slice_engine,
         preferred_slicer: localSettings.preferred_slicer,
         open_in_slicer: localSettings.open_in_slicer,
         use_slicer_api: localSettings.use_slicer_api,
@@ -1778,6 +1781,36 @@ export function SettingsPage() {
                   {t('settings.defaultPrinterDescription')}
                 </p>
               </div>
+              {/* Where slicing runs. Rendered only once more than one engine is
+                  actually usable — while the sidecar is the only one, a picker
+                  with a single entry is noise, and an entry the user can see
+                  but never select reads as a broken feature. Adding a browser
+                  engine to lib/sliceEngines.ts is what makes this appear. */}
+              {hasEngineChoice() && (
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('settings.sliceEngine')}</label>
+                  <div className="relative">
+                    <select
+                      value={resolveEngine(localSettings.slice_engine)}
+                      onChange={(e) => updateSetting('slice_engine', e.target.value as SliceEngineId)}
+                      className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
+                    >
+                      {availableEngines().map((engine) => (
+                        <option key={engine.id} value={engine.id}>
+                          {t(engine.labelKey)}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
+                  </div>
+                  <p className="text-xs text-bambu-gray mt-1">
+                    {t(
+                      availableEngines().find((e) => e.id === resolveEngine(localSettings.slice_engine))
+                        ?.descriptionKey ?? 'settings.sliceEngineSidecarHint',
+                    )}
+                  </p>
+                </div>
+              )}
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">
                   {t('settings.preferredSlicer')}

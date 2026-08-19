@@ -2,6 +2,9 @@ import { AlertTriangle, Cloud, CloudOff, Cog, Loader2, RefreshCw, X } from 'luci
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+
+import SlicerSettingsPanel from './SlicerSettingsPanel';
+import type { SettingValue } from '../types/slicerSettings';
 import {
   api,
   type BedType,
@@ -212,6 +215,13 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
 
   const [printerPreset, setPrinterPreset] = useState<PresetRef | null>(null);
   const [processPreset, setProcessPreset] = useState<PresetRef | null>(null);
+  // Process settings the user edited by hand in the settings panel. TWO shapes
+  // are kept: the panel's editing values, and the same set serialised into the
+  // string forms a process preset stores. The panel owns the option schema, so
+  // it hands back both rather than making this component re-derive the second.
+  const [processOverrides, setProcessOverrides] = useState<Record<string, SettingValue>>({});
+  const [serializedProcessOverrides, setSerializedProcessOverrides] = useState<Record<string, string | string[]>>({});
+  const [settingsExpanded, setSettingsExpanded] = useState(false);
   // One filament ref per plate slot, in plate order. For STL / single-plate /
   // single-color sources this is a one-element array; multi-color 3MFs get one
   // entry per AMS slot the plate uses. Pre-pick (effect below) initialises
@@ -299,6 +309,31 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // Backend caches the health response per (kind, url) for 30 s — these
   // two queries hit the network at most once per modal open, even if the
   // SliceModal re-mounts a few times during the user's flow.
+  // The picked process preset's effective values, flattened by the sidecar.
+  // ⚠️ Without this the settings panel shows OrcaSlicer's compiled-in defaults —
+  // a preset with a 0.42 mm line width would read 0, which is the C++ default
+  // meaning "derive from the nozzle", not zero. Keyed on the preset so
+  // switching presets re-baselines the panel.
+  const presetValuesQuery = useQuery({
+    queryKey: ['slicer-preset-values', processPreset?.source, processPreset?.id],
+    queryFn: () => api.getSlicerPresetValues(processPreset as PresetRef),
+    enabled: processPreset != null,
+    // Preset contents only change when the user edits them in the slicer, and
+    // the dialog is short-lived; no need to re-fetch while it is open.
+    staleTime: 5 * 60_000,
+  });
+
+  // A failed fetch is not an error the user must act on — the panel falls back
+  // to schema defaults and says so — so "no data yet" counts as unresolved
+  // rather than blocking the panel on it.
+  const presetValues = presetValuesQuery.data?.values as Record<string, SettingValue> | undefined;
+  const presetValuesResolved = presetValuesQuery.data?.resolved ?? presetValuesQuery.isLoading;
+  // A failed REQUEST (rather than a `resolved: false` answer) means we never
+  // reached the backend, which is the same situation as an unreachable sidecar
+  // as far as the user is concerned.
+  const presetValuesReason =
+    presetValuesQuery.data?.reason ?? (presetValuesQuery.isError ? 'sidecar_unavailable' : undefined);
+
   const orcaHealthQuery = useQuery({
     queryKey: ['slicerHealth', 'orcaslicer'],
     queryFn: () => api.getSlicerHealth('orcaslicer'),
@@ -691,6 +726,12 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
         // which the embedded-settings path never sends — so the two are
         // mutually exclusive by construction (#2622).
         ...(!useEmbedded && designKeys.size > 0 ? { design_overrides: [...designKeys] } : {}),
+        // The user's own edits from the settings panel. Like design_overrides
+        // these patch the resolved process JSON, so the embedded-settings path
+        // — which sends no process JSON at all — cannot carry them.
+        ...(!useEmbedded && Object.keys(processOverrides).length > 0
+          ? { process_overrides: serializedProcessOverrides }
+          : {}),
       };
       if (source.kind === 'libraryFile') {
         return api.sliceLibraryFile(source.id, body);
@@ -1149,6 +1190,47 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                     </span>
                   </span>
                 </label>
+              )}
+              {/* Process settings, mirroring OrcaSlicer's own Print Settings
+                  tabs. Collapsed by default: the common case is slicing with a
+                  preset as-is, and the full option set unfolded would bury the
+                  preset pickers above. Hidden entirely in embedded mode, where
+                  no process JSON is sent for these to patch. */}
+              {!useEmbedded && (
+                <div className="rounded border border-bambu-dark-tertiary p-3">
+                  <button
+                    type="button"
+                    onClick={() => setSettingsExpanded((v) => !v)}
+                    className="flex w-full items-center justify-between gap-2 text-left"
+                  >
+                    <span className="text-sm text-white">
+                      {t('slice.processSettings')}
+                      <span className="block text-xs text-bambu-gray/70">{t('slice.processSettingsHint')}</span>
+                    </span>
+                    <span className="shrink-0 text-xs text-bambu-gray">
+                      {Object.keys(serializedProcessOverrides).length > 0
+                        ? t('slice.processSettingsChanged', {
+                            count: Object.keys(serializedProcessOverrides).length,
+                          })
+                        : t('slice.processSettingsUnchanged')}
+                    </span>
+                  </button>
+                  {settingsExpanded && (
+                    <div className="mt-3 border-t border-bambu-dark-tertiary pt-3">
+                      <SlicerSettingsPanel
+                        values={processOverrides}
+                        onChange={(values, serialized) => {
+                          setProcessOverrides(values);
+                          setSerializedProcessOverrides(serialized);
+                        }}
+                        presetValues={presetValues}
+                        presetValuesResolved={presetValuesResolved}
+                        presetValuesReason={presetValuesReason}
+                        disabled={isEnqueuing}
+                      />
+                    </div>
+                  )}
+                </div>
               )}
               {/* The designer's own process tweaks (#2622). BambuStudio records
                   which keys deviate from the stock preset in the 3MF itself, so

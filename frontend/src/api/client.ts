@@ -1747,6 +1747,9 @@ export interface AppSettings {
   // Camera view settings
   camera_view_mode: 'window' | 'embedded';
   // Preferred slicer (server-side / API sidecar)
+  /** Where slicing RUNS — a separate axis from `preferred_slicer`, which only
+   * says which slicer binary the sidecar drives. Only 'sidecar' exists today. */
+  slice_engine?: 'sidecar' | 'browser';
   preferred_slicer: 'bambu_studio' | 'orcaslicer';
   // Desktop "Open in Slicer" override — null inherits from preferred_slicer (#1329)
   open_in_slicer?: 'bambu_studio' | 'orcaslicer' | null;
@@ -2203,6 +2206,30 @@ export type BedType =
   | 'Textured PEI Plate'
   | 'Supertack Plate';
 
+/**
+ * Why a preset's own values could not be read.
+ *
+ * ⚠️ Four causes, not one. The overwhelmingly common one has an obvious fix and
+ * is not an edge case: a sidecar image older than `POST /profiles/resolve` is
+ * the normal state for an install that has not rebuilt it, so collapsing them
+ * into "could not be read" would show an amber warning on every slice with
+ * nothing pointing at the sidecar.
+ */
+export type SlicerPresetValuesReason =
+  | 'ok'
+  | 'sidecar_outdated'
+  | 'sidecar_unavailable'
+  | 'not_configured'
+  | 'preset_unresolved';
+
+export interface SlicerPresetValues {
+  /** False when the sidecar could not supply values; `values` is then empty. */
+  resolved: boolean;
+  /** Flattened key -> value map, in the string forms a process preset stores. */
+  values: Record<string, string | string[]>;
+  reason: SlicerPresetValuesReason;
+}
+
 export interface SliceRequest {
   // "Slice as designed" (upstream #2611). 3MF only: slice using the file's
   // embedded project_settings.config (the designer's own wall count, infill,
@@ -2227,6 +2254,10 @@ export interface SliceRequest {
   filament_presets?: PresetRef[];
   plate?: number;
   export_3mf?: boolean;
+  /** The user's own process-setting edits from the settings panel, as a sparse
+   * `{option_key: value}` map. Applied after the source's support settings and
+   * the designer's carried tweaks, so an explicit choice wins over both. */
+  process_overrides?: Record<string, string | number | boolean | string[]>;
   /** Run the slicer's auto-arrange pass, repositioning objects on the bed.
    * Unions with the automatic cross-nozzle-class arrange rather than
    * replacing it — an unticked box cannot switch that one off. */
@@ -8485,6 +8516,11 @@ export const api = {
     }),
   deleteSlicerPipeline: (id: number) =>
     request<void>(`/slicer-pipelines/${id}`, { method: 'DELETE' }),
+  getSlicerPresetValues: (ref: PresetRef) =>
+    request<SlicerPresetValues>(
+      `/slicer/preset-values?source=${encodeURIComponent(ref.source)}&id=${encodeURIComponent(ref.id)}`,
+    ),
+
   // Local Presets (OrcaSlicer imports)
   getLocalPresets: () =>
     request<LocalPresetsResponse>('/local-presets/'),

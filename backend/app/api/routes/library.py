@@ -80,6 +80,7 @@ from backend.app.services.library_ingest import IngestResult, external_hash_is_s
 from backend.app.services.library_trash import library_trash_service
 from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing
 from backend.app.services.print_plan import inherit_folder_projects, sync_plan_for_file, sync_plan_for_folder
+from backend.app.services.process_overrides import apply_process_overrides
 from backend.app.services.stl_thumbnail import MIN_USABLE_STL_BYTES, generate_stl_thumbnail
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.filename import (
@@ -2806,6 +2807,14 @@ async def _run_slicer_with_fallback(
                 extract_design_process_overrides(primary_bytes),
                 request.design_overrides,
             )
+
+    # ⚠️ The user's own edits from the slice dialog's settings panel. Applied
+    # LAST, and for every model type — not just 3MF: unlike the two patches
+    # above this reads nothing out of the source file, it is what the user
+    # typed. Last write wins, so an explicit choice beats both the carried
+    # support config and the designer's tweaks.
+    if request.process_overrides:
+        presets["process"] = apply_process_overrides(presets["process"], request.process_overrides)
 
     used_embedded_settings = False
     # "Slice as designed" (upstream #2611): honour the file's embedded
