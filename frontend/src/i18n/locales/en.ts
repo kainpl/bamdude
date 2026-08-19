@@ -3725,6 +3725,7 @@ export default {
     runningWithProgress: '{{name}} - {{stage}} ({{percent}}%) - {{elapsed}}',
     queuedToast: 'Queued: {{name}} - {{elapsed}}',
     completedToast: 'Sliced {{name}}',
+    externalFallbackToast: 'Sliced {{name}}, but it could not be written to the external folder ({{reason}}) — saved to the library instead.',
     failedToast: 'Slicing {{name}} failed: {{detail}}',
     failed: 'Slice failed',
     failedTitle: 'Slice failed',

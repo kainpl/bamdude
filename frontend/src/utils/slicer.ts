@@ -80,3 +80,26 @@ export function openInSlicer(downloadUrl: string, slicer: SlicerType = 'bambu_st
   link.click();
   document.body.removeChild(link);
 }
+
+/**
+ * The file types the slicer *sidecar* can slice.
+ *
+ * ⚠️ Narrower than what the DESKTOP slicers accept, by exactly STEP. The
+ * desktop applications open a STEP happily; their command-line interfaces do
+ * not — both OrcaSlicer and Bambu Studio answer one with "Unknown file format.
+ * Input file must have .stl, .obj, .amf(.xml) extension."
+ *
+ * So a STEP still gets an "Open in Slicer" handoff, and no longer gets a
+ * "Slice" button that could only ever fail — after reading, converting and
+ * uploading the file first.
+ *
+ * Kept as its own predicate rather than a flag on a shared one so the two
+ * questions cannot drift back together.
+ */
+export const API_SLICEABLE_FILE_TYPES = ['3mf', 'stl'] as const;
+
+/** Does a `LibraryFile.file_type` name something the sidecar can slice? */
+export function isApiSliceableFileType(fileType?: string | null): boolean {
+  const normalized = (fileType || '').toLowerCase();
+  return (API_SLICEABLE_FILE_TYPES as readonly string[]).includes(normalized);
+}

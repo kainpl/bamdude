@@ -2308,6 +2308,13 @@ export interface SliceResponse {
   filament_used_g: number;
   filament_used_mm: number;
   used_embedded_settings: boolean;
+  /**
+   * Set when the slice could not be written to the source's external folder and
+   * went to managed storage instead; names which reason. `null` on every normal
+   * slice. Surfaced as a warning — a silent fallback is what made the original
+   * bug impossible to see.
+   */
+  external_write_fallback?: string | null;
 }
 
 export interface SliceArchiveResponse {

@@ -6,7 +6,7 @@ import { ModelViewer } from './ModelViewer';
 import { GcodePreview } from './GcodePreview';
 import { Button } from './Button';
 import { api } from '../api/client';
-import { openInSlicer, type SlicerType } from '../utils/slicer';
+import { openInSlicer, type SlicerType, isApiSliceableFileType } from '../utils/slicer';
 import { useTheme } from '../contexts/ThemeContext';
 import type { ArchivePlatesResponse, LibraryFilePlatesResponse, PlateMetadata } from '../types/plates';
 
@@ -311,7 +311,11 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
   // BamDude's own SliceModal (same as the file-row Cog) instead of launching
   // an external slicer. Only for library previews of a sliceable source type,
   // and only when the caller wired an in-app handler.
-  const sliceableType = ['3mf', 'stl', 'step', 'stp'].includes((fileType || '').toLowerCase());
+  // ⚠️ The SIDECAR's list, not the desktop slicers'. A STEP opens fine in the
+  // desktop application — which is what the button below still does — but no
+  // slicer CLI can load one, so offering the in-app slice only ever produced a
+  // failure after the upload. See isApiSliceableFileType.
+  const sliceableType = isApiSliceableFileType(fileType);
   const useBamDudeSlicer = Boolean(isLibrary && settings?.use_slicer_api && onSliceWithBamDude && sliceableType);
 
   const handleOpenInSlicer = async () => {

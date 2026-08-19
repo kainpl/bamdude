@@ -56,6 +56,46 @@ def validate_print_filename(name: str) -> None:
         raise InvalidFilenameError(f"Filename exceeds {MAX_FILENAME_BYTES} bytes")
 
 
+def safe_path_component(name: str, *, fallback: str, max_bytes: int = MAX_FILENAME_BYTES) -> str:
+    """Reduce a display name to something usable as ONE path component.
+
+    ⚠️ A print's display name is not a filename. It comes from the ``print_name``
+    embedded in the 3MF — a MakerWorld title like "Planter Pot with Drip Tray,
+    12 cm / 5 inches" arrives verbatim — and several places build a directory or
+    a file out of it. A ``/`` in such a name is a path SEPARATOR, not a
+    character: the join silently gains a level, ``mkdir(parents=True)`` creates
+    the one it implied, and the write that follows lands on a parent nobody
+    made. The containment check on the join does not catch this — the deeper
+    path is still under the parent, so it passes and then fails on ENOENT.
+
+    Every character the SD-card rules already reject is REPLACED rather than
+    dropped, so the result still reads like the original: that set is exactly
+    the separators plus the Windows-reserved punctuation, which a Windows
+    install needs for the same reason Linux needs the separators. Leading and
+    trailing dots and spaces go too — so ``..`` reduces to nothing rather than
+    to a relative path — and the result is capped to what one component holds.
+
+    Returns *fallback* when nothing usable survives, so a name made entirely of
+    separators cannot produce an empty path component.
+
+    ⚠️ *max_bytes* is the budget for THIS COMPONENT ALONE. A caller that wraps
+    the result in a prefix or an extension must subtract those, or the composed
+    name can still exceed what the filesystem accepts.
+
+    ⚠️ Deliberately not applied to the name BamDude displays. A title is allowed
+    its punctuation, and refusing the slash would reject the very name this was
+    reported about.
+    """
+    cleaned = "".join("-" if (ch in INVALID_FILENAME_CHARS or ord(ch) < 0x20 or ord(ch) == 0x7F) else ch for ch in name)
+    cleaned = cleaned.strip(" .")
+
+    if len(cleaned.encode("utf-8")) > max_bytes:
+        # Cut on the byte limit, then drop any partial character the cut left.
+        cleaned = cleaned.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore").strip(" .")
+
+    return cleaned or fallback
+
+
 def is_sliced_file(filename: str) -> bool:
     """Whether this filename names something the printer can be handed.
 

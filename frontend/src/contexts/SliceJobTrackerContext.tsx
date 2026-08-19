@@ -164,10 +164,29 @@ export function SliceJobTrackerProvider({ children }: { children: ReactNode }) {
       dismissToast(toastIdFor(job.id));
 
       if (state.status === 'completed') {
-        showToast(
-          t('slice.completedToast', 'Sliced {{name}}', { name: prettifyFilename(job.sourceName) }),
-          'success',
-        );
+        // ⚠️ A slice whose source lives on an external mount but could not be
+        // written there lands in managed storage instead. It succeeded, so the
+        // success toast is honest — but saying only that is what made the
+        // original bug invisible: the file appeared in the right folder in the
+        // UI and never reached the share the user was looking at.
+        const fallback =
+          state.result && 'external_write_fallback' in state.result
+            ? state.result.external_write_fallback
+            : null;
+        if (fallback) {
+          showToast(
+            t('slice.externalFallbackToast', {
+              name: prettifyFilename(job.sourceName),
+              reason: fallback,
+            }),
+            'warning',
+          );
+        } else {
+          showToast(
+            t('slice.completedToast', 'Sliced {{name}}', { name: prettifyFilename(job.sourceName) }),
+            'success',
+          );
+        }
       } else if (state.status === 'failed') {
         // A failed slice surfaces as an acknowledge-only modal, not a toast:
         // the slicer's reason (e.g. "objects over the bed boundary") is

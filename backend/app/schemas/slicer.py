@@ -200,6 +200,15 @@ class SliceResponse(BaseModel):
     filament_used_g: float
     filament_used_mm: float
     used_embedded_settings: bool = False
+    # Set when the source lives in an external folder that could not receive
+    # the result (read-only, unreachable, not writable), so the file went to
+    # managed storage instead — and names which of those it was. ``None`` on
+    # every normal slice.
+    #
+    # ⚠️ Reported rather than silently absorbed. Filing the output somewhere the
+    # user is not looking, with no signal, is exactly what made this
+    # unreproducible from the UI.
+    external_write_fallback: str | None = None
 
 
 class SliceArchiveResponse(BaseModel):

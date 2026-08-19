@@ -3741,6 +3741,7 @@ export default {
     runningWithProgress: '{{name}} - {{stage}} ({{percent}}%) - {{elapsed}}',
     queuedToast: 'У черзі: {{name}} - {{elapsed}}',
     completedToast: 'Нарізано {{name}}',
+    externalFallbackToast: 'Нарізано {{name}}, але записати в зовнішню теку не вдалося ({{reason}}) — збережено в бібліотеку.',
     failedToast: 'Нарізання {{name}} не вдалося: {{detail}}',
     failed: 'Помилка нарізання',
     failedTitle: 'Помилка нарізання',
