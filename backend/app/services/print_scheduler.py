@@ -35,6 +35,7 @@ from backend.app.services.printer_manager import (
     supports_drying_while_printing,
 )
 from backend.app.services.smart_plug_manager import smart_plug_manager
+from backend.app.utils.filament_types import canonical_filament_type
 from backend.app.utils.threemf_tools import extract_nozzle_mapping_from_3mf
 
 logger = logging.getLogger(__name__)
@@ -59,22 +60,10 @@ _ACTIVE_PRINT_STATES: frozenset[str] = frozenset({"PREPARE", "SLICING", "RUNNING
 # loop for a genuinely wedged printer.
 DISPATCH_MAX_ATTEMPTS = 3
 
-# Filament type equivalence groups - types within the same group are
-# interchangeable on the printer side (Bambu Lab firmware treats them as compatible).
-_FILAMENT_TYPE_GROUPS: list[list[str]] = [
-    ["PA-CF", "PA12-CF", "PAHT-CF"],
-]
-_FILAMENT_EQUIV_MAP: dict[str, str] = {}
-for _group in _FILAMENT_TYPE_GROUPS:
-    _canonical = _group[0].upper()
-    for _t in _group:
-        _FILAMENT_EQUIV_MAP[_t.upper()] = _canonical
-
-
-def _canonical_filament_type(ftype: str) -> str:
-    """Return canonical type for equivalence matching."""
-    upper = ftype.upper()
-    return _FILAMENT_EQUIV_MAP.get(upper, upper)
+# Kept as a module-level name because ``auto_queue_eligibility`` imports it from
+# here and the two must never diverge. The table itself moved to
+# ``utils/filament_types``, which the frontend mirrors.
+_canonical_filament_type = canonical_filament_type
 
 
 def _mapping_is_all_unresolved(mapping: list | None) -> bool:
@@ -1000,6 +989,37 @@ class PrintScheduler:
             return ""
         return color.replace("#", "").lower()[:6]
 
+    def _nearer_colour(self, incumbent: dict | None, candidate: dict, required: str | None) -> dict:
+        """Whichever of the two looks closer to ``required``.
+
+        ⚠️ Among the trays the tolerance already admits, the FIRST one in tray
+        order used to win. Tray order is the order spools happen to sit in the
+        AMS, which has nothing to do with colour — so a print asking for a dark
+        green took whichever near-enough spool was in the lower slot, even with
+        a visibly closer one two slots along.
+
+        ⚠️ Ranked by CIEDE2000, not by RGB distance. RGB measures how far apart
+        the NUMBERS are, not how far apart the colours look, and it overweights
+        blue badly enough to invert the answer on real spool pairs. Eligibility
+        is untouched — still the RGB tolerance in ``_colors_are_similar`` — so
+        this only reorders trays that already qualified.
+
+        A candidate whose colour cannot be read loses to any incumbent and wins
+        only when there is none: unreadable is not "far", but it is not evidence
+        of nearness either.
+        """
+        if incumbent is None:
+            return candidate
+        from backend.app.utils.color_utils import perceptual_color_distance
+
+        incumbent_distance = perceptual_color_distance(incumbent.get("color", ""), required)
+        candidate_distance = perceptual_color_distance(candidate.get("color", ""), required)
+        if candidate_distance is None:
+            return incumbent
+        if incumbent_distance is None:
+            return candidate
+        return candidate if candidate_distance < incumbent_distance else incumbent
+
     def _colors_are_similar(self, color1: str | None, color2: str | None, threshold: int = 40) -> bool:
         """Check if two colors are visually similar within a threshold."""
         hex1 = self._normalize_color_for_compare(color1)
@@ -1238,8 +1258,7 @@ class PrintScheduler:
                             if not exact_match:
                                 exact_match = f
                         elif self._colors_are_similar(f_color, req_color):
-                            if not similar_match:
-                                similar_match = f
+                            similar_match = self._nearer_colour(similar_match, f, req_color)
                         elif not idx_type_only:
                             # Right variant, wrong colour — last resort only.
                             # Blocking pass 2 with it would hide a correctly
@@ -1259,8 +1278,7 @@ class PrintScheduler:
                         if not exact_match:
                             exact_match = f
                     elif self._colors_are_similar(f_color, req_color):
-                        if not similar_match:
-                            similar_match = f
+                        similar_match = self._nearer_colour(similar_match, f, req_color)
                     elif not type_only_match:
                         type_only_match = f
 
