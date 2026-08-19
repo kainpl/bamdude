@@ -42,14 +42,68 @@ naming-template ones.
 from __future__ import annotations
 
 import io
+import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 import qrcode
 from reportlab.lib.colors import Color, HexColor, black, white
 from reportlab.lib.pagesizes import A4, letter
 from reportlab.lib.units import mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas as rl_canvas
+
+logger = logging.getLogger(__name__)
+
+
+# ── Fonts ────────────────────────────────────────────────────────────────────
+#
+# reportlab's built-in Type-1 faces are WinAnsi-encoded. Handed a character they
+# cannot encode they do NOT raise — they switch to ZapfDingbats, whose ``n``
+# glyph is a filled black square. So a spool named "Чорний матовий" printed as
+# ``■■■■■■`` on every template, while Latin names were fine, which is exactly
+# why it went unnoticed. ``uk`` is one of two first-class locales.
+#
+# Arimo (SIL OFL) replaces them: Latin + Cyrillic + Greek, and metric-compatible
+# with Arial and therefore Helvetica — measured at ±0.1% across regular, bold
+# and italic. That matters beyond taste: the layout below truncates on
+# ``stringWidth``, so a wider face would silently start clipping names that fit
+# today. Provenance and the rejected alternative: ``data/fonts/README.md``.
+_FONT_DIR = Path(__file__).resolve().parent.parent / "data" / "fonts"
+_FONT_FILES: dict[str, Path] = {
+    "Arimo": _FONT_DIR / "Arimo-Regular.ttf",
+    "Arimo-Bold": _FONT_DIR / "Arimo-Bold.ttf",
+    "Arimo-Italic": _FONT_DIR / "Arimo-Italic.ttf",
+}
+
+
+def _register_label_fonts() -> tuple[str, str, str]:
+    """Register the shipped TTFs, or fall back to the built-in faces.
+
+    Degrading rather than raising keeps the promise the rest of this module
+    makes — a label should always print, and a missing font file is not a reason
+    to fail an inventory action. The fallback is loud in the log and pinned by a
+    test, because a *silent* fallback is precisely how the Cyrillic bug hid.
+    """
+    try:
+        for name, path in _FONT_FILES.items():
+            pdfmetrics.registerFont(TTFont(name, str(path)))
+    except Exception:
+        logger.error(
+            "Label fonts could not be registered from %s — falling back to the built-in "
+            "faces. Non-Latin text on labels will print as filled squares.",
+            _FONT_DIR,
+            exc_info=True,
+        )
+        return "Helvetica", "Helvetica-Bold", "Helvetica-Oblique"
+
+    pdfmetrics.registerFontFamily("Arimo", normal="Arimo", bold="Arimo-Bold", italic="Arimo-Italic")
+    return "Arimo", "Arimo-Bold", "Arimo-Italic"
+
+
+_FONT_REGULAR, _FONT_BOLD, _FONT_ITALIC = _register_label_fonts()
 
 TemplateName = Literal[
     "ams_holder_74x33",
@@ -290,8 +344,8 @@ def _draw_label_tight(
     # easiest thing to read on a small AMS holder at arm's length.
     brand_size = 6.5
     if data.brand:
-        c.setFont("Helvetica-Bold", brand_size)
-        brand = _truncate_to_width(c, data.brand, "Helvetica-Bold", brand_size, text_w)
+        c.setFont(_FONT_BOLD, brand_size)
+        brand = _truncate_to_width(c, data.brand, _FONT_BOLD, brand_size, text_w)
         c.drawString(text_x, y + h - pad - brand_size, brand)
 
     # Second line: material + subtype, small
@@ -299,8 +353,8 @@ def _draw_label_tight(
     sub_line = " ".join(filter(None, [data.material, data.subtype]))
     sub_y_baseline = y + h - pad - brand_size - 0.6 - sub_size
     if sub_line:
-        c.setFont("Helvetica", sub_size)
-        sub_line = _truncate_to_width(c, sub_line, "Helvetica", sub_size, text_w)
+        c.setFont(_FONT_REGULAR, sub_size)
+        sub_line = _truncate_to_width(c, sub_line, _FONT_REGULAR, sub_size, text_w)
         c.drawString(text_x, sub_y_baseline, sub_line)
 
     # Third line (when there's room): hex code, tiny — useful when the user
@@ -311,13 +365,13 @@ def _draw_label_tight(
         hex_y = sub_y_baseline - 0.4 - hex_size
         # Don't render if it'd collide with the spool ID at the bottom.
         if hex_y > inner_y + 13:
-            c.setFont("Helvetica", hex_size)
+            c.setFont(_FONT_REGULAR, hex_size)
             c.drawString(text_x, hex_y, hex_code)
 
     # Bottom: BIG spool ID — the killer field at-a-glance.
     id_size = 13
-    c.setFont("Helvetica-Bold", id_size)
-    id_text = _truncate_to_width(c, f"#{data.spool_id}", "Helvetica-Bold", id_size, text_w)
+    c.setFont(_FONT_BOLD, id_size)
+    id_text = _truncate_to_width(c, f"#{data.spool_id}", _FONT_BOLD, id_size, text_w)
     c.drawString(text_x, inner_y + 0.5, id_text)
 
 
@@ -372,16 +426,16 @@ def _draw_label_roomy(
     # Brand — bumped to bold + larger per the #809 follow-up.
     if line1:
         size = 8
-        c.setFont("Helvetica-Bold", size)
-        text = _truncate_to_width(c, line1, "Helvetica-Bold", size, text_w)
+        c.setFont(_FONT_BOLD, size)
+        text = _truncate_to_width(c, line1, _FONT_BOLD, size, text_w)
         cursor_y -= size
         c.drawString(text_x, cursor_y, text)
         cursor_y -= 1.2
 
     if line2:
         size = 7
-        c.setFont("Helvetica", size)
-        text = _truncate_to_width(c, line2, "Helvetica", size, text_w)
+        c.setFont(_FONT_REGULAR, size)
+        text = _truncate_to_width(c, line2, _FONT_REGULAR, size, text_w)
         cursor_y -= size
         c.drawString(text_x, cursor_y, text)
         cursor_y -= 1.5
@@ -390,30 +444,30 @@ def _draw_label_roomy(
     # spools apart when the swatch is small or the user is colour-blind.
     if hex_code:
         size = 6.5
-        c.setFont("Helvetica", size)
+        c.setFont(_FONT_REGULAR, size)
         cursor_y -= size
         c.drawString(text_x, cursor_y, hex_code)
         cursor_y -= 1.2
 
     if name and name != line1:
         size = 9
-        c.setFont("Helvetica-Bold", size)
-        text = _truncate_to_width(c, name, "Helvetica-Bold", size, text_w)
+        c.setFont(_FONT_BOLD, size)
+        text = _truncate_to_width(c, name, _FONT_BOLD, size, text_w)
         cursor_y -= size
         c.drawString(text_x, cursor_y, text)
         cursor_y -= 1.2
 
     if data.storage_location:
         size = 6.5
-        c.setFont("Helvetica-Oblique", size)
-        text = _truncate_to_width(c, data.storage_location, "Helvetica-Oblique", size, text_w)
+        c.setFont(_FONT_ITALIC, size)
+        text = _truncate_to_width(c, data.storage_location, _FONT_ITALIC, size, text_w)
         cursor_y -= size
         c.drawString(text_x, cursor_y, text)
 
     # Spool ID — anchored at the bottom of the text column, big and bold.
     id_size = 16
-    c.setFont("Helvetica-Bold", id_size)
-    id_text = _truncate_to_width(c, f"#{data.spool_id}", "Helvetica-Bold", id_size, text_w)
+    c.setFont(_FONT_BOLD, id_size)
+    id_text = _truncate_to_width(c, f"#{data.spool_id}", _FONT_BOLD, id_size, text_w)
     c.drawString(text_x, inner_y + 0.5, id_text)
 
 

@@ -18,10 +18,14 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
+      # OFL.txt — vendored licence text for the label fonts. It must stay
+      # byte-identical to upstream so a re-sync can be diffed against it;
+      # normalising a trailing space would show as a diff forever. Same
+      # reasoning as the calib_assets exclusion below.
       - id: trailing-whitespace
-        exclude: ^static/
+        exclude: ^(static/|backend/app/data/fonts/OFL\.txt$)
       - id: end-of-file-fixer
-        exclude: ^static/
+        exclude: ^(static/|backend/app/data/fonts/OFL\.txt$)
       - id: check-yaml
         # ``--unsafe`` allows custom YAML tags through. Kept on so any
         # future YAML using non-standard tags doesn't fail this hook.
