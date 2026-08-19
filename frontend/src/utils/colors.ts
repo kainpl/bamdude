@@ -55,8 +55,86 @@ export function __resetColorCatalogForTests(): void {
  * Convert hex color to basic color name using HSL analysis.
  * Used as fallback when hex is not in the runtime catalog.
  */
-export function hexToColorName(hex: string | null | undefined): string {
-  if (!hex || hex.length < 6) return 'Unknown';
+/**
+ * Colour families, in the order the Inventory's Color column sorts them.
+ *
+ * Chromatic families run in rainbow order with Brown after them — it is a dark
+ * orange by hue and would otherwise split the oranges in half — then the
+ * neutrals light-to-dark, then Clear.
+ */
+export const COLOR_FAMILY_ORDER = [
+  'Red',
+  'Orange',
+  'Yellow',
+  'Green',
+  'Cyan',
+  'Blue',
+  'Purple',
+  'Pink',
+  'Brown',
+  'White',
+  'Light Gray',
+  'Gray',
+  'Dark Gray',
+  'Black',
+  'Clear',
+] as const;
+
+export type ColorFamily = (typeof COLOR_FAMILY_ORDER)[number];
+
+/** Families whose hue carries no meaning — see `colorSortKey`. */
+const ACHROMATIC_FAMILIES = new Set<ColorFamily>([
+  'White',
+  'Light Gray',
+  'Gray',
+  'Dark Gray',
+  'Black',
+  'Clear',
+]);
+
+interface Hsl {
+  h: number;
+  s: number;
+  l: number;
+}
+
+/** Parse 6/8-char hex (with or without '#') to HSL, or null if unparseable. */
+function hexToHsl(hex: string | null | undefined): Hsl | null {
+  if (!hex || hex.length < 6) return null;
+  const cleanHex = hex.replace('#', '');
+  const r = parseInt(cleanHex.substring(0, 2), 16);
+  const g = parseInt(cleanHex.substring(2, 4), 16);
+  const b = parseInt(cleanHex.substring(4, 6), 16);
+  if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) return null;
+
+  const max = Math.max(r, g, b) / 255;
+  const min = Math.min(r, g, b) / 255;
+  const l = (max + min) / 2;
+
+  let h = 0;
+  let s = 0;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    const rNorm = r / 255, gNorm = g / 255, bNorm = b / 255;
+    if (max === rNorm) h = ((gNorm - bNorm) / d + (gNorm < bNorm ? 6 : 0)) / 6;
+    else if (max === gNorm) h = ((bNorm - rNorm) / d + 2) / 6;
+    else h = ((rNorm - gNorm) / d + 4) / 6;
+  }
+
+  return { h: h * 360, s, l };
+}
+
+/**
+ * Classify a hex colour into one of `COLOR_FAMILY_ORDER`, or null when the
+ * value cannot be parsed.
+ *
+ * ⚠️ The single source of truth for BOTH the fallback colour name shown when a
+ * hex is not in the catalog and the order the Color column sorts in, so the two
+ * cannot drift into disagreeing about what counts as brown or grey.
+ */
+export function colorFamily(hex: string | null | undefined): ColorFamily | null {
+  if (!hex || hex.length < 6) return null;
   const cleanHex = hex.replace('#', '');
   // Alpha=00 → fully transparent. Name it 'Clear' before falling through to
   // RGB-based naming, otherwise #00000000 (Bambu's transparent code) would
@@ -103,6 +181,57 @@ export function hexToColorName(hex: string | null | undefined): string {
   if (h < 260) return 'Blue';
   if (h < 290) return 'Purple';
   return 'Pink';
+}
+
+/**
+ * Convert hex color to basic color name using HSL analysis.
+ * Used as fallback when hex is not in the runtime catalog.
+ */
+export function hexToColorName(hex: string | null | undefined): string {
+  return colorFamily(hex) ?? 'Unknown';
+}
+
+/**
+ * Sort key placing a spool colour in rainbow order.
+ *
+ * Returns a fixed-width string so it drops straight into the Inventory table's
+ * existing ``string | number`` comparison. Ascending = Red first.
+ *
+ * ⚠️ A straight hue → saturation → lightness sort does not survive contact with
+ * a real inventory: a near-neutral still has a hue, and it can be anything.
+ * Measured on a 30-spool inventory, a titanium grey (hue 210°, saturation 0.04)
+ * landed among the blues and a warm grey next to the reds, and the oranges were
+ * split around brown. Black, white and pure silver happen to clump correctly —
+ * zero saturation sorts first within hue 0 — but anything a shade off neutral
+ * flies into the colours.
+ *
+ * So the FAMILY leads and the continuous sort runs inside it. Within a neutral
+ * family hue is discarded rather than sorted on, for the same reason it is not
+ * trusted to pick the family: ordering greys by 210° against 340° is ordering
+ * them by noise. Neutrals go light-to-dark instead, matching the order of the
+ * families themselves.
+ *
+ * ⚠️ Families come from ``colorFamily`` — the same classifier that names a
+ * colour the catalog does not know — so the swatch column and the Color Name
+ * column cannot drift into disagreeing about what counts as brown or grey.
+ *
+ * Unparseable or missing colours sort last ascending, so a spool with no colour
+ * recorded never leads the list.
+ */
+export function colorSortKey(rgba: string | null | undefined): string {
+  const family = colorFamily(rgba);
+  if (!family) return '99|0000|0000|0000';
+
+  const rank = String(COLOR_FAMILY_ORDER.indexOf(family)).padStart(2, '0');
+  const hsl = hexToHsl(rgba) ?? { h: 0, s: 0, l: 0 };
+  const pad4 = (n: number) => String(Math.round(n)).padStart(4, '0');
+
+  if (ACHROMATIC_FAMILIES.has(family)) {
+    // Lightness descending, so lighter shades lead within the family just as
+    // White leads Black across families. Hue is deliberately zeroed.
+    return `${rank}|0000|${pad4(1000 - hsl.l * 1000)}|${pad4(hsl.s * 1000)}`;
+  }
+  return `${rank}|${pad4(hsl.h * 10)}|${pad4(hsl.s * 1000)}|${pad4(hsl.l * 1000)}`;
 }
 
 /**

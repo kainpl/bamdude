@@ -24,7 +24,9 @@ import { BulkEditSpoolsModal } from '../components/BulkEditSpoolsModal';
 import { LocationsModal } from '../components/LocationsModal';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
-import { resolveSpoolColorName } from '../utils/colors';
+import { resolveSpoolColorName,
+  colorSortKey,
+} from '../utils/colors';
 import { useColorCatalogVersion } from '../hooks/useColorCatalogVersion';
 import { getCurrencySymbol } from '../utils/currency';
 import { formatDateInput, parseUTCDate, type DateFormat } from '../utils/date';
@@ -520,8 +522,14 @@ const columnSortValues: Record<string, (spool: InventorySpool, assignmentMap: Re
   last_used_time: (s) => s.last_used || '',
   material: (s) => (s.material || '').toLowerCase(),
   subtype: (s) => (s.subtype || '').toLowerCase(),
+  // The NAME column sorts by name — alphabetical is what it says on the header.
   color_name: (s) => (s.color_name || '').toLowerCase(),
-  color_combined: (s) => (s.color_name || '').toLowerCase(),
+  // ⚠️ The swatch columns sort by COLOUR. The swatch column had no extractor at
+  // all, so its header ignored clicks; the combined one sorted by name, which
+  // files a titanium grey under T and a burgundy under B — an ordering nobody
+  // reading a row of swatches can follow.
+  rgba: (s) => colorSortKey(s.rgba),
+  color_combined: (s) => colorSortKey(s.rgba),
   brand: (s) => (s.brand || '').toLowerCase(),
   slicer_filament: (s) => (s.slicer_filament_name || s.slicer_filament || '').toLowerCase(),
   location: (s, am) => {
