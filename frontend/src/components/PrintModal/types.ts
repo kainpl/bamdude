@@ -269,6 +269,15 @@ export interface PlateSelectorProps {
   onDeselectAll?: () => void;
   /** Whether multi-select (checkboxes) is enabled - true in add-to-queue mode */
   multiSelect?: boolean;
+  /** How many runs of each plate are wanted, keyed by plate index. A plate
+   *  absent from the map takes the dialog's shared Quantity — which is what
+   *  every plate took before per-plate counts existed. */
+  quantities?: Record<number, number>;
+  /** Omitted where per-plate counts make no sense (reprint, edit). The stepper
+   *  is only drawn when this is supplied AND more than one plate is selected:
+   *  with one plate the shared Quantity field already answers the question, and
+   *  two controls for it would be two sources of truth. */
+  onQuantityChange?: (plateIndex: number, quantity: number) => void;
 }
 
 /**

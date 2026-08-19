@@ -253,7 +253,19 @@ async def add_to_auto_queue(
     )
     max_pos = int(max_pos_q.scalar() or 0)
 
-    batch_id = str(uuid.uuid4()) if (data.quantity > 1 or len(plate_ids) > 1) else None
+    # How many runs each plate was asked for. Absent for a plate → the shared
+    # ``quantity``, which is what every caller sent before per-plate counts
+    # existed.
+    per_plate = data.plate_quantities or {}
+
+    def _quantity_for(plate: int | None) -> int:
+        return per_plate.get(plate, data.quantity) if plate is not None else data.quantity
+
+    total_items = sum(_quantity_for(p) for p in plate_ids)
+    # A batch is "these rows were created together", so it is the TOTAL that
+    # decides — two plates at one copy each is still a batch, and one plate at
+    # three is too.
+    batch_id = str(uuid.uuid4()) if total_items > 1 else None
 
     # Raw override dicts; narrowed per-plate inside the loop below (#2551).
     overrides_list = [o.model_dump() for o in data.filament_overrides] if data.filament_overrides else []
@@ -286,7 +298,7 @@ async def add_to_auto_queue(
         plate_overrides = overrides_for_plate(overrides_list, file_path, plate_id)
         plate_overrides_json = json.dumps(plate_overrides) if plate_overrides else None
 
-        for _ in range(data.quantity):
+        for _ in range(_quantity_for(plate_id)):
             pos_offset += 1
             items.append(
                 AutoQueueItem(

@@ -5654,6 +5654,9 @@ export default {
     printOptions: 'Print Options',
     quantity: 'Quantity',
     quantityHint: 'Print multiple copies. Extras are queued after the first.',
+    copiesOfThisPlate: 'Copies of this plate',
+    decreaseQuantity: 'Fewer',
+    increaseQuantity: 'More',
 
     // Dispatch mode toggle (add-to-queue only)
     dispatchModeSpecific: 'Specific printer',

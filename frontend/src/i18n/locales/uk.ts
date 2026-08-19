@@ -5684,6 +5684,9 @@ export default {
     printOptions: 'Параметри друку',
     quantity: 'Кількість',
     quantityHint: 'Кілька копій. Додаткові стають у чергу після першої.',
+    copiesOfThisPlate: 'Копій цієї плити',
+    decreaseQuantity: 'Менше',
+    increaseQuantity: 'Більше',
 
     // Перемикач режиму призначення (тільки в add-to-queue)
     dispatchModeSpecific: 'Конкретний принтер',

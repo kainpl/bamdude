@@ -6,6 +6,8 @@
 
 ### Added
 
+- **Each plate of a multi-plate file can be printed a different number of times.** One shared Quantity field could only say "three of everything" — one plate of brackets and three of the clip that keeps breaking meant queueing each plate as its own submission and keeping the counts in your head. Select the plates, set a count on each, queue once. A single plate is unchanged: the Quantity field is still the answer, and the per-plate control only appears once a second plate is selected.
+
 - **Telegram can now aim a job at a room, not just at a printer model.** "Any P1S" is a useful answer on a one-room farm and a poor one when the P1S you meant is upstairs. Choosing a model in the bot now offers the places that actually hold one, and the job is routed there — the same location filter the print dialog has had, reaching the shelves inside a workshop you pick. The step is skipped entirely when there is nothing to choose between, so a farm with no locations set up sees no extra tap.
 
 ### Fixed

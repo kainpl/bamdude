@@ -3159,6 +3159,10 @@ export interface AutoQueueItemCreate {
   force_color_match?: boolean;
   plate_id?: number | null;
   plate_ids?: number[] | null;
+  /** Runs wanted per plate, keyed by plate index. A plate left out takes
+   *  ``quantity``. Only the auto-queue needs this — the per-printer route gets
+   *  one request per plate and carries the count in each. */
+  plate_quantities?: Record<number, number> | null;
   bed_levelling?: CalibrationMode;
   flow_cali?: CalibrationMode;
   layer_inspect?: boolean;

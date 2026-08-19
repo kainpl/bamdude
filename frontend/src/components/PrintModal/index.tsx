@@ -217,6 +217,14 @@ export function PrintModal({
 
   // Quantity (batch). Only exposed for reprint + add-to-queue modes.
   const [quantity, setQuantity] = useState<number>(1);
+  // Per-plate overrides of ``quantity``, keyed by plate index. A plate absent
+  // here takes the shared value — which is what every plate took before this
+  // existed, so the common single-plate flow is untouched. Changing the shared
+  // Quantity clears the overrides: it is the bulk setter, and leaving stale
+  // per-plate numbers behind it would make the visible field a lie.
+  const [plateQuantities, setPlateQuantities] = useState<Record<number, number>>({});
+  const quantityForPlate = (plateIndex: number | null | undefined) =>
+    (plateIndex != null ? plateQuantities[plateIndex] : undefined) ?? quantity;
 
   // Dispatch mode: 'specific' = pick exact printer(s); 'auto' = route via auto-queue.
   // Only meaningful for add-to-queue mode (reprint is always specific, edit-queue-item
@@ -840,10 +848,21 @@ export function PrintModal({
           auto_off_after: scheduleOptions.autoOffAfter,
           require_previous_success: scheduleOptions.requirePreviousSuccess,
           quantity,
+          // Auto-queue takes every plate in ONE request, so per-plate counts
+          // have to travel as a map. (The per-printer tier gets one request per
+          // plate and simply carries a different ``quantity`` in each.) Sent
+          // only when something was actually overridden, so an unchanged
+          // dialog still produces the payload it always did.
+          plate_quantities: Object.keys(plateQuantities).length > 0
+            ? Object.fromEntries(platesToQueue.map((index) => [index, quantityForPlate(index)]))
+            : undefined,
         };
         await api.addToAutoQueue(payload);
         persistPreference();
-        showToast(quantity > 1 ? t('queue.itemsQueued', { count: quantity }) : t('queue.printQueued'));
+        const queuedCount = platesToQueue.length > 0
+          ? platesToQueue.reduce((sum, index) => sum + quantityForPlate(index), 0)
+          : quantity;
+        showToast(queuedCount > 1 ? t('queue.itemsQueued', { count: queuedCount }) : t('queue.printQueued'));
         queryClient.invalidateQueries({ queryKey: ['auto-queue'] });
         queryClient.invalidateQueries({ queryKey: ['queue'] });
         onSuccess?.();
@@ -986,7 +1005,7 @@ export function PrintModal({
         : undefined,
       ...printOptions,
       ...getSwapPayloadForPrinter(printerId),
-      quantity: mode === 'edit-queue-item' ? 1 : quantity,
+      quantity: mode === 'edit-queue-item' ? 1 : quantityForPlate(plateId),
       project_id: projectId,
       };
     };
@@ -1323,6 +1342,14 @@ export function PrintModal({
               onSelectAll={mode === 'add-to-queue' ? () => setSelectedPlates(new Set(plates.map(p => p.index))) : undefined}
               onDeselectAll={mode === 'add-to-queue' ? () => setSelectedPlates(new Set()) : undefined}
               multiSelect={mode === 'add-to-queue'}
+              quantities={Object.fromEntries(
+                [...selectedPlates].map((index) => [index, quantityForPlate(index)]),
+              )}
+              onQuantityChange={
+                mode === 'add-to-queue'
+                  ? (plateIndex, value) => setPlateQuantities((prev) => ({ ...prev, [plateIndex]: value }))
+                  : undefined
+              }
             />
 
             {/* Auto-distribute mode controls — replaces PrinterSelector */}
@@ -1483,7 +1510,7 @@ export function PrintModal({
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => setQuantity(q => Math.max(1, q - 1))}
+                    onClick={() => { setQuantity(q => Math.max(1, q - 1)); setPlateQuantities({}); }}
                     disabled={quantity <= 1}
                     className="w-8 h-8 rounded bg-bambu-dark border border-bambu-dark-tertiary text-white hover:border-bambu-green disabled:opacity-40"
                   >−</button>
@@ -1494,13 +1521,13 @@ export function PrintModal({
                     value={quantity}
                     onChange={(e) => {
                       const v = parseInt(e.target.value, 10);
-                      if (Number.isFinite(v)) setQuantity(Math.min(50, Math.max(1, v)));
+                      if (Number.isFinite(v)) { setQuantity(Math.min(50, Math.max(1, v))); setPlateQuantities({}); }
                     }}
                     className="w-14 text-center bg-bambu-dark border border-bambu-dark-tertiary rounded text-white py-1"
                   />
                   <button
                     type="button"
-                    onClick={() => setQuantity(q => Math.min(50, q + 1))}
+                    onClick={() => { setQuantity(q => Math.min(50, q + 1)); setPlateQuantities({}); }}
                     disabled={quantity >= 50}
                     className="w-8 h-8 rounded bg-bambu-dark border border-bambu-dark-tertiary text-white hover:border-bambu-green disabled:opacity-40"
                   >+</button>

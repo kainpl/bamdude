@@ -13,7 +13,7 @@ by *copying* it into that printer's print_queue.
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, PlainSerializer, model_validator
+from pydantic import BaseModel, Field, PlainSerializer, field_validator, model_validator
 
 from backend.app.schemas.calibration_mode import CalibrationMode
 from backend.app.schemas.print_queue import serialize_utc_datetime
@@ -54,6 +54,12 @@ class AutoQueueItemCreate(BaseModel):
     # Single plate_id also accepted for parity with print_queue API.
     plate_id: int | None = None
     plate_ids: list[int] | None = None
+    # How many runs of a GIVEN plate, keyed by plate id. One shared Quantity
+    # cannot say "plate 1 once, plate 2 twice" (upstream #342), and a
+    # multi-plate file is exactly where that comes up. Absent — or absent for a
+    # particular plate — falls back to ``quantity``, so every existing caller
+    # keeps its meaning.
+    plate_quantities: dict[int, int] | None = None
 
     # Print options (copied to print_queue on assignment). Tri-state accepted
     # (off/auto/on, or legacy bool), but auto-queue has no *_mode column, so
@@ -84,6 +90,22 @@ class AutoQueueItemCreate(BaseModel):
     @classmethod
     def _no_legacy_location(cls, values):
         return reject_legacy_key(values, "target_location", "target_location_id")
+
+    @field_validator("plate_quantities")
+    @classmethod
+    def _plate_quantities_in_range(cls, value: dict[int, int] | None) -> dict[int, int] | None:
+        """Same 1..50 bound ``quantity`` carries.
+
+        Bounded on the field rather than clamped in the route: a caller asking
+        for 200 copies of a plate has made a mistake, and silently giving them
+        50 hides it.
+        """
+        if value is None:
+            return None
+        for plate_id, count in value.items():
+            if count < 1 or count > 50:
+                raise ValueError(f"plate {plate_id}: quantity must be between 1 and 50")
+        return value
 
 
 class AutoQueueItemUpdate(BaseModel):
