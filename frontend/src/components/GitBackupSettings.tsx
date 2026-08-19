@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+
+import { GitRestoreModal } from './GitRestoreModal';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -97,6 +99,7 @@ export function GitBackupSettings() {
   const dateFormat = (settings?.date_format ?? 'system') as DateFormat;
 
   // Local state for form
+  const [showGitRestore, setShowGitRestore] = useState(false);
   const [provider, setProvider] = useState<GitProvider>('github');
   const [apiBaseUrl, setApiBaseUrl] = useState('');
   const [repoUrl, setRepoUrl] = useState('');
@@ -819,6 +822,18 @@ export function GitBackupSettings() {
                           {testLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
                           {t('backup.test')}
                         </Button>
+                        {/* Read side of the same repository. Disabled while a
+                            restore is already running — the two would rewrite
+                            the same rows. */}
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => setShowGitRestore(true)}
+                          disabled={status.restore_running}
+                        >
+                          <RotateCcw className="w-4 h-4" />
+                          {t('backup.restoreFromGit.button')}
+                        </Button>
                       </>
                     )}
                   </>
@@ -1438,6 +1453,8 @@ export function GitBackupSettings() {
           </div>
         </div>
       )}
+
+      {showGitRestore && <GitRestoreModal onClose={() => setShowGitRestore(false)} />}
     </div>
   );
 }

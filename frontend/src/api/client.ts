@@ -2230,6 +2230,73 @@ export interface SlicerPresetValues {
   reason: SlicerPresetValuesReason;
 }
 
+// --- Git backup restore ------------------------------------------------------
+
+export type RestoreCategory = 'kprofiles' | 'settings' | 'spools' | 'archives';
+
+export interface GitCommitInfo {
+  sha: string;
+  message: string;
+  author: string;
+  date: string;
+}
+
+export interface GitCommitListResponse {
+  success: boolean;
+  message: string;
+  branch: string;
+  commits: GitCommitInfo[];
+}
+
+export type GitRestoreParams = Record<string, string | number>;
+
+export interface GitRestorePreviewCategory {
+  category: RestoreCategory;
+  available: boolean;
+  item_count: number;
+  /** English rendering. Used as i18next's defaultValue, never shown on its own. */
+  detail: string | null;
+  /** Key under backup.restoreFromGit.details, or null when there is no caveat. */
+  detail_code: string | null;
+  detail_params: GitRestoreParams;
+}
+
+export interface GitRestorePreview {
+  success: boolean;
+  message: string;
+  ref: string;
+  commit: GitCommitInfo | null;
+  metadata_version: string | null;
+  categories: GitRestorePreviewCategory[];
+}
+
+export interface GitRestoreRequest {
+  ref?: string;
+  categories: RestoreCategory[];
+  overwrite_existing?: boolean;
+}
+
+export interface GitRestoreNote {
+  code: string;
+  params: GitRestoreParams;
+  message: string;
+}
+
+export interface GitRestoreCategoryResult {
+  restored: number;
+  skipped: number;
+  failed: number;
+  notes: GitRestoreNote[];
+}
+
+export interface GitRestoreResponse {
+  success: boolean;
+  message: string;
+  log_id: number | null;
+  ref: string | null;
+  results: Record<string, GitRestoreCategoryResult>;
+}
+
 export interface SliceRequest {
   // "Slice as designed" (upstream #2611). 3MF only: slice using the file's
   // embedded project_settings.config (the designer's own wall count, infill,
@@ -3594,6 +3661,10 @@ export interface GitBackupStatus {
   configured: boolean;
   enabled: boolean;
   is_running: boolean;
+  /** Separate from `is_running`: the two block different things. A running
+   * backup only stops another backup; a running restore is rewriting the very
+   * rows a backup would read. */
+  restore_running: boolean;
   progress: string | null;
   last_backup_at: string | null;
   last_backup_status: string | null;
@@ -8516,6 +8587,13 @@ export const api = {
     }),
   deleteSlicerPipeline: (id: number) =>
     request<void>(`/slicer-pipelines/${id}`, { method: 'DELETE' }),
+  getGitBackupCommits: (limit = 20) =>
+    request<GitCommitListResponse>(`/git-backup/commits?limit=${limit}`),
+  getGitRestorePreview: (ref: string) =>
+    request<GitRestorePreview>(`/git-backup/restore/preview?ref=${encodeURIComponent(ref)}`),
+  restoreFromGit: (body: GitRestoreRequest) =>
+    request<GitRestoreResponse>('/git-backup/restore', { method: 'POST', body: JSON.stringify(body) }),
+
   getSlicerPresetValues: (ref: PresetRef) =>
     request<SlicerPresetValues>(
       `/slicer/preset-values?source=${encodeURIComponent(ref.source)}&id=${encodeURIComponent(ref.id)}`,

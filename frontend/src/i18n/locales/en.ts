@@ -1686,6 +1686,9 @@ export default {
 
   // Settings page
   settings: {
+    sliceEngine: 'Slice engine',
+    sliceEngineSidecar: 'Server sidecar',
+    sliceEngineSidecarHint: 'Slicing runs on the server, in the slicer sidecar container.',
     zigbee: {
       removedLeft: 'Device removed from the network.',
       removedForced: 'Device removed here, but it never answered — it keeps the network key and may rejoin when powered on. Reset it at the device to be sure.',
@@ -3729,9 +3732,6 @@ export default {
     processSettingsHint: "Adjust the picked preset for this slice. Anything you don't touch stays as the preset defines it.",
     processSettingsChanged: '{{count}} changed',
     processSettingsUnchanged: 'Preset defaults',
-    sliceEngine: 'Slice engine',
-    sliceEngineSidecar: 'Server sidecar',
-    sliceEngineSidecarHint: 'Slicing runs on the server, in the slicer sidecar container.',
     autoArrange: 'Auto-arrange on the bed',
     autoArrangeHint: 'Let the slicer reposition objects before slicing. Applied automatically when re-slicing for a different nozzle class.',
     autoOrient: 'Auto-orient objects',
@@ -5924,6 +5924,72 @@ export default {
     },
     // Diagnosis of an unwritable backup directory (#2544). `code` from the API
     // selects the message; `remedy` is rendered verbatim as a snippet.
+    restoreFromGit: {
+      button: 'Restore from Git',
+      title: 'Restore from Git Backup',
+      subtitle: 'Pick a commit and choose what to restore',
+      commitLabel: 'Backup commit',
+      latestCommit: 'Latest backup (branch tip)',
+      categoriesLabel: 'What to restore',
+      inspecting: 'Reading backup contents...',
+      itemCount: '{{count}} in backup',
+      overwriteLabel: 'Overwrite existing entries',
+      overwriteOn: 'Existing entries will be updated from the backup.',
+      overwriteOff: 'Only missing entries are added; existing ones are left untouched.',
+      selectedCount: '{{count}} selected',
+      restoring: 'Restoring...',
+      confirmTitle: 'Restore from backup?',
+      confirmMessage: 'The selected categories will be restored from this commit. Missing entries are added; existing entries stay as they are.',
+      confirmMessageOverwrite: 'The selected categories will be restored from this commit, overwriting entries that already exist locally. This cannot be undone.',
+      kprofilesOverwriteCaveat: 'K-profiles are the exception: writing a slot always replaces the calibration on the printer.',
+      tally: '{{restored}} restored, {{skipped}} skipped, {{failed}} failed',
+      reloadHint: 'Reload BamDude so the restored data appears everywhere.',
+      partialHint: 'The categories listed above finished and are on disk. Any that are missing did not run.',
+      failed: 'Restore failed.',
+      loadFailed: 'Could not read the backup repository.',
+      // Preview caveats. The server sends detail_code + detail_params and the
+      // English detail as defaultValue, same contract as backup.pathCheck.
+      details: {
+        notPresent: 'Not present in this backup commit',
+        unreadableJson: 'Unreadable JSON: {{paths}}',
+        settingsNoPayload: 'No settings in payload',
+        settingsCredentialsWillSkip: '{{count}} credential-like key(s) will be skipped',
+        settingsCompanionWillSkip: '{{count}} credential-like key(s) will be skipped, and {{companion}} switch(es) that depend on them will be left off',
+        settingsCompanionOnlyWillSkip: '{{companion}} switch(es) will be left off - the credential each one needs cannot be restored from a backup',
+        spoolsUsageCount: 'including {{count}} usage record(s)',
+        archivesMetadataOnly: 'Metadata only - 3MF files and thumbnails are not in a Git backup',
+        kprofilesPrinterCount: 'across {{count}} printer(s)',
+      },
+      // Tally notes, same contract. noData is shared by all four categories:
+      // the category heading renders beside it, so naming the category again
+      // would be redundant.
+      notes: {
+        noData: 'No data of this kind in this backup',
+        archivesPrinterMissing: 'Some archives referenced printers that no longer exist - link cleared',
+        archivesProjectMissing: 'Some archives referenced projects that no longer exist - link cleared',
+        archivesOwnerCleared: 'Some archives referenced users that no longer exist - owner cleared, so they are visible only to users with the archives:read_all permission until an admin reassigns them',
+        archivesOwnerUnmatched: 'Some archives name an owner this instance does not have - owner cleared rather than guessed from the backup\'s user id, so they are visible only to users with the archives:read_all permission until an admin reassigns them',
+        archivesOwnerUnknown: 'Some archives were restored without an owner - this backup does not record one, so they are visible only to users with the archives:read_all permission until an admin reassigns them',
+        archivesUndeleted: 'Archive(s) deleted since the backup are visible again - overwrite was on',
+        archivesMetadataOnly: 'Restored archives carry metadata only - the 3MF and thumbnail files are not in a Git backup',
+        spoolUsageUnresolved: '{{count}} usage record(s) skipped - their spool is not in this backup\'s spool list, so there is nothing to attach them to.',
+        spoolUsageUnlinked: '{{count}} usage record(s) restored without their print-history link - select Print archives alongside Spool inventory to keep it.',
+        spoolTagKept: '{{count}} spool tag(s) left as they are - the backup would have cleared a tag that has since been scanned, or moved one onto a second spool.',
+        settingsCredentialsSkipped: '{{count}} credential-like key(s) skipped - re-enter secrets manually',
+        settingsAuthSkipped: '{{count}} authentication setting(s) skipped - change those in Settings > Authentication so the lockout checks still run',
+        settingsCompanionSkipped: '{{keys}} left switched off - the credential each one needs cannot be restored from a backup and this instance has none stored, so switching them on would leave the integration unauthenticated',
+        settingsMqttRelayFailed: 'MQTT settings restored, but the relay could not be reconnected - restart BamDude',
+        kprofilesAlwaysOverwrite: 'K-profiles always overwrite the matching slot on the printer',
+        kprofilesAckUnreliable: 'A printer that does not answer still counts as restored - verify the profiles on the printer',
+        kprofilesPrinterMissing: 'No printer with serial {{serial}} - skipped',
+        kprofilesPrinterOffline: '{{printer}} ({{serial}}) is not connected - skipped',
+        kprofilesUnknownNozzle: 'Unexpected nozzle diameter {{nozzle}} for {{serial}} - sent as-is',
+        kprofilesUnmatched: '{{count}} profile(s) for {{nozzle}} had no counterpart on {{printer}} - added as new profiles',
+        kprofilesSendFailed: 'Failed to send {{nozzle}} profiles to {{printer}} ({{serial}})',
+        kprofilesRefused: '{{printer}} ({{serial}}) refused the {{nozzle}} profiles: {{reason}}',
+        kprofilesStepFailed: 'The K-profile step could not be completed - {{reason}}. Anything restored before it is still saved.',
+      },
+    },
     pathCheck: {
       title: 'BamDude cannot write backups to {{path}}',
       howToFix: 'How to fix',
