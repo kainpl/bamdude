@@ -24,6 +24,10 @@
 
 ### Fixed
 
+- **A slice that came back without the printer's start G-code is now refused instead of printed.** That block is where a Bambu printer's AMS load and its preparation-stage announcements live. Without it a job still dispatches, still heats the bed and still moves the toolhead — it just extrudes nothing, reports no stage, and sits at layer 0, which is indistinguishable from a print that has not started yet. Nothing downstream can tell those apart, so the check is on the bytes the slicer just handed back, and the error names the actual fix: rebuild the slicer sidecar image.
+
+    Only slices that used a **bundled** printer preset are judged, and only when your presets were actually applied. The bundle is what makes the absence conclusive — every one of its printer presets carries that block. A local, cloud or Orca-cloud profile is yours to author, and a deliberately empty start block in one is not our business.
+
 - **A Forgejo token limited to one repository is now accepted.** The connection test asked `/user` who the token belonged to before asking whether it could reach the repository, and treated a refusal there as fatal — but a Forgejo v15 repository-scoped token, the kind Forgejo itself recommends, carries no permission to read `/user` at all. So the safest token you could mint was the one BamDude rejected, while it reached its own repository perfectly well, which is all a backup needs. Only an outright "this token is invalid" from that probe still ends the check; everything else now falls through to the repository, which answers the real question.
 
     The messages got sharper along the way: a repository that answers "not found" now names `write:repository` and the scoped-to-another-repository case, and mentions a possibly-invalid token only when the token's identity was never confirmed. And the hint under the token field is per provider — one shared line was GitHub's advice shown to Gitea, Forgejo and GitLab users, naming a setting their instance does not have.

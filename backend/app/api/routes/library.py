@@ -81,6 +81,7 @@ from backend.app.services.library_trash import library_trash_service
 from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing
 from backend.app.services.print_plan import inherit_folder_projects, sync_plan_for_file, sync_plan_for_folder
 from backend.app.services.process_overrides import apply_process_overrides
+from backend.app.services.slice_output_check import missing_start_gcode_message, start_gcode_is_missing
 from backend.app.services.stl_thumbnail import MIN_USABLE_STL_BYTES, generate_stl_thumbnail
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.filename import (
@@ -3041,6 +3042,26 @@ async def _run_slicer_with_fallback(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     finally:
         await service.close()
+
+    # Backstop for upstream #2838. Only the standard tier, and only when the
+    # presets we sent were actually used: there the sidecar resolved a bundled
+    # preset by name and the bundle guarantees the start G-code, so its absence
+    # is a sidecar defect we can name. A cloud, local or Orca-cloud preset
+    # carries its own start G-code, and the embedded-settings fallback prints
+    # the source file's — both are the user's to author, and refusing them here
+    # would be us second-guessing a profile we did not resolve.
+    if (
+        not used_embedded_settings
+        and request.printer_preset is not None
+        and request.printer_preset.source == "standard"
+        and start_gcode_is_missing(result.content, export_3mf=bool(request.export_3mf))
+    ):
+        logger.error(
+            "Slice for printer preset %r came back without start G-code (%s); refusing it",
+            request.printer_preset.id,
+            "3mf" if request.export_3mf else "gcode",
+        )
+        raise HTTPException(status_code=502, detail=missing_start_gcode_message(request.printer_preset.id))
 
     return result, used_embedded_settings
 
