@@ -572,7 +572,21 @@ function DualNozzleHoverCard({ leftSlot, rightSlot, activeNozzle, filamentInfo, 
 }
 
 // H2C Nozzle Rack Card - compact single row showing 6-position tool-changer dock
-function NozzleRackCard({ slots, filamentInfo }: { slots: import('../api/client').NozzleRackSlot[]; filamentInfo?: Record<string, { name: string; k: number | null }> }) {
+/** Chip size for the six rack slots, by card size.
+ *
+ *  The chips were a hard-coded 28px at every card size while the type and
+ *  icons around them grew, so setting the card larger left a shrunken strip
+ *  beside neighbours that had scaled. S and M are unchanged, as they are for
+ *  every other property that scales with the card. */
+function rackChipClass(cardSize: number): string {
+  switch (cardSize) {
+    case 3: return 'w-8 h-8 text-[11px]';
+    case 4: return 'w-10 h-10 text-[13px]';
+    default: return 'w-7 h-7 text-[10px]';
+  }
+}
+
+function NozzleRackCard({ slots, filamentInfo, cardSize = 2 }: { slots: import('../api/client').NozzleRackSlot[]; filamentInfo?: Record<string, { name: string; k: number | null }>; cardSize?: number }) {
   const { t } = useTranslation();
   // Rack nozzles only (IDs >= 2) - excludes L/R hotend nozzles (IDs 0, 1).
   // H2C rack slot IDs are fixed at 16..21. When a nozzle is picked up into the
@@ -602,14 +616,14 @@ function NozzleRackCard({ slots, filamentInfo }: { slots: import('../api/client'
           return (
             <NozzleSlotHoverCard key={slot.id >= 0 ? slot.id : `empty-${i}`} slot={slot} index={i} filamentName={slot.filament_id ? filamentInfo?.[slot.filament_id]?.name : undefined}>
               <div
-                className={`w-7 h-7 rounded flex items-center justify-center cursor-default transition-colors border-b-2 ${
+                className={`${rackChipClass(cardSize)} rounded flex items-center justify-center cursor-default transition-colors border-b-2 ${
                   isEmpty
                     ? 'bg-bambu-dark-tertiary/20 border-bambu-dark-tertiary/20'
                     : 'bg-bambu-dark-tertiary/40 border-bambu-dark-tertiary/40'
                 }`}
                 style={filamentBg ? { backgroundColor: filamentBg } : undefined}
               >
-                <span className={`text-[10px] font-semibold ${isEmpty ? 'text-bambu-gray/30' : lightBg ? 'text-black/80' : 'text-white'}`}
+                <span className={`font-semibold ${isEmpty ? 'text-bambu-gray/30' : lightBg ? 'text-black/80' : 'text-white'}`}
                       style={filamentBg && !lightBg ? { textShadow: '0 1px 3px rgba(0,0,0,0.9)' } : undefined}
                 >
                   {isEmpty ? '-' : (slot.nozzle_diameter || '?')}
@@ -3920,7 +3934,7 @@ function PrinterCard({
                   )}
                   {/* H2C nozzle rack (tool-changer dock) - only show when rack nozzles exist (IDs >= 2) */}
                   {status.nozzle_rack && status.nozzle_rack.some(s => s.id >= 2) && (
-                    <NozzleRackCard slots={status.nozzle_rack} filamentInfo={filamentInfo} />
+                    <NozzleRackCard slots={status.nozzle_rack} filamentInfo={filamentInfo} cardSize={cardSize} />
                   )}
                 </div>
               );

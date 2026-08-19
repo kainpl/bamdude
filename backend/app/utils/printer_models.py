@@ -203,6 +203,49 @@ DUAL_NOZZLE_MODELS = frozenset(
 )
 
 
+# Printers with a swappable nozzle rack ("Vortek"): the H2C carries six hotends
+# in a rack and mounts one of them at a time.
+#
+# ⚠️ **Why this needs its own set rather than reusing DUAL_NOZZLE_MODELS.** On
+# every other dual-nozzle printer the dispatch ``nozzle_mapping`` values ARE the
+# MQTT extruder indices (0 = right, 1 = left). On a rack model the wire wants
+# the *physical* nozzle position for both carriages: the rack positions the
+# firmware reports as IDs 16-21 (see ``device.nozzle.info`` in bambu_mqtt), and
+# **1** for the fixed hotend — which is not its extruder index.
+#
+# ⚠️ The H2C does not follow the "0 = right" convention either: **extruder index
+# 1 is the rack side**. Both values were settled by hardware A/B in upstream
+# #2800 after the first attempt got both of them wrong — sending an extruder
+# index where a physical position is expected makes the printer clean and level
+# with one nozzle and then print with another, several millimetres off the bed.
+NOZZLE_RACK_MODELS = frozenset(
+    [
+        # Display names (uppercase, no spaces)
+        "H2C",
+        # Internal codes
+        "O1C",  # H2C
+        "O1C2",  # H2C (dual nozzle variant)
+    ]
+)
+
+# The extruder index the rack carriage answers to, and the physical nozzle id
+# the fixed carriage answers to. Neither is derivable from the other models.
+NOZZLE_RACK_EXTRUDER_INDEX = 1
+FIXED_CARRIAGE_PHYSICAL_ID = 1
+
+
+def is_nozzle_rack_model(model: str | None) -> bool:
+    """Return True if the model mounts its nozzles from a swappable rack (H2C).
+
+    Accepts both the display name and the internal SSDP code, because the model
+    string carries whichever the printer row happens to hold.
+    """
+    if not model:
+        return False
+    normalized = model.strip().upper().replace(" ", "").replace("-", "")
+    return normalized in NOZZLE_RACK_MODELS
+
+
 def has_ethernet(model: str | None) -> bool:
     """Return True if the printer model has an ethernet port."""
     if not model:

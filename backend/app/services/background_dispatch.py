@@ -605,6 +605,45 @@ class ActiveDispatchState:
     upload_total_bytes: int | None = None
 
 
+def _rack_slot_extruders(printer, file_path, plate_id, nozzle_mapping) -> str | None:
+    """Per-slot extruder assignment for a nozzle-rack printer, as JSON, or None.
+
+    ⚠️ **Derived at dispatch, not at queue time.** This is the first point that
+    knows both the actual printer and the actual file: an item can be created
+    without a printer (model-based assignment), reassigned afterwards, or have
+    its file swapped for a G-code-injected copy. One call here therefore covers
+    the print dialog, a bulk library add, the webhook and a pipeline run, and no
+    column is needed.
+
+    Skipped when the job already carries a BambuStudio capture from the Virtual
+    Printer: that one wins downstream anyway, so reading the 3MF again would be
+    work thrown away on every dispatch.
+
+    ⚠️ Takes the file **actually being sent** — the patched copy when G-code
+    injection or an M970 rewrite produced one — rather than the archive on disk.
+    The patcher does not touch ``slice_info.config`` today, so the two agree;
+    reading the dispatched file is what keeps that from mattering if it ever
+    stops being true.
+
+    ⚠️ Nothing here may fail a dispatch — the queue item is already committed as
+    ``printing`` and the command is published with no handler above it. Every
+    failure degrades to "no field, firmware picks", which is the behaviour that
+    existed before.
+    """
+    if nozzle_mapping or file_path is None:
+        return None
+    from backend.app.utils.printer_models import is_nozzle_rack_model
+
+    if not is_nozzle_rack_model(getattr(printer, "model", None)):
+        return None
+    import json
+
+    from backend.app.utils.threemf_tools import extract_slot_extruders_from_3mf
+
+    slot_extruders = extract_slot_extruders_from_3mf(file_path, plate_id=plate_id or 1)
+    return json.dumps(slot_extruders) if slot_extruders else None
+
+
 class BackgroundDispatchService:
     def __init__(self):
         self._queued_jobs: deque[PrintDispatchJob] = deque()
@@ -1637,6 +1676,11 @@ class BackgroundDispatchService:
                     use_ams=job.options.get("use_ams", True),
                     nozzle_offset_cali=job.options.get("nozzle_offset_cali", False),
                     nozzle_mapping=job.options.get("nozzle_mapping"),
+                    # H2C only: the physical rack position is resolved in the
+                    # MQTT layer, where the live mounted hotend is known.
+                    nozzle_slot_extruders=_rack_slot_extruders(
+                        printer, upload_file_path, plate_id, job.options.get("nozzle_mapping")
+                    ),
                     # The medium and the URL scheme are one decision, carried
                     # here from where it was made rather than re-derived.
                     storage=storage,
@@ -2237,6 +2281,11 @@ class BackgroundDispatchService:
                     use_ams=job.options.get("use_ams", True),
                     nozzle_offset_cali=job.options.get("nozzle_offset_cali", False),
                     nozzle_mapping=job.options.get("nozzle_mapping"),
+                    # H2C only: the physical rack position is resolved in the
+                    # MQTT layer, where the live mounted hotend is known.
+                    nozzle_slot_extruders=_rack_slot_extruders(
+                        printer, upload_file_path, plate_id, job.options.get("nozzle_mapping")
+                    ),
                     # The medium and the URL scheme are one decision, carried
                     # here from where it was made rather than re-derived.
                     storage=storage,

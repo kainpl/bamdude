@@ -16,6 +16,12 @@
 
 ### Fixed
 
+- **The H2C now prints on the nozzle its file was sliced for.** The H2C is the only Bambu that mounts its nozzle from a rack of six, and a print command has to name that nozzle by its physical position in the rack, not by the left/right index every other dual-nozzle printer uses. BamDude only ever had that position for jobs sent through the Virtual Printer; anything queued from the library, an archive, the webhook or a pipeline arrived without it and the printer chose for itself — which is how a print could clean and level on one hotend and then print several millimetres above the plate with another. The position is now worked out from the file at the moment of dispatch and resolved against the hotend the printer reports as actually mounted, since it can be swapped from the touchscreen in between. When it cannot be worked out with certainty the field is left off and the printer chooses, exactly as before.
+
+    **A multi-colour plate no longer stops with a hotend mismatch.** On a rack machine the slicer numbers filament groups per nozzle rather than per carriage, so a three-colour plate could carry a group the mapping had no place for; the printer refused the job outright rather than start on a contradiction. The file's own group table is now read, and a plate that still cannot be placed is dispatched without a mapping instead of with half of one.
+
+    **The rack display grows with the printer card.** Its six chips were a fixed size while everything around them scaled.
+
 - **Staggered start no longer lets the whole farm heat at once.** Clearing the plates on eleven printers set to "two at a time" started all eleven inside two seconds — enough to trip the mains. A printer that has just been sent a job still reports the *previous* print as finished for the eight to thirty seconds it takes to upload the file and begin, and the stagger was reading that as "this one is done" and handing the slot straight back. Each dispatch freed the slots the dispatches before it had taken, so the limit was never reached. The slot is now held until the printer is actually seen starting — and released as before once it does, or after three minutes if a print never begins.
 
 

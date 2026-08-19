@@ -381,6 +381,10 @@ class TestPrinterManager:
             use_ams=True,
             nozzle_offset_cali=False,
             nozzle_mapping=None,
+            # Derived per dispatch for a nozzle-rack model (H2C) and None for
+            # every other printer — the rack is the only one whose wire wants a
+            # physical nozzle position rather than an extruder index.
+            nozzle_slot_extruders=None,
             # Defaults keep every existing caller on the card and on today's
             # empty digest; only a dispatch that uploaded to internal storage
             # passes anything else.
