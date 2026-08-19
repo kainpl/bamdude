@@ -4,6 +4,10 @@
 
 - **Four dependency advisories closed.** A high-severity CPU-exhaustion flaw in `js-yaml` (CVE-2026-59870), an XSS in `dompurify` where removing an `IN_PLACE` hook left a detached subtree executable, a denial-of-service in `brace-expansion`, and an infinite loop in `nanoid`. All four are frontend build/runtime dependencies; `npm audit` now reports nothing.
 
+### Added
+
+- **Telegram can now aim a job at a room, not just at a printer model.** "Any P1S" is a useful answer on a one-room farm and a poor one when the P1S you meant is upstairs. Choosing a model in the bot now offers the places that actually hold one, and the job is routed there — the same location filter the print dialog has had, reaching the shelves inside a workshop you pick. The step is skipped entirely when there is nothing to choose between, so a farm with no locations set up sees no extra tap.
+
 ### Fixed
 
 - **Staggered start no longer lets the whole farm heat at once.** Clearing the plates on eleven printers set to "two at a time" started all eleven inside two seconds — enough to trip the mains. A printer that has just been sent a job still reports the *previous* print as finished for the eight to thirty seconds it takes to upload the file and begin, and the stagger was reading that as "this one is done" and handing the slot straight back. Each dispatch freed the slots the dispatches before it had taken, so the limit was never reached. The slot is now held until the printer is actually seen starting — and released as before once it does, or after three minutes if a print never begins.
