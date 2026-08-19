@@ -30,6 +30,14 @@
 
 - **The archive list sorts by what a print actually cost.** Cost, energy, filament used and real print duration join date, name, size and printer. Prints with nothing recorded for the chosen column — an external print has no cost, a printer with no smart plug no energy — are held at the end whichever direction you sort, rather than filling the first screen with blanks. In list view the Print Time column is now clickable — it sorts on how long the print really took, not the slicer's estimate — and the grid view's sort menu offers all four.
 
+- **AMS drying is no longer torn down for a print that cannot start.** A printer sitting at Finished with its plate not yet acknowledged, and something waiting in its queue, stopped and restarted drying once every few seconds — for as long as the plate stayed unacknowledged. No cycle ever ran long enough to remove any moisture, and a cycle started by hand on another AMS unit of the same printer was killed along with it.
+
+    Three things caused it. Waiting for a plate to be cleared answers "is the bed ready for the next job" and says nothing about whether the AMS may heat — and that gap, with the printer free and nobody waiting on it, is exactly when drying is most useful, so it no longer counts against drying. A printer the queue merely could not dispatch to was being read as "printing", which quietly lowered its drying temperature to the while-printing limit and logged the cycle as mid-print while the machine stood idle. And "the print takes priority" now stops only cycles BamDude itself started, and only once a print is actually going out — not every cycle the printer reports, on every pass.
+
+    After a restart BamDude cannot tell whether a drying cycle it finds running is its own, so it now leaves it alone rather than risk stopping one you started by hand.
+
+    **"Pause the queue while drying" finally does what it says.** From where the check sat, both of its answers led to the same skip: the queue waited either way, and all the setting decided was whether the cycle got needlessly killed on the way past. A queued print now waits for a running cycle when it is on. Off by default.
+
 - **Staggered start no longer lets the whole farm heat at once.** Clearing the plates on eleven printers set to "two at a time" started all eleven inside two seconds — enough to trip the mains. A printer that has just been sent a job still reports the *previous* print as finished for the eight to thirty seconds it takes to upload the file and begin, and the stagger was reading that as "this one is done" and handing the slot straight back. Each dispatch freed the slots the dispatches before it had taken, so the limit was never reached. The slot is now held until the printer is actually seen starting — and released as before once it does, or after three minutes if a print never begins.
 
 

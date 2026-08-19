@@ -182,6 +182,12 @@ def _timelapse_storage_full(printer_id: int) -> bool:
     return is_storage_low(client.state.timelapse_storage or {}, "internal" if storage else "external")
 
 
+# How long a freshly-armed drying claim is exempt from the state sweep. The
+# printer needs a report cycle or two before ``dry_time`` reflects the command,
+# and a claim dropped in that window is never recovered.
+_DRYING_CLAIM_GRACE_SECONDS = 120.0
+
+
 class PrintScheduler:
     """Background scheduler that processes the print queue."""
 
@@ -211,6 +217,15 @@ class PrintScheduler:
         self._power_on_check_interval = 10  # seconds between connection checks
         # Track which printers are currently auto-drying (printer_id -> start timestamp)
         self._drying_in_progress: dict[int, float] = {}
+        # ⚠️ The units WE armed, as (printer_id, ams_id) — a narrower question
+        # than ``_drying_in_progress``, which also adopts a cycle already
+        # running when we first look at the printer. Only this set may be
+        # stopped for a print: one auto-dried unit used to be enough to kill a
+        # cycle the operator had started by hand on a different unit of the
+        # same machine. The consequence is deliberate — after a restart we
+        # cannot prove a running cycle is ours, so we leave it alone rather
+        # than risk stopping somebody's manual dry.
+        self._auto_dried_units: dict[tuple[int, int], float] = {}
         # Staggered start: rolling slots for electrical load management
         self._stagger_slots: list[_StaggerSlot] = []
         # Serialises check+register in ``acquire_stagger_slot`` so multiple
@@ -337,6 +352,18 @@ class PrintScheduler:
             for held_printer_id in list(self._dispatch_holds.keys()):
                 if self._printer_in_dispatch_hold(held_printer_id):
                     busy_printers.add(held_printer_id)
+
+            # ⚠️ Snapshot taken HERE, before the item loop adds anything.
+            #
+            # Both sources above mean the same thing: a print on this printer is
+            # running or imminent. Everything the loop adds below means only
+            # "the queue could not dispatch here this pass" — a printer waiting
+            # on a plate-clear acknowledgment, an offline one, one with no
+            # matching file. Auto-drying must only see the first kind: reading
+            # the whole set as "is printing" is what put a plate-held printer
+            # down the mid-print path, capping its drying temperature and
+            # logging the cycle as (mid-print) while the machine stood idle.
+            dispatching_printers: set[int] = set(busy_printers)
 
             # Cache per-printer require_plate_clear setting
             _plate_clear_cache: dict[int, bool] = {}
@@ -470,21 +497,32 @@ class PrintScheduler:
                         continue
 
                 # Check if printer is idle (busy with another print)
+                #
+                # ⚠️ Drying used to be handled inside this branch, and could
+                # never have helped: it is not one of the things
+                # ``_is_printer_idle`` looks at, so stopping a cycle here could
+                # not turn a non-idle printer into an idle one. The stop
+                # therefore fired only on the passes where the print was NOT
+                # going to start — and on a printer held behind an
+                # unacknowledged plate that meant tearing drying down once per
+                # scheduler tick, for ever, while auto-drying re-armed in
+                # between. It now runs where the decision is actually made,
+                # just before dispatch.
                 if not printer_idle:
-                    if self._drying_in_progress.get(printer_id):
-                        block_for_drying = await self._get_bool_setting(db, "queue_drying_block")
-                        if block_for_drying:
-                            busy_printers.add(printer_id)
-                            continue
-                        else:
-                            await self._stop_drying(printer_id)
-                            printer_idle = self._is_printer_idle(printer_id, require_plate_clear=rpc)
-                            if not printer_idle:
-                                busy_printers.add(printer_id)
-                                continue
-                    else:
-                        busy_printers.add(printer_id)
-                        continue
+                    busy_printers.add(printer_id)
+                    continue
+
+                # Drying blocks the queue, if the user asked it to. A hold is a
+                # skip like any other, so it belongs here with the rest of the
+                # availability checks.
+                #
+                # ⚠️ This setting only starts meaning something now. From inside
+                # the not-idle branch both of its answers led to the same skip,
+                # so all it ever decided was whether a cycle was needlessly
+                # killed on the way. Off by default.
+                if self._drying_in_progress.get(printer_id) and await self._get_bool_setting(db, "queue_drying_block"):
+                    busy_printers.add(printer_id)
+                    continue
 
                 # Staggered start: check if we have a free slot
                 if stagger_enabled and not self._can_start_staggered(stagger_concurrent):
@@ -530,6 +568,26 @@ class PrintScheduler:
                 # empty feed).
                 await self._ensure_ams_mapping(db, printer_id, item)
 
+                # Print takes priority — stop a cycle WE armed, now that this
+                # item is definitely going out.
+                #
+                # ⚠️ The placement is the whole point. Every skip between the
+                # availability checks and here — a failed previous print, an
+                # unmappable item, a filament deficit, a full stagger slot — is
+                # another way to spend a drying cycle on a print that never
+                # happens, so this waits until the decision is actually made.
+                # Skipped entirely for hardware that can dry THROUGH a print:
+                # there is nothing to yield.
+                if self._drying_in_progress.get(printer_id):
+                    model = printer_manager.get_model(printer_id)
+                    state_now = printer_manager.get_status(printer_id)
+                    firmware = state_now.firmware_version if state_now else None
+                    dry_through = await self._get_bool_setting(
+                        db, "print_drying_enabled"
+                    ) and supports_drying_while_printing(model, firmware)
+                    if not dry_through:
+                        await self._stop_drying(printer_id)
+
                 # Start the print — _start_print spawns a parallel task for the
                 # FTP/dispatch pipeline and returns once the queue row is flipped
                 # to "printing" + the stagger slot is pre-registered. This lets
@@ -538,6 +596,11 @@ class PrintScheduler:
                 await self._start_print(db, item)
                 dispatched = True
                 busy_printers.add(printer_id)
+                # ⚠️ The one addition the narrow set DOES take: this print is
+                # imminent. The printer's own state still reads IDLE for a few
+                # seconds after dispatch, so without this the drying pass at the
+                # end of this very tick would re-arm the cycle we just stopped.
+                dispatching_printers.add(printer_id)
 
             # Log summary of skip reasons (helps diagnose why queue items aren't starting)
             if skip_reasons:
@@ -558,7 +621,7 @@ class PrintScheduler:
                     )
 
             # Auto-drying: start drying on idle printers that have no pending queue items
-            await self._check_auto_drying(db, items, busy_printers)
+            await self._check_auto_drying(db, items, dispatching_printers)
             return dispatched
 
     async def _ensure_ams_mapping(self, db: AsyncSession, printer_id: int, item: PrintQueueItem) -> None:
@@ -1638,7 +1701,9 @@ class PrintScheduler:
             return default
         return min(candidates)
 
-    async def _check_auto_drying(self, db: AsyncSession, queue_items: list[PrintQueueItem], busy_printers: set[int]):
+    async def _check_auto_drying(
+        self, db: AsyncSession, queue_items: list[PrintQueueItem], dispatching_printers: set[int]
+    ):
         """Start drying on idle printers based on humidity.
 
         Three modes (can all be enabled independently):
@@ -1712,12 +1777,20 @@ class PrintScheduler:
             model = printer_manager.get_model(pid)
             firmware = state.firmware_version
 
-            mid_print = (
-                pid in busy_printers and print_drying_enabled and supports_drying_while_printing(model, firmware)
-            )
+            # ⚠️ "Mid-print" has to mean the printer is ACTUALLY printing. It
+            # used to be inferred from the dispatch set, which also holds
+            # printers the queue merely could not dispatch to — so a printer
+            # sitting in FINISH behind an unacknowledged plate was treated as
+            # printing, had its drying temperature capped by the mid-print spool
+            # protection, and was logged as (mid-print) while standing idle.
+            is_printing = (state.state or "").upper() in ("RUNNING", "PREPARE", "PAUSE")
+            mid_print = is_printing and print_drying_enabled and supports_drying_while_printing(model, firmware)
 
-            if pid in busy_printers and not mid_print:
-                logger.debug("Auto-drying: printer %d skipped - busy", pid)
+            # A printer whose print is running or imminent is left alone unless
+            # it can dry through it. ``dispatching_printers`` is deliberately the
+            # narrow set: printing, or held post-dispatch.
+            if (is_printing or pid in dispatching_printers) and not mid_print:
+                logger.debug("Auto-drying: printer %d skipped - printing or about to", pid)
                 continue
 
             if not mid_print:
@@ -1736,7 +1809,14 @@ class PrintScheduler:
             if not printer_manager.is_connected(pid):
                 logger.debug("Auto-drying: printer %d skipped - not connected", pid)
                 continue
-            if not mid_print and not self._is_printer_idle(pid):
+            # ⚠️ Plate-clear is deliberately ignored here. It answers "is the
+            # bed ready for the next job", which says nothing about whether the
+            # AMS may heat — and the gap between a finished print and the
+            # acknowledgment is exactly when drying is most useful, because the
+            # printer is free and nobody is waiting on it. Leaving a plate
+            # unacknowledged is also how people hold the queue by hand, and that
+            # hold should not cost them their drying.
+            if not mid_print and not self._is_printer_idle(pid, require_plate_clear=False):
                 logger.debug("Auto-drying: printer %d skipped - not idle", pid)
                 continue
 
@@ -1863,6 +1943,7 @@ class PrintScheduler:
                 )
                 if success:
                     self._drying_in_progress[pid] = time.monotonic()
+                    self._auto_dried_units[(pid, ams_id)] = time.monotonic()
 
     def _sync_drying_state(self):
         """Sync in-memory drying state with actual printer status.
@@ -1884,8 +1965,40 @@ class PrintScheduler:
         for pid in to_remove:
             self._drying_in_progress.pop(pid, None)
 
+        # ⚠️ Swept over ITS OWN keys, not over ``_drying_in_progress``:
+        # ``_stop_drying`` pops the printer from that dict, so a claim swept
+        # only there would outlive the cycle it describes and later authorise
+        # stopping a manual dry on the same unit.
+        now = time.monotonic()
+        for (pid, ams_id), armed_at in list(self._auto_dried_units.items()):
+            # ⚠️ A fresh claim is left alone. ``dry_time`` does not appear in
+            # the printer's report the instant the command lands, and unlike
+            # ``_drying_in_progress`` a claim is never re-adopted — dropping one
+            # in that window would lose it for the whole cycle.
+            if now - armed_at < _DRYING_CLAIM_GRACE_SECONDS:
+                continue
+            state = printer_manager.get_status(pid)
+            if state is None:
+                # A printer we can no longer see says nothing about what its AMS
+                # units are doing, so its claims go too.
+                self._auto_dried_units.pop((pid, ams_id), None)
+                continue
+            still_drying = any(
+                int(ams.get("id", 0)) == ams_id and int(ams.get("dry_time") or 0) > 0
+                for ams in state.raw_data.get("ams", [])
+            )
+            if not still_drying:
+                self._auto_dried_units.pop((pid, ams_id), None)
+
     async def _stop_drying(self, printer_id: int):
-        """Stop all active drying on a printer.
+        """Stop the drying cycles WE armed on a printer.
+
+        ⚠️ Scoped to ``_auto_dried_units``. It used to send a stop to every AMS
+        reporting ``dry_time > 0``, so one auto-dried unit was enough to kill a
+        cycle the operator had started by hand on a different unit of the same
+        printer. That also contradicted the contract ``_sync_drying_state``
+        documents: the entry gate only knows about cycles we began, so the
+        action must not reach past them either.
 
         Print takes priority AT DISPATCH: this fires when a print is dispatched onto
         a drying printer. When ``print_drying_enabled`` is on and the printer's
@@ -1904,6 +2017,13 @@ class PrintScheduler:
             dry_time = int(ams_data.get("dry_time") or 0)
             if dry_time > 0:
                 ams_id = int(ams_data.get("id", 0))
+                if (printer_id, ams_id) not in self._auto_dried_units:
+                    logger.debug(
+                        "Auto-drying: leaving printer %d AMS %d alone - not a cycle we started",
+                        printer_id,
+                        ams_id,
+                    )
+                    continue
                 logger.info(
                     "Auto-drying: stopping drying on printer %d AMS %d - print takes priority",
                     printer_id,

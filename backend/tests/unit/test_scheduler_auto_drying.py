@@ -13,6 +13,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# ⚠️ Imported for its side effect: Printer names PrinterLocation in a
+# relationship by string, and SQLAlchemy cannot resolve it unless the module has
+# been imported. Without this the file passes only when something earlier in the
+# run happens to have imported it first.
+import backend.app.models.printer_location  # noqa: F401
 from backend.app.services.print_scheduler import PrintScheduler
 
 
@@ -155,6 +160,22 @@ class TestDryingPresets:
         assert presets == PrintScheduler.DEFAULT_DRYING_PRESETS
 
 
+def _claim(scheduler, *printer_ids: int) -> None:
+    """Record the printers' drying as cycles WE armed.
+
+    ⚠️ Needed by every test that expects ``_stop_drying`` to fire. The stop is
+    scoped to cycles the scheduler started: a printer merely present in
+    ``_drying_in_progress`` — which also adopts a cycle already running when we
+    first look at the machine — is deliberately left alone, so that a dry the
+    operator started by hand on another AMS unit is not torn down with ours.
+    The stamp is 0.0, i.e. armed long ago, so the sweep's grace window plays no
+    part.
+    """
+    for printer_id in printer_ids:
+        for ams_id in (0, 1, 128):
+            scheduler._auto_dried_units[(printer_id, ams_id)] = 0.0
+
+
 class TestSyncDryingState:
     """Test _sync_drying_state - syncs in-memory state with actual printer status."""
 
@@ -207,6 +228,7 @@ class TestStopDrying:
     async def test_stops_all_ams_units(self, mock_pm, scheduler):
         """Sends stop command to each AMS unit that is drying."""
         scheduler._drying_in_progress = {1: time.monotonic()}
+        _claim(scheduler, 1)
         state = MagicMock()
         state.raw_data = {
             "ams": [
@@ -310,6 +332,7 @@ class TestMinimumDryingTime:
         the removed keyword humidity-stop."""
         # Simulate: drying started 35 minutes ago
         scheduler._drying_in_progress = {1: time.monotonic() - 2100}
+        _claim(scheduler, 1)
 
         state = MagicMock()
         state.raw_data = {
@@ -411,6 +434,7 @@ class TestAutoStopOnFeatureDisabled:
     async def test_stops_drying_when_disabled(self, mock_pm, scheduler):
         """Disabling auto-drying should send stop commands to all drying printers."""
         scheduler._drying_in_progress = {1: time.monotonic(), 2: time.monotonic()}
+        _claim(scheduler, 1, 2)
 
         # Printer 1: drying, Printer 2: drying
         def get_status(pid):
@@ -475,6 +499,7 @@ class TestAutoStopOnNoScheduledItems:
     async def test_stops_when_no_scheduled_items(self, mock_pm, scheduler):
         """Auto-drying stops when queue has no scheduled items (queue mode only)."""
         scheduler._drying_in_progress = {1: time.monotonic()}
+        _claim(scheduler, 1)
 
         state = MagicMock()
         state.raw_data = {"ams": [{"id": 0, "dry_time": 120}]}
@@ -504,6 +529,7 @@ class TestAutoStopOnNoScheduledItems:
     async def test_stops_when_empty_queue(self, mock_pm, scheduler):
         """Auto-drying stops when queue is completely empty (queue mode only)."""
         scheduler._drying_in_progress = {1: time.monotonic()}
+        _claim(scheduler, 1)
 
         state = MagicMock()
         state.raw_data = {"ams": [{"id": 0, "dry_time": 120}]}
@@ -686,6 +712,7 @@ class TestAmbientDrying(_DryingTestBase):
     async def test_ambient_off_stops_drying_without_queue(self, mock_pm, scheduler):
         """Disabling ambient drying stops drying on printers without queue items."""
         scheduler._drying_in_progress = {1: time.monotonic()}
+        _claim(scheduler, 1)
 
         state = MagicMock()
         state.raw_data = {"ams": [{"id": 0, "dry_time": 120}]}
@@ -804,6 +831,7 @@ class TestBlockForDryingBugFix(_DryingTestBase):
         """Bug fix: printer already drying in block mode should still check humidity to auto-stop."""
         # Drying started 35 minutes ago
         scheduler._drying_in_progress = {1: time.monotonic() - 2100}
+        _claim(scheduler, 1)
 
         state = MagicMock()
         state.raw_data = {
@@ -925,10 +953,15 @@ class TestMidPrintDrying(_DryingTestBase):
             "tray": [{"tray_type": "PLA"}],
         }
 
-    def _state(self, firmware: str):
+    def _state(self, firmware: str, printer_state: str = "RUNNING"):
         state = MagicMock()
         state.raw_data = {"ams": [self._ams_unit()]}
         state.firmware_version = firmware
+        # ⚠️ "Mid-print" is read from the printer's OWN state now, not from
+        # membership of the dispatch set — that set also holds printers the
+        # queue merely could not dispatch to, and treating one of those as
+        # printing capped its drying temperature while it stood idle.
+        state.state = printer_state
         return state
 
     @pytest.mark.asyncio
@@ -952,7 +985,7 @@ class TestMidPrintDrying(_DryingTestBase):
         }
         db.execute = AsyncMock(side_effect=self._make_db_side_effect(settings_returns))
 
-        # Printer 1 is in busy_printers — would normally be skipped
+        # Printer 1 is printing, and the hardware can dry through it.
         await scheduler._check_auto_drying(db, [], {1})
 
         # PLA preset is 45 degC for n3f; mid-print cap is max(40, 45-5) = 40
@@ -977,6 +1010,8 @@ class TestMidPrintDrying(_DryingTestBase):
             ]
         }
         state.firmware_version = "01.03.00.00"
+        # Mid-print now means the printer says it is printing — see _state().
+        state.state = "RUNNING"
         mock_pm.get_status.return_value = state
         mock_pm.is_connected.return_value = True
         mock_pm.get_model.return_value = "H2D"
