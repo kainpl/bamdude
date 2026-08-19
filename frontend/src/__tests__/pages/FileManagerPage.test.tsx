@@ -9,6 +9,12 @@ import { render } from '../utils';
 import { FileManagerPage } from '../../pages/FileManagerPage';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
+import { openInSlicer } from '../../utils/slicer';
+
+vi.mock('../../utils/slicer', async () => {
+  const actual = await vi.importActual<Record<string, unknown>>('../../utils/slicer');
+  return { ...actual, openInSlicer: vi.fn() };
+});
 
 // Mock data
 const mockFolders = [
@@ -987,6 +993,51 @@ describe('FileManagerPage', () => {
       await waitFor(() => {
         expect(scopes).toContain('external');
       });
+    });
+  });
+
+  // ⚠️ The slice entry used to be gated on the sidecar being enabled, so with
+  // it off there was no slicer entry at all — not even the desktop hand-off,
+  // which has always worked and simply had no way in from this menu.
+  describe('the slice entry falls back to the desktop slicer', () => {
+    beforeEach(() => {
+      vi.mocked(openInSlicer).mockClear();
+      server.use(
+        http.post('/api/v1/library/files/:id/slicer-token', () => HttpResponse.json({ token: 'test-token' })),
+      );
+    });
+
+    it('hands the file to the desktop slicer when the sidecar is off', async () => {
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('bracket.stl')).toBeInTheDocument());
+      // The overflow menu is the last button on the card, and it portals its
+      // contents out of the card — hence the document-level query below.
+      const card = screen.getByText('bracket.stl').closest('.group') as HTMLElement;
+      await user.click(within(card).getByRole('button', { name: 'File actions' }));
+      await user.click(await screen.findByText('Open in Slicer'));
+
+      await waitFor(() => {
+        expect(openInSlicer).toHaveBeenCalledWith(
+          expect.stringContaining('/library/files/2/'),
+          'bambu_studio',
+        );
+      });
+    });
+
+    it('offers the server slice when the sidecar is on', async () => {
+      server.use(http.get('/api/v1/settings/', () => HttpResponse.json({ use_slicer_api: true })));
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('bracket.stl')).toBeInTheDocument());
+      const card = screen.getByText('bracket.stl').closest('.group') as HTMLElement;
+      await user.click(within(card).getByRole('button', { name: 'File actions' }));
+
+      // The label is the tell: the same entry, a different action behind it.
+      expect(await screen.findByText('Slice')).toBeInTheDocument();
+      expect(screen.queryByText('Open in Slicer')).not.toBeInTheDocument();
     });
   });
 });

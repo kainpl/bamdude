@@ -45,6 +45,7 @@ import {
   ListCollapse,
   Layers,
   Cog,
+  ExternalLink,
   Tag as TagIcon,
 } from 'lucide-react';
 import { api } from '../api/client';
@@ -81,6 +82,7 @@ import { FileTagBadges } from '../components/FileTagBadges';
 import { PlateObjectsPreviewModal } from '../components/PlateObjectsPreviewModal';
 import { SkipObjectsIcon } from '../components/SkipObjectsModal';
 import { getTagStyle, isPrintable, isSliceable, isMultiPlate } from '../lib/fileTags';
+import { openInSlicer, type SlicerType } from '../utils/slicer';
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
 import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
 import { FileTagsPopover, type TagsPopoverAnchor } from '../components/FileTagsPopover';
@@ -933,6 +935,7 @@ interface FileCardProps {
   onAddToQueue?: (id: number) => void;
   onPrint?: (file: LibraryFileListItem) => void;
   onSlice?: (file: LibraryFileListItem) => void;
+  onOpenInSlicer?: (file: LibraryFileListItem) => void;
   useSlicerApi?: boolean;
   onPreview3d?: (file: LibraryFileListItem) => void;
   onRename?: (file: LibraryFileListItem) => void;
@@ -983,7 +986,7 @@ function anchorFrom(
   };
 }
 
-function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onSlice, useSlicerApi, onPreview3d, onDownload, onRename, onGenerateThumbnail, onMove, onTags, onDelete }: {
+function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onSlice, onOpenInSlicer, useSlicerApi, onPreview3d, onDownload, onRename, onGenerateThumbnail, onMove, onTags, onDelete }: {
   file: LibraryFileListItem;
   t: TFunction;
   hasPermission: (permission: Permission) => boolean;
@@ -991,6 +994,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   onPrint: (f: LibraryFileListItem) => void;
   onSchedule: (f: LibraryFileListItem) => void;
   onSlice?: (f: LibraryFileListItem) => void;
+  onOpenInSlicer?: (f: LibraryFileListItem) => void;
   useSlicerApi?: boolean;
   onPreview3d: (f: LibraryFileListItem) => void;
   onDownload: (id: number) => void;
@@ -1000,6 +1004,9 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   onTags?: (f: LibraryFileListItem, anchor: TagsPopoverAnchor) => void;
   onDelete: (id: number) => void;
 }) {
+  // ⚠️ The two modes need different permissions: slicing through the sidecar
+  // writes a new library file, while opening in a desktop slicer is a download.
+  const sliceDisabled = useSlicerApi ? !hasPermission('library:upload') : !hasPermission('library:read');
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   // Portal-rendered dropdown escapes the list container's `overflow-hidden`,
@@ -1071,15 +1078,26 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
                 </button>
               </>
             )}
-            {onSlice && useSlicerApi && isSliceable(file) && (
+            {/* ⚠️ The entry is no longer gated on the sidecar being enabled.
+                With it off this is the desktop hand-off, which has always
+                worked and simply had no way in from here. The two also need
+                DIFFERENT permissions: slicing on the server writes a new
+                library file (library:upload), while opening in a desktop app
+                is a download (library:read). */}
+            {isSliceable(file) && (onSlice || onOpenInSlicer) && (
               <button
-                className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${hasPermission('library:upload') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
-                onClick={() => { if (hasPermission('library:upload')) { onSlice(file); setOpen(false); } }}
-                disabled={!hasPermission('library:upload')}
-                title={!hasPermission('library:upload') ? t('fileManager.noPermissionSlice', { defaultValue: 'You do not have permission to slice' }) : undefined}
+                className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${!sliceDisabled ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
+                onClick={() => {
+                  if (sliceDisabled) return;
+                  if (useSlicerApi) onSlice?.(file);
+                  else onOpenInSlicer?.(file);
+                  setOpen(false);
+                }}
+                disabled={sliceDisabled}
+                title={sliceDisabled ? (useSlicerApi ? t('fileManager.noPermissionSlice') : t('fileManager.noPermissionDownload')) : undefined}
               >
-                <Cog className="w-3.5 h-3.5" />
-                {t('slice.action', { defaultValue: 'Slice' })}
+                {useSlicerApi ? <Cog className="w-3.5 h-3.5" /> : <ExternalLink className="w-3.5 h-3.5" />}
+                {useSlicerApi ? t('slice.action') : t('modelViewer.openInSlicer')}
               </button>
             )}
             {(file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl' || file.file_type === 'obj') && (
@@ -1177,7 +1195,10 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, useSlicerApi, onPreview3d, onRename, onLink, onGenerateThumbnail, onPlateGallery, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onOpenInSlicer, useSlicerApi, onPreview3d, onRename, onLink, onGenerateThumbnail, onPlateGallery, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+  // ⚠️ The two modes need different permissions: slicing through the sidecar
+  // writes a new library file, while opening in a desktop slicer is a download.
+  const sliceDisabled = useSlicerApi ? !hasPermission('library:upload') : !hasPermission('library:read');
   const [showActions, setShowActions] = useState(false);
   // Portal-rendered dropdown — the card root has `overflow-hidden` for the
   // thumbnail crop, which clips an absolute-positioned menu against the card
@@ -1412,6 +1433,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
         <button
           ref={triggerRef}
           onClick={() => setShowActions(!showActions)}
+          aria-label={t('fileManager.fileActions')}
           className="p-1.5 rounded bg-bambu-dark-secondary/90 hover:bg-bambu-dark-tertiary"
         >
           <MoreVertical className="w-4 h-4 text-bambu-gray" />
@@ -1456,17 +1478,24 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
                   {t('fileManager.schedulePrint')}
                 </button>
               )}
-              {onSlice && useSlicerApi && isSliceable(file) && (
+              {/* See the note on the sibling menu above: not gated on the
+                  sidecar, and the two modes need different permissions. */}
+              {isSliceable(file) && (onSlice || onOpenInSlicer) && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                    hasPermission('library:upload') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                    !sliceDisabled ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
                   }`}
-                  onClick={() => { if (hasPermission('library:upload')) { onSlice(file); setShowActions(false); } }}
-                  disabled={!hasPermission('library:upload')}
-                  title={!hasPermission('library:upload') ? t('fileManager.noPermissionSlice', { defaultValue: 'You do not have permission to slice' }) : undefined}
+                  onClick={() => {
+                    if (sliceDisabled) return;
+                    if (useSlicerApi) onSlice?.(file);
+                    else onOpenInSlicer?.(file);
+                    setShowActions(false);
+                  }}
+                  disabled={sliceDisabled}
+                  title={sliceDisabled ? (useSlicerApi ? t('fileManager.noPermissionSlice') : t('fileManager.noPermissionDownload')) : undefined}
                 >
-                  <Cog className="w-3.5 h-3.5" />
-                  {t('slice.action', { defaultValue: 'Slice' })}
+                  {useSlicerApi ? <Cog className="w-3.5 h-3.5" /> : <ExternalLink className="w-3.5 h-3.5" />}
+                  {useSlicerApi ? t('slice.action') : t('modelViewer.openInSlicer')}
                 </button>
               )}
               {onPreview3d && (file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl' || file.file_type === 'obj') && (
@@ -1778,6 +1807,24 @@ export function FileManagerPage() {
   });
   const timeFormat: TimeFormat = settings?.time_format || 'system';
   const dateFormat: DateFormat = settings?.date_format || 'system';
+
+  // Hand a library file to the operator's own desktop slicer. ⚠️ The token URL
+  // first so the file is reachable with auth on; the plain download URL is the
+  // fallback for an install with auth disabled, where minting one would 404.
+  const preferredSlicer: SlicerType = settings?.open_in_slicer || settings?.preferred_slicer || 'bambu_studio';
+  const handleOpenInSlicer = useCallback(
+    async (file: LibraryFileListItem) => {
+      try {
+        const { token } = await api.createLibrarySlicerToken(file.id);
+        const path = api.getLibrarySlicerDownloadUrl(file.id, token, file.filename);
+        openInSlicer(`${window.location.origin}${path}`, preferredSlicer);
+      } catch {
+        const path = api.getLibraryFileDownloadUrl(file.id);
+        openInSlicer(`${window.location.origin}${path}`, preferredSlicer);
+      }
+    },
+    [preferredSlicer],
+  );
   const { data: folders, isLoading: foldersLoading } = useQuery({
     queryKey: ['library-folders'],
     queryFn: () => api.getLibraryFolders(),
@@ -3212,6 +3259,7 @@ export function FileManagerPage() {
                     }}
                     onPrint={setPrintFile}
                     onSlice={setSliceFile}
+                    onOpenInSlicer={handleOpenInSlicer}
                     useSlicerApi={settings?.use_slicer_api ?? false}
                     onPreview3d={setViewerFile}
                     onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
@@ -3516,6 +3564,7 @@ export function FileManagerPage() {
                         onPrint={setPrintFile}
                         onSchedule={scheduleOne}
                         onSlice={setSliceFile}
+                        onOpenInSlicer={handleOpenInSlicer}
                         useSlicerApi={settings?.use_slicer_api ?? false}
                         onPreview3d={setViewerFile}
                             onDownload={handleDownload}

@@ -4346,6 +4346,7 @@ export default {
     noPermissionPrint: 'You do not have permission to print',
     noPermissionAddToQueue: 'You do not have permission to add to queue',
     noPermissionSlice: 'You do not have permission to slice',
+    fileActions: 'File actions',
     noPermissionDownload: 'You do not have permission to download files',
     noPermissionPreview: 'You do not have permission to preview files',
     noPermissionRenameFile: 'You do not have permission to rename this file',
@@ -6457,6 +6458,8 @@ export default {
   // Model Viewer
   modelViewer: {
     openInSlicer: 'Open in Slicer',
+    openInSlicerWith: 'Open in {{slicer}}',
+    moreSlicerOptions: 'More slicer options',
     tabs: {
       model: '3D Model',
       gcode: 'G-code Preview'

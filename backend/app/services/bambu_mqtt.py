@@ -1434,7 +1434,15 @@ STAGE_NAMES = {
 
 def get_stage_name(stage: int) -> str:
     """Get human-readable stage name from stage number."""
-    return STAGE_NAMES.get(stage, f"Unknown stage ({stage})")
+    try:
+        return STAGE_NAMES.get(stage, f"Unknown stage ({stage})")
+    except TypeError:
+        # ⚠️ ``stage`` is an int by convention only — it comes straight out of
+        # the printer's JSON. An unhashable value there would raise from inside
+        # the argument list of the stage-change log call, which is evaluated on
+        # every transition whatever the log level is set to. Labelling a value
+        # must not be able to abort the whole state update.
+        return f"Unknown stage ({stage})"
 
 
 # What the active airduct mode does with one fan. BS's own three outcomes
@@ -1785,6 +1793,10 @@ class BambuMQTTClient:
         # left at 'printing' by a print that finished while BamDude was
         # stopped. printer_manager wires it to reconcile_printer_prints.
         self.on_first_status = on_first_status
+
+        # Stage numbers this printer has reported that STAGE_NAMES has no entry
+        # for, so each is reported once rather than on every transition into it.
+        self._unnamed_stages_seen: set[int] = set()
 
         self.state = PrinterState()
         self._client: mqtt.Client | None = None
@@ -4714,6 +4726,43 @@ class BambuMQTTClient:
                     new_stg,
                     get_stage_name(new_stg),
                 )
+                # ⚠️ A stage we CANNOT name is the one worth seeing at the
+                # default log level. STAGE_NAMES is hand-maintained and every
+                # new model adds to it, so a printer occasionally reports a
+                # number that is not in it and the card reads "Unknown stage
+                # (72)" — with nothing behind it to say when that happened or
+                # what the printer was doing, because the DEBUG line above is
+                # off in normal running and by the time anyone looks the
+                # printer has moved on.
+                #
+                # Recorded once per stage number per session, with the model,
+                # the stage it came from and the print state — which is what
+                # naming it afterwards needs. A normal print logs nothing new.
+                if (
+                    isinstance(new_stg, int)
+                    and not isinstance(new_stg, bool)
+                    # ⚠️ -1 and 255 are OUR OWN "not in a stage" sentinels (and
+                    # -1 is the field's initial value), not something the
+                    # firmware reports. Every print would otherwise report one
+                    # on the way out of its last real stage.
+                    and new_stg not in (-1, 255)
+                    and new_stg not in STAGE_NAMES
+                    and new_stg not in self._unnamed_stages_seen
+                ):
+                    self._unnamed_stages_seen.add(new_stg)
+                    logger.info(
+                        "[%s] Unnamed print stage %s on model %s, entered from %s (%s); "
+                        "state=%s progress=%s%% layer=%s/%s",
+                        self.serial_number,
+                        new_stg,
+                        self.model,
+                        self.state.stg_cur,
+                        get_stage_name(self.state.stg_cur),
+                        self.state.state,
+                        self.state.progress,
+                        self.state.layer_num,
+                        self.state.total_layers,
+                    )
 
             # Macro execution tracking via stg_cur transitions
             # Start marker: stg_cur becomes 0 ("Printing") via claim_action:0

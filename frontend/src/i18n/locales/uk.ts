@@ -4378,6 +4378,7 @@ export default {
     noPermissionPrint: 'У вас немає дозволу друкувати',
     noPermissionAddToQueue: 'У вас немає дозволу додавати до черги',
     noPermissionSlice: 'У вас немає дозволу нарізати моделі',
+    fileActions: 'Дії з файлом',
     noPermissionDownload: 'У вас немає дозволу завантажувати файли',
     noPermissionPreview: 'У вас немає дозволу переглядати файли',
     noPermissionRenameFile: 'У вас немає дозволу перейменовувати цей файл',
@@ -6482,6 +6483,8 @@ export default {
   // Model Viewer
   modelViewer: {
     openInSlicer: 'Відкрити у слайсері',
+    openInSlicerWith: 'Відкрити в {{slicer}}',
+    moreSlicerOptions: 'Інші варіанти слайсера',
     tabs: {
       model: '3D модель',
       gcode: 'Попередній перегляд G-code'
