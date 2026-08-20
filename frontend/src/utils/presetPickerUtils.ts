@@ -5,7 +5,7 @@
  * exports React components — ``react-refresh/only-export-components``
  * flags non-component exports (they break Fast Refresh / fail CI lint).
  */
-import type { PresetRef, PresetSource, UnifiedPreset, UnifiedPresetsResponse } from '../../api/client';
+import type { PresetRef, PresetSource, UnifiedPreset, UnifiedPresetsResponse } from '../api/client';
 
 // Slot is one of the three preset categories the slicer takes: machine,
 // process, filament. Shared with SliceModal so both sites use the same

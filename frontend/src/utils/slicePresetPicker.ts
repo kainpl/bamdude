@@ -22,10 +22,10 @@
 import type { PresetRef, PresetSource, UnifiedPreset, UnifiedPresetsResponse } from '../api/client';
 import { colorsAreSimilar, normalizeColorForCompare } from './amsHelpers';
 import { presetCompatibility, type PrinterCompatibilityIndex } from './slicerPrinterMatch';
-// `Slot` + the lookup priority live in presetPickerUtils (BamDude's single
+// `Slot` + the lookup priority live in utils/presetPickerUtils (BamDude's single
 // source of truth for both the SliceModal and the calibration preset pickers);
 // re-use them here rather than redefining a parallel copy.
-import { TIER_ORDER as SLICE_MODAL_TIER_ORDER, type Slot } from '../components/preset-picker/presetPickerUtils';
+import { TIER_ORDER as SLICE_MODAL_TIER_ORDER, type Slot } from './presetPickerUtils';
 
 export type { Slot };
 export { SLICE_MODAL_TIER_ORDER };

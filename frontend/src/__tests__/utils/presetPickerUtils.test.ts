@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolvePresetName } from '../../components/preset-picker/presetPickerUtils';
+import { resolvePresetName } from '../../utils/presetPickerUtils';
 import { presetCompatibility, EMPTY_COMPATIBILITY_INDEX } from '../../utils/slicerPrinterMatch';
 import type { UnifiedPresetsResponse } from '../../api/client';
 

@@ -3,7 +3,7 @@
  * Split out of PlateObjectMarkers.tsx because that file exports a component and
  * `react-refresh/only-export-components` needs component files to export only
  * components for HMR to work. Same reason filamentSwatchHelpers.ts and
- * presetPickerUtils.ts exist.
+ * utils/presetPickerUtils.ts exist.
  *
  * Both plate dialogs — SkipObjectsModal and the read-only
  * PlateObjectsPreviewModal — import from here, so their geometry and their

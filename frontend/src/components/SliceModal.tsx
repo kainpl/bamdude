@@ -29,7 +29,7 @@ import {
   resolvePresetName,
   type OwnerFilter,
   type Slot,
-} from './preset-picker/presetPickerUtils';
+} from '../utils/presetPickerUtils';
 import { BedTypePicker } from './preset-picker/BedTypePicker';
 import { SlicerPicker, type SlicerKind } from './preset-picker/SlicerPicker';
 import {
