@@ -570,6 +570,7 @@ _expected_print_registered_at: dict[tuple[int, str], float] = {}
 # Cleanup loop interval
 _EXPECTED_PRINT_CLEANUP_INTERVAL: int = 15 * 60  # 15 minutes
 _expected_prints_cleanup_task: asyncio.Task | None = None
+_label_reclaim_task: asyncio.Task | None = None
 
 
 # Per-printer lock that serialises the spool-assignment block of
@@ -7420,6 +7421,30 @@ def stop_expected_prints_cleanup() -> None:
         logging.getLogger(__name__).info("Expected prints cleanup stopped")
 
 
+def start_label_reclaim() -> None:
+    """Sweep label jobs whose device claimed them and then went quiet.
+
+    ⚠️ Started unconditionally rather than behind ``device_labels_enabled``: the
+    setting can be switched off while a job is out, and the sweep is what stops
+    that job reading as "printing" forever. It is a no-op query against an empty
+    table on every install that never uses this.
+    """
+    global _label_reclaim_task
+    if _label_reclaim_task is None:
+        from backend.app.services.label_reclaim import reclaim_loop
+
+        _label_reclaim_task = asyncio.create_task(reclaim_loop())
+        logging.getLogger(__name__).info("Label job reclaim sweep started")
+
+
+def stop_label_reclaim() -> None:
+    global _label_reclaim_task
+    if _label_reclaim_task:
+        _label_reclaim_task.cancel()
+        _label_reclaim_task = None
+        logging.getLogger(__name__).info("Label job reclaim sweep stopped")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
@@ -7989,6 +8014,7 @@ async def lifespan(app: FastAPI):
     # Start expected-print TTL eviction (prevents memory leak when prints are
     # registered but on_print_start never fires)
     start_expected_prints_cleanup()
+    start_label_reclaim()
 
     # Event-loop stall watchdog: dumps all thread stacks to stderr if the loop
     # freezes (#1486 — silent "container hangs after adding a printer" reports).
@@ -8146,6 +8172,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logging.warning("Failed to shut down camera broadcasters: %s", e)
     stop_expected_prints_cleanup()
+    stop_label_reclaim()
     printer_manager.disconnect_all()
     await close_spoolman_client()
 

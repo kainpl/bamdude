@@ -38,6 +38,7 @@ from backend.app.schemas.label_device import (
     LabelJobHandout,
     LabelJobOut,
     LabelJobPreview,
+    LabelJobResult,
 )
 from backend.app.services.label_dispatch import (
     DOTS_PER_MM,
@@ -424,3 +425,43 @@ async def poll(
         copies=job.copies,
         density=device.density,
     )
+
+
+@router.post("/label-devices/jobs/{job_id}/result", status_code=204, response_model=None)
+async def report_result(
+    job_id: int,
+    body: LabelJobResult,
+    installation_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.LABEL_DEVICES_POLL),
+) -> None:
+    """What happened to a claimed job.
+
+    ⚠️ Resolved by device **and** id together, so a bridge asking about a job
+    that belongs to another device gets a 404 rather than a permission error —
+    the latter would confirm that the job exists, which is more than the caller
+    is entitled to know.
+    """
+    device = (
+        await db.execute(select(LabelDevice).where(LabelDevice.installation_id == installation_id))
+    ).scalar_one_or_none()
+    if device is None:
+        raise HTTPException(404, f"Label job {job_id} not found")
+
+    job = (
+        await db.execute(select(LabelJob).where(LabelJob.id == job_id, LabelJob.device_id == device.id))
+    ).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(404, f"Label job {job_id} not found")
+
+    # ⚠️ A report on a job that is no longer claimed is accepted quietly rather
+    # than refused. The sweeper may have requeued it while the bridge was
+    # printing it perfectly well, and answering 409 to a device that just did
+    # the work would leave it retrying something that already came out.
+    if body.ok:
+        job.status = "printed"
+        job.error = None
+    else:
+        job.status = "failed"
+        job.error = (body.error or "").strip() or "the device did not say why"
+    await db.commit()
