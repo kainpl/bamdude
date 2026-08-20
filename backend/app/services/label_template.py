@@ -186,7 +186,25 @@ class BarcodeElement(_Box):
     human_readable: bool = False
 
 
-LabelElement = Annotated[TextElement | QrElement | BarcodeElement, Field(discriminator="type")]
+class SwatchElement(_Box):
+    """A block of the spool's colour.
+
+    ⚠️ **Drawn on paper and skipped on a thermal head.** A colour block on a
+    black-and-white head prints as a muddy grey that says nothing, which is why
+    the PDF renderer already dropped it in monochrome mode. Keeping the element
+    but ignoring it on a 1-bit canvas means one template serves both without the
+    author having to keep two.
+
+    It exists at all because the PDF layouts carry one today, and losing it
+    would be losing the thing people find a spool by.
+    """
+
+    type: Literal["swatch"]
+    #: Resolves to one or more comma-separated hex colours, no leading hash.
+    content: str = "{color_hex_all}"
+
+
+LabelElement = Annotated[TextElement | QrElement | BarcodeElement | SwatchElement, Field(discriminator="type")]
 
 
 class LabelTemplateSpec(BaseModel):
@@ -257,6 +275,7 @@ __all__ = [
     "LabelTemplateSpec",
     "Placeholder",
     "QrElement",
+    "SwatchElement",
     "TextElement",
     "orientation",
     "resolve",

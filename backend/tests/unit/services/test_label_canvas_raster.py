@@ -225,3 +225,18 @@ def test_png_bytes_round_trip():
     img = Image.open(io.BytesIO(raw))
     assert img.size == (320, 240)
     assert img.mode == "1"
+
+
+def test_a_swatch_draws_nothing_on_a_thermal_head():
+    """⚠️ Deliberate, not missing. A colour block on a one-bit head is a solid
+    smear that says nothing — the very reason the PDF renderer already drops it
+    in monochrome mode. Skipping rather than refusing means one template serves
+    both a label printer and a colour sheet.
+    """
+    img, warnings = render_template_raster(
+        _spec({"type": "swatch", "x_mm": 2, "y_mm": 2, "w_mm": 6, "h_mm": 20, "content": "{color_hex_all}"}),
+        {**CONTEXT, "color_hex_all": "FF3300,FFFFFF"},
+        dots_per_mm=DPMM,
+    )
+    assert _ink(img, (0, 0, img.width, img.height)) == 0
+    assert not warnings

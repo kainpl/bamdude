@@ -304,6 +304,16 @@ class RasterCanvas:
 
         self._draw.text((left, top), drawn, font=font, fill=0)
 
+    def swatch(self, colours: list[str], *, box_mm: Box) -> None:
+        """Nothing, on purpose.
+
+        ⚠️ A colour block on a one-bit head is a solid smear that conveys
+        nothing — which is exactly why the PDF renderer already drops it in
+        monochrome mode. Skipping it here rather than refusing the element means
+        one template serves both a thermal printer and a colour sheet, with the
+        hex-code line carrying the colour where the block cannot.
+        """
+
     def image(self, img: Image.Image, *, box_mm: Box) -> None:
         x, y, box_w, box_h = self._px(box_mm)
         # Centred in its box. A barcode too wide for its box keeps its module

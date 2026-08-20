@@ -663,6 +663,20 @@ class PdfCanvas:
         self._c.setFont(font, size)
         self._c.drawString(x, y, drawn)
 
+    def swatch(self, colours: list[str], *, box_mm) -> None:
+        """One band per colour, stacked across the box.
+
+        A two-colour spool is two colours, and painting only the first is a
+        small lie somebody reaches for on a shelf — the same reasoning that put
+        segments on the printer card.
+        """
+        left, bottom, box_w, box_h = self.box_to_points(box_mm)
+        band = box_h / len(colours)
+        for index, colour in enumerate(colours):
+            self._c.setFillColor(_color_from_hex(colour))
+            self._c.rect(left, bottom + index * band, box_w, band, stroke=0, fill=1)
+        self._c.setFillColor(black)
+
     def image(self, img, *, box_mm) -> None:
         left, bottom, box_w, box_h = self.box_to_points(box_mm)
         # Keep the code's own aspect ratio and centre it, the way the raster

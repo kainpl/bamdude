@@ -223,3 +223,46 @@ def test_an_empty_batch_still_produces_a_readable_pdf():
     pdf, warnings = render_template_pdf(_spec(_text()), [])
     assert pdf.startswith(b"%PDF-")
     assert not warnings
+
+
+def test_a_swatch_reaches_the_pdf_as_colour():
+    """The PDF keeps the colour block the fixed layouts have always drawn.
+    Losing it would be losing the thing people find a spool by on a shelf.
+    """
+    pdf, warnings = render_template_pdf(
+        _spec({"type": "swatch", "x_mm": 2, "y_mm": 2, "w_mm": 6, "h_mm": 20, "content": "{color_hex_all}"}),
+        [{"color_hex_all": "FF3300"}],
+    )
+    assert pdf.startswith(b"%PDF-")
+    assert not warnings
+
+
+def test_a_two_colour_spool_gets_one_band_per_colour():
+    """Painting only the first colour is a small lie somebody reaches for on a
+    shelf — the same reasoning that put segments on the printer card.
+
+    ⚠️ Counted in the content stream rather than by comparing file sizes. The
+    first version of this test did the latter and passed nothing: reportlab
+    compresses, and one rectangle and two came out the same length.
+    """
+    from reportlab.lib.units import mm
+    from reportlab.pdfgen import canvas as rl_canvas
+
+    from backend.app.services.label_renderer import PdfCanvas
+
+    def fills(colours: list[str]) -> int:
+        buf = io.BytesIO()
+        # pageCompression=0 so the operators are readable ASCII.
+        c = rl_canvas.Canvas(buf, pagesize=(40 * mm, 30 * mm), pageCompression=0)
+        PdfCanvas(c, origin_mm=(0.0, 0.0), page_height_pt=30 * mm).swatch(colours, box_mm=(2.0, 2.0, 6.0, 20.0))
+        c.showPage()
+        c.save()
+        # "re f" is a filled rectangle.
+        # reportlab writes a filled rectangle as "re f*" — read off the real
+        # output rather than guessed at, which is how the first two attempts
+        # at this test managed to assert nothing.
+        return buf.getvalue().count(b"re f*")
+
+    assert fills(["FF3300"]) == 1
+    assert fills(["FF3300", "FFFFFF"]) == 2
+    assert fills(["FF3300", "FFFFFF", "0000FF"]) == 3
