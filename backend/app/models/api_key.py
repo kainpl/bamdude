@@ -76,6 +76,13 @@ class APIKey(Base):
     # of the admin denylist so automations can organize prints into projects.
     # Default True; m104 backfills existing rows to False.
     can_manage_projects: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Direct-to-device label printing: poll for work and queue a label.
+    # ⚠️ Defaults **False**, unlike the can_manage_* columns above. Those split a
+    # capability keys already had, so m104 backfilling silence to False would
+    # have taken something away; this one is new, so nobody loses anything by
+    # not being granted it. It is deliberately narrow — a bridge key sits on a
+    # desktop somewhere and must not reach the library or the inventory.
+    can_print_labels: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Optional scope limits
     printer_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)  # null = all printers

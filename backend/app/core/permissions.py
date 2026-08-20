@@ -106,12 +106,24 @@ class Permission(StrEnum):
     # resource from smart_plugs on purpose: a sensor has no on/off, no energy
     # and no printer binding, so "smart_plugs:delete" to remove one would be
     # borrowing a name that means something else.
-    LABEL_TEMPLATES_READ = "label_templates:read"
-    LABEL_TEMPLATES_WRITE = "label_templates:write"
     SMART_SENSORS_READ = "smart_sensors:read"
     SMART_SENSORS_CREATE = "smart_sensors:create"
     SMART_SENSORS_UPDATE = "smart_sensors:update"
     SMART_SENSORS_DELETE = "smart_sensors:delete"
+
+    # Labels. Designing one and printing one are different questions: a design
+    # outlives every label made from it, so redrawing it is not a print action.
+    LABEL_TEMPLATES_READ = "label_templates:read"
+    LABEL_TEMPLATES_WRITE = "label_templates:write"
+
+    # Direct-to-device label printing. A device is a printer on somebody's desk,
+    # reached through a bridge that polls us — so POLL is its own permission
+    # rather than a read: it mutates (it claims a job), and the key that holds
+    # it must reach nothing else.
+    LABEL_DEVICES_READ = "label_devices:read"
+    LABEL_DEVICES_POLL = "label_devices:poll"
+    LABEL_DEVICES_MANAGE = "label_devices:manage"
+    LABEL_JOBS_CREATE = "label_jobs:create"
 
     # Camera
     CAMERA_VIEW = "camera:view"
@@ -292,6 +304,12 @@ PERMISSION_CATEGORIES = {
     "Label Templates": [
         Permission.LABEL_TEMPLATES_READ,
         Permission.LABEL_TEMPLATES_WRITE,
+    ],
+    "Label Printers": [
+        Permission.LABEL_DEVICES_READ,
+        Permission.LABEL_DEVICES_POLL,
+        Permission.LABEL_DEVICES_MANAGE,
+        Permission.LABEL_JOBS_CREATE,
     ],
     "Camera": [
         Permission.CAMERA_VIEW,
@@ -500,6 +518,11 @@ DEFAULT_GROUPS = {
             # Label templates — design the labels, and print them
             Permission.LABEL_TEMPLATES_READ.value,
             Permission.LABEL_TEMPLATES_WRITE.value,
+            # ⚠️ Print to a device and see which ones exist, but NOT adopt one.
+            # Adopting decides that a printer on somebody's desk may receive our
+            # labels, which is an administrator's call, not an operator's.
+            Permission.LABEL_DEVICES_READ.value,
+            Permission.LABEL_JOBS_CREATE.value,
             Permission.WEBSOCKET_CONNECT.value,
         ],
         "is_system": True,
@@ -538,6 +561,7 @@ DEFAULT_GROUPS = {
             Permission.SYSTEM_READ.value,
             Permission.SETTINGS_READ.value,
             Permission.LABEL_TEMPLATES_READ.value,
+            Permission.LABEL_DEVICES_READ.value,
             Permission.WEBSOCKET_CONNECT.value,
         ],
         "is_system": True,

@@ -1064,6 +1064,12 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     # A sensor reading is status, exactly as a plug reading is — so it rides
     # the scope a key already has rather than growing a column of its own.
     Permission.LABEL_TEMPLATES_READ: "can_read_status",
+    Permission.LABEL_DEVICES_READ: "can_read_status",
+    # ⚠️ The bridge's own two, on a column of their own. POLL mutates — it
+    # claims a job — so it is not a read, and a key that can print labels must
+    # not thereby reach anything else.
+    Permission.LABEL_DEVICES_POLL: "can_print_labels",
+    Permission.LABEL_JOBS_CREATE: "can_print_labels",
     Permission.SMART_SENSORS_READ: "can_read_status",
     Permission.CAMERA_VIEW: "can_read_status",
     Permission.MAINTENANCE_READ: "can_read_status",
@@ -1185,6 +1191,9 @@ _APIKEY_DENIED_PERMISSIONS: frozenset[Permission] = frozenset(
         # reason to redesign a label, and the consequence of a bad one shows
         # up on every label printed afterwards.
         Permission.LABEL_TEMPLATES_WRITE,
+        # ⚠️ Adopting a device decides that a printer on somebody's desk may
+        # receive our labels. Pairing is a person's judgement, not a key's.
+        Permission.LABEL_DEVICES_MANAGE,
         # Settings administration (cred storage; rewriting these reaches SMTP/LDAP/MQTT).
         Permission.SETTINGS_UPDATE,
         Permission.SETTINGS_BACKUP,

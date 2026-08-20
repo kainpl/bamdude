@@ -78,6 +78,12 @@ class AppSettings(BaseModel):
     # so without these there is no way to configure Zigbee short of writing to
     # the database by hand. The phase-4 UI binds to the same three.
     zigbee_enabled: bool = Field(default=False, description="Run the built-in Zigbee coordinator")
+    # Off by default: it needs a desktop bridge running somewhere, so a farm
+    # that has none must not be shown a queue nothing will ever drain.
+    device_labels_enabled: bool = Field(
+        default=False,
+        description="Print spool labels directly on a printer attached to a desktop bridge",
+    )
     zigbee_transport: str = Field(default="ethernet", description="Zigbee dongle transport: ethernet or usb")
     zigbee_path: str = Field(
         default="",
@@ -586,6 +592,7 @@ class AppSettingsUpdate(BaseModel):
     energy_tracking_mode: str | None = None
     spoolman_enabled: bool | None = None
     zigbee_enabled: bool | None = None
+    device_labels_enabled: bool | None = None
     zigbee_transport: str | None = None
     zigbee_path: str | None = None
     spoolman_url: str | None = None
