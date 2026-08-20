@@ -2337,12 +2337,12 @@ export interface SliceRequest {
   /** Run the slicer's auto-arrange pass, repositioning objects on the bed.
    * Unions with the automatic cross-nozzle-class arrange rather than
    * replacing it — an unticked box cannot switch that one off. */
-  arrange?: boolean;
+  auto_arrange?: boolean;
   /** Run the slicer's auto-orientation pass, rotating each object onto its
    * best-scoring orientation. User-driven only; nothing turns it on by
    * itself, since rotating a deliberately laid-out model is not a change to
    * make silently. */
-  orient?: boolean;
+  auto_orient?: boolean;
   // Per-job slicer override. When the user has both OrcaSlicer and
   // BambuStudio sidecars configured, the SliceModal exposes a radio so the
   // slicer can be picked per source file. Falls back to the global
@@ -8613,8 +8613,18 @@ export const api = {
   // Per-request progress proxy used by the SliceModal's filament-discovery
   // preview slice (the sidecar's CORS allowlist + same-origin policy stop
   // the browser from hitting /slice/progress/{id} directly).
-  getPreviewSliceProgress: (requestId: string) =>
-    request<SliceJobProgress | null>(`/slicer/preview-progress/${requestId}`),
+  // ⚠️ Returns null rather than throwing: this is polled on a timer while a
+  // preview slice runs, and one failed poll is not a failed slice. The id goes
+  // through encodeURIComponent because it reaches us from the caller.
+  getPreviewSliceProgress: async (requestId: string): Promise<SliceJobProgress | null> => {
+    try {
+      return await request<SliceJobProgress>(
+        `/slicer/preview-progress/${encodeURIComponent(requestId)}`,
+      );
+    } catch {
+      return null;
+    }
+  },
   // Reachability probe for a single sidecar — used by the SliceModal to
   // disable a radio option when the picked slicer is offline. The backend
   // caches results for 30 s per (kind, url) so render-time polls don't hit

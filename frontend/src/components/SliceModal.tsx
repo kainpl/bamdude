@@ -984,8 +984,8 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
         // the file's embedded project_settings.config instead.
         // Sent only when on: the backend omits the sidecar form field entirely
         // for an off flag, because a literal "false" is truthy over multipart.
-        ...(autoArrange ? { arrange: true } : {}),
-        ...(autoOrient ? { orient: true } : {}),
+        ...(autoArrange ? { auto_arrange: true } : {}),
+        ...(autoOrient ? { auto_orient: true } : {}),
         ...(useEmbedded && canUseEmbedded ? { use_embedded_settings: true } : {}),
         // Carried design settings are patched onto the resolved process JSON,
         // which the embedded-settings path never sends — so the two are

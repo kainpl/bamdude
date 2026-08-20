@@ -2865,7 +2865,7 @@ async def _run_slicer_with_fallback(
     # ⚠️ UNION, not replacement: the cross-class case is a correctness measure
     # (the source's coordinate layout lands in the target's dead zone without
     # it), and a user who did not tick the box must not switch it off.
-    arrange = cross_class_arrange or request.arrange
+    arrange = cross_class_arrange or request.auto_arrange
 
     # SliceModal submits a filament pick per slot, but each plate uses only a
     # subset. A heterogeneous unused-slot default trips BS's loaded-filament
@@ -2910,7 +2910,7 @@ async def _run_slicer_with_fallback(
                     plate=request.plate,
                     export_3mf=request.export_3mf,
                     arrange=arrange_single_call,
-                    orient=request.orient,
+                    orient=request.auto_orient,
                     bed_type=request.bed_type,
                     request_id=progress_request_id,
                     on_progress=progress_callback,
@@ -2956,7 +2956,7 @@ async def _run_slicer_with_fallback(
                         plate=plate_num,
                         export_3mf=True,
                         arrange=True,
-                        orient=request.orient,
+                        orient=request.auto_orient,
                         request_id=progress_request_id,
                         on_progress=plate_cb,
                     )
@@ -2982,7 +2982,7 @@ async def _run_slicer_with_fallback(
                     plate=request.plate,
                     export_3mf=request.export_3mf,
                     arrange=arrange,
-                    orient=request.orient,
+                    orient=request.auto_orient,
                     bed_type=request.bed_type,
                     request_id=progress_request_id,
                     on_progress=progress_callback,
@@ -3023,7 +3023,7 @@ async def _run_slicer_with_fallback(
                 plate=request.plate,
                 export_3mf=request.export_3mf,
                 arrange=arrange_single_call,
-                orient=request.orient,
+                orient=request.auto_orient,
                 bed_type=request.bed_type,
                 request_id=progress_request_id,
                 on_progress=progress_callback,

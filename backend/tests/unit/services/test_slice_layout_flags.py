@@ -101,16 +101,16 @@ class TestTheRequestSchema:
     def test_both_default_to_off(self):
         request = SliceRequest(printer_preset_id=1, process_preset_id=2, filament_preset_id=3)
 
-        assert request.arrange is False
-        assert request.orient is False
+        assert request.auto_arrange is False
+        assert request.auto_orient is False
 
     def test_both_can_be_asked_for(self):
         request = SliceRequest(
-            printer_preset_id=1, process_preset_id=2, filament_preset_id=3, arrange=True, orient=True
+            printer_preset_id=1, process_preset_id=2, filament_preset_id=3, auto_arrange=True, auto_orient=True
         )
 
-        assert request.arrange is True
-        assert request.orient is True
+        assert request.auto_arrange is True
+        assert request.auto_orient is True
 
 
 class TestTheRouteWiring:
@@ -123,7 +123,7 @@ class TestTheRouteWiring:
     def test_arrange_unions_with_the_cross_class_decision(self):
         """⚠️ Not a replacement: the cross-class arrange is a correctness
         measure and an unticked box must not switch it off."""
-        assert "arrange = cross_class_arrange or request.arrange" in self._source()
+        assert "arrange = cross_class_arrange or request.auto_arrange" in self._source()
 
     def test_the_slice_all_loop_is_keyed_on_the_flag_not_the_crossing(self):
         """The project-wide collapse belongs to --arrange, so a user who ticks
@@ -141,4 +141,4 @@ class TestTheRouteWiring:
     def test_orient_reaches_every_path(self):
         """Unlike arrange it has no plate-consolidation hazard, so it is
         forwarded verbatim wherever a slice is issued."""
-        assert self._source().count("orient=request.orient,") == 4
+        assert self._source().count("orient=request.auto_orient,") == 4

@@ -93,7 +93,7 @@ class SliceRequest(BaseModel):
             "slice. None/empty leaves the picked preset untouched."
         ),
     )
-    arrange: bool = Field(
+    auto_arrange: bool = Field(
         default=False,
         description=(
             "Run the slicer's auto-arrange pass, repositioning objects on the bed before slicing. "
@@ -101,7 +101,7 @@ class SliceRequest(BaseModel):
             "replacing it."
         ),
     )
-    orient: bool = Field(
+    auto_orient: bool = Field(
         default=False,
         description=(
             "Run the slicer's auto-orientation pass: score candidate rotations (overhang area, "
