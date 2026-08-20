@@ -143,3 +143,50 @@ async def test_a_printer_with_no_queue_row_is_a_noop(db_session, printer_factory
     await mark_queue_printing_for_printer(printer.id)  # no error
 
     assert (await db_session.execute(select(PrintQueueItem))).scalars().all() == []
+
+
+class TestTheRowSurvivesItsOwnCompletion:
+    """⚠️ A new interaction: before this change an external print had no row, so
+    ``_completion_belongs_to_item`` never saw one.
+
+    That guard refuses a completion whose subtask name disagrees with the
+    archive the row points at — and a refused row is never closed by anything
+    else. Its own docstring names the cost: ``check_queue`` counts a printing
+    row as a busy printer, so the queue stops until somebody cancels by hand.
+    An external print's row must therefore be recognised by its own completion.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_completion_recognises_the_row_it_created(
+        self, db_session, printer_factory, main_db, archive_factory
+    ):
+        from backend.app.main import _completion_belongs_to_item
+
+        printer, queue = await _queue(db_session, printer_factory)
+        # The archive on_print_start builds for a print it did not dispatch:
+        # print_name comes from the same subtask_name the completion carries.
+        archive = await archive_factory(printer.id, status="printing", print_name="Bracket v3")
+
+        await mark_queue_printing_for_printer(printer.id, archive_id=archive.id)
+        row = (await _printing_rows(db_session, queue.id))[0]
+
+        assert await _completion_belongs_to_item(db_session, row, {"subtask_name": "Bracket v3"}) is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_somebody_elses_completion_still_does_not_close_it(
+        self, db_session, printer_factory, main_db, archive_factory
+    ):
+        """The other half — giving external prints a row must not weaken the
+        guard. A calibration run or the tail of a previous job arrives on the
+        same printer with a different name."""
+        from backend.app.main import _completion_belongs_to_item
+
+        printer, queue = await _queue(db_session, printer_factory)
+        archive = await archive_factory(printer.id, status="printing", print_name="Bracket v3")
+
+        await mark_queue_printing_for_printer(printer.id, archive_id=archive.id)
+        row = (await _printing_rows(db_session, queue.id))[0]
+
+        assert await _completion_belongs_to_item(db_session, row, {"subtask_name": "Something else"}) is False
