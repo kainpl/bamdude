@@ -1027,7 +1027,13 @@ class BackgroundDispatchService:
             # already started — and the queue dispatched over the file on its
             # way, which is the bug reported against 0.5.4. Inside the lock and
             # after the refusals above: if this raises, no job was created and
-            # nothing leaked.
+            # nothing leaked, and a rejected dispatch cannot park a printer.
+            #
+            # ⚠️ Yes, this does DB I/O while holding ``_lock``, and that is
+            # deliberate. Moving it out would leave the job queued but unclaimed
+            # for however long the write takes — which is the exact window the
+            # claim exists to close. The cost is bounded: one INSERT plus one
+            # UPDATE, and the enqueue path is not on any hot loop.
             from backend.app.services.queue_batch import claim_printer_for_direct_print
 
             async with async_session() as claim_db:
