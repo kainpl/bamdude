@@ -81,6 +81,53 @@ class LabelDeviceUpdate(BaseModel):
     density: int | None = Field(default=None, ge=1, le=5)
 
 
+class LabelCassetteReport(BaseModel):
+    """What the printer says is loaded. The barcode is all it knows."""
+
+    barcode: str | None = None
+
+
+class LabelDeviceReport(BaseModel):
+    """One poll from a bridge: who it is and what it can see.
+
+    Everything here is the device's word about itself. The two fields a person
+    owns — whether it is adopted and what it is called — are deliberately absent:
+    a bridge that could set ``enabled`` would be adopting itself.
+    """
+
+    installation_id: str = Field(min_length=1, max_length=64)
+    driver: str = "niimbot"
+    model: str | None = None
+    protocol_version: int | None = None
+    transport: str | None = None
+    address: str | None = None
+    app_version: str | None = None
+    #: 0 means the printer says it has no paper. ⚠️ None means it did not say,
+    #: which is not the same thing and must not stop a job.
+    paper_state: int | None = None
+    power_level: int | None = None
+    printer_reachable: bool = False
+    cassette: LabelCassetteReport | None = None
+
+
+class LabelJobHandout(BaseModel):
+    """A claimed job, on its way to the printer."""
+
+    job_id: int
+    image_png: str
+    width_px: int
+    height_px: int
+    width_mm: float
+    height_mm: float
+    copies: int
+    density: int
+
+
+class LabelJobResult(BaseModel):
+    ok: bool
+    error: str | None = Field(default=None, max_length=500)
+
+
 class LabelCassetteIn(BaseModel):
     width_mm: float = Field(gt=0, le=500)
     height_mm: float = Field(gt=0, le=500)
@@ -97,11 +144,15 @@ class LabelCassetteOut(BaseModel):
 
 __all__ = [
     "LabelCassetteIn",
+    "LabelCassetteReport",
     "LabelCassetteOut",
     "LabelDeviceOut",
+    "LabelDeviceReport",
     "LabelDeviceUpdate",
     "LabelJobCreate",
+    "LabelJobHandout",
     "LabelJobOut",
+    "LabelJobResult",
     "LabelJobPreview",
     "LabelSpoolEntry",
 ]

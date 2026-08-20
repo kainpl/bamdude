@@ -12,6 +12,7 @@ feature: it looks like it is working.
 
 from __future__ import annotations
 
+import base64
 import io
 import logging
 import os
@@ -31,21 +32,33 @@ from backend.app.schemas.label_device import (
     LabelCassetteIn,
     LabelCassetteOut,
     LabelDeviceOut,
+    LabelDeviceReport,
     LabelDeviceUpdate,
     LabelJobCreate,
+    LabelJobHandout,
     LabelJobOut,
     LabelJobPreview,
 )
 from backend.app.services.label_dispatch import (
+    DOTS_PER_MM,
     build_contexts,
+    claim_next_job,
     enqueue_jobs,
     render_job_png,
+    resolve_cassette,
     resolve_template,
+    upsert_device,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["label-devices"])
+
+#: How long a bridge waits before asking again when there was nothing for it.
+POLL_INTERVAL_SECONDS = 5
+#: And when the whole subsystem is switched off. Long, because the answer will
+#: not change until somebody visits a settings page.
+DISABLED_BACKOFF_SECONDS = 300
 
 
 async def _require_subsystem(db: AsyncSession) -> None:
@@ -347,3 +360,67 @@ async def forget_cassette(
         raise HTTPException(404, f"No cassette taught for barcode {barcode}")
     await db.delete(row)
     await db.commit()
+
+
+# ── The poll ─────────────────────────────────────────────────────────────────
+
+
+@router.post("/label-devices/poll", response_model=None)
+async def poll(
+    report: LabelDeviceReport,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.LABEL_DEVICES_POLL),
+) -> LabelJobHandout | Response:
+    """One request carries the device's state up and at most one job down.
+
+    ⚠️ **The server sets the cadence**, through ``Retry-After`` on every answer
+    — including the refusals. An administrator can slow a chatty bridge down
+    from where they already are instead of walking to the machine, and a bridge
+    that has just been handed work is told to come straight back, so a batch of
+    ten labels drains at printer speed rather than one per poll interval.
+
+    There is no long poll. Holding a request open for a desktop that may be
+    asleep buys latency at the cost of a connection per device, forever.
+    """
+    enabled = (await get_setting(db, "device_labels_enabled") or "").lower() == "true"
+    if not enabled:
+        return Response(
+            status_code=409,
+            content='{"detail":"device_labels_disabled"}',
+            media_type="application/json",
+            headers={"Retry-After": str(DISABLED_BACKOFF_SECONDS)},
+        )
+
+    barcode = report.cassette.barcode if report.cassette else None
+    cassette = await resolve_cassette(db, barcode)
+    device = await upsert_device(db, report, cassette=cassette)
+
+    # ⚠️ A device nobody adopted still gets a 204 rather than a 403. "Alive and
+    # waiting for approval" has to be distinguishable from "gone", and the way
+    # it stays distinguishable is that the poll keeps succeeding.
+    if not device.enabled:
+        response.headers["Retry-After"] = str(POLL_INTERVAL_SECONDS)
+        return Response(status_code=204, headers={"Retry-After": str(POLL_INTERVAL_SECONDS)})
+
+    # ⚠️ 0 means the printer says it is out of paper; None means it did not say.
+    # Paper is a ten-second fix, so the job waits rather than failing — but a
+    # device that reports nothing must not be starved by our own caution.
+    if report.paper_state == 0 or not report.printer_reachable:
+        return Response(status_code=204, headers={"Retry-After": str(POLL_INTERVAL_SECONDS)})
+
+    job = await claim_next_job(db, device.id)
+    if job is None:
+        return Response(status_code=204, headers={"Retry-After": str(POLL_INTERVAL_SECONDS)})
+
+    response.headers["Retry-After"] = "0"
+    return LabelJobHandout(
+        job_id=job.id,
+        image_png=base64.b64encode(job.image_png).decode("ascii"),
+        width_px=round(job.width_mm * DOTS_PER_MM),
+        height_px=round(job.height_mm * DOTS_PER_MM),
+        width_mm=job.width_mm,
+        height_mm=job.height_mm,
+        copies=job.copies,
+        density=device.density,
+    )
