@@ -15,7 +15,6 @@ from backend.app.core.catalog_defaults import DEFAULT_COLOR_CATALOG, DEFAULT_SPO
 from backend.app.core.config import APP_VERSION
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
-from backend.app.core.tasks import spawn_background_task
 from backend.app.core.websocket import ws_manager
 from backend.app.models.ams_label import AmsLabel
 from backend.app.models.color_catalog import ColorCatalogEntry
@@ -50,7 +49,6 @@ from backend.app.services.location_service import (
     prepare_internal_spool_payload,
     rename_location as rename_location_record,
 )
-from backend.app.services.slot_settle import nudge_until_slot_reports_type
 from backend.app.services.spool_csv import (
     MAX_CSV_IMPORT_BYTES,
     ImportPreview,
@@ -2140,21 +2138,11 @@ async def assign_spool(
             # telemetry to compare against within its window, instead of waiting
             # for the next idle push. Best-effort — the periodic push is the
             # fallback.
-            #
-            # ⚠️ One push is not enough on its own: the printer echoes the
-            # filament id back almost immediately but fills ``tray_type`` later,
-            # so this single forced push lands in the gap and the card renders a
-            # slot that still looks unconfigured. Keep asking, briefly, until the
-            # printer has described the slot — see ``services/slot_settle``.
             if configured:
                 try:
                     client = printer_manager.get_client(data.printer_id)
                     if client:
                         client.request_status_update()
-                        spawn_background_task(
-                            nudge_until_slot_reports_type(client, data.ams_id, data.tray_id),
-                            name=f"slot-settle-{data.printer_id}-{data.ams_id}-{data.tray_id}",
-                        )
                 except Exception:
                     pass
 
