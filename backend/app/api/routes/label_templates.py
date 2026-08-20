@@ -210,7 +210,12 @@ async def duplicate_template(
     return _to_out(copy)
 
 
-@router.delete("/{template_id}", status_code=204)
+# ``response_model=None`` is load-bearing under `from __future__ import
+# annotations`: the ``-> None`` annotation reaches FastAPI as the string "None",
+# which resolves to NoneType — a truthy class — and the app then fails at IMPORT
+# on the fastapi 0.109-0.115 releases our requirements floor still allows.
+# Pinned by test_204_routes_declare_response_model.
+@router.delete("/{template_id}", status_code=204, response_model=None)
 async def delete_template(
     template_id: int,
     db: AsyncSession = Depends(get_db),
