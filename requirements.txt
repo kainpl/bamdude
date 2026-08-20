@@ -61,6 +61,12 @@ aiofiles>=23.0.0
 
 # QR Code generation
 qrcode[pil]>=7.4.0
+# 1D barcodes on labels. Pure Python (no C extension, no Ghostscript, no
+# cairo), MIT, and it rasterises through Pillow which is already here.
+# reportlab carries 20 symbologies too, but only as vector — its raster
+# backend needs rlPyCairo, and a cairo binding is real weight on the armv7l
+# images this project builds.
+python-barcode[images]>=0.15.0
 
 # PDF spool labels (B.1 from upstream 0.2.4b2)
 reportlab>=4.0.0
