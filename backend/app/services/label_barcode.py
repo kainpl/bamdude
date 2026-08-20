@@ -116,11 +116,51 @@ def render_barcode(
     return img
 
 
+# ── Spool numbering ──────────────────────────────────────────────────────────
+#
+# The one thing in this file that knows what a spool is. It lives here because a
+# module for a single function is worse than a clearly-marked section, and it is
+# useless without the symbology beside it.
+
+#: First digit of every barcode we mint.
+#:
+#: ⚠️ **GS1 reserves 02 and 20–29 for restricted distribution** — in-store,
+#: internal, never issued to a manufacturer. Anything else mints codes that look
+#: like real products: 590 is Poland, 460 is Russia, 482 is Ukraine. A spool
+#: label carrying a plausible foreign product code is a small lie that a
+#: warehouse scanner will one day believe.
+INTERNAL_PREFIX = "2"
+
+#: Twelve digits go in and the check digit makes thirteen, so eleven are ours.
+_SPOOL_DIGITS = 11
+
+
+def spool_ean13(spool_id: int) -> str:
+    """A twelve-digit EAN-13 payload for one spool. The check digit is not ours.
+
+    ⚠️ **Always twelve digits, never thirteen.** Handed thirteen with a mistyped
+    check digit, the library accepts it and quietly encodes a different number
+    than the one written down — so the thirteenth is never ours to supply.
+
+    The result is the reason to prefer EAN-13 on a label at all: it is always 95
+    modules, whatever the id, so the box holding it can never overflow. Code 128
+    grows with its payload and a spool name does not fit a 40 mm label.
+    """
+    if spool_id < 0:
+        raise BarcodeError(f"spool id {spool_id} is negative")
+    digits = str(spool_id)
+    if len(digits) > _SPOOL_DIGITS:
+        raise BarcodeError(f"spool id {spool_id} needs {len(digits)} digits; EAN-13 leaves room for {_SPOOL_DIGITS}")
+    return INTERNAL_PREFIX + digits.zfill(_SPOOL_DIGITS)
+
+
 __all__ = [
     "MIN_MODULE_PX",
     "QUIET_ZONE_MODULES",
     "SUPPORTED",
     "BarcodeError",
+    "INTERNAL_PREFIX",
     "modules_for",
     "render_barcode",
+    "spool_ean13",
 ]

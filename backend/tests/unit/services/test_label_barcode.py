@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import barcode
 import pytest
 from PIL import Image
 
 from backend.app.services.label_barcode import (
+    INTERNAL_PREFIX,
     MIN_MODULE_PX,
     QUIET_ZONE_MODULES,
     SUPPORTED,
     BarcodeError,
     modules_for,
     render_barcode,
+    spool_ean13,
 )
 
 
@@ -101,7 +104,7 @@ def test_the_module_string_comes_from_the_library_not_from_us():
     which is a cheap way to prove we are reading a real encoder rather than
     something home-made.
     """
-    assert len(modules_for("590123412345", "ean13")) == 95
+    assert len(modules_for("200000000042", "ean13")) == 95
     assert set(modules_for("SPOOL-42", "code128")) == {"0", "1"}
 
 
@@ -129,8 +132,8 @@ def test_an_empty_payload_is_refused():
         ("code128", "SPOOL-42"),
         ("code39", "SPOOL42"),
         ("itf", "004212"),
-        ("ean13", "590123412345"),
-        ("ean8", "1234567"),
+        ("ean13", "200000000042"),
+        ("ean8", "2000042"),
         ("upca", "01234567890"),
     ],
 )
@@ -147,3 +150,65 @@ def test_the_offered_list_and_the_tested_list_are_the_same():
     """Otherwise a symbology can be added to the menu and never exercised."""
     tested = {"code128", "code39", "itf", "ean13", "ean8", "upca"}
     assert set(SUPPORTED) == tested
+
+
+# ── EAN-13 for spools ──
+
+
+def _ean13_check_digit(twelve: str) -> str:
+    """The standard algorithm, computed here rather than asked of the library —
+    otherwise the test only proves the library agrees with itself."""
+    total = sum(int(d) * (3 if i % 2 else 1) for i, d in enumerate(twelve))
+    return str((10 - total % 10) % 10)
+
+
+def test_a_spool_payload_is_twelve_digits_and_never_thirteen():
+    """⚠️ Handed thirteen digits with a mistyped check digit, the library
+    accepts them and encodes a different number than the one written down. So
+    the thirteenth is never ours to supply.
+    """
+    payload = spool_ean13(42)
+    assert len(payload) == 12
+    assert payload.isdigit()
+
+
+def test_the_prefix_is_one_gs1_reserves_for_internal_use():
+    """02 and 20–29 are restricted distribution and never issued to a
+    manufacturer. Anything else mints codes that look like real products — 590
+    is Poland, 482 is Ukraine — and a warehouse scanner will one day believe
+    one.
+    """
+    assert INTERNAL_PREFIX == "2"
+    assert spool_ean13(1).startswith("2")
+
+
+def test_the_check_digit_the_library_adds_is_the_right_one():
+    for spool_id in (0, 1, 42, 12345, 99999999999):
+        payload = spool_ean13(spool_id)
+        full = barcode.get("ean13", payload).get_fullcode()
+        assert full == payload + _ean13_check_digit(payload)
+
+
+def test_every_spool_gets_the_same_width_whatever_its_id():
+    """The reason to reach for EAN-13 on a label at all: 95 modules, always, so
+    the box holding it cannot overflow. Code 128 grows with its payload.
+    """
+    widths = {len(modules_for(spool_ean13(i), "ean13")) for i in (1, 42, 999, 99999999999)}
+    assert widths == {95}
+
+
+def test_two_spools_never_share_a_code():
+    assert spool_ean13(41) != spool_ean13(42)
+
+
+def test_an_id_too_large_to_encode_is_refused_rather_than_truncated():
+    """Truncating would hand two different spools the same barcode, which is
+    the one failure a barcode must not have.
+    """
+    with pytest.raises(BarcodeError, match="leaves room for"):
+        spool_ean13(10**11)
+
+
+def test_a_negative_id_is_refused():
+    with pytest.raises(BarcodeError):
+        spool_ean13(-1)
