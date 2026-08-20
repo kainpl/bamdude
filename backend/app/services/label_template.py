@@ -203,6 +203,31 @@ class LabelTemplateSpec(BaseModel):
     elements: list[LabelElement] = Field(default_factory=list)
 
 
+class LabelSheetSpec(BaseModel):
+    """A page of labels: the paper, the grid, and nothing about the design.
+
+    ⚠️ **No reference to a template.** The tempting shape — "this sheet holds
+    that label" — makes a template undeletable while a sheet looks at it, and
+    welds one paper geometry to one design forever. A sheet states its cell
+    size; printing takes a sheet plus a template that fits the cell.
+    """
+
+    name: str = Field(min_length=1, max_length=120)
+    page_size: Literal["A4", "letter"]
+    cell_width_mm: float = Field(gt=0)
+    cell_height_mm: float = Field(gt=0)
+    cols: int = Field(gt=0)
+    rows: int = Field(gt=0)
+    margin_top_mm: float = Field(ge=0)
+    margin_left_mm: float = Field(ge=0)
+    gap_x_mm: float = Field(ge=0)
+    gap_y_mm: float = Field(ge=0)
+
+    @property
+    def per_page(self) -> int:
+        return self.cols * self.rows
+
+
 def orientation(width_mm: float, height_mm: float, head_mm: float) -> Literal["as_drawn", "rotated"]:
     """Which way the label goes through the printhead.
 
@@ -228,6 +253,7 @@ __all__ = [
     "PLACEHOLDERS",
     "BarcodeElement",
     "LabelElement",
+    "LabelSheetSpec",
     "LabelTemplateSpec",
     "Placeholder",
     "QrElement",

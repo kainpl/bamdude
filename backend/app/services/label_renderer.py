@@ -51,9 +51,14 @@ import qrcode
 from reportlab.lib.colors import Color, HexColor, black, white
 from reportlab.lib.pagesizes import A4, letter
 from reportlab.lib.units import mm
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.pdfmetrics import stringWidth as c_stringWidth
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas as rl_canvas
+
+from backend.app.services.label_canvas import draw_template
+from backend.app.services.label_template import LabelSheetSpec, LabelTemplateSpec
 
 logger = logging.getLogger(__name__)
 
@@ -553,7 +558,184 @@ def render_labels(template: TemplateName, data_list: list[LabelData], *, monochr
     raise ValueError(f"Unknown label template: {template!r}")
 
 
-__all__ = ["LabelData", "TemplateName", "render_labels"]
+__all__ = [
+    "CODE_DOTS_PER_MM",
+    "LabelData",
+    "PdfCanvas",
+    "TemplateName",
+    "render_labels",
+    "render_template_pdf",
+    "render_template_sheet_pdf",
+]
+
+# ── Template-driven rendering ────────────────────────────────────────────────
+
+#: Resolution the code images are built at before being placed in the PDF.
+#:
+#: ⚠️ Barcodes and QR codes go into the PDF as raster, not as reportlab's vector
+#: symbologies. Two implementations would let one label differ by how it was
+#: printed, which is exactly what having one template is meant to end. 600 dpi
+#: is finer than any printer this reaches and invisible once placed.
+CODE_DOTS_PER_MM = 600 / 25.4
+
+#: Below this a glyph stops being type and becomes a smudge on a thermal head.
+_MIN_TEXT_PT = 2.8
+
+
+class PdfCanvas:
+    """A [`label_canvas.LabelCanvas`] that draws one label onto a PDF page.
+
+    ⚠️ **reportlab counts from the bottom-left of the page; a template counts
+    from the top-left of the label.** The flip happens here, once. Anywhere else
+    and every label comes out mirrored vertically, which reads as a layout bug
+    rather than as a coordinate one.
+    """
+
+    def __init__(
+        self,
+        canvas: rl_canvas.Canvas,
+        *,
+        origin_mm: tuple[float, float],
+        page_height_pt: float,
+    ) -> None:
+        self._c = canvas
+        self._origin_x_mm, self._origin_y_mm = origin_mm
+        self._page_height_pt = page_height_pt
+
+    @property
+    def dots_per_mm(self) -> float:
+        return CODE_DOTS_PER_MM
+
+    def box_to_points(self, box_mm) -> tuple[float, float, float, float]:
+        """Box in millimetres from the label's top-left → points from the page's
+        bottom-left, returning the box's own bottom-left corner.
+
+        Public because it is the one piece of arithmetic in this class that can
+        be wrong in a way nothing else notices, and a compressed PDF is no place
+        to go looking for it.
+        """
+        x, y, w, h = box_mm
+        left = (self._origin_x_mm + x) * mm
+        top = (self._origin_y_mm + y) * mm
+        bottom = self._page_height_pt - top - h * mm
+        return left, bottom, w * mm, h * mm
+
+    def text(
+        self,
+        text: str,
+        *,
+        box_mm,
+        size_mm: float,
+        bold: bool,
+        italic: bool,
+        align: str,
+        valign: str,
+        fit: str,
+    ) -> None:
+        left, bottom, box_w, box_h = self.box_to_points(box_mm)
+        font = _FONT_BOLD if bold else (_FONT_ITALIC if italic else _FONT_REGULAR)
+        size = max(_MIN_TEXT_PT, size_mm * mm)
+
+        if fit == "shrink":
+            while size > _MIN_TEXT_PT and (c_stringWidth(text, font, size) > box_w or size > box_h):
+                size -= 0.25
+        else:
+            size = max(_MIN_TEXT_PT, min(size, box_h))
+
+        # Truncation applies to both fits: it is what keeps text inside its box
+        # rather than running over whatever sits beside it.
+        drawn = _truncate_to_width(self._c, text, font, size, box_w)
+        if not drawn:
+            return
+
+        width = c_stringWidth(drawn, font, size)
+        x = {"left": left, "center": left + (box_w - width) / 2, "right": left + box_w - width}.get(align, left)
+        # The baseline sits an ascender below the top of the box, so that `top`
+        # means the same thing here as it does on the raster.
+        ascent = size * 0.8
+        top_of_box = bottom + box_h
+        y = {
+            "top": top_of_box - ascent,
+            "middle": bottom + (box_h - size) / 2 + (size - ascent),
+            "bottom": bottom + (size - ascent),
+        }.get(valign, top_of_box - ascent)
+
+        self._c.setFont(font, size)
+        self._c.drawString(x, y, drawn)
+
+    def image(self, img, *, box_mm) -> None:
+        left, bottom, box_w, box_h = self.box_to_points(box_mm)
+        # Keep the code's own aspect ratio and centre it, the way the raster
+        # backend does — a stretched barcode is an unreadable one.
+        scale = min(box_w / img.width, box_h / img.height)
+        width, height = img.width * scale, img.height * scale
+        self._c.drawImage(
+            ImageReader(img.convert("L")),
+            left + (box_w - width) / 2,
+            bottom + (box_h - height) / 2,
+            width=width,
+            height=height,
+        )
+
+
+def _page_size(name: str) -> tuple[float, float]:
+    return A4 if name == "A4" else letter
+
+
+def render_template_pdf(spec: LabelTemplateSpec, contexts: list[dict[str, str]]) -> tuple[bytes, list[str]]:
+    """One page per spool, each page the size of the label.
+
+    ⚠️ Warnings are collected once, not once per spool. The same template drawn
+    twenty times has one fault, and a list that grows with the batch buries
+    whatever else is in it.
+    """
+    page = (spec.width_mm * mm, spec.height_mm * mm)
+    buf = io.BytesIO()
+    c = rl_canvas.Canvas(buf, pagesize=page)
+    c.setTitle(f"BamDude label ({spec.name})")
+
+    warnings: list[str] = []
+    for context in contexts:
+        canvas = PdfCanvas(c, origin_mm=(0.0, 0.0), page_height_pt=page[1])
+        found = draw_template(canvas, spec, context)
+        for warning in found:
+            if warning not in warnings:
+                warnings.append(warning)
+        c.showPage()
+
+    c.save()
+    return buf.getvalue(), warnings
+
+
+def render_template_sheet_pdf(
+    spec: LabelTemplateSpec, contexts: list[dict[str, str]], sheet: LabelSheetSpec
+) -> tuple[bytes, list[str]]:
+    """The same label repeated across a page of stock."""
+    page_w, page_h = _page_size(sheet.page_size)
+    buf = io.BytesIO()
+    c = rl_canvas.Canvas(buf, pagesize=(page_w, page_h))
+    c.setTitle(f"BamDude labels ({spec.name} on {sheet.name})")
+
+    warnings: list[str] = []
+    per_page = sheet.per_page
+    for start in range(0, max(len(contexts), 1), per_page):
+        chunk = contexts[start : start + per_page]
+        for index, context in enumerate(chunk):
+            row, col = divmod(index, sheet.cols)
+            origin = (
+                sheet.margin_left_mm + col * (sheet.cell_width_mm + sheet.gap_x_mm),
+                sheet.margin_top_mm + row * (sheet.cell_height_mm + sheet.gap_y_mm),
+            )
+            canvas = PdfCanvas(c, origin_mm=origin, page_height_pt=page_h)
+            for warning in draw_template(canvas, spec, context):
+                if warning not in warnings:
+                    warnings.append(warning)
+        c.showPage()
+
+    c.save()
+    return buf.getvalue(), warnings
+
+
 # white re-exported for completeness; future templates may need a paper-tone variant.
 _ = white
 # _luminance is exported for future templates that need contrast-adaptive text.
