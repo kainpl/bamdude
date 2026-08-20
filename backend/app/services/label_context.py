@@ -88,13 +88,16 @@ def spool_context(
         "slicer_filament_name": spool.slicer_filament_name or "",
         "note": spool.note or "",
         "label_weight_g": _num(label_weight),
-        "label_weight_kg": _num(label_weight / 1000, 2) if label_weight else "",
+        "label_weight_kg": _num(label_weight / 1000, 2),
         "remaining_g": _num(remaining),
         "remaining_kg": _num(remaining / 1000, 2),
-        "remaining_pct": _num(remaining_pct),
+        # ⚠️ With the sign, because that is how the same token reads in the
+        # inventory table. A label and the row it was printed from disagreeing
+        # about one field is discovered at a shelf.
+        "remaining_pct": f"{_num(remaining_pct)}%",
         "color_hex": _hex(spool.rgba),
         "color_hex_all": _hex_all(spool.rgba, spool.extra_colors),
-        "cost_per_kg": _num(spool.cost_per_kg, 2) if spool.cost_per_kg else "",
+        "cost_per_kg": _num(spool.cost_per_kg, 2) if spool.cost_per_kg is not None else "",
         "purchase_date": spool.purchase_date.strftime("%Y-%m-%d") if spool.purchase_date else "",
         "filament_diameter": spool.filament_diameter or "",
         "lot": str(spool.lot) if spool.lot is not None else "",
@@ -153,7 +156,7 @@ def spoolman_context(
         "label_weight_kg": _num(float(initial) / 1000, 2) if initial else "",
         "remaining_g": _num(remaining) if remaining is not None else "",
         "remaining_kg": _num(float(remaining) / 1000, 2) if remaining else "",
-        "remaining_pct": _num(float(remaining) / float(initial) * 100) if remaining and initial else "",
+        "remaining_pct": f"{_num(float(remaining) / float(initial) * 100)}%" if remaining and initial else "",
         "color_hex": _hex(rgba),
         "color_hex_all": _hex_all(rgba, multi if isinstance(multi, str) else None),
         "cost_per_kg": _num(filament.get("price"), 2) if filament.get("price") else "",

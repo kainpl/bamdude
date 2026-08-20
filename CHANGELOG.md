@@ -6,6 +6,18 @@
 
 ### Added
 
+- **Spool label layouts are now templates, and the text on them is spelled out in fields rather than fixed.** The six layouts the print dialog offered were drawn in code: what they showed, in what order, at what size, was not adjustable by anybody. They are rows now — four labels and two Avery sheets — and each one lists its boxes: a line of text, a QR code, a barcode, the colour block. A line's content is written with the same `{brand}`, `{remaining_g}`, `{note}` placeholders the spool-naming setting already uses, so a label can say whatever a spool's row says.
+
+    Two things this makes possible that the fixed six could not express. **Any design can be printed on any paper** — pairing a design with a sheet is a request now, rather than one of two hard-coded combinations — and a design can carry a **barcode**: EAN-13, Code 128, Code 39, UPC-A or ITF, with the EAN-13 minted from the spool's own id under the prefix reserved for exactly this, so it scans on any reader without colliding with a real product.
+
+    **The label's name line is now composed on the server.** It always came from the browser, which meant a label printed by an API key or from Telegram used a different rule than one printed from the page — the same spool, two different labels. The setting is read where the label is drawn, so all three agree.
+
+    ⚠️ **Existing labels come out slightly different.** The fixed layouts adjusted themselves in ways a movable design cannot reproduce: dropping a row that would collide, sizing the QR against a floor. The seeded designs reproduce their geometry from the same formulas, so the difference is small — a millimetre here, a line that truncates where it used to shrink. Nothing needs doing; if a particular label mattered, duplicate the built-in and adjust the copy.
+
+    ⚠️ **A built-in design cannot be edited or deleted.** Its name is what the print API accepts, and an automation printing the same label for a year must not start printing a different one because somebody moved a box. Duplicating gives an editable copy, which is what editing a built-in actually means.
+
+    Two starter designs ship alongside them at 40 × 20 and 50 × 30 mm — sizes a thermal label printer can actually take. Three of the four built-ins are wider than such a printer's head, so without them, plugging one in showed a list with nothing in it that fits.
+
 - **A master project now adds up everything beneath it.** Sub-projects existed — the column and the list were there — but a parent's figures only ever covered its own prints, and nothing outside the API could set a parent in the first place. The project dialog gets a parent picker, and a project with sub-projects gets a second card covering the whole tree: jobs, parts, time, filament and progress against every target in it added together. Its own card keeps its own meaning, so nothing you already nested is restated.
 
     **Two things that could quietly break a tree are fixed.** A project could be put inside its own grandchild — refusing only "itself" left the loop two clicks away — and deleting a project in the middle dropped its sub-projects out to the top level instead of moving them up to its parent.

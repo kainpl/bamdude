@@ -3989,16 +3989,25 @@ export interface SpoolLabelEntry {
   /** Optional override for the label's bold central line. The frontend forwards
    *  the value composed by ``formatSpoolDisplayName`` against the user's
    *  ``settings.spool_display_template`` so the printed label matches the
-   *  Inventory page. When omitted the backend composes a fallback as
-   *  ``color_name → slicer_filament_name → "{brand} {material}"``. */
+   *  Inventory page. When omitted the backend interpolates that same setting
+   *  itself — a label printed by an API key must read like one printed here. */
   display_name?: string | null;
 }
 
 export interface SpoolLabelRequest {
   spools: SpoolLabelEntry[];
-  template: SpoolLabelTemplate;
-  /** Black-and-white thermal printers: drop the colour swatch (prints as a
-   *  muddy grey block) and widen the text column instead (#1870). */
+  /** One of the six names this endpoint has always taken. Exclusive with
+   *  ``template_id`` — naming both is refused rather than guessed at. */
+  template?: SpoolLabelTemplate;
+  /** A design from the label-template catalogue, by id. */
+  template_id?: number;
+  /** Paper to lay that design out on. Only meaningful beside ``template_id``. */
+  sheet_id?: number;
+  /** Black-and-white thermal printers: drop the colour swatch, which prints as
+   *  a muddy grey block (#1870). The hex line still carries the colour.
+   *  ⚠️ The text no longer widens into the freed space: the boxes are a design
+   *  somebody placed, and rearranging them behind their back would be worse
+   *  than the gap. */
   monochrome?: boolean;
 }
 

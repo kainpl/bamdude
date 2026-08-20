@@ -287,4 +287,25 @@ STARTER_TEMPLATES: list[dict[str, Any]] = [
 ]
 
 
-__all__ = ["BUILTIN_SHEETS", "BUILTIN_TEMPLATES", "STARTER_TEMPLATES"]
+__all__ = ["BUILTIN_SHEETS", "BUILTIN_TEMPLATES", "STARTER_TEMPLATES", "sheet_cell_template"]
+
+
+def sheet_cell_template(sheet: dict[str, Any] | Any, name: str | None = None) -> dict[str, Any]:
+    """A design sized to one cell of a sheet, drawn the way the built-ins are.
+
+    ⚠️ This is what the two Avery names resolve to. They named a page, never a
+    design, so there is no template row to point them at — and seeding one per
+    sheet would put two undeletable rows in the catalogue that exist only to be
+    the inside of a page.
+
+    Takes either a seed dict or a ``LabelSheet`` row.
+    """
+    get = sheet.get if isinstance(sheet, dict) else lambda key: getattr(sheet, key)
+    width, height = get("cell_width_mm"), get("cell_height_mm")
+    return {
+        "name": name or f"{get('name')} cell",
+        "width_mm": width,
+        "height_mm": height,
+        "shape": "rect",
+        "elements": _roomy_elements(width, height),
+    }

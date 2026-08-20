@@ -55,7 +55,7 @@ def test_remaining_is_label_weight_minus_used():
     context = spool_context(_spool(), deeplink_base=BASE)
     assert context["remaining_g"] == "750"
     assert context["remaining_kg"] == "0.75"
-    assert context["remaining_pct"] == "75"
+    assert context["remaining_pct"] == "75%"
 
 
 def test_an_overdrawn_spool_reads_zero_rather_than_negative():
@@ -64,13 +64,13 @@ def test_an_overdrawn_spool_reads_zero_rather_than_negative():
     """
     context = spool_context(_spool(weight_used=1040.0), deeplink_base=BASE)
     assert context["remaining_g"] == "0"
-    assert context["remaining_pct"] == "0"
+    assert context["remaining_pct"] == "0%"
 
 
 def test_a_spool_with_no_nominal_weight_does_not_divide_by_it():
     context = spool_context(_spool(label_weight=0), deeplink_base=BASE)
-    assert context["remaining_pct"] == "0"
-    assert context["label_weight_kg"] == ""
+    assert context["remaining_pct"] == "0%"
+    assert context["label_weight_kg"] == "0"
 
 
 def test_the_alpha_channel_is_dropped_from_the_hex():
@@ -194,3 +194,38 @@ def test_no_placeholder_resolves_to_none(key):
     """``None`` reaches the renderer as the four characters "None"."""
     context = spool_context(_spool(), deeplink_base=BASE)
     assert isinstance(context[key], str)
+
+
+class TestParityWithTheInventoryTable:
+    """⚠️ The same tokens drive the spool display-name setting, interpolated
+    client-side in ``frontend/src/utils/spoolName.ts``. A token that formats one
+    way on screen and another on the label is found at a shelf, holding both.
+    """
+
+    def test_the_percentage_carries_its_sign(self):
+        assert spool_context(_spool(), deeplink_base=BASE)["remaining_pct"].endswith("%")
+
+    def test_a_weight_in_kilos_drops_trailing_zeros(self):
+        """``formatKg`` prints 1 kg as "1", not "1.00"."""
+        assert spool_context(_spool(label_weight=1000), deeplink_base=BASE)["label_weight_kg"] == "1"
+        assert spool_context(_spool(label_weight=750), deeplink_base=BASE)["label_weight_kg"] == "0.75"
+
+    def test_a_zero_weight_is_zero_rather_than_blank(self):
+        """The screen shows "0"; a blank on the label would read as unknown."""
+        assert spool_context(_spool(label_weight=0), deeplink_base=BASE)["label_weight_kg"] == "0"
+
+    def test_a_free_spool_costs_zero_rather_than_nothing_at_all(self):
+        assert spool_context(_spool(cost_per_kg=0), deeplink_base=BASE)["cost_per_kg"] == "0"
+
+    def test_the_example_for_every_placeholder_is_shaped_like_a_real_value(self):
+        """⚠️ The picker's examples are what the editor previews with. One that
+        does not look like the real thing teaches a layout against text nothing
+        produces — the percentage sign is exactly such a case.
+        """
+        context = spool_context(_spool(), deeplink_base=BASE)
+        for placeholder in PLACEHOLDERS:
+            real, example = context[placeholder.key], placeholder.example
+            if not real or not example:
+                continue
+            assert real[0].isdigit() == example[0].isdigit(), placeholder.key
+            assert real.endswith("%") == example.endswith("%"), placeholder.key
