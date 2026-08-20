@@ -30,11 +30,13 @@ from __future__ import annotations
 import io
 from typing import Literal
 
-import qrcode
 from PIL import Image, ImageDraw, ImageFont
 
+from backend.app.services.label_canvas import Box, draw_template
+from backend.app.services.label_qr import render_qr
 from backend.app.services.label_raster_fonts import font_at
 from backend.app.services.label_renderer import LabelData
+from backend.app.services.label_template import LabelTemplateSpec
 
 Layout = Literal["roomy", "tight"]
 
@@ -136,21 +138,9 @@ def _pad_to_byte(px: int) -> int:
 
 
 def _qr_image(payload: str, side_px: int) -> Image.Image:
-    qr = qrcode.QRCode(
-        # ERROR_CORRECT_L for the reason label_renderer gives: fewer, chunkier
-        # modules, which is what makes the code survive a 203 dpi head.
-        error_correction=qrcode.constants.ERROR_CORRECT_L,
-        box_size=_MIN_QR_MODULE_PX,
-        border=_QUIET_ZONE_MODULES,
-    )
-    qr.add_data(payload)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white").get_image().convert("1")
-    if img.width != side_px:
-        # NEAREST on purpose: any smoothing here reintroduces grey, and a
-        # blurred module edge is precisely what fails to scan.
-        img = img.resize((side_px, side_px), Image.NEAREST)
-    return img
+    """Kept as a name the fixed layouts below still call. The building moved to
+    ``label_qr`` so the template walker and these share one QR."""
+    return render_qr(payload, side_px)
 
 
 def _draw_text_column(draw: ImageDraw.ImageDraw, data: LabelData, left: int, right: int, height_px: int) -> None:
@@ -234,4 +224,121 @@ def _truncate(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont
     return (out + "…") if out else ""
 
 
-__all__ = ["Layout", "choose_layout", "render_label_png", "render_label_raster"]
+# ── Template-driven rendering ────────────────────────────────────────────────
+
+
+class RasterCanvas:
+    """A [`label_canvas.LabelCanvas`] that draws onto a 1-bit image.
+
+    Bilevel from the start: ImageDraw does not antialias onto a mode-"1" image,
+    so there is never a grey pixel to threshold away afterwards, and a grey edge
+    is what a thermal head turns into a smudge.
+    """
+
+    def __init__(self, width_mm: float, height_mm: float, dots_per_mm: float) -> None:
+        self._dots_per_mm = dots_per_mm
+        width_px = _pad_to_byte(max(8, round(width_mm * dots_per_mm)))
+        height_px = max(8, round(height_mm * dots_per_mm))
+        self._img = Image.new("1", (width_px, height_px), 1)
+        self._draw = ImageDraw.Draw(self._img)
+
+    @property
+    def dots_per_mm(self) -> float:
+        return self._dots_per_mm
+
+    def image_out(self) -> Image.Image:
+        return self._img
+
+    def _px(self, box_mm: Box) -> tuple[int, int, int, int]:
+        x, y, w, h = box_mm
+        return (
+            round(x * self._dots_per_mm),
+            round(y * self._dots_per_mm),
+            max(1, round(w * self._dots_per_mm)),
+            max(1, round(h * self._dots_per_mm)),
+        )
+
+    def text(
+        self,
+        text: str,
+        *,
+        box_mm: Box,
+        size_mm: float,
+        bold: bool,
+        italic: bool,
+        align: str,
+        valign: str,
+        fit: str,
+    ) -> None:
+        x, y, box_w, box_h = self._px(box_mm)
+        size = max(_MIN_FONT_PX, round(size_mm * self._dots_per_mm))
+        font = font_at(size, bold=bold, italic=italic)
+
+        if fit == "shrink":
+            while size > _MIN_FONT_PX and (self._draw.textlength(text, font=font) > box_w or size > box_h):
+                size -= 1
+                font = font_at(size, bold=bold, italic=italic)
+        else:
+            # `clip` keeps the authored size, but never taller than its box —
+            # otherwise the line below it is what pays for the choice.
+            size = max(_MIN_FONT_PX, min(size, box_h))
+            font = font_at(size, bold=bold, italic=italic)
+
+        # ⚠️ Truncation applies to both fits. It is what guarantees the text
+        # cannot run past its box into whatever the operator put beside it.
+        drawn = _truncate(self._draw, text, font, box_w)
+        if not drawn:
+            return
+
+        width = self._draw.textlength(drawn, font=font)
+        left = {
+            "left": x,
+            "center": x + (box_w - width) / 2,
+            "right": x + box_w - width,
+        }.get(align, x)
+        top = {
+            "top": y,
+            "middle": y + (box_h - size) / 2,
+            "bottom": y + box_h - size,
+        }.get(valign, y)
+
+        self._draw.text((left, top), drawn, font=font, fill=0)
+
+    def image(self, img: Image.Image, *, box_mm: Box) -> None:
+        x, y, box_w, box_h = self._px(box_mm)
+        # Centred in its box. A barcode too wide for its box keeps its module
+        # floor and overflows rather than shrinking into something unreadable,
+        # so this can put ink outside the box on purpose — the walker warns.
+        left = x + (box_w - img.width) // 2
+        top = y + (box_h - img.height) // 2
+        self._img.paste(img, (left, top))
+
+
+def render_template_raster(
+    spec: LabelTemplateSpec, context: dict[str, str], *, dots_per_mm: float
+) -> tuple[Image.Image, list[str]]:
+    """One label from one template, plus whatever went wrong drawing it."""
+    canvas = RasterCanvas(spec.width_mm, spec.height_mm, dots_per_mm)
+    warnings = draw_template(canvas, spec, context)
+    return canvas.image_out(), warnings
+
+
+def render_template_png(
+    spec: LabelTemplateSpec, context: dict[str, str], *, dots_per_mm: float
+) -> tuple[bytes, list[str]]:
+    """The same label as PNG bytes, which is what travels to a device."""
+    img, warnings = render_template_raster(spec, context, dots_per_mm=dots_per_mm)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", bits=1)
+    return buf.getvalue(), warnings
+
+
+__all__ = [
+    "Layout",
+    "RasterCanvas",
+    "choose_layout",
+    "render_label_png",
+    "render_label_raster",
+    "render_template_png",
+    "render_template_raster",
+]
