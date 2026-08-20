@@ -3999,6 +3999,103 @@ export interface SpoolLabelEntry {
   display_name?: string | null;
 }
 
+/** Where an element sits, in millimetres from the top-left of the label. */
+export interface LabelElementBox {
+  x_mm: number;
+  y_mm: number;
+  w_mm: number;
+  h_mm: number;
+}
+
+export interface LabelTextElement extends LabelElementBox {
+  type: 'text';
+  /** Placeholders in `{brand}` form, resolved server-side. ⚠️ An unknown one
+   *  survives verbatim so a typo shows in the preview rather than as a gap. */
+  content: string;
+  size_mm: number;
+  bold: boolean;
+  italic: boolean;
+  align: 'left' | 'center' | 'right';
+  valign: 'top' | 'middle' | 'bottom';
+  /** `shrink` fits by reducing type; `clip` keeps the size and truncates. */
+  fit: 'shrink' | 'clip';
+}
+
+export interface LabelQrElement extends LabelElementBox {
+  type: 'qr';
+  content: string;
+}
+
+export interface LabelBarcodeElement extends LabelElementBox {
+  type: 'barcode';
+  content: string;
+  symbology: 'code128' | 'code39' | 'ean13' | 'ean8' | 'upca' | 'itf';
+}
+
+export interface LabelSwatchElement extends LabelElementBox {
+  type: 'swatch';
+  content: string;
+}
+
+export type LabelTemplateElement =
+  | LabelTextElement
+  | LabelQrElement
+  | LabelBarcodeElement
+  | LabelSwatchElement;
+
+export interface LabelTemplate {
+  id: number;
+  name: string;
+  width_mm: number;
+  height_mm: number;
+  shape: 'rect' | 'round';
+  elements: LabelTemplateElement[];
+  /** ⚠️ A row that carries one is read-only: the name is a public contract
+   *  the print API accepts, so an automation must not start printing something
+   *  else because somebody moved a box. Duplicate to get an editable copy. */
+  builtin_key: string | null;
+  is_builtin: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+/** What a template looks like before it has an id. */
+export interface LabelTemplateInput {
+  name: string;
+  width_mm: number;
+  height_mm: number;
+  shape: 'rect' | 'round';
+  elements: LabelTemplateElement[];
+}
+
+export interface LabelPlaceholder {
+  key: string;
+  label: string;
+  description: string;
+  example: string;
+}
+
+export interface LabelSheet {
+  id: number;
+  name: string;
+  builtin_key: string | null;
+  page_size: 'A4' | 'letter';
+  cell_width_mm: number;
+  cell_height_mm: number;
+  cols: number;
+  rows: number;
+  margin_top_mm: number;
+  margin_left_mm: number;
+  gap_x_mm: number;
+  gap_y_mm: number;
+}
+
+/** A rendered preview plus whatever went wrong drawing it. */
+export interface LabelPreview {
+  blob: Blob;
+  warnings: string[];
+}
+
 /** A label printer attached to somebody's desktop, reached through a bridge. */
 export interface LabelDevice {
   id: number;
@@ -7432,7 +7529,54 @@ export const api = {
     return response.blob();
   },
 
-  // ── Direct-to-device label printing ──────────────────────────────────────
+  // ── Label templates ──────────────────────────────────────────────────
+  // ⚠️ getLabelTemplates stays PARAMETER-FREE — an optional argument breaks
+  // TanStack's `queryFn: api.getLabelTemplates` inference.
+  getLabelTemplates: () => request<LabelTemplate[]>('/label-templates'),
+  getLabelTemplate: (id: number) => request<LabelTemplate>(`/label-templates/${id}`),
+  createLabelTemplate: (body: LabelTemplateInput) =>
+    request<LabelTemplate>('/label-templates', { method: 'POST', body: JSON.stringify(body) }),
+  updateLabelTemplate: (id: number, body: LabelTemplateInput) =>
+    request<LabelTemplate>(`/label-templates/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  duplicateLabelTemplate: (id: number) =>
+    request<LabelTemplate>(`/label-templates/${id}/duplicate`, { method: 'POST' }),
+  deleteLabelTemplate: (id: number) =>
+    request<void>(`/label-templates/${id}`, { method: 'DELETE' }),
+  getLabelPlaceholders: () => request<LabelPlaceholder[]>('/label-templates/placeholders'),
+  getLabelSheets: () => request<LabelSheet[]>('/label-templates/sheets'),
+
+  /**
+   * Render a design that has not been saved.
+   *
+   * ⚠️ The template travels in the BODY, not by id: dragging a box must not
+   * have to save anything, and the picture has to come from the renderer that
+   * will do the printing. Raw fetch because the answer is a PNG — `request<T>`
+   * is for JSON — and because the warnings ride in a header beside it.
+   */
+  previewLabelTemplate: async (body: {
+    template: LabelTemplateInput;
+    spool_id?: number | null;
+    dots_per_mm?: number;
+  }): Promise<LabelPreview> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/label-templates/preview`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    const raw = response.headers.get('X-Label-Warnings');
+    return {
+      blob: await response.blob(),
+      warnings: raw ? raw.split(' | ').filter(Boolean) : [],
+    };
+  },
+
+  // ── Direct-to-device label printing ─────────────────────────────────
   // ⚠️ getLabelDevices stays PARAMETER-FREE. An optional argument breaks
   // TanStack's `queryFn: api.getLabelDevices` inference — the same trap
   // getPrinters / getPrintersWithArchived already exists to avoid.

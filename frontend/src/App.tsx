@@ -18,6 +18,7 @@ import { FileManagerPage } from './pages/FileManagerPage';
 import { LibraryTrashPage } from './pages/LibraryTrashPage';
 import { ArchiveTrashPage } from './pages/ArchiveTrashPage';
 import { MakerworldPage } from './pages/MakerworldPage';
+import { LabelTemplatesPage } from './pages/LabelTemplatesPage';
 import { CameraPage } from './pages/CameraPage';
 import { StreamOverlayPage } from './pages/StreamOverlayPage';
 import { CamWallPage } from './pages/CamWallPage';
@@ -261,6 +262,7 @@ function App() {
                   <Route path="files" element={<FileManagerPage />} />
                   <Route path="files/trash" element={<LibraryTrashPage />} />
                   <Route path="makerworld" element={<PermissionRoute permission="makerworld:view"><MakerworldPage /></PermissionRoute>} />
+                  <Route path="label-templates" element={<PermissionRoute permission="label_templates:read"><LabelTemplatesPage /></PermissionRoute>} />
                   <Route path="settings" element={<PermissionRoute permission="settings:read"><SettingsPage /></PermissionRoute>} />
                   <Route path="groups/new" element={<PermissionRoute permission="groups:create"><GroupEditPage /></PermissionRoute>} />
                   <Route path="groups/:id/edit" element={<PermissionRoute permission="groups:update"><GroupEditPage /></PermissionRoute>} />

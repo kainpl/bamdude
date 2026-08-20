@@ -6,6 +6,14 @@
 
 ### Added
 
+- **Labels are drawn with the mouse now.** A new **Label designs** page: pick a design, drag the boxes where you want them, and see the result as you go. Text boxes say what they say with the same `{brand}`, `{remaining_g}`, `{purchase_date}` fields the naming template uses — click a field to insert it rather than typing the braces. QR codes, barcodes and the colour block are boxes too.
+
+    **The picture in the middle is not a drawing of your label — it is your label.** It comes from the same renderer that will print it, at the printer's own resolution, so a QR whose squares have merged or a line that no longer fits shows up while you are moving things rather than on wasted stock. Anything the renderer objects to is listed under the label in words.
+
+    Boxes snap to each other and to the label's own edges and centre, with a red line showing what they caught on; nothing snapping means the half-millimetre grid. Arrow keys nudge, shift-arrows nudge further, Ctrl+Z and Ctrl+Shift+Z step back and forward, and a box cannot be dragged off the label or shrunk until it can no longer be grabbed.
+
+    ⚠️ **A built-in design opens read-only.** Its name is what the print API accepts, and an automation printing the same label for a year must not start printing a different one because somebody moved a box. Duplicate it — the copy is yours and behaves exactly like one you made.
+
 - **A label printer plugged into your desk can now print from BamDude.** The server has always rendered labels to a PDF you then had to print yourself, because a server in a container cannot reach a USB printer on somebody's machine. So it does not try: BamDude renders the label, puts it in a queue, and the **BamDude Bridge** app already running on that desktop comes and takes it. Nothing connects *to* your desktop, which is why this works on a laptop, behind NAT, or through a firewall that would never allow the reverse.
 
     Switch it on under Settings, give the bridge an API key with the new **Print labels** scope, and the machine appears in BamDude's device list — **unadopted**. It stays that way until somebody enables it: the key proves the app is yours, not that this particular printer should be given your labels.

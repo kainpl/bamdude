@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Printer, Archive, Calendar, BarChart3, Cloud, Settings, Sun, Moon, Monitor, ChevronLeft, ChevronRight, Keyboard, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, BookOpen, Cpu, Thermometer, type LucideIcon } from 'lucide-react';
+import { Printer, Archive, Calendar, BarChart3, Cloud, Settings, Sun, Moon, Monitor, ChevronLeft, ChevronRight, Keyboard, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, BookOpen, Cpu, Thermometer, Tag, type LucideIcon } from 'lucide-react';
 import { GitHubIcon, TelegramIcon, MakerWorldIcon } from './BrandIcons';
 import { useTranslation } from 'react-i18next';
 import { useHoverIntent } from '../hooks/useHoverIntent';
@@ -62,6 +62,7 @@ export const defaultNavItems: NavItem[] = [
   // Resources — consumables + slicer presets
   { id: 'inventory', to: '/inventory', icon: Disc3, labelKey: 'nav.inventory', group: 'resources' },
   { id: 'profiles', to: '/profiles', icon: Cloud, labelKey: 'nav.profiles', group: 'resources' },
+  { id: 'labelTemplates', to: '/label-templates', icon: Tag, labelKey: 'nav.labelTemplates', group: 'resources' },
   // Care — long-term printer health
   { id: 'maintenance', to: '/maintenance', icon: Wrench, labelKey: 'nav.maintenance', group: 'care' },
   { id: 'firmware', to: '/firmware', icon: Cpu, labelKey: 'nav.firmware', group: 'care' },
@@ -400,6 +401,7 @@ export function Layout() {
       maintenance: 'maintenance:read',
       projects: 'projects:read',
       inventory: 'inventory:read',
+      labelTemplates: 'label_templates:read',
       files: ['library:read', 'library:read_own', 'library:read_all'],
       makerworld: 'makerworld:view',
       firmware: 'firmware:read',
