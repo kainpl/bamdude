@@ -29,6 +29,7 @@ import {
   type Slot,
 } from '../utils/presetPickerUtils';
 import { useSlicerHealth, type SlicerKind } from '../hooks/useSlicerHealth';
+import { useIsWideLayout } from '../hooks/useIsWideLayout';
 import {
   EMPTY_COMPATIBILITY_INDEX,
   buildCompatibilityIndex,
@@ -527,6 +528,11 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   const [processOverrides, setProcessOverrides] = useState<Record<string, SettingValue>>({});
   const [serializedProcessOverrides, setSerializedProcessOverrides] = useState<Record<string, string | string[]>>({});
   const [settingsExpanded, setSettingsExpanded] = useState(false);
+  const isWideLayout = useIsWideLayout();
+  // ⚠️ The panel is permanently open once it owns a column — there is nothing
+  // to collapse it out of the way of. The disclosure exists only because the
+  // single-column stack below `lg` cannot afford 348 options unfolded.
+  const panelOpen = isWideLayout || settingsExpanded;
   // One filament ref per plate slot, in plate order. For STL / single-plate /
   // single-color sources this is a one-element array; multi-color 3MFs get one
   // entry per AMS slot the plate uses. Pre-pick (effect below) initialises
@@ -1237,6 +1243,14 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                   {t('slice.refreshPresets')}
                 </button>
               </div>
+              {/* Two columns once there is room for them. The left keeps
+                  the "what am I slicing with" decisions together; the right
+                  gives the process-settings panel a column of its own, which
+                  is the only way 348 options are comfortable to work through.
+                  ⚠️ Below lg both collapse back into the single stack this
+                  dialog used to be, so nothing on a phone changes. */}
+              <div className="lg:grid lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)] lg:gap-5 lg:items-start">
+                <div className="space-y-4 min-w-0">
               {/* Slicer picker — two big card-buttons matching the
                   "Filament Tracking" pattern in Settings. Each card carries
                   its own live health status (version / offline / checking)
@@ -1442,47 +1456,6 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                   </span>
                 </label>
               )}
-              {/* Process settings, mirroring OrcaSlicer's own Print Settings
-                  tabs. Collapsed by default: the common case is slicing with a
-                  preset as-is, and the full option set unfolded would bury the
-                  preset pickers above. Hidden entirely in embedded mode, where
-                  no process JSON is sent for these to patch. */}
-              {!useEmbedded && (
-                <div className="rounded border border-bambu-dark-tertiary p-3">
-                  <button
-                    type="button"
-                    onClick={() => setSettingsExpanded((v) => !v)}
-                    className="flex w-full items-center justify-between gap-2 text-left"
-                  >
-                    <span className="text-sm text-white">
-                      {t('slice.processSettings')}
-                      <span className="block text-xs text-bambu-gray/70">{t('slice.processSettingsHint')}</span>
-                    </span>
-                    <span className="shrink-0 text-xs text-bambu-gray">
-                      {Object.keys(serializedProcessOverrides).length > 0
-                        ? t('slice.processSettingsChanged', {
-                            count: Object.keys(serializedProcessOverrides).length,
-                          })
-                        : t('slice.processSettingsUnchanged')}
-                    </span>
-                  </button>
-                  {settingsExpanded && (
-                    <div className="mt-3 border-t border-bambu-dark-tertiary pt-3">
-                      <SlicerSettingsPanel
-                        values={processOverrides}
-                        onChange={(values, serialized) => {
-                          setProcessOverrides(values);
-                          setSerializedProcessOverrides(serialized);
-                        }}
-                        presetValues={presetValues}
-                        presetValuesResolved={presetValuesResolved}
-                        presetValuesReason={presetValuesReason}
-                        disabled={isEnqueuing}
-                      />
-                    </div>
-                  )}
-                </div>
-              )}
               {/* The designer's own process tweaks (#2622). BambuStudio records
                   which keys deviate from the stock preset in the 3MF itself, so
                   a re-slice for another printer can carry them instead of
@@ -1631,6 +1604,62 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                   );
                 })
               )}
+                </div>
+
+                {/* Right column: the settings panel. ⚠️ Kept on screen in
+                    embedded mode but DISABLED rather than removed — nothing
+                    here is sent on that path (the file's own settings drive
+                    the slice), and dropping the column outright made the
+                    dialog look like it had lost a feature whenever the
+                    toggle was flipped. */}
+                <div className="mt-4 lg:mt-0 min-w-0">
+              {/* Process settings, mirroring OrcaSlicer's own Print Settings
+                  tabs. Collapsed by default: the common case is slicing with a
+                  preset as-is, and the full option set unfolded would bury the
+                  preset pickers above. Hidden entirely in embedded mode, where
+                  no process JSON is sent for these to patch. */}
+              {(
+                <div
+                  className={`rounded border border-bambu-dark-tertiary p-3 ${useEmbedded ? 'opacity-60' : ''}`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => setSettingsExpanded((v) => !v)}
+                    aria-expanded={panelOpen}
+                    disabled={isWideLayout}
+                    className="flex w-full items-center justify-between gap-2 text-left lg:cursor-default"
+                  >
+                    <span className="text-sm text-white">
+                      {t('slice.processSettings')}
+                      <span className="block text-xs text-bambu-gray/70">{t('slice.processSettingsHint')}</span>
+                    </span>
+                    <span className="shrink-0 text-xs text-bambu-gray">
+                      {Object.keys(serializedProcessOverrides).length > 0
+                        ? t('slice.processSettingsChanged', {
+                            count: Object.keys(serializedProcessOverrides).length,
+                          })
+                        : t('slice.processSettingsUnchanged')}
+                    </span>
+                  </button>
+                  {panelOpen && !useEmbedded && (
+                    <div className="mt-3 border-t border-bambu-dark-tertiary pt-3">
+                      <SlicerSettingsPanel
+                        values={processOverrides}
+                        onChange={(values, serialized) => {
+                          setProcessOverrides(values);
+                          setSerializedProcessOverrides(serialized);
+                        }}
+                        presetValues={presetValues}
+                        presetValuesResolved={presetValuesResolved}
+                        presetValuesReason={presetValuesReason}
+                        disabled={isEnqueuing}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+                </div>
+              </div>
             </>
           )}
 
