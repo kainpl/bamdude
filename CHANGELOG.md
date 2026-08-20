@@ -84,6 +84,8 @@
 
 ### Fixed
 
+- **A spool you assign to a slot now appears on the printer card straight away.** Assigning a spool — especially to the external holder — left the card showing the previous filament for anywhere up to a minute, and then it corrected itself with no further action. Nothing had gone wrong: the assignment was stored, the printer had taken it, and the slicer showed the new spool immediately. The printer confirms a new filament in two steps, echoing the filament's identity back within a fraction of a second but filling in its material and colour a good while later — and BamDude asked the printer for a fresh report exactly once, right after sending the change, which landed in between the two. It now keeps asking for about a second until the printer has actually described the slot.
+
 - **A spool with no brand no longer reads "· PLA".** Anywhere a naming template puts a separator between two fields — the Filaments list, the spool hover card, the label itself — a field that happens to be empty used to leave its separator behind, so a spool missing one value looked like a spool with broken data. The separator now goes with the value it was separating; a line where nothing is filled in disappears entirely rather than printing a lone dot. Punctuation inside a value is untouched: `PLA-CF` is still `PLA-CF`.
 
 

@@ -3033,6 +3033,18 @@ async def configure_ams_slot(
     update_result = client.request_status_update()
     logger.info("[configure_ams_slot] Status update request result: %s", update_result)
 
+    # ⚠️ That one push lands in the gap: the printer echoes the filament id back
+    # almost immediately but fills ``tray_type`` later, and ``tray_type`` is what
+    # the card renders. Keep asking, briefly, until it has described the slot —
+    # see ``services/slot_settle``.
+    from backend.app.core.tasks import spawn_background_task
+    from backend.app.services.slot_settle import nudge_until_slot_reports_type
+
+    spawn_background_task(
+        nudge_until_slot_reports_type(client, ams_id, tray_id),
+        name=f"slot-settle-{printer_id}-{ams_id}-{tray_id}",
+    )
+
     return {
         "success": True,
         "message": f"Configured AMS {ams_id} tray {tray_id} with {tray_sub_brands}",

@@ -4342,6 +4342,21 @@ class BambuMQTTClient:
             return None
         return None
 
+    def slot_reported_filament_type(self, ams_id: int, tray_id: int) -> str:
+        """What filament type the printer currently reports for a slot, or ``""``.
+
+        A blank answer is the "configured but not yet described" state: the
+        printer has taken ``ams_filament_setting`` and echoes the filament id
+        back, but has not yet filled ``tray_type`` — which is the field the
+        printer card renders and the one ``on_ams_change`` compares the
+        assignment fingerprint against. See ``services/slot_settle``.
+
+        Shares ``_find_verify_tray`` with the assignment read-back so the
+        external holder's ``vt_tray`` shape has one definition, not two.
+        """
+        tray = self._find_verify_tray(ams_id, tray_id)
+        return str((tray or {}).get("tray_type") or "").strip()
+
     def _check_assignment_verifications(self) -> None:
         """Compare each pending assignment against live tray telemetry and fire
         ``on_assignment_verified`` on a match or once the deadline passes.
