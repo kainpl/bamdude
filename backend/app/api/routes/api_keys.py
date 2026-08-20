@@ -84,6 +84,7 @@ async def create_api_key(
         can_manage_maintenance=data.can_manage_maintenance,
         can_manage_archives=data.can_manage_archives,
         can_manage_projects=data.can_manage_projects,
+        can_print_labels=data.can_print_labels,
         printer_ids=data.printer_ids,
         expires_at=data.expires_at,
     )
@@ -113,6 +114,7 @@ async def create_api_key(
         can_manage_maintenance=api_key.can_manage_maintenance,
         can_manage_archives=api_key.can_manage_archives,
         can_manage_projects=api_key.can_manage_projects,
+        can_print_labels=api_key.can_print_labels,
         printer_ids=api_key.printer_ids,
         enabled=api_key.enabled,
         last_used=api_key.last_used,
@@ -177,6 +179,8 @@ async def update_api_key(
         api_key.can_manage_archives = data.can_manage_archives
     if data.can_manage_projects is not None:
         api_key.can_manage_projects = data.can_manage_projects
+    if data.can_print_labels is not None:
+        api_key.can_print_labels = data.can_print_labels
     if data.printer_ids is not None:
         api_key.printer_ids = data.printer_ids
     if data.enabled is not None:

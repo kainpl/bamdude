@@ -291,6 +291,10 @@ export function SettingsPage() {
     can_manage_maintenance: true,
     can_manage_archives: true,
     can_manage_projects: true,
+    // Off by default, unlike every scope above. Those split capabilities keys
+    // already had; this one is new, and it is what a desktop bridge sitting on
+    // somebody's machine authenticates with — granting it must be deliberate.
+    can_print_labels: false,
   });
   const [createdAPIKey, setCreatedAPIKey] = useState<string | null>(null);
   const [showDeleteAPIKeyConfirm, setShowDeleteAPIKeyConfirm] = useState<number | null>(null);
@@ -526,6 +530,7 @@ export function SettingsPage() {
       can_manage_maintenance: boolean;
       can_manage_archives: boolean;
       can_manage_projects: boolean;
+      can_print_labels: boolean;
     }) => api.createAPIKey(data),
     onSuccess: (data) => {
       setCreatedAPIKey(data.key || null);
@@ -5023,6 +5028,18 @@ export function SettingsPage() {
                           <p className="text-xs text-bambu-gray">{t('settings.manageProjectsDescription')}</p>
                         </div>
                       </label>
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={newAPIKeyPermissions.can_print_labels}
+                          onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_print_labels: e.target.checked }))}
+                          className="w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
+                        />
+                        <div>
+                          <span className="text-white">{t('settings.printLabels')}</span>
+                          <p className="text-xs text-bambu-gray">{t('settings.printLabelsDescription')}</p>
+                        </div>
+                      </label>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 pt-2">
@@ -5097,6 +5114,9 @@ export function SettingsPage() {
                             )}
                             {key.can_manage_projects && (
                               <span className="px-1.5 py-0.5 bg-lime-100 dark:bg-lime-500/20 text-lime-700 dark:text-lime-400 rounded">{t('settings.projectsBadge')}</span>
+                            )}
+                            {key.can_print_labels && (
+                              <span className="px-1.5 py-0.5 bg-pink-100 dark:bg-pink-500/20 text-pink-700 dark:text-pink-400 rounded">{t('settings.labelsBadge')}</span>
                             )}
                             {key.user_id === null && (
                               <span className="px-1.5 py-0.5 bg-bambu-dark-tertiary text-bambu-gray rounded">{t('settings.legacyBadge')}</span>

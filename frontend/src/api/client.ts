@@ -1503,6 +1503,7 @@ export interface APIKey {
   can_manage_archives: boolean;
   /** Project write scope: create/update/delete projects + add archives (#1893). */
   can_manage_projects: boolean;
+  can_print_labels: boolean;
   printer_ids: number[] | null;
   enabled: boolean;
   last_used: string | null;
@@ -1522,6 +1523,7 @@ export interface APIKeyCreate {
   can_manage_maintenance?: boolean;
   can_manage_archives?: boolean;
   can_manage_projects?: boolean;
+  can_print_labels?: boolean;
   printer_ids?: number[] | null;
   expires_at?: string | null;
 }
@@ -1542,6 +1544,7 @@ export interface APIKeyUpdate {
   can_manage_maintenance?: boolean;
   can_manage_archives?: boolean;
   can_manage_projects?: boolean;
+  can_print_labels?: boolean;
   printer_ids?: number[] | null;
   enabled?: boolean;
   expires_at?: string | null;

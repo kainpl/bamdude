@@ -6,6 +6,18 @@
 
 ### Added
 
+- **A label printer plugged into your desk can now print from BamDude.** The server has always rendered labels to a PDF you then had to print yourself, because a server in a container cannot reach a USB printer on somebody's machine. So it does not try: BamDude renders the label, puts it in a queue, and the **BamDude Bridge** app already running on that desktop comes and takes it. Nothing connects *to* your desktop, which is why this works on a laptop, behind NAT, or through a firewall that would never allow the reverse.
+
+    Switch it on under Settings, give the bridge an API key with the new **Print labels** scope, and the machine appears in BamDude's device list — **unadopted**. It stays that way until somebody enables it: the key proves the app is yours, not that this particular printer should be given your labels.
+
+    The design and its size come from the templates above; the printer contributes what it knows, which is the barcode on the loaded cassette. What size that barcode means is **taught, not looked up** — BamDude does not send consumable identifiers to any vendor's cloud to find out how big a sticker is. Teach it once and every machine with that stock resolves it.
+
+    ⚠️ **A design is printed at its own size or not at all.** A label larger than the loaded stock is refused, naming both sizes, rather than shrunk to fit — scaling a one-bit image breaks the bar widths a scanner reads by, and that failure is silent: the label looks perfect and simply will not scan.
+
+    Out of paper holds the queue instead of failing it, because paper is a ten-second fix. A job whose printer goes quiet mid-print goes back in the queue and, after three tries, fails visibly with whatever the device last said — rather than sitting there reading as "printing" forever.
+
+    Currently the Niimbot B1 over USB. The bridge names the model in its own window and says plainly when it meets one it cannot drive yet.
+
 - **Spool label layouts are now templates, and the text on them is spelled out in fields rather than fixed.** The six layouts the print dialog offered were drawn in code: what they showed, in what order, at what size, was not adjustable by anybody. They are rows now — four labels and two Avery sheets — and each one lists its boxes: a line of text, a QR code, a barcode, the colour block. A line's content is written with the same `{brand}`, `{remaining_g}`, `{note}` placeholders the spool-naming setting already uses, so a label can say whatever a spool's row says.
 
     Two things this makes possible that the fixed six could not express. **Any design can be printed on any paper** — pairing a design with a sheet is a request now, rather than one of two hard-coded combinations — and a design can carry a **barcode**: EAN-13, Code 128, Code 39, UPC-A or ITF, with the EAN-13 minted from the spool's own id under the prefix reserved for exactly this, so it scans on any reader without colliding with a real product.

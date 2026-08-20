@@ -143,3 +143,20 @@ def test_the_migration_seeds_exactly_what_the_groups_declare():
     assert set(OPERATOR_PERMISSIONS) == {
         p.value for p in NEW_PERMISSIONS if p.value in set(DEFAULT_GROUPS["Operators"]["permissions"])
     }
+
+
+def test_every_scope_column_is_reachable_through_the_api():
+    """⚠️ A scope the key form cannot set is a scope nobody can ever have.
+
+    Adding the column, mapping the permission to it and wiring it through the
+    schemas are three separate edits, and the first two pass every existing test
+    on their own — the bridge simply never authenticates, with a 403 that names
+    a scope the UI does not offer. Caught exactly that way.
+    """
+    from backend.app.models.api_key import APIKey
+    from backend.app.schemas.api_key import APIKeyCreate, APIKeyResponse, APIKeyUpdate
+
+    columns = {c.name for c in APIKey.__table__.columns if c.name.startswith("can_")}
+    for model in (APIKeyCreate, APIKeyResponse, APIKeyUpdate):
+        missing = columns - set(model.model_fields)
+        assert not missing, f"{model.__name__} cannot express {sorted(missing)}"
