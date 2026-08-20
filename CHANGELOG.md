@@ -6,7 +6,7 @@
 
 ### Added
 
-- **Labels are drawn with the mouse now.** A new **Label designs** page: pick a design, drag the boxes where you want them, and see the result as you go. Text boxes say what they say with the same `{brand}`, `{remaining_g}`, `{purchase_date}` fields the naming template uses — click a field to insert it rather than typing the braces. QR codes, barcodes and the colour block are boxes too.
+- **Labels are drawn with the mouse now.** Settings → Filament gains two sub-tabs, and the new **Marking** one holds everything about labels — the designs and the printers that put them on stock: pick a design, drag the boxes where you want them, and see the result as you go. Text boxes say what they say with the same `{brand}`, `{remaining_g}`, `{purchase_date}` fields the naming template uses — click a field to insert it rather than typing the braces. QR codes, barcodes and the colour block are boxes too.
 
     **The picture in the middle is not a drawing of your label — it is your label.** It comes from the same renderer that will print it, at the printer's own resolution, so a QR whose squares have merged or a line that no longer fits shows up while you are moving things rather than on wasted stock. Anything the renderer objects to is listed under the label in words.
 
@@ -28,7 +28,7 @@
 
     Currently the Niimbot B1 over USB. The bridge names the model in its own window and says plainly when it meets one it cannot drive yet.
 
-    In the label dialog, an adopted printer appears as a destination beside the existing PDF layouts — which are unchanged and still the default. Settings → Printing → **Label printers** is where machines are adopted, cassette sizes taught, and recent labels shown with what the printer said about each one.
+    In the label dialog, an adopted printer appears as a destination beside the existing PDF layouts — which are unchanged and still the default. Settings → Filament → **Marking** is where machines are adopted, cassette sizes taught, and recent labels shown with what the printer said about each one.
 
 - **Spool label layouts are now templates, and the text on them is spelled out in fields rather than fixed.** The six layouts the print dialog offered were drawn in code: what they showed, in what order, at what size, was not adjustable by anybody. They are rows now — four labels and two Avery sheets — and each one lists its boxes: a line of text, a QR code, a barcode, the colour block. A line's content is written with the same `{brand}`, `{remaining_g}`, `{note}` placeholders the spool-naming setting already uses, so a label can say whatever a spool's row says.
 

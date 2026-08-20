@@ -5,6 +5,10 @@
  * says. The middle one is a picture the server rendered — see LabelCanvas for
  * why the browser is not allowed to draw it.
  *
+ * Lives inside Settings → Filament → Marking rather than as a page of its own:
+ * a label is a thing you print about a spool, and it belongs beside the spools
+ * rather than beside the printers.
+ *
  * ⚠️ **A built-in is read-only.** Its name is a contract the print API accepts,
  * so an automation must not start printing something else because somebody
  * dragged a box. Opening one shows the design and offers Duplicate; the API
@@ -32,12 +36,12 @@ import {
   type LabelTemplate,
   type LabelTemplateElement,
   type LabelTemplateInput,
-} from '../api/client';
-import { useToast } from '../contexts/ToastContext';
-import { Button } from '../components/Button';
-import { Card, CardContent, CardHeader } from '../components/Card';
-import { LabelCanvas } from '../components/labels/LabelCanvas';
-import { ElementInspector } from '../components/labels/ElementInspector';
+} from '../../api/client';
+import { useToast } from '../../contexts/ToastContext';
+import { Button } from '../Button';
+import { Card, CardContent, CardHeader } from '../Card';
+import { LabelCanvas } from './LabelCanvas';
+import { ElementInspector } from './ElementInspector';
 import {
   alignBox,
   boxOf,
@@ -48,7 +52,7 @@ import {
   roundMm,
   type Alignment,
   type Box,
-} from '../components/labels/labelGeometry';
+} from './labelGeometry';
 
 /** How long the editor waits after a change before asking the server to draw it.
  *  ⚠️ Long enough that typing a name is one render rather than fifteen; short
@@ -67,7 +71,7 @@ const asInput = (template: LabelTemplate): LabelTemplateInput => ({
   elements: template.elements,
 });
 
-export function LabelTemplatesPage() {
+export function LabelTemplateEditor() {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const qc = useQueryClient();
@@ -311,9 +315,9 @@ export function LabelTemplatesPage() {
   const dirty = Boolean(draft && open && JSON.stringify(draft) !== JSON.stringify(asInput(open)));
 
   return (
-    <div className="p-4 space-y-4">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-white">{t('labelEditor.title')}</h1>
+        <h2 className="text-base font-semibold text-white">{t('labelEditor.title')}</h2>
         <Button onClick={() => create.mutate()} disabled={create.isPending}>
           <Plus className="w-4 h-4" />
           {t('labelEditor.newTemplate')}
@@ -462,5 +466,3 @@ export function LabelTemplatesPage() {
     </div>
   );
 }
-
-export default LabelTemplatesPage;

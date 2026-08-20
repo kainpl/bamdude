@@ -40,7 +40,6 @@ export default {
       care: 'Care',
       system: 'System',
       external: 'Links',
-    labelTemplates: 'Label designs',
     },
   },
 
@@ -1927,6 +1926,8 @@ export default {
       smartPlugs: 'Smart Plugs',
       notifications: 'Notifications',
       filament: 'Filament',
+      filamentGeneral: 'General',
+      filamentMarking: 'Marking',
       network: 'Network',
       apiKeys: 'API Keys',
       virtualPrinter: 'Virtual Printer',

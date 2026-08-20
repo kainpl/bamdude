@@ -40,7 +40,6 @@ export default {
       care: 'Догляд',
       system: 'Система',
       external: 'Посилання',
-    labelTemplates: 'Дизайни етикеток',
     },
   },
 
@@ -1933,6 +1932,8 @@ export default {
       smartPlugs: 'Розумні розетки',
       notifications: 'Сповіщення',
       filament: 'Філамент',
+      filamentGeneral: 'Основне',
+      filamentMarking: 'Маркування',
       network: 'Мережа',
       apiKeys: 'API ключі',
       virtualPrinter: 'Віртуальний принтер',

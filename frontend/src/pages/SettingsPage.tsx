@@ -57,6 +57,7 @@ import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
 import { PrintOptionsPreferencesPanel } from '../components/settings/PrintOptionsPreferencesPanel';
 import { ArchivedPrintersPanel } from '../components/settings/ArchivedPrintersPanel';
 import { LabelDevicesSettings } from '../components/settings/LabelDevicesSettings';
+import { LabelTemplateEditor } from '../components/labels/LabelTemplateEditor';
 import { RetentionCard } from '../components/settings/RetentionCard';
 import { PrinterLocationsCard } from '../components/settings/PrinterLocationsCard';
 import { PreheatFilamentTargetsEditor } from '../components/PreheatFilamentTargetsEditor';
@@ -65,6 +66,11 @@ import { adoptUntouchedServerChanges } from '../utils/settingsReconcile';
 const validTabs = ['general', 'printing', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
 type UsersSubTab = 'users' | 'email' | 'ldap' | 'twofa' | 'oidc' | 'security';
+/** ⚠️ Everything about labels lives under `marking` — the designs AND the
+ *  printers that put them on stock. Splitting the two put half the answer
+ *  under Printing, beside bed levelling, which is not the question anybody
+ *  has when they are looking for it. */
+type FilamentSubTab = 'general' | 'marking';
 
 // Module-level search registry. Tab-level entries only — see lib/settingsSearch.ts
 // for the design note. Adding a narrower `anchor="card-xyz"` entry + id on the
@@ -72,6 +78,7 @@ type UsersSubTab = 'users' | 'email' | 'ldap' | 'twofa' | 'oidc' | 'security';
 registerSettingsSearch({ labelKey: 'settings.tabs.general', tab: 'general', keywords: 'general language date time format printer model cards appearance theme dark light archive auto save thumbnails camera external video stream currency cost kwh price file manager disk updates version firmware beta sidebar links navigation', anchor: 'tab-general' });
 registerSettingsSearch({ labelKey: 'settings.tabs.printing', tab: 'printing', keywords: 'printing bed leveling flow calibration vibration first layer timelapse staggered batch delay start group plate clear confirm auto queue gcode injection farmloop swapmod autoclear drying presets temperature humidity ams ftp retry upload', anchor: 'tab-printing' });
 registerSettingsSearch({ labelKey: 'printOptionsPrefs.cardTitle', labelFallback: 'Saved Print Profiles', tab: 'printing', keywords: 'print options profile preferences saved per user model toggles bed leveling flow timelapse mesh swap macros copy', anchor: 'card-print-options-prefs' });
+registerSettingsSearch({ labelKey: 'labelEditor.title', tab: 'filament', subTab: 'marking', keywords: 'label template design editor sticker niimbot barcode qr code placeholder print printer bridge cassette', anchor: 'card-label-designs' });
 registerSettingsSearch({ labelKey: 'settings.tabs.filament', tab: 'filament', keywords: 'filament checks warning runout remaining print modal custom mapping ams thresholds humidity temperature history retention spoolman tracking inventory sync remote integration spool catalog color catalog brand material import export', anchor: 'tab-filament' });
 registerSettingsSearch({ labelKey: 'settings.tabs.notifications', tab: 'notifications', keywords: 'notifications providers telegram discord email webhook ntfy pushover home assistant message templates notification text edit digest log viewer', anchor: 'tab-notifications' });
 registerSettingsSearch({ labelKey: 'settings.tabs.smartPlugs', tab: 'plugs', keywords: 'smart plugs energy power automation tapo kasa tplink shelly tasmota discovery kwh monitoring', anchor: 'tab-plugs' });
@@ -266,6 +273,7 @@ export function SettingsPage() {
   const initialTab = isLegacyEmailTab ? 'users' : (tabParam && validTabs.includes(tabParam as TabType) ? tabParam as TabType : 'general');
   const [activeTab, setActiveTab] = useState<TabType>(initialTab);
   const [usersSubTab, setUsersSubTab] = useState<UsersSubTab>(isLegacyEmailTab ? 'email' : 'users');
+  const [filamentSubTab, setFilamentSubTab] = useState<FilamentSubTab>('general');
 
   // Update URL when tab changes
   const handleTabChange = (tab: TabType) => {
@@ -1525,7 +1533,11 @@ export function SettingsPage() {
         <SettingsSearchBar
           onSelect={(entry) => {
             handleTabChange(entry.tab);
-            if (entry.subTab) setUsersSubTab(entry.subTab);
+            // ⚠️ Sub-tabs are not all on the same tab any more. Routing every
+            // one to the users setter left a search hit landing on the right
+            // tab and the wrong section of it.
+            if (entry.subTab === 'marking') setFilamentSubTab('marking');
+            else if (entry.subTab) setUsersSubTab(entry.subTab);
           }}
         />
       </div>
@@ -3194,23 +3206,6 @@ export function SettingsPage() {
               </CardHeader>
               <CardContent>
                 <ArchivedPrintersPanel />
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Label printers — a printer on somebody's desktop, reached through
-              the bridge app running there. Admin-grade: adopting one decides
-              that a machine in another room may receive our labels. */}
-          {hasPermission('label_devices:manage') && (
-            <Card id="card-label-devices">
-              <CardHeader>
-                <h3 className="text-base font-semibold text-white flex items-center gap-2">
-                  <Tag className="w-4 h-4 text-bambu-green" />
-                  {t('labelDevices.title')}
-                </h3>
-              </CardHeader>
-              <CardContent>
-                <LabelDevicesSettings />
               </CardContent>
             </Card>
           )}
@@ -5283,6 +5278,61 @@ export function SettingsPage() {
 
       {/* ══════ FILAMENT TAB ══════ */}
       {activeTab === 'filament' && localSettings && (
+        <>
+        <div className="flex gap-1 border-b border-bambu-dark-tertiary mb-4">
+          <button
+            onClick={() => setFilamentSubTab('general')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              filamentSubTab === 'general'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <Cylinder className="w-4 h-4" />
+            {t('settings.tabs.filamentGeneral')}
+          </button>
+          <button
+            onClick={() => setFilamentSubTab('marking')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              filamentSubTab === 'marking'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <Tag className="w-4 h-4" />
+            {t('settings.tabs.filamentMarking')}
+          </button>
+        </div>
+        </>
+      )}
+
+      {activeTab === 'filament' && localSettings && filamentSubTab === 'marking' && (
+        <div className="space-y-4">
+          <Card id="card-label-designs">
+            <CardContent>
+              <LabelTemplateEditor />
+            </CardContent>
+          </Card>
+
+          {/* Adopting a device decides that a machine in another room may
+              receive our labels, so it stays admin-grade wherever it lives. */}
+          {hasPermission('label_devices:manage') && (
+            <Card id="card-label-devices">
+              <CardHeader>
+                <h2 className="text-base font-semibold text-white flex items-center gap-2">
+                  <Printer className="w-4 h-4 text-bambu-green" />
+                  {t('labelDevices.title')}
+                </h2>
+              </CardHeader>
+              <CardContent>
+                <LabelDevicesSettings />
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'filament' && localSettings && filamentSubTab === 'general' && (
         <>
         <div className="flex flex-col lg:flex-row gap-4">
           {/* Left Column (1/3) - Mode Selector + AMS Thresholds */}
