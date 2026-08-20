@@ -35,6 +35,7 @@ from backend.app.api.routes import (
     hms as hms_routes,
     inventory,
     kprofiles,
+    label_templates,
     labels,
     library,
     library_notes,
@@ -8671,6 +8672,7 @@ app.include_router(archives.router, prefix=app_settings.api_prefix)
 app.include_router(inventory.router, prefix=app_settings.api_prefix)
 app.include_router(orca_cloud.router, prefix=app_settings.api_prefix)
 app.include_router(labels.router, prefix=app_settings.api_prefix)
+app.include_router(label_templates.router, prefix=app_settings.api_prefix)
 app.include_router(settings_routes.router, prefix=app_settings.api_prefix)
 app.include_router(cloud.router, prefix=app_settings.api_prefix)
 app.include_router(local_presets.router, prefix=app_settings.api_prefix)

@@ -80,6 +80,16 @@ PLACEHOLDERS: tuple[Placeholder, ...] = (
     ),
     Placeholder(key="color_hex", label="Color hex", description="#RRGGBB (alpha dropped)", example="#FF3300"),
     Placeholder(
+        key="color_hex_all",
+        # ⚠️ The swatch element defaults to this one, so it has to be a known
+        # key: an unknown one survives resolution verbatim, and the swatch would
+        # then try to draw a block the colour of the literal text
+        # "{color_hex_all}". Found by writing the context builder, not by a test.
+        label="All colour hexes",
+        description="Every colour of a multi-colour spool, comma-separated, no leading hash",
+        example="FF3300,FFFFFF",
+    ),
+    Placeholder(
         key="cost_per_kg",
         label="Cost per kg",
         description="Cost per kilogram (bare number, no currency symbol)",
