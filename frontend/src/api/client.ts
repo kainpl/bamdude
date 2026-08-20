@@ -7576,6 +7576,20 @@ export const api = {
     };
   },
 
+  /**
+   * Print the design on screen, with example data, on a real printer.
+   *
+   * ⚠️ Unsaved, like the preview — checking a design before committing to it
+   * means before saving it. Goes through the same gate, renderer and queue a
+   * real print does, so a test that succeeds says something about the print it
+   * rehearses.
+   */
+  testPrintLabelTemplate: (body: { device_id: number; template: LabelTemplateInput }) =>
+    request<{ job_id: number; warnings: string[] }>('/label-templates/test-print', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
   // ── Direct-to-device label printing ─────────────────────────────────
   // ⚠️ getLabelDevices stays PARAMETER-FREE. An optional argument breaks
   // TanStack's `queryFn: api.getLabelDevices` inference — the same trap

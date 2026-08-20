@@ -69,8 +69,26 @@ class LabelPreviewRequest(BaseModel):
     dots_per_mm: float = Field(default=8.0, gt=0, le=40)
 
 
+class LabelTestPrintRequest(BaseModel):
+    """Put the design currently on screen onto real stock.
+
+    ⚠️ The template travels in the body, exactly as it does for the preview, and
+    for the same reason: the point is to check a design *before* committing to
+    it, which means before saving it.
+
+    No spool is named. A test print is rendered from the placeholders' own
+    examples — the same data the editor is previewing — so what comes out of the
+    printer is what the screen was showing rather than a different label that
+    happens to use the same design.
+    """
+
+    device_id: int
+    template: LabelTemplateIn
+
+
 __all__ = [
     "LabelPreviewRequest",
+    "LabelTestPrintRequest",
     "LabelSheetOut",
     "LabelTemplateIn",
     "LabelTemplateOut",

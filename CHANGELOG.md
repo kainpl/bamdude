@@ -12,6 +12,8 @@
 
     Boxes snap to each other and to the label's own edges and centre, with a red line showing what they caught on; nothing snapping means the half-millimetre grid. Arrow keys nudge, shift-arrows nudge further, Ctrl+Z and Ctrl+Shift+Z step back and forward, and a box cannot be dragged off the label or shrunk until it can no longer be grabbed.
 
+    **A Test print button puts the design on real stock**, with the same example data the preview is showing, on a printer attached to a desktop. A picture answers "does it look right"; only a label answers "is that type readable, does the barcode scan, is it centred on the paper I actually have". It works on an unsaved design and on a built-in — checking before committing is the point — and goes through exactly the gate a real print does, so a test that succeeds means something.
+
     ⚠️ **A built-in design opens read-only.** Its name is what the print API accepts, and an automation printing the same label for a year must not start printing a different one because somebody moved a box. Duplicate it — the copy is yours and behaves exactly like one you made.
 
 - **A label printer plugged into your desk can now print from BamDude.** The server has always rendered labels to a PDF you then had to print yourself, because a server in a container cannot reach a USB printer on somebody's machine. So it does not try: BamDude renders the label, puts it in a queue, and the **BamDude Bridge** app already running on that desktop comes and takes it. Nothing connects *to* your desktop, which is why this works on a laptop, behind NAT, or through a firewall that would never allow the reverse.

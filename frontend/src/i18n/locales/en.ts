@@ -1729,6 +1729,8 @@ export default {
     swatchHint: 'One band per colour. Prints as a grey smear on a black-and-white thermal printer, so leave it off those designs.',
     builtinHint:
       'A built-in design. Its name is what the print API accepts, so it cannot be changed — an automation printing this label for a year must not suddenly print something else. Duplicate it to get a copy you can edit.',
+    testPrint: 'Test print',
+    testPrintQueued: 'Sent to the printer.',
     duplicate: 'Duplicate',
     duplicated: 'Copied. You are now editing the copy.',
     saved: 'Design saved.',

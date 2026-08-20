@@ -34,6 +34,7 @@ from backend.app.schemas.label_template import (
     LabelSheetOut,
     LabelTemplateIn,
     LabelTemplateOut,
+    LabelTestPrintRequest,
 )
 from backend.app.services.label_context import example_context, spool_context
 from backend.app.services.label_raster import render_template_png
@@ -270,3 +271,56 @@ async def preview_template(
         headers["X-Label-Warnings"] = " | ".join(warnings)
         headers["Access-Control-Expose-Headers"] = "X-Label-Warnings"
     return StreamingResponse(io.BytesIO(png), media_type="image/png", headers=headers)
+
+
+@router.post("/test-print", status_code=201)
+async def test_print(
+    body: LabelTestPrintRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.LABEL_JOBS_CREATE),
+) -> dict[str, object]:
+    """Print the design on screen, with example data, on a real printer.
+
+    A preview answers "does it look right"; only stock answers "is the type
+    readable, does the barcode scan, is it centred on the paper I actually
+    have". This is the shortest path between the two, and it deliberately goes
+    through the same gate, renderer and queue the real print does — a test that
+    took a private route would prove nothing about the real one.
+    """
+    from backend.app.api.routes.settings import get_setting
+    from backend.app.models.label_device import LabelDevice
+    from backend.app.services.label_dispatch import assert_fits, enqueue_jobs
+
+    enabled = (await get_setting(db, "device_labels_enabled") or "").lower() == "true"
+    if not enabled:
+        raise HTTPException(409, "device_labels_disabled")
+
+    device = await db.get(LabelDevice, body.device_id)
+    if device is None:
+        raise HTTPException(404, f"Label device {body.device_id} not found")
+    if not device.enabled:
+        raise HTTPException(
+            409,
+            f"'{device.name or device.installation_id}' has not been adopted — enable it before printing to it",
+        )
+
+    spec = _as_spec(body.template)
+    assert_fits(spec, device)
+
+    deeplink_base = f"{request.url.scheme}://{request.url.netloc}"
+    context = example_context(deeplink_base=deeplink_base)
+
+    jobs, warnings = await enqueue_jobs(
+        db,
+        device=device,
+        spec=spec,
+        contexts=[context],
+        # ⚠️ No spool id. Nothing was printed *about* a spool, and recording one
+        # would put a test label in that spool's history.
+        spool_ids=[None],
+        template_id=None,
+        copies=1,
+        user_id=user.id if user else None,
+    )
+    return {"job_id": jobs[0].id, "warnings": warnings}

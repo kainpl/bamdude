@@ -72,6 +72,28 @@ async def resolve_cassette(db: AsyncSession, barcode: str | None) -> tuple[float
     return row.width_mm, row.height_mm
 
 
+def assert_fits(spec: LabelTemplateSpec, device: LabelDevice) -> None:
+    """Refuse a design larger than the stock this printer says is loaded.
+
+    ⚠️ Shared with the test-print path on purpose. A test that skipped this
+    would succeed where the real print refuses, which is the opposite of what a
+    test print is for.
+
+    A device that has reported no cassette is not judged: the gate cannot rule
+    on what it has not been told, and refusing there would let one un-taught
+    barcode block printing entirely.
+    """
+    if not (device.cassette_width_mm and device.cassette_height_mm):
+        return
+    width, height = device.cassette_width_mm, device.cassette_height_mm
+    if spec.width_mm > width + _SIZE_TOLERANCE_MM or spec.height_mm > height + _SIZE_TOLERANCE_MM:
+        raise HTTPException(
+            422,
+            f"'{spec.name}' is {spec.width_mm:g} x {spec.height_mm:g} mm and does not fit the "
+            f"{width:g} x {height:g} mm stock loaded in this printer",
+        )
+
+
 async def resolve_template(
     db: AsyncSession,
     device: LabelDevice,
@@ -101,14 +123,7 @@ async def resolve_template(
         if row is None:
             raise HTTPException(404, f"Label template {template_id} not found")
         spec = _spec_of(row)
-        if cassette is not None:
-            width, height = cassette
-            if spec.width_mm > width + _SIZE_TOLERANCE_MM or spec.height_mm > height + _SIZE_TOLERANCE_MM:
-                raise HTTPException(
-                    422,
-                    f"'{spec.name}' is {spec.width_mm:g} x {spec.height_mm:g} mm and does not fit the "
-                    f"{width:g} x {height:g} mm stock loaded in this printer",
-                )
+        assert_fits(spec, device)
         return spec
 
     if cassette is None:
@@ -220,6 +235,7 @@ async def enqueue_jobs(
 
 __all__ = [
     "DOTS_PER_MM",
+    "assert_fits",
     "build_contexts",
     "claim_next_job",
     "enqueue_jobs",

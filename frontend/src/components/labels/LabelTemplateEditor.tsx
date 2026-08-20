@@ -26,6 +26,7 @@ import {
   Loader2,
   Lock,
   Plus,
+  Printer,
   Redo2,
   Save,
   Trash2,
@@ -33,6 +34,7 @@ import {
 } from 'lucide-react';
 import {
   api,
+  type LabelDevice,
   type LabelTemplate,
   type LabelTemplateElement,
   type LabelTemplateInput,
@@ -82,6 +84,7 @@ export function LabelTemplateEditor() {
   });
 
   const [openId, setOpenId] = useState<number | null>(null);
+  const [testDeviceId, setTestDeviceId] = useState<number | null>(null);
   const [draft, setDraft] = useState<LabelTemplateInput | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
 
@@ -312,6 +315,33 @@ export function LabelTemplateEditor() {
     onError: (error: Error) => showToast(error.message, 'error'),
   });
 
+  // Only adopted devices, and only when the subsystem is on — offering a test
+  // print with nowhere to send it is a button that can only disappoint.
+  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const { data: allDevices } = useQuery({
+    queryKey: ['label-devices'],
+    queryFn: api.getLabelDevices,
+    enabled: Boolean(settings?.device_labels_enabled),
+  });
+  const devices = (allDevices ?? []).filter((device: LabelDevice) => device.enabled);
+  const targetId = testDeviceId ?? devices[0]?.id ?? null;
+
+  const testPrint = useMutation({
+    mutationFn: () =>
+      api.testPrintLabelTemplate({ device_id: targetId as number, template: draft as LabelTemplateInput }),
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ['label-jobs'] });
+      // ⚠️ The server's complaints are shown even on success. A label that
+      // printed with a barcode missing is not a failure the queue records, and
+      // it is the whole reason somebody pressed this.
+      showToast(
+        result.warnings.length > 0 ? result.warnings.join(' · ') : t('labelEditor.testPrintQueued'),
+        result.warnings.length > 0 ? 'error' : 'success',
+      );
+    },
+    onError: (error: Error) => showToast(error.message, 'error'),
+  });
+
   const dirty = Boolean(draft && open && JSON.stringify(draft) !== JSON.stringify(asInput(open)));
 
   return (
@@ -436,6 +466,39 @@ export function LabelTemplateEditor() {
                   >
                     <Trash2 className="w-4 h-4 text-red-600 dark:text-red-400" />
                   </Button>
+                  {/* ⚠️ Works on an UNSAVED design and on a built-in alike. The
+                      point is to check before committing, and a built-in is
+                      exactly what somebody duplicates after seeing it come out
+                      wrong on their stock. */}
+                  {devices.length > 0 && (
+                    <>
+                      {devices.length > 1 && (
+                        <select
+                          value={targetId ?? ''}
+                          onChange={(e) => setTestDeviceId(Number(e.target.value))}
+                          className="px-2 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded"
+                        >
+                          {devices.map((device: LabelDevice) => (
+                            <option key={device.id} value={device.id}>
+                              {device.name || device.model || device.installation_id}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      <Button
+                        variant="secondary"
+                        onClick={() => testPrint.mutate()}
+                        disabled={targetId === null || testPrint.isPending}
+                      >
+                        {testPrint.isPending ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Printer className="w-4 h-4" />
+                        )}
+                        {t('labelEditor.testPrint')}
+                      </Button>
+                    </>
+                  )}
                   {dirty && <span className="text-xs text-bambu-gray">{t('labelEditor.unsaved')}</span>}
                 </div>
               </>

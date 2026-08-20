@@ -359,3 +359,117 @@ class TestTheNameOnTheLabel:
         )
         assert first.status_code == second.status_code == 200
         assert first.content != second.content, "the override must reach the raster"
+
+
+class TestTestPrint:
+    """Putting the design on screen onto real stock.
+
+    ⚠️ The point is that it takes the SAME route as a real print — same gate,
+    same renderer, same queue. A test that took a private path would prove
+    nothing about the print it is meant to rehearse.
+    """
+
+    def _design(self, width: float = 40.0, height: float = 20.0) -> dict:
+        return {
+            "name": "Work in progress",
+            "width_mm": width,
+            "height_mm": height,
+            "shape": "rect",
+            "elements": [
+                {
+                    "type": "text",
+                    "x_mm": 1.5,
+                    "y_mm": 1.5,
+                    "w_mm": 25.0,
+                    "h_mm": 4.0,
+                    "content": "{display_name}",
+                    "size_mm": 4.0,
+                }
+            ],
+        }
+
+    async def test_an_unsaved_design_can_be_printed(
+        self, async_client: AsyncClient, labels_enabled, a_device, db_session
+    ):
+        """The whole point: checking a design before committing to it means
+        before saving it.
+        """
+        response = await async_client.post(
+            "/api/v1/label-templates/test-print",
+            json={"device_id": a_device.id, "template": self._design()},
+        )
+        assert response.status_code == 201, response.text
+        assert response.json()["job_id"]
+        assert (await db_session.execute(select(func.count(LabelTemplate.id)))).scalar() == 0
+
+    async def test_it_is_queued_like_any_other_label(
+        self, async_client: AsyncClient, labels_enabled, a_device, db_session
+    ):
+        await async_client.post(
+            "/api/v1/label-templates/test-print",
+            json={"device_id": a_device.id, "template": self._design()},
+        )
+        job = (await db_session.execute(select(LabelJob))).scalars().one()
+        assert job.status == "queued"
+        assert job.device_id == a_device.id
+        assert job.image_png[:8] == b"\x89PNG\r\n\x1a\n"
+
+    async def test_it_belongs_to_no_spool(self, async_client: AsyncClient, labels_enabled, a_device, db_session):
+        """⚠️ Nothing was printed *about* a spool. Recording one would put a
+        test label in that spool's history.
+        """
+        await async_client.post(
+            "/api/v1/label-templates/test-print",
+            json={"device_id": a_device.id, "template": self._design()},
+        )
+        job = (await db_session.execute(select(LabelJob))).scalars().one()
+        assert job.spool_id is None
+        assert job.template_id is None
+
+    async def test_a_design_too_big_for_the_stock_is_refused_here_too(
+        self, async_client: AsyncClient, labels_enabled, a_device
+    ):
+        """⚠️ The same gate as the real print. A test that succeeded where the
+        real one refuses is worse than no test at all.
+        """
+        response = await async_client.post(
+            "/api/v1/label-templates/test-print",
+            json={"device_id": a_device.id, "template": self._design(74.0, 33.0)},
+        )
+        assert response.status_code == 422
+        assert "does not fit" in response.json()["detail"]
+
+    async def test_it_is_refused_while_the_subsystem_is_off(self, async_client: AsyncClient, a_device):
+        response = await async_client.post(
+            "/api/v1/label-templates/test-print",
+            json={"device_id": a_device.id, "template": self._design()},
+        )
+        assert response.status_code == 409
+
+    async def test_it_is_refused_for_a_device_nobody_adopted(
+        self, async_client: AsyncClient, labels_enabled, a_pending_device
+    ):
+        response = await async_client.post(
+            "/api/v1/label-templates/test-print",
+            json={"device_id": a_pending_device.id, "template": self._design()},
+        )
+        assert response.status_code == 409
+        assert "adopted" in response.json()["detail"]
+
+    async def test_the_picture_matches_what_the_editor_previews(
+        self, async_client: AsyncClient, labels_enabled, a_device, db_session
+    ):
+        """⚠️ Example data on both sides, so what comes out of the printer is
+        what the screen was showing — not a different label using the same
+        design.
+        """
+        preview = await async_client.post(
+            "/api/v1/label-templates/preview",
+            json={"template": self._design(), "dots_per_mm": 8.0},
+        )
+        await async_client.post(
+            "/api/v1/label-templates/test-print",
+            json={"device_id": a_device.id, "template": self._design()},
+        )
+        job = (await db_session.execute(select(LabelJob))).scalars().one()
+        assert preview.content == job.image_png
