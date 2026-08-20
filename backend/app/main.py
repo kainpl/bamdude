@@ -1043,7 +1043,9 @@ async def maybe_register_external_stagger(printer_id: int) -> None:
         logging.getLogger(__name__).debug("External stagger registration failed for printer %s: %s", printer_id, e)
 
 
-async def mark_queue_printing_for_printer(printer_id: int, item_id: int | None = None) -> None:
+async def mark_queue_printing_for_printer(
+    printer_id: int, item_id: int | None = None, *, archive_id: int | None = None
+) -> None:
     """Ensure the printer's queue reflects the real busy state.
 
     Call this once we know an active print exists on *printer_id* —
@@ -1052,10 +1054,20 @@ async def mark_queue_printing_for_printer(printer_id: int, item_id: int | None =
     but the UI does, and a stale idle status while a print runs is
     confusing.
 
-    ``item_id`` is ``None`` for external / direct-dispatch prints that
-    have no corresponding ``PrintQueueItem``.
+    ``item_id`` is the scheduler's queue item when it has one. When it is None
+    the print either claimed its own row at dispatch (Print now — see
+    ``claim_printer_for_direct_print``) or has none at all, which is what an
+    external print looks like: started from the printer's screen or sent
+    straight from a slicer, so BamDude registered no expected key for it.
+
+    ⚠️ **A missing row is created, an existing one is adopted.** Two rows in
+    ``printing`` on one queue is exactly the state ``on_print_complete`` warns
+    about as "BUG: Multiple queue items in 'printing' status", and it would
+    attribute the print to whichever came back first.
     """
+    from backend.app.models.print_queue import PrintQueueItem
     from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.queue_batch import claim_printer_for_direct_print
     from backend.app.services.queue_counters import set_queue_printing
 
     async with async_session() as db:
@@ -1063,6 +1075,35 @@ async def mark_queue_printing_for_printer(printer_id: int, item_id: int | None =
         queue = result.scalar_one_or_none()
         if queue is None:
             return
+
+        if item_id is None:
+            existing = (
+                (
+                    await db.execute(
+                        select(PrintQueueItem)
+                        .where(PrintQueueItem.queue_id == queue.id)
+                        .where(PrintQueueItem.status == "printing")
+                        .order_by(PrintQueueItem.started_at.desc())
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if existing is not None:
+                item_id = existing.id
+                # ⚠️ A direct print's row is created before its archive exists.
+                # The dispatcher wires the two together, but a re-trigger path
+                # that adopts a *different* archive would leave the row pointing
+                # nowhere — and a completed item with no archive is never
+                # auto-cleaned, so it would outlive its print.
+                if existing.archive_id is None and archive_id is not None:
+                    existing.archive_id = archive_id
+                    await db.commit()
+            else:
+                created = await claim_printer_for_direct_print(db, printer_id=printer_id, archive_id=archive_id)
+                if created is not None:
+                    item_id = created.id
+
         if queue.status == "printing" and queue.current_item_id == item_id:
             return  # already in correct state
         await set_queue_printing(db, queue.id, item_id)
@@ -3483,7 +3524,7 @@ async def on_print_start(printer_id: int, data: dict):
 
                 # Ensure queue reflects the busy state (queue-driven flow
                 # already sets this from the scheduler, but repeat-safe).
-                await mark_queue_printing_for_printer(printer_id)
+                await mark_queue_printing_for_printer(printer_id, archive_id=archive.id)
 
                 # Set up energy tracking (#941: persist start on archive row)
                 await _record_energy_start(archive, printer_id, db, context="expected-print")
@@ -3696,7 +3737,7 @@ async def on_print_start(printer_id: int, data: dict):
             )
             _active_prints[(printer_id, existing_archive.filename)] = existing_archive.id
             # Ensure queue reflects the busy state.
-            await mark_queue_printing_for_printer(printer_id)
+            await mark_queue_printing_for_printer(printer_id, archive_id=existing_archive.id)
             # Also set up energy tracking if not already tracked (#941: persisted column)
             if existing_archive.energy_start_kwh is None:
                 await _record_energy_start(existing_archive, printer_id, db, context="existing-printing")
@@ -3805,7 +3846,7 @@ async def on_print_start(printer_id: int, data: dict):
             _active_prints[(printer_id, subtask_name)] = archive.id
 
         # Ensure the queue reflects the busy state (external / direct print).
-        await mark_queue_printing_for_printer(printer_id)
+        await mark_queue_printing_for_printer(printer_id, archive_id=archive.id)
         await maybe_register_external_stagger(printer_id)
 
         # #941: the plug's lifetime counter, read at the real start of the
@@ -4099,7 +4140,7 @@ async def on_print_start(printer_id: int, data: dict):
                         if subtask_name:
                             _active_prints[(printer_id, f"{subtask_name}.3mf")] = hash_match.id
                             _active_prints[(printer_id, subtask_name)] = hash_match.id
-                        await mark_queue_printing_for_printer(printer_id)
+                        await mark_queue_printing_for_printer(printer_id, archive_id=hash_match.id)
                         if hash_match.energy_start_kwh is None:
                             await _record_energy_start(hash_match, printer_id, db, context="hash-adoption")
                         if not notification_sent:
@@ -5896,10 +5937,21 @@ async def on_print_complete(printer_id: int, data: dict):
                 except Exception:
                     pass  # Don't fail if notification fails
             else:
-                # No queue_item was printing → this was an external or
-                # direct-dispatch print.  Still flip queue.status back to
+                # No queue_item was printing. Still flip queue.status back to
                 # idle/error so the UI's current-print card goes away and
                 # pending items unblock.
+                #
+                # ⚠️ This is now a FALLBACK, not the direct/external path it was
+                # written as. Every print holds a row while it runs — the
+                # scheduler's, the claim a direct print takes at dispatch, or the
+                # one created here at start for a print BamDude did not send — so
+                # reaching this branch means the row vanished, or
+                # ``_completion_belongs_to_item`` rejected it as somebody else's.
+                #
+                # ⚠️ **Do not delete it as dead code.** Without it, exactly those
+                # cases leave the printer claimed for ever, and ``check_queue``
+                # reads a stale claim as a live one with no age check — the farm
+                # quietly stops taking work.
                 from backend.app.models.printer_queue import PrinterQueue
                 from backend.app.services.queue_counters import set_queue_error, set_queue_idle
 

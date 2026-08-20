@@ -22,7 +22,6 @@ def _item_columns(
     archive_id: int | None,
     library_file_id: int | None,
     options: dict | None,
-    created_by_id: int | None,
     project_id: int | None,
 ) -> dict:
     """Dispatch options → queue-item columns.
@@ -30,6 +29,11 @@ def _item_columns(
     Reads with ``.get()`` because the caller's dict comes from
     ``model_dump(exclude_none=True)`` — an option left at its default is simply
     absent, not None.
+
+    ⚠️ ``created_by_id`` is deliberately NOT in here. It is passed explicitly at
+    each ``PrintQueueItem(...)`` site because ``test_queue_item_attribution``
+    reads those sites with the AST and cannot see through a ``**`` unpack —
+    hiding the owner in this dict would silence the guard for the whole module.
     """
     opts = options or {}
     bed_mode = normalize_mode(opts.get("bed_levelling", True))
@@ -61,7 +65,6 @@ def _item_columns(
         "swap_macro_events": json.dumps(swap_events) if execute_swap_macros and swap_events else None,
         "selected_macro_ids": json.dumps(selected_macro_ids) if selected_macro_ids is not None else None,
         "auto_off_after": bool(opts.get("auto_off_after", False)),
-        "created_by_id": created_by_id,
         "project_id": project_id,
     }
 
@@ -105,11 +108,11 @@ async def claim_printer_for_direct_print(
         position=0,
         status="printing",
         started_at=datetime.now(timezone.utc),
+        created_by_id=created_by_id,
         **_item_columns(
             archive_id=archive_id,
             library_file_id=library_file_id,
             options=options,
-            created_by_id=created_by_id,
             project_id=project_id,
         ),
     )
