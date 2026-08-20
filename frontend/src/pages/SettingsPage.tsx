@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Archive, MapPin, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles, MonitorPlay } from 'lucide-react';
+import { Loader2, Archive, MapPin, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles, MonitorPlay, Tag } from 'lucide-react';
 import { availableEngines, hasEngineChoice, resolveEngine, type SliceEngineId } from '../lib/sliceEngines';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -56,6 +56,7 @@ import { registerSettingsSearch, getSettingsSearchEntries } from '../lib/setting
 import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
 import { PrintOptionsPreferencesPanel } from '../components/settings/PrintOptionsPreferencesPanel';
 import { ArchivedPrintersPanel } from '../components/settings/ArchivedPrintersPanel';
+import { LabelDevicesSettings } from '../components/settings/LabelDevicesSettings';
 import { RetentionCard } from '../components/settings/RetentionCard';
 import { PrinterLocationsCard } from '../components/settings/PrinterLocationsCard';
 import { PreheatFilamentTargetsEditor } from '../components/PreheatFilamentTargetsEditor';
@@ -3193,6 +3194,23 @@ export function SettingsPage() {
               </CardHeader>
               <CardContent>
                 <ArchivedPrintersPanel />
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Label printers — a printer on somebody's desktop, reached through
+              the bridge app running there. Admin-grade: adopting one decides
+              that a machine in another room may receive our labels. */}
+          {hasPermission('label_devices:manage') && (
+            <Card id="card-label-devices">
+              <CardHeader>
+                <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                  <Tag className="w-4 h-4 text-bambu-green" />
+                  {t('labelDevices.title')}
+                </h3>
+              </CardHeader>
+              <CardContent>
+                <LabelDevicesSettings />
               </CardContent>
             </Card>
           )}

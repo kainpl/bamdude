@@ -1663,6 +1663,8 @@ export interface AppSettings {
   // the settings PATCH is typed by this interface — an undeclared key would be
   // dropped on the way out, exactly as Pydantic drops one on the way in.
   zigbee_enabled: boolean;
+  /** Direct-to-device label printing. Off unless somebody runs a bridge. */
+  device_labels_enabled: boolean;
   zigbee_transport: string;
   zigbee_path: string;
   energy_tracking_mode: 'print' | 'total';
@@ -3997,6 +3999,72 @@ export interface SpoolLabelEntry {
   display_name?: string | null;
 }
 
+/** A label printer attached to somebody's desktop, reached through a bridge. */
+export interface LabelDevice {
+  id: number;
+  installation_id: string;
+  driver: string;
+  model: string | null;
+  protocol_version: number | null;
+  transport: string | null;
+  address: string | null;
+  name: string | null;
+  /** ⚠️ False until a person adopts it. The bridge authenticating proves it is
+   *  ours, not that this printer should be given our labels. */
+  enabled: boolean;
+  density: number;
+  app_version: string | null;
+  last_seen_at: string | null;
+  cassette_barcode: string | null;
+  /** Null when nobody has taught this barcode a size yet. */
+  cassette_width_mm: number | null;
+  cassette_height_mm: number | null;
+  /** 0 = the printer says it has none; null = it did not say. */
+  paper_state: number | null;
+  power_level: number | null;
+  /** The bridge answered but the printer behind it did not. */
+  printer_reachable: boolean;
+  queued: number;
+}
+
+export interface LabelDeviceUpdate {
+  name?: string | null;
+  enabled?: boolean;
+  density?: number;
+}
+
+export interface LabelJob {
+  id: number;
+  device_id: number;
+  spool_id: number | null;
+  template_id: number | null;
+  width_mm: number;
+  height_mm: number;
+  copies: number;
+  status: string;
+  attempts: number;
+  error: string | null;
+  claimed_at: string | null;
+  created_at: string | null;
+}
+
+export interface LabelJobCreate {
+  device_id: number;
+  spools: SpoolLabelEntry[];
+  /** Omitted, the server picks the design matching the loaded cassette — and
+   *  refuses if nothing does, rather than guessing a size. */
+  template_id?: number;
+  copies?: number;
+}
+
+export interface LabelCassette {
+  id: number;
+  barcode: string;
+  width_mm: number;
+  height_mm: number;
+  name: string | null;
+}
+
 export interface SpoolLabelRequest {
   spools: SpoolLabelEntry[];
   /** One of the six names this endpoint has always taken. Exclusive with
@@ -4288,6 +4356,8 @@ export type Permission =
   | 'inventory:forecast_read' | 'inventory:forecast_write'
   | 'smart_plugs:read' | 'smart_plugs:create' | 'smart_plugs:update' | 'smart_plugs:delete' | 'smart_plugs:control'
   | 'smart_sensors:read' | 'smart_sensors:create' | 'smart_sensors:update' | 'smart_sensors:delete'
+  | 'label_templates:read' | 'label_templates:write'
+  | 'label_devices:read' | 'label_devices:poll' | 'label_devices:manage' | 'label_jobs:create'
   | 'camera:view'
   | 'maintenance:read' | 'maintenance:create' | 'maintenance:update' | 'maintenance:delete'
   | 'kprofiles:read' | 'kprofiles:create' | 'kprofiles:update' | 'kprofiles:delete'
@@ -7351,6 +7421,45 @@ export const api = {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
     const response = await fetch(`${API_BASE}/spoolman/labels`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.blob();
+  },
+
+  // ── Direct-to-device label printing ──────────────────────────────────────
+  // ⚠️ getLabelDevices stays PARAMETER-FREE. An optional argument breaks
+  // TanStack's `queryFn: api.getLabelDevices` inference — the same trap
+  // getPrinters / getPrintersWithArchived already exists to avoid.
+  getLabelDevices: () => request<LabelDevice[]>('/label-devices'),
+  updateLabelDevice: (id: number, body: LabelDeviceUpdate) =>
+    request<LabelDevice>(`/label-devices/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteLabelDevice: (id: number) =>
+    request<void>(`/label-devices/${id}`, { method: 'DELETE' }),
+  getLabelJobs: (deviceId?: number) =>
+    request<LabelJob[]>(deviceId ? `/label-jobs?device_id=${deviceId}` : '/label-jobs'),
+  createLabelJobs: (body: LabelJobCreate) =>
+    request<LabelJob[]>('/label-jobs', { method: 'POST', body: JSON.stringify(body) }),
+  cancelLabelJob: (id: number) => request<void>(`/label-jobs/${id}`, { method: 'DELETE' }),
+  getLabelCassettes: () => request<LabelCassette[]>('/label-cassettes'),
+  putLabelCassette: (barcode: string, body: { width_mm: number; height_mm: number; name?: string | null }) =>
+    request<LabelCassette>(`/label-cassettes/${encodeURIComponent(barcode)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  forgetLabelCassette: (barcode: string) =>
+    request<void>(`/label-cassettes/${encodeURIComponent(barcode)}`, { method: 'DELETE' }),
+  // Binary, so raw fetch — request<T> is for JSON. Same picture the device
+  // would get, at the device's own resolution.
+  previewDeviceLabel: async (body: { device_id: number; spool: SpoolLabelEntry; template_id?: number }): Promise<Blob> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/label-jobs/preview`, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),

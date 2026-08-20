@@ -18,6 +18,8 @@
 
     Currently the Niimbot B1 over USB. The bridge names the model in its own window and says plainly when it meets one it cannot drive yet.
 
+    In the label dialog, an adopted printer appears as a destination beside the existing PDF layouts — which are unchanged and still the default. Settings → Printing → **Label printers** is where machines are adopted, cassette sizes taught, and recent labels shown with what the printer said about each one.
+
 - **Spool label layouts are now templates, and the text on them is spelled out in fields rather than fixed.** The six layouts the print dialog offered were drawn in code: what they showed, in what order, at what size, was not adjustable by anybody. They are rows now — four labels and two Avery sheets — and each one lists its boxes: a line of text, a QR code, a barcode, the colour block. A line's content is written with the same `{brand}`, `{remaining_g}`, `{note}` placeholders the spool-naming setting already uses, so a label can say whatever a spool's row says.
 
     Two things this makes possible that the fixed six could not express. **Any design can be printed on any paper** — pairing a design with a sheet is a request now, rather than one of two hard-coded combinations — and a design can carry a **barcode**: EAN-13, Code 128, Code 39, UPC-A or ITF, with the EAN-13 minted from the spool's own id under the prefix reserved for exactly this, so it scans on any reader without colliding with a real product.

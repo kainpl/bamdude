@@ -5,6 +5,8 @@ import { api, type SpoolLabelTemplate, type InventorySpool } from '../api/client
 import { getSwatchStyle } from '../utils/colors';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import type { LabelDevice } from '../api/client';
 import { DEFAULT_SPOOL_DISPLAY_TEMPLATE, formatSpoolDisplayName } from '../utils/spoolName';
 
 /** Subset of InventorySpool the modal needs. The label name is composed via
@@ -155,6 +157,21 @@ export function LabelTemplatePickerModal({
   // Resets to off each time the modal opens.
   const [monochrome, setMonochrome] = useState(false);
 
+  // Devices are only asked for while the modal is open, and only listed when
+  // adopted — an unadopted one would be an option that silently refuses.
+  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, enabled: isOpen });
+  const deviceLabels = Boolean(settings?.device_labels_enabled);
+  const { data: allDevices } = useQuery({
+    queryKey: ['label-devices'],
+    queryFn: api.getLabelDevices,
+    enabled: isOpen && deviceLabels,
+  });
+  const devices = (allDevices ?? []).filter((d: LabelDevice) => d.enabled);
+
+  const [sending, setSending] = useState<number | null>(null);
+  const send = useMutation({ mutationFn: api.createLabelJobs });
+
+
   const effectiveTemplate = spoolDisplayTemplate || DEFAULT_SPOOL_DISPLAY_TEMPLATE;
 
   // Sync from caller and reset transient state on open. Intentionally not
@@ -169,6 +186,7 @@ export function LabelTemplatePickerModal({
       setSortMode('id');
       setMonochrome(false);
       setPending(null);
+      setSending(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
@@ -254,6 +272,31 @@ export function LabelTemplatePickerModal({
 
   function clearAll() {
     setSelectedIds(new Set());
+  }
+
+  /**
+   * Queue one label per selected spool on a desk printer.
+   *
+   * ⚠️ No template is named. The server picks the design matching the stock
+   * the printer says is loaded, and refuses if nothing matches — which is a
+   * better answer than this modal guessing, because only the printer knows
+   * what is actually in it.
+   */
+  async function sendToDevice(device: LabelDevice) {
+    if (noSelection || sending !== null) return;
+    const ids = sortedSpools.filter((s) => selectedIds.has(s.id)).map((s) => s.id);
+    const spools = ids.map((id) => ({ id, display_name: displayNameById.get(id) ?? null }));
+    setSending(device.id);
+    try {
+      const jobs = await send.mutateAsync({ device_id: device.id, spools });
+      showToast(t('inventory.labels.queuedOnDevice', { count: jobs.length }), 'success');
+      onClose();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(msg, 'error');
+    } finally {
+      setSending(null);
+    }
   }
 
   async function handlePick(template: SpoolLabelTemplate) {
@@ -488,10 +531,54 @@ export function LabelTemplatePickerModal({
               {t('inventory.labels.monochrome', 'Monochrome (black & white printer)')}
             </span>
             <span className="text-xs text-bambu-gray">
-              {t('inventory.labels.monochromeHint', 'Drops the colour swatch and widens the text')}
+              {t('inventory.labels.monochromeHint', 'Drops the colour swatch; the hex line still carries the colour')}
             </span>
           </label>
         </div>
+
+        {/* A printer on somebody's desk, reached through the bridge running
+            there. Appears only when the subsystem is on AND a device has been
+            adopted — otherwise this is a button that can only disappoint.
+
+            ⚠️ The PDF templates below stay the default and are untouched. This
+            is an additional destination, not a replacement: most people
+            printing labels are printing a sheet of them on ordinary paper. */}
+        {devices.length > 0 && (
+          <div className="px-3 pt-1 pb-2">
+            <div className="p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark space-y-2">
+              <div className="text-xs font-medium text-white">
+                {t('inventory.labels.sendToDevice')}
+              </div>
+              {devices.map((device) => (
+                <button
+                  key={device.id}
+                  disabled={noSelection || pending !== null || sending !== null}
+                  onClick={() => sendToDevice(device)}
+                  className="w-full text-left p-2 rounded-lg border border-bambu-dark-tertiary hover:border-bambu-green hover:bg-bambu-green/10 disabled:opacity-50 disabled:cursor-not-allowed transition flex items-center gap-3"
+                >
+                  <Printer className="w-4 h-4 text-bambu-gray shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm text-white truncate">
+                      {device.name || device.model || device.installation_id}
+                    </div>
+                    <div className="text-xs text-bambu-gray truncate">
+                      {device.cassette_width_mm && device.cassette_height_mm
+                        ? t('inventory.labels.deviceCassette', {
+                            width: device.cassette_width_mm,
+                            height: device.cassette_height_mm,
+                          })
+                        : t('inventory.labels.deviceCassetteUnknown')}
+                      {!device.printer_reachable && ` — ${t('inventory.labels.deviceOffline')}`}
+                    </div>
+                  </div>
+                  {sending === device.id && (
+                    <Loader2 className="w-4 h-4 animate-spin text-bambu-green shrink-0" />
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Templates — 2-col grid on >= sm so all 5 plus the Cancel footer fit
             inside max-h-[90vh] even when browser chrome eats into the viewport
