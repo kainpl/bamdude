@@ -689,6 +689,43 @@ class BackgroundDispatchService:
             return False
         return state.state in ("RUNNING", "PAUSE", "PAUSED") and bool(state.gcode_file)
 
+    async def _release_direct_claim(self, job: PrintDispatchJob, *, status: str) -> None:
+        """Give the printer back after a direct dispatch that will not print.
+
+        ⚠️ Gated on ``awaited_by_scheduler``: the scheduler owns the outcome of
+        its own items — including the #2598 busy-refusal that returns one to
+        ``pending`` instead of failing it — and a second writer here would
+        overwrite that silently.
+
+        Never raises. This runs on the way out of a dispatch that has already
+        gone wrong, and losing the real error to a secondary one from the
+        cleanup is the failure this method exists to avoid.
+        """
+        if job.awaited_by_scheduler or job.queue_item_id is None:
+            return
+
+        from datetime import datetime, timezone
+
+        from backend.app.models.print_queue import PrintQueueItem
+        from backend.app.services.queue_counters import set_queue_error, set_queue_idle, update_queue_counters
+
+        try:
+            async with async_session() as db:
+                item = await db.get(PrintQueueItem, job.queue_item_id)
+                if item is None:
+                    return
+                item.status = status
+                item.completed_at = datetime.now(timezone.utc)
+                if status == "failed":
+                    item.error_message = str((job.outcome or {}).get("error") or "Dispatch failed")
+                    await set_queue_error(db, item.queue_id, failed_item_id=item.id)
+                else:
+                    await set_queue_idle(db, item.queue_id)
+                await update_queue_counters(db, item.queue_id)
+                await db.commit()
+        except Exception:
+            logger.exception("Failed to release the dispatch claim for job %s", job.id)
+
     async def start(self):
         async with self._lock:
             if self._dispatcher_task and not self._dispatcher_task.done():
@@ -1092,16 +1129,31 @@ class BackgroundDispatchService:
                     await ws_manager.broadcast({"type": "background_dispatch", "data": payload})
 
     async def _run_active_job(self, job: PrintDispatchJob):
+        # Only direct prints reach here: ``_queued_jobs`` is fed by ``_dispatch``
+        # alone, and the scheduler runs its own items through
+        # ``run_from_queue_item``. So this method owns the claim's release.
+        #
+        # ⚠️ The release is on the failure paths, never in ``finally``: a
+        # ``finally`` release would also fire on success and hand the printer
+        # away in the middle of the print it just started. A normal return means
+        # the print IS running — every failure inside the runners raises,
+        # including a refused ``start_print`` — and from there the claim belongs
+        # to the running print, for ``on_print_complete`` to close.
         try:
             await self._process_job(job)
             await self._mark_job_finished(job, failed=False, message="Background dispatch complete")
         except DispatchJobCancelled:
+            await self._release_direct_claim(job, status="cancelled")
             await self._mark_job_cancelled(job)
         except asyncio.CancelledError:
+            # Process shutdown. Deliberately not released here — that would race
+            # the shutdown's own session teardown, and
+            # ``release_interrupted_dispatch_claims`` reclaims it at next start.
             raise
         except Exception as e:
             logger.error("Background dispatch job %s failed: %s", job.id, e, exc_info=True)
             _record_outcome_error(job, e)
+            await self._release_direct_claim(job, status="failed")
             await self._mark_job_finished(job, failed=True, message=str(e))
         finally:
             self._job_event.set()
