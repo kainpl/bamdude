@@ -13,6 +13,25 @@ from backend.app.services.background_dispatch import (
 )
 
 
+@pytest.fixture
+def dispatch_claim_db(monkeypatch, db_session):
+    """Point the enqueue path's claim at the test session.
+
+    ⚠️ Required by every test that reaches ``_dispatch``: accepting a direct
+    print now writes the printer's queue claim, so the enqueue path is no
+    longer pure. Without this the claim runs against the configured engine with
+    an unconfigured mapper registry, which fails here *and* poisons the
+    registry for every test file that runs after this one in the same process.
+    """
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _session_ctx():
+        yield db_session
+
+    monkeypatch.setattr("backend.app.services.background_dispatch.async_session", _session_ctx)
+
+
 @pytest.mark.asyncio
 async def test_dispatch_rejects_when_printer_busy_printing():
     """Reject enqueue when target printer is already printing."""
@@ -37,7 +56,8 @@ async def test_dispatch_rejects_when_printer_busy_printing():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_enqueues_job_and_broadcasts_state():
+@pytest.mark.integration
+async def test_dispatch_enqueues_job_and_broadcasts_state(dispatch_claim_db):
     """Enqueue succeeds and emits websocket queue update."""
     service = BackgroundDispatchService()
 
@@ -69,7 +89,8 @@ async def test_dispatch_enqueues_job_and_broadcasts_state():
 
 
 @pytest.mark.asyncio
-async def test_cancel_queued_job_removes_it_and_broadcasts():
+@pytest.mark.integration
+async def test_cancel_queued_job_removes_it_and_broadcasts(dispatch_claim_db):
     """Cancelling queued job removes it immediately."""
     service = BackgroundDispatchService()
 

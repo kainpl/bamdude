@@ -549,6 +549,12 @@ class PrintDispatchJob:
     # ``archive_id`` once the archive row is created so the two FSMs stay
     # in sync without a second DB round-trip from the scheduler.
     queue_item_id: int | None = None
+    # True only for jobs the scheduler is awaiting through
+    # ``run_from_queue_item``. ⚠️ Not the same question as
+    # ``queue_item_id is not None`` — a direct print now carries a queue item
+    # too (it is how it claims the printer), so that older test would silence
+    # the only failure report a Print now ever gets.
+    awaited_by_scheduler: bool = False
     # Signalled at the very end of ``_run_*`` (success / failure / cancel)
     # so ``run_from_queue_item`` callers can await the outcome.
     completion_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -569,9 +575,12 @@ async def report_failure_if_unwatched(job: PrintDispatchJob) -> None:
     nowhere else. Whoever pressed the button learns nothing, unless they happen
     to be looking at that panel at that moment.
 
-    ⚠️ **Gated on ``queue_item_id is None``** — that is the whole discriminator.
-    A job dispatched for a queue item is already awaited and reported by the
-    scheduler, and announcing it here would notify twice for one failure.
+    ⚠️ **Gated on ``awaited_by_scheduler``** — that is the whole discriminator.
+    A job dispatched for a queue item by the scheduler is already awaited and
+    reported by it, and announcing here would notify twice for one failure. It
+    used to read ``queue_item_id is None`` instead, which stopped meaning
+    "direct print" the moment a direct print started claiming the printer with
+    a queue item of its own.
 
     ⚠️ Cancellations are not failures. The operator who pressed Cancel does not
     need to be told what they just did.
@@ -580,7 +589,7 @@ async def report_failure_if_unwatched(job: PrintDispatchJob) -> None:
     wrong, and a notification provider being unreachable must not replace the
     real error with its own.
     """
-    if job.queue_item_id is not None:
+    if job.awaited_by_scheduler:
         return
     outcome = job.outcome or {}
     if outcome.get("success") or outcome.get("cancelled"):
@@ -778,6 +787,7 @@ class BackgroundDispatchService:
                 requested_by_username=requested_by_username,
                 project_id=project_id,
                 queue_item_id=queue_item_id,
+                awaited_by_scheduler=True,
             )
             self._next_job_id += 1
             self._active_jobs[job.id] = ActiveDispatchState(job=job, message=f"Queue dispatch to {printer_name}...")
@@ -974,6 +984,27 @@ class BackgroundDispatchService:
             if self._printer_is_busy_printing(printer_id):
                 raise DispatchEnqueueRejected(f"Printer {printer_name} is currently busy printing")
 
+            # Claim the printer now, in the DB, so ``check_queue`` sees this
+            # print for the whole of its dispatch. Until this existed the claim
+            # arrived only with ``on_print_start`` — i.e. once the printer had
+            # already started — and the queue dispatched over the file on its
+            # way, which is the bug reported against 0.5.4. Inside the lock and
+            # after the refusals above: if this raises, no job was created and
+            # nothing leaked.
+            from backend.app.services.queue_batch import claim_printer_for_direct_print
+
+            async with async_session() as claim_db:
+                claim_item = await claim_printer_for_direct_print(
+                    claim_db,
+                    printer_id=printer_id,
+                    archive_id=source_id if kind == "reprint_archive" else None,
+                    library_file_id=source_id if kind == "print_library_file" else None,
+                    options=options,
+                    created_by_id=requested_by_user_id,
+                    project_id=project_id,
+                )
+                claim_item_id = claim_item.id if claim_item is not None else None
+
             dispatch_position = len(self._queued_jobs) + len(self._active_jobs) + 1
             job = PrintDispatchJob(
                 id=self._next_job_id,
@@ -987,6 +1018,9 @@ class BackgroundDispatchService:
                 requested_by_username=requested_by_username,
                 project_id=project_id,
                 cleanup_library_after_dispatch=cleanup_library_after_dispatch,
+                queue_item_id=claim_item_id,
+                # ⚠️ ``awaited_by_scheduler`` stays False: the dispatcher owns
+                # this item, and is therefore the one that must release it.
             )
             self._next_job_id += 1
             self._batch_total += 1
