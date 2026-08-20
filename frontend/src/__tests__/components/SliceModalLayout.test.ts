@@ -16,9 +16,8 @@ import { describe, it, expect } from 'vitest';
 
 import modalSource from '../../components/SliceModal.tsx?raw';
 
-const gridLine = modalSource
-  .split(/\r?\n/)
-  .find((line) => line.includes('lg:grid-cols-[minmax(0,20rem)'));
+const sourceLines = modalSource.split(/\r?\n/);
+const gridLine = sourceLines.find((line) => line.includes('lg:grid-cols-[minmax(0,20rem)'));
 
 describe('SliceModal layout', () => {
   it('puts the body in a two-column grid', () => {
@@ -33,6 +32,20 @@ describe('SliceModal layout', () => {
     // `grid` here would apply the two columns at every width.
     expect(gridLine).not.toMatch(/(^|\s)grid(\s|"|$)/);
     expect(gridLine).not.toMatch(/(^|\s)grid-cols-/);
+  });
+
+  it('widens the frame at the same breakpoint the grid appears', () => {
+    // ⚠️ The miss the first attempt made: the grid went in and the frame stayed
+    // at the single-column `max-w-xl` (36rem). A 20rem left column plus the gap
+    // left the 348-option panel about 13rem — worse than the one column it
+    // replaced. The two must switch together or the layout is a downgrade.
+    const frame = sourceLines.find((line) =>
+      line.includes('max-h-[85vh] flex flex-col rounded-lg'),
+    );
+
+    expect(frame, 'the modal frame').toBeDefined();
+    expect(frame).toContain('max-w-xl');
+    expect(frame).toContain('lg:max-w-5xl');
   });
 
   it('keeps the settings panel open and its toggle inert when it owns a column', () => {

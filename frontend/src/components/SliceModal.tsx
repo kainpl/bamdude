@@ -1147,7 +1147,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       }}
     >
       <div
-        className="w-full max-w-xl max-h-[85vh] flex flex-col rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary/60"
+        className="w-full max-w-xl lg:max-w-5xl max-h-[85vh] flex flex-col rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary/60"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
