@@ -1,11 +1,17 @@
+/**
+ * ⚠️ Calibration's own preset picker. Was shared with the slice dialog until
+ * that dialog was rebuilt on upstream's layout with inline pickers; the shared
+ * copy is gone and this one belongs to the calibration flow alone. Changing it
+ * changes calibration and nothing else — which is the point.
+ */
 import { Check, Cog, Loader2, XCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { useSlicerHealth } from '../../hooks/useSlicerHealth';
+import { useSlicerHealth } from '../../../hooks/useSlicerHealth';
 
 export type SlicerKind = 'orcaslicer' | 'bambu_studio';
 
-interface SlicerPickerProps {
+interface CalibrationSlicerPickerProps {
   value: SlicerKind | null;
   onChange: (next: SlicerKind) => void;
   disabled?: boolean;
@@ -22,7 +28,7 @@ interface SlicerPickerProps {
  * reachable; if neither, the backend will surface the real error at
  * submit time.
  */
-export function SlicerPicker({ value, onChange, disabled }: SlicerPickerProps) {
+export function CalibrationSlicerPicker({ value, onChange, disabled }: CalibrationSlicerPickerProps) {
   const { t } = useTranslation();
   const options: { kind: SlicerKind; label: string }[] = [
     { kind: 'orcaslicer', label: 'OrcaSlicer' },
@@ -35,7 +41,7 @@ export function SlicerPicker({ value, onChange, disabled }: SlicerPickerProps) {
       </legend>
       <div className="grid grid-cols-2 gap-3">
         {options.map((opt) => (
-          <SlicerPickerCard
+          <CalibrationSlicerPickerCard
             key={opt.kind}
             kind={opt.kind}
             label={opt.label}
@@ -49,7 +55,7 @@ export function SlicerPicker({ value, onChange, disabled }: SlicerPickerProps) {
   );
 }
 
-interface SlicerPickerCardProps {
+interface CalibrationSlicerPickerCardProps {
   kind: SlicerKind;
   label: string;
   selected: boolean;
@@ -57,13 +63,13 @@ interface SlicerPickerCardProps {
   onSelect: () => void;
 }
 
-function SlicerPickerCard({
+function CalibrationSlicerPickerCard({
   kind,
   label,
   selected,
   outerDisabled,
   onSelect,
-}: SlicerPickerCardProps) {
+}: CalibrationSlicerPickerCardProps) {
   const { t } = useTranslation();
   const { data, isLoading } = useSlicerHealth(kind);
   const healthy = data?.healthy === true;

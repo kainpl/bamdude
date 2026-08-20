@@ -21,17 +21,17 @@ import { useToast } from '../contexts/ToastContext';
 import { SlicePlateSelector } from './SlicePlateSelector';
 import type { DesignOverride, PlateFilament } from '../types/plates';
 import {
-  PresetDropdown,
-  PresetSourceControl,
-} from './preset-picker/PresetTripletPicker';
+  CalibrationPresetDropdown as PresetDropdown,
+  CalibrationPresetSourceControl as PresetSourceControl,
+} from './calibration/preset-picker/CalibrationPresetDropdown';
 import {
   matchesOwnerFilter,
   resolvePresetName,
   type OwnerFilter,
   type Slot,
 } from '../utils/presetPickerUtils';
-import { BedTypePicker } from './preset-picker/BedTypePicker';
-import { SlicerPicker, type SlicerKind } from './preset-picker/SlicerPicker';
+import { CalibrationBedTypePicker as BedTypePicker } from './calibration/preset-picker/CalibrationBedTypePicker';
+import { CalibrationSlicerPicker as SlicerPicker, type SlicerKind } from './calibration/preset-picker/CalibrationSlicerPicker';
 import {
   buildCompatibilityIndex,
   presetCompatibility,

@@ -1,3 +1,9 @@
+/**
+ * ⚠️ Calibration's own preset picker. Was shared with the slice dialog until
+ * that dialog was rebuilt on upstream's layout with inline pickers; the shared
+ * copy is gone and this one belongs to the calibration flow alone. Changing it
+ * changes calibration and nothing else — which is the point.
+ */
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -6,21 +12,21 @@ import type {
   UnifiedPreset,
   UnifiedPresetsBySlot,
   UnifiedPresetsResponse,
-} from '../../api/client';
+} from '../../../api/client';
 import {
   type OwnerFilter,
   type Slot,
   fromRefValue,
   matchesOwnerFilter,
   toRefValue,
-} from '../../utils/presetPickerUtils';
+} from '../../../utils/presetPickerUtils';
 import {
   EMPTY_COMPATIBILITY_INDEX,
   presetCompatibility,
   type PrinterCompatibilityIndex,
-} from '../../utils/slicerPrinterMatch';
+} from '../../../utils/slicerPrinterMatch';
 
-interface PresetDropdownProps {
+interface CalibrationPresetDropdownProps {
   label: string;
   slot: Slot;
   data: UnifiedPresetsResponse;
@@ -45,7 +51,7 @@ interface PresetDropdownProps {
 }
 
 /** Cloud/local/standard preset dropdown with optgroup tiers. */
-export function PresetDropdown({
+export function CalibrationPresetDropdown({
   label,
   slot,
   data,
@@ -56,7 +62,7 @@ export function PresetDropdown({
   ownerFilter = 'all',
   selectedPrinterName,
   compatIndex,
-}: PresetDropdownProps) {
+}: CalibrationPresetDropdownProps) {
   const { t } = useTranslation();
 
   // Tier sections (imported → cloud → standard) after the owner filter, plus
@@ -153,7 +159,7 @@ export function PresetDropdown({
   );
 }
 
-interface PresetSourceControlProps {
+interface CalibrationPresetSourceControlProps {
   ownerFilter: OwnerFilter;
   onOwnerFilterChange: (next: OwnerFilter) => void;
   disabled?: boolean;
@@ -165,11 +171,11 @@ interface PresetSourceControlProps {
  * tiers. The former Manual / Bundle mode toggle was removed with the
  * slicer-bundle feature (#1712).
  */
-export function PresetSourceControl({
+export function CalibrationPresetSourceControl({
   ownerFilter,
   onOwnerFilterChange,
   disabled,
-}: PresetSourceControlProps) {
+}: CalibrationPresetSourceControlProps) {
   const { t } = useTranslation();
   const ownerOptions: { key: OwnerFilter; label: string }[] = [
     { key: 'all', label: t('profiles.cloudView.filters.all', 'All') },

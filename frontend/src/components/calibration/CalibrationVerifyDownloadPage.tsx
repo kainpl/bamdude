@@ -14,16 +14,16 @@ import type {
 import { useToast } from '../../contexts/ToastContext';
 import { tempDefaultsForFilament } from '../../utils/calibrationTemp';
 import {
-  PresetDropdown,
-  PresetSourceControl,
-} from '../preset-picker/PresetTripletPicker';
+  CalibrationPresetDropdown,
+  CalibrationPresetSourceControl,
+} from './preset-picker/CalibrationPresetDropdown';
 import {
   TIER_ORDER,
   matchesOwnerFilter,
   type OwnerFilter,
 } from '../../utils/presetPickerUtils';
-import { BedTypePicker } from '../preset-picker/BedTypePicker';
-import { SlicerPicker, type SlicerKind } from '../preset-picker/SlicerPicker';
+import { CalibrationBedTypePicker } from './preset-picker/CalibrationBedTypePicker';
+import { CalibrationSlicerPicker, type SlicerKind } from './preset-picker/CalibrationSlicerPicker';
 
 interface Props {
   printerId: number;
@@ -379,19 +379,19 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
       <p className="text-sm text-bambu-gray">{t('filamentCali.verifyDownload.intro')}</p>
 
       <section className="space-y-3">
-        <SlicerPicker
+        <CalibrationSlicerPicker
           value={pickedSlicer}
           onChange={setPickedSlicer}
           disabled={isDownloading || isBaking}
         />
 
-        <BedTypePicker
+        <CalibrationBedTypePicker
           value={bedType}
           onChange={setBedType}
           disabled={isDownloading || isBaking}
         />
 
-        <PresetSourceControl
+        <CalibrationPresetSourceControl
           ownerFilter={ownerFilter}
           onOwnerFilterChange={setOwnerFilter}
           disabled={isDownloading}
@@ -400,7 +400,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
         <div className="grid grid-cols-1 gap-2">
           {presets ? (
             <>
-              <PresetDropdown
+              <CalibrationPresetDropdown
                 label={t('slice.printer', 'Printer profile')}
                 slot="printer"
                 data={presets}
@@ -409,7 +409,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
                 disabled={isDownloading}
                 ownerFilter={ownerFilter}
               />
-              <PresetDropdown
+              <CalibrationPresetDropdown
                 label={t('slice.process', 'Process profile')}
                 slot="process"
                 data={presets}
@@ -418,7 +418,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
                 disabled={isDownloading}
                 ownerFilter={ownerFilter}
               />
-              <PresetDropdown
+              <CalibrationPresetDropdown
                 label={t('slice.filament', 'Filament profile')}
                 slot="filament"
                 data={presets}

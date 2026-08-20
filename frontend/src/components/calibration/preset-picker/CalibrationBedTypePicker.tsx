@@ -1,8 +1,14 @@
+/**
+ * ⚠️ Calibration's own preset picker. Was shared with the slice dialog until
+ * that dialog was rebuilt on upstream's layout with inline pickers; the shared
+ * copy is gone and this one belongs to the calibration flow alone. Changing it
+ * changes calibration and nothing else — which is the point.
+ */
 import { useTranslation } from 'react-i18next';
 
-import type { BedType } from '../../api/client';
+import type { BedType } from '../../../api/client';
 
-interface BedTypePickerProps {
+interface CalibrationBedTypePickerProps {
   value: BedType;
   onChange: (next: BedType) => void;
   disabled?: boolean;
@@ -17,7 +23,7 @@ interface BedTypePickerProps {
  * four of the five values are uncommon; a wide tile row would dominate
  * a modal for a setting most users flip once.
  */
-export function BedTypePicker({ value, onChange, disabled }: BedTypePickerProps) {
+export function CalibrationBedTypePicker({ value, onChange, disabled }: CalibrationBedTypePickerProps) {
   const { t } = useTranslation();
   const options: { value: BedType; labelKey: string; fallback: string }[] = [
     { value: 'Cool Plate', labelKey: 'slice.bedType.coolPlate', fallback: 'Cool Plate' },
