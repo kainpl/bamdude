@@ -50,6 +50,43 @@ def test_a_starter_keeps_its_content_within_what_a_b1_can_print():
             assert element["x_mm"] + element["w_mm"] <= 48.0 + 1e-6, (row["name"], element["type"])
 
 
+def test_a_starter_uses_the_whole_label():
+    """⚠️ Measured, because looking at the numbers did not catch it.
+
+    The first version of these starters capped the QR at 30% of the width,
+    anchored it to the top, and stacked three fixed rows that stopped at
+    11.8 mm — so a 40 × 20 label came off a real B1 with its bottom third blank
+    and nothing anywhere said so. Every element was inside the label, which is
+    all the other tests here check.
+    """
+    for row in STARTER_TEMPLATES:
+        bottom = max(e["y_mm"] + e["h_mm"] for e in row["elements"])
+        right = max(e["x_mm"] + e["w_mm"] for e in row["elements"])
+        assert bottom >= row["height_mm"] * 0.85, (
+            f"{row['name']}: content stops at {bottom} mm of {row['height_mm']} mm"
+        )
+        assert right >= min(row["width_mm"], 48.0) * 0.9, f"{row['name']}: content stops at {right} mm across"
+
+
+def test_a_starter_row_is_only_placeholders():
+    """⚠️ A caption survives the value it captions.
+
+    "Lot {lot}" on a spool with no lot prints "Lot", which reads as a fault in
+    the data rather than as an absent field. A row that resolves to nothing is
+    skipped entirely — and that only works when there is nothing in the row but
+    fields and separators.
+    """
+    import re
+
+    for row in STARTER_TEMPLATES:
+        for element in row["elements"]:
+            if element["type"] != "text":
+                continue
+            leftovers = re.sub(r"\{[a-z_0-9]+\}", "", element["content"])
+            words = re.findall(r"[A-Za-z]+", leftovers)
+            assert not words or words == ["g"], (row["name"], element["content"], words)
+
+
 def test_a_starter_has_no_builtin_key():
     """No API contract names them, and a key would make them undeletable."""
     assert all(t["builtin_key"] is None for t in STARTER_TEMPLATES)

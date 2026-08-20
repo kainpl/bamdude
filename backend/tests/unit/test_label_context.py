@@ -229,3 +229,48 @@ class TestParityWithTheInventoryTable:
                 continue
             assert real[0].isdigit() == example[0].isdigit(), placeholder.key
             assert real.endswith("%") == example.endswith("%"), placeholder.key
+
+
+class TestSeparatorsWithNothingToSeparate:
+    """⚠️ Found on printed stock, not in a test.
+
+    A separator is punctuation between two things. With one of them gone it is
+    debris, and debris on a shelf label reads as a fault in the data — which is
+    exactly what somebody chases when they see it.
+    """
+
+    def test_a_missing_first_field_takes_the_separator_with_it(self):
+        context = spool_context(_spool(brand=None), deeplink_base=BASE)
+        assert resolve("{brand} · {material}", context) == "PLA"
+
+    def test_a_missing_last_field_does_too(self):
+        context = spool_context(_spool(material=None), deeplink_base=BASE)
+        assert resolve("{brand} · {material}", context) == "Polymaker"
+
+    def test_both_missing_leaves_nothing_at_all(self):
+        """An element that resolves to nothing is skipped, so this is what makes
+        an absent field absent rather than a lone dot on the label.
+        """
+        context = spool_context(_spool(purchase_date=None, lot=None), deeplink_base=BASE)
+        assert resolve("{purchase_date} · {lot}", context) == ""
+
+    def test_a_middle_field_going_missing_does_not_double_the_separator(self):
+        context = spool_context(_spool(material=None), deeplink_base=BASE)
+        assert resolve("{brand} · {material} · {subtype}", context) == "Polymaker · Matte"
+
+    def test_a_hyphen_inside_a_value_is_not_a_separator(self):
+        """⚠️ "PLA-CF" is a material, not two fields with punctuation between."""
+        context = spool_context(_spool(material="PLA-CF"), deeplink_base=BASE)
+        assert resolve("{material}", context) == "PLA-CF"
+
+    def test_a_units_word_is_not_a_separator(self):
+        """Only punctuation is dropped. "750 g" keeps its g."""
+        context = spool_context(_spool(), deeplink_base=BASE)
+        assert resolve("{remaining_g} g", context) == "750 g"
+
+    def test_a_caption_beside_an_empty_field_still_survives(self):
+        """⚠️ Which is precisely why the seeded rows carry no captions. This
+        pins the limit of the rule rather than pretending it does more.
+        """
+        context = spool_context(_spool(lot=None), deeplink_base=BASE)
+        assert resolve("Lot {lot}", context) == "Lot"

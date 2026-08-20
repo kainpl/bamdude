@@ -132,3 +132,34 @@ describe('SPOOL_PLACEHOLDERS registry', () => {
     }
   });
 });
+
+describe('separators with nothing to separate', () => {
+  // ⚠️ The same rule runs server-side in label_template.py::resolve. These two
+  // lists are one vocabulary written twice, and a spool has to read the same
+  // way in the table and on the label printed from it.
+  const spool = (overrides: Partial<InventorySpool> = {}) =>
+    ({ id: 42, material: 'PLA', brand: 'Polymaker', color_name: 'Ivory', ...overrides }) as InventorySpool;
+
+  it('drops a separator left by a missing first field', () => {
+    expect(formatSpoolDisplayName(spool({ brand: null }), '{brand} · {material}')).toBe('PLA');
+  });
+
+  it('drops one left by a missing last field', () => {
+    expect(formatSpoolDisplayName(spool({ material: '' }), '{brand} · {material}')).toBe('Polymaker');
+  });
+
+  it('leaves nothing at all when both are missing', () => {
+    expect(formatSpoolDisplayName(spool({ brand: null, material: '' }), '{brand} · {material}')).toBe('');
+  });
+
+  it('does not double a separator when the middle field goes', () => {
+    expect(
+      formatSpoolDisplayName(spool({ material: '' }), '{brand} · {material} · {color_name}'),
+    ).toBe('Polymaker · Ivory');
+  });
+
+  it('keeps a hyphen that is part of a value', () => {
+    // "PLA-CF" is a material, not two fields with punctuation between them.
+    expect(formatSpoolDisplayName(spool({ material: 'PLA-CF' }), '{material}')).toBe('PLA-CF');
+  });
+});

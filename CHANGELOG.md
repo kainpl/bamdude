@@ -16,6 +16,8 @@
 
     Out of paper holds the queue instead of failing it, because paper is a ten-second fix. A job whose printer goes quiet mid-print goes back in the queue and, after three tries, fails visibly with whatever the device last said — rather than sitting there reading as "printing" forever.
 
+    The two starter designs use the whole label: name, brand and material, what is left, purchase date and lot. Any of those a spool does not have simply is not printed — no empty captions, no stray punctuation.
+
     Currently the Niimbot B1 over USB. The bridge names the model in its own window and says plainly when it meets one it cannot drive yet.
 
     In the label dialog, an adopted printer appears as a destination beside the existing PDF layouts — which are unchanged and still the default. Settings → Printing → **Label printers** is where machines are adopted, cassette sizes taught, and recent labels shown with what the printer said about each one.
@@ -71,6 +73,9 @@
 - **Telegram can now aim a job at a room, not just at a printer model.** "Any P1S" is a useful answer on a one-room farm and a poor one when the P1S you meant is upstairs. Choosing a model in the bot now offers the places that actually hold one, and the job is routed there — the same location filter the print dialog has had, reaching the shelves inside a workshop you pick. The step is skipped entirely when there is nothing to choose between, so a farm with no locations set up sees no extra tap.
 
 ### Fixed
+
+- **A spool with no brand no longer reads "· PLA".** Anywhere a naming template puts a separator between two fields — the Filaments list, the spool hover card, the label itself — a field that happens to be empty used to leave its separator behind, so a spool missing one value looked like a spool with broken data. The separator now goes with the value it was separating; a line where nothing is filled in disappears entirely rather than printing a lone dot. Punctuation inside a value is untouched: `PLA-CF` is still `PLA-CF`.
+
 
 - **A file sent with "Print now" is no longer overtaken by the queue.** Sending a file to a printer and then adding a second one to that printer's queue could start the second file instead, leaving the first never printed — but only while the first had not started yet. Nothing in that window recorded that the printer was already taken: the claim the queue reads was written when the printer *reported* the print, which is a good while after the file was sent, and the printer's own status reads idle the whole time it is receiving a file. A print now claims its printer the moment it is dispatched and holds it until it finishes, whether it was sent from BamDude, started from the printer's screen, or pushed straight from a slicer. That running print is also visible in the printer's queue for as long as it runs, and can be stopped from there.
 

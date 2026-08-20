@@ -195,50 +195,72 @@ def _device_elements(
 
     ``printable_mm`` narrows where content may go without changing how big the
     label is.
+
+    ⚠️ **The content reaches the bottom.** The first version capped the QR at 30%
+    of the width, anchored it to the top, and stacked three rows that ended at
+    11.8 mm — so a 40 x 20 label came out of a real B1 with its bottom third
+    blank. Found by printing one and looking at it. The extra rows here are real
+    fields rather than invented spacing, and
+    ``test_a_starter_uses_the_whole_label`` measures the result.
+
+    ⚠️ **Every row is bare placeholders — no literal captions.** A caption
+    survives the value it captions: "Lot {lot}" on a spool with no lot prints
+    "Lot", which reads as a fault in the data rather than as an absent field. A
+    row that resolves to nothing is skipped entirely, and that only works if
+    there is nothing in it but fields.
     """
     pad = 1.5
     usable_mm = min(width_mm, printable_mm or width_mm)
-    qr = min(height_mm - 2 * pad, usable_mm * 0.3, 12.0)
-    if barcode:
-        qr = min(qr, (height_mm - 2 * pad) * 0.55)
+    inner_h = height_mm - 2 * pad
 
+    # The barcode takes the bottom strip; everything else divides what is left.
+    bar_h = 7.0 if barcode else 0.0
+    bar_gap = 1.2 if barcode else 0.0
+    column_h = inner_h - bar_h - bar_gap
+
+    # ⚠️ A third of the WIDTH, not the height. The QR is the scannable anchor,
+    # but the text is what somebody reads across a room — and on a 40 mm label a
+    # square as tall as the stock would leave nothing to read.
+    qr = min(column_h, usable_mm * 0.34)
     qr_x = usable_mm - pad - qr
     text_w = qr_x - pad - 1.0
 
+    # Proportions rather than constants, so one set of formulas fills 40 x 20
+    # and 50 x 30 alike and the name dominates at either size.
+    name_mm = round(column_h * 0.26, 2)
+    line_mm = round(column_h * 0.145, 2)
+    gap = round((column_h - name_mm - 4 * line_mm) / 4, 2)
+
+    rows: list[dict[str, Any]] = []
+    y = pad
+    for content, size, bold, italic in (
+        ("{display_name}", name_mm, True, False),
+        ("{brand} · {material}", line_mm, False, False),
+        ("{remaining_g} g · #{id}", line_mm, False, False),
+        ("{purchase_date}", line_mm, False, True),
+        ("{lot}", line_mm, False, True),
+    ):
+        rows.append(
+            {
+                "type": "text",
+                "x_mm": pad,
+                "y_mm": round(y, 2),
+                "w_mm": round(text_w, 2),
+                "h_mm": size,
+                "content": content,
+                "size_mm": size,
+                "bold": bold,
+                "italic": italic,
+            }
+        )
+        y += size + gap
+
     elements: list[dict[str, Any]] = [
-        {
-            "type": "text",
-            "x_mm": pad,
-            "y_mm": pad,
-            "w_mm": round(text_w, 2),
-            "h_mm": 4.0,
-            "content": "{display_name}",
-            "size_mm": 4.0,
-            "bold": True,
-        },
-        {
-            "type": "text",
-            "x_mm": pad,
-            "y_mm": round(pad + 4.6, 2),
-            "w_mm": round(text_w, 2),
-            "h_mm": 2.6,
-            "content": "{brand} · {material}",
-            "size_mm": 2.6,
-        },
-        {
-            "type": "text",
-            "x_mm": pad,
-            "y_mm": round(pad + 7.7, 2),
-            "w_mm": round(text_w, 2),
-            "h_mm": 2.6,
-            "content": "{remaining_g} g · #{id}",
-            "size_mm": 2.6,
-            "italic": True,
-        },
+        *rows,
         {
             "type": "qr",
             "x_mm": round(qr_x, 2),
-            "y_mm": pad,
+            "y_mm": round(pad + (column_h - qr) / 2, 2),
             "w_mm": round(qr, 2),
             "h_mm": round(qr, 2),
             "content": "{deeplink}",
@@ -246,7 +268,6 @@ def _device_elements(
     ]
 
     if barcode:
-        bar_h = 7.0
         elements.append(
             {
                 "type": "barcode",

@@ -132,6 +132,27 @@ PLACEHOLDERS: tuple[Placeholder, ...] = (
 _TOKEN = re.compile(r"\{([a-z_0-9]+)\}")
 _KNOWN = frozenset(p.key for p in PLACEHOLDERS)
 
+#: Characters that are punctuation between two values rather than a value.
+#: ⚠️ Only a word made ENTIRELY of these counts — "PLA-CF" and "1,000" are
+#: values that happen to contain one.
+_SEPARATORS = frozenset("·-–—/|,;:")
+
+
+def _is_separator(word: str) -> bool:
+    return bool(word) and all(character in _SEPARATORS for character in word)
+
+
+def _drop_orphan_separators(words: list[str]) -> list[str]:
+    """Remove separators with nothing on one side of them."""
+    kept: list[str] = []
+    for word in words:
+        if _is_separator(word) and (not kept or _is_separator(kept[-1])):
+            continue
+        kept.append(word)
+    while kept and _is_separator(kept[-1]):
+        kept.pop()
+    return kept
+
 
 def resolve(text: str, context: dict[str, str]) -> str:
     """Substitute ``{key}`` tokens against ``context``.
@@ -144,6 +165,12 @@ def resolve(text: str, context: dict[str, str]) -> str:
     A known key with no value becomes empty, and the surrounding whitespace
     collapses — so ``{brand} {subtype}`` on a spool with no subtype does not
     print a trailing space.
+
+    ⚠️ **A separator left holding nothing goes with it.** ``{brand} · {material}``
+    on a spool with no brand used to print "· PLA", and a date-and-lot line on a
+    spool with neither printed a lone "·". A separator is punctuation between
+    two things; with one of them gone it is debris, and debris on a shelf label
+    reads as a bug in the data.
     """
 
     def swap(match: re.Match[str]) -> str:
@@ -152,7 +179,7 @@ def resolve(text: str, context: dict[str, str]) -> str:
             return match.group(0)
         return context.get(key, "")
 
-    return " ".join(_TOKEN.sub(swap, text).split())
+    return " ".join(_drop_orphan_separators(_TOKEN.sub(swap, text).split()))
 
 
 class _Box(BaseModel):
