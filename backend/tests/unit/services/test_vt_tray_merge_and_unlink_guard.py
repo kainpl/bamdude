@@ -114,8 +114,12 @@ class TestTheEdges:
         assert by_id["255"]["tray_color"] == "FFFFFFFF"
 
     def test_malformed_entries_are_passed_along_untouched(self) -> None:
+        """⚠️ Only entries that are not objects at all. An entry that *is* an
+        object but carries no ``id`` used to be passed through here too — and
+        that was the defect, not the contract: the printer sends exactly that
+        shape for the external slot, and passing it through erased the slot.
+        See ``TestADeltaWithNoSlotIdAtAll``."""
         assert _merge_vt_tray(_full(), ["nonsense"]) == ["nonsense"]
-        assert _merge_vt_tray(_full(), [{"remain": 5}]) == [{"remain": 5}]
 
     def test_the_cached_list_is_not_mutated(self) -> None:
         before = _full()
@@ -151,3 +155,63 @@ class TestTheUnlinkGuard:
     def test_a_missing_type_field_is_handled(self) -> None:
         """``tray.get("tray_type")`` yields None when the key was never sent."""
         assert slot_reported_no_filament(None, 3) is True
+
+
+class TestADeltaWithNoSlotIdAtAll:
+    """⚠️ The shape every test above missed: the printer omits ``id`` entirely.
+
+    Live capture from the MQTT log — the reply to our OWN ``extrusion_cali_sel``,
+    which every slot configuration sends right after ``ams_filament_setting``::
+
+        {"print":{"command":"extrusion_cali_sel","result":"success",
+                  "vt_tray":[{"tray_color":"50543DFF"}], ...}}
+
+    One key, no ``id``. The ``ams_filament_setting`` reply a heartbeat earlier
+    carried the complete entry — id, ``tray_type``, filament id — and merged
+    cleanly; this one threw all of it away. Keyed matching cannot place it, and taking it wholesale
+    erases the type, the filament id **and the slot id** — after which nothing
+    can ever be keyed again, so every later report replaces the cache wholesale
+    too. That cascade is why only a manual reconfigure (which forces a full
+    pushall) appeared to fix the slot.
+    """
+
+    def test_the_captured_delta_keeps_everything_it_did_not_carry(self) -> None:
+        merged = _merge_vt_tray(_full(), [{"tray_color": "50543DFF"}])
+        assert len(merged) == 1
+        assert merged[0]["tray_color"] == "50543DFF", "what it did carry lands"
+        assert merged[0]["tray_type"] == "PETG"
+        assert merged[0]["tray_info_idx"] == "GFG99"
+
+    def test_it_keeps_the_slot_id_so_the_next_merge_still_works(self) -> None:
+        """The cascade, pinned: losing ``id`` is what poisons every later merge."""
+        once = _merge_vt_tray(_full(), [{"tray_color": "50543DFF"}])
+        assert once[0].get("id") == 254
+
+        twice = _merge_vt_tray(once, [{"remain": 42}])
+        assert twice[0]["tray_type"] == "PETG", "the second delta erased what the first preserved"
+        assert twice[0]["tray_color"] == "50543DFF"
+        assert twice[0]["remain"] == 42
+
+    def test_a_cache_already_missing_its_id_still_heals(self) -> None:
+        """Installs that already hold a poisoned cache must recover on the next
+        delta rather than waiting for a full pushall."""
+        poisoned = [{"tray_type": "PETG", "tray_color": "000000FF"}]
+        merged = _merge_vt_tray(poisoned, [{"tray_color": "50543DFF"}])
+        assert merged[0]["tray_type"] == "PETG"
+        assert merged[0]["tray_color"] == "50543DFF"
+
+    def test_it_refuses_to_guess_when_two_slots_are_cached(self) -> None:
+        """⚠️ H2D has two external slots. An id-less delta cannot say which one
+        it describes, and attaching it to the wrong one — or replacing the list
+        and dropping the other slot — is worse than ignoring a colour update."""
+        two = [
+            {"id": 254, "tray_type": "PETG", "tray_color": "000000FF"},
+            {"id": 255, "tray_type": "PLA", "tray_color": "FFFFFFFF"},
+        ]
+        merged = _merge_vt_tray(two, [{"tray_color": "50543DFF"}])
+        assert merged == two, "a delta we cannot place must change nothing"
+
+    def test_an_identified_delta_is_unaffected_by_any_of_this(self) -> None:
+        merged = _merge_vt_tray(_full(), [{"id": 254, "tray_color": "50543DFF"}])
+        assert merged[0]["tray_type"] == "PETG"
+        assert merged[0]["tray_color"] == "50543DFF"

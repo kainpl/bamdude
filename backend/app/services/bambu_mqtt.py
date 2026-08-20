@@ -555,13 +555,38 @@ def _merge_vt_tray(existing: object, incoming: list) -> list:
         return None if raw is None else str(raw)
 
     previous = {k: e for e in existing if (k := _slot_key(e)) is not None}
-    if not previous:
-        return incoming
+
+    # ⚠️ The printer omits ``id`` entirely on external-slot deltas — including in
+    # the reply to our OWN ``extrusion_cali_sel``, which every slot configuration
+    # sends right after ``ams_filament_setting``. Live capture::
+    #
+    #     {"command":"extrusion_cali_sel", "result":"success",
+    #      "vt_tray":[{"tray_color":"50543DFF"}]}
+    #
+    # The ``ams_filament_setting`` reply just before it carries the COMPLETE
+    # entry (id, ``tray_type``, filament id) and merges cleanly; this one lands
+    # a heartbeat later and, unfixed, threw all of it away.
+    #
+    # One key, no id. Keyed matching cannot place that, and taking it wholesale
+    # erases the type, the filament id **and the slot id** — after which
+    # ``previous`` is empty for ever and every later report replaces the cache
+    # wholesale too. That cascade is why the slot stayed wrong until somebody
+    # reconfigured it by hand, which forces a full pushall.
+    #
+    # A single cached slot is unambiguous, so an id-less delta belongs to it.
+    # More than one (H2D's two external slots) is not, and we do not guess.
+    sole_cached = existing[0] if len(existing) == 1 and isinstance(existing[0], dict) else None
+    if sole_cached is None and any(isinstance(e, dict) and _slot_key(e) is None for e in incoming):
+        # ⚠️ Unplaceable. Returning ``incoming`` here would drop the slots it
+        # does not mention; losing one colour update is much the cheaper error.
+        return list(existing)
 
     merged: list = []
     for entry in incoming:
-        key = _slot_key(entry)
+        key = _slot_key(entry) if isinstance(entry, dict) else None
         before = previous.get(key) if key is not None else None
+        if before is None and key is None and sole_cached is not None and len(incoming) == 1:
+            before = sole_cached
         if not isinstance(entry, dict) or not isinstance(before, dict):
             merged.append(entry)
             continue
