@@ -251,3 +251,97 @@ class TestBothHalvesOfTheConversation:
         rec.stop(7)
 
         assert client.publish_handlers == [], "a stopped recording kept teeing our commands"
+
+
+class TestReadingARecordingBack:
+    """The dialog reads the file, so the recorder owns parsing it.
+
+    ⚠️ ``file_for`` only knows a path while the recording runs — it is dropped on
+    stop. A stopped recording is exactly what somebody wants to read, so lookup
+    goes by the naming convention on disk instead.
+    """
+
+    def test_a_stopped_recording_is_still_findable(self, recorder):
+        rec, client = recorder
+        path = rec.start(7)
+        client.emit("device/X/report", {"print": {"command": "push_status"}})
+        assert _wait_for(path, lambda t: "push_status" in t)
+        rec.stop(7)
+
+        assert rec.file_for(7) is None, "the live handle is gone, as before"
+        assert rec.paths_for(7) == [path], "but the file on disk is still ours to find"
+
+    def test_another_printers_recording_is_not_ours(self, recorder):
+        rec, client = recorder
+        rec.start(7)
+        (rec.log_dir / "mqtt" / "mqtt-20260101-9.log").write_text("x\n", encoding="utf-8")
+
+        assert all(p.name.endswith("-7.log") for p in rec.paths_for(7))
+
+    def test_tail_parses_the_columns(self, recorder):
+        rec, client = recorder
+        path = rec.start(7)
+        client.publish("device/X/request", {"print": {"command": "ams_filament_setting"}})
+        client.emit("device/X/report", {"print": {"command": "push_status"}})
+        assert _wait_for(path, lambda t: "push_status" in t)
+
+        entries = rec.tail(7, limit=10)
+
+        assert [e["direction"] for e in entries] == ["out", "in"]
+        assert entries[0]["topic"] == "device/X/request"
+        assert entries[0]["payload"]["print"]["command"] == "ams_filament_setting"
+        assert entries[0]["timestamp"]
+
+    def test_tail_returns_the_end_not_the_beginning(self, recorder):
+        """⚠️ Nothing caps the file. Reading it whole to show the last screenful
+        is how a debugging aid becomes the thing that falls over."""
+        rec, client = recorder
+        path = rec.start(7)
+        for i in range(50):
+            client.emit("device/X/report", {"print": {"seq": i}})
+        assert _wait_for(path, lambda t: t.count("\n") >= 50)
+
+        entries = rec.tail(7, limit=5)
+
+        assert len(entries) == 5
+        assert [e["payload"]["print"]["seq"] for e in entries] == [45, 46, 47, 48, 49]
+
+    def test_a_line_that_is_not_json_still_comes_back(self, recorder):
+        """A truncated last line, or a payload the printer sent as plain text,
+        must not blank the whole view."""
+        rec, _ = recorder
+        path = rec.start(7)
+        path.write_text("2026-08-21T00:00:00+00:00\tin\tdevice/X/report\tnot json\n", encoding="utf-8")
+
+        entries = rec.tail(7, limit=10)
+
+        assert entries[0]["payload"] == "not json"
+
+    def test_nothing_recorded_yet_is_an_empty_list(self, recorder):
+        rec, _ = recorder
+        assert rec.tail(7, limit=10) == []
+        assert rec.paths_for(7) == []
+
+    def test_delete_removes_the_files_and_reports_how_many(self, recorder):
+        rec, client = recorder
+        path = rec.start(7)
+        client.emit("device/X/report", {"print": {"a": 1}})
+        assert _wait_for(path, lambda t: '"a"' in t)
+        rec.stop(7)
+
+        assert rec.delete(7) == 1
+        assert rec.paths_for(7) == []
+
+    def test_deleting_while_recording_keeps_recording(self, recorder):
+        """⚠️ Clear means "start the transcript over", not "stop watching" — the
+        badge stays on, so stopping here would leave it lying."""
+        rec, client = recorder
+        path = rec.start(7)
+        client.emit("device/X/report", {"print": {"a": 1}})
+        assert _wait_for(path, lambda t: '"a"' in t)
+
+        rec.delete(7)
+
+        assert rec.is_recording(7) is True
+        client.emit("device/X/report", {"print": {"b": 2}})
+        assert _wait_for(rec.file_for(7), lambda t: '"b"' in t)

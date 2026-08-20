@@ -1,9 +1,15 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X, Play, Square, Trash2, RefreshCw, ArrowDown, ArrowUp, Search } from 'lucide-react';
+import { X, Play, Square, Trash2, RefreshCw, ArrowDown, ArrowUp, Search, Download } from 'lucide-react';
 import { api, type MQTTLogEntry } from '../api/client';
 import { Button } from './Button';
 import { useState, useEffect, useRef, useMemo } from 'react';
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 interface MQTTDebugModalProps {
   printerId: number;
@@ -20,31 +26,32 @@ export function MQTTDebugModal({ printerId, printerName, onClose }: MQTTDebugMod
   const [directionFilter, setDirectionFilter] = useState<'all' | 'in' | 'out'>('all');
   const logContainerRef = useRef<HTMLDivElement>(null);
 
+  // Reads the recorder's FILE, not an in-memory buffer. The buffer this
+  // replaced held a hundred messages, so the start of anything interesting had
+  // already scrolled out by the time somebody looked — and it saw only the
+  // commands that went through send_command, which is not the path the ones
+  // worth reading take.
   const { data, isLoading, refetch } = useQuery({
-    queryKey: ['mqtt-logs', printerId],
-    queryFn: () => api.getMQTTLogs(printerId),
-    refetchInterval: 1000, // Poll every second when logging is enabled
+    queryKey: ['mqtt-recording', printerId],
+    queryFn: () => api.getMQTTRecording(printerId),
+    refetchInterval: 1000,
   });
 
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['mqtt-recording', printerId] });
+
   const enableMutation = useMutation({
-    mutationFn: () => api.enableMQTTLogging(printerId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['mqtt-logs', printerId] });
-    },
+    mutationFn: () => api.setMQTTRecording(printerId, true),
+    onSuccess: invalidate,
   });
 
   const disableMutation = useMutation({
-    mutationFn: () => api.disableMQTTLogging(printerId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['mqtt-logs', printerId] });
-    },
+    mutationFn: () => api.setMQTTRecording(printerId, false),
+    onSuccess: invalidate,
   });
 
   const clearMutation = useMutation({
-    mutationFn: () => api.clearMQTTLogs(printerId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['mqtt-logs', printerId] });
-    },
+    mutationFn: () => api.clearMQTTRecording(printerId),
+    onSuccess: invalidate,
   });
 
   // Close on Escape key
@@ -61,7 +68,7 @@ export function MQTTDebugModal({ printerId, printerName, onClose }: MQTTDebugMod
     if (autoScroll && logContainerRef.current) {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
-  }, [data?.logs, autoScroll]);
+  }, [data?.entries, autoScroll]);
 
   const toggleExpand = (index: number) => {
     setExpandedLogs((prev) => {
@@ -84,8 +91,18 @@ export function MQTTDebugModal({ printerId, printerName, onClose }: MQTTDebugMod
     if (payload === undefined || payload === null) {
       return '<empty>';
     }
-    // If payload is already a string, parse it first to format nicely
-    const obj = typeof payload === 'string' ? JSON.parse(payload) : payload;
+    // ⚠️ A recorded line whose payload was not JSON comes back as the raw
+    // string — a half-written last line, or a payload the printer sent as plain
+    // text. Parsing it unguarded threw and blanked the whole view, so show it
+    // as it is instead.
+    let obj: unknown = payload;
+    if (typeof payload === 'string') {
+      try {
+        obj = JSON.parse(payload);
+      } catch {
+        return expanded || payload.length <= 100 ? payload : payload.substring(0, 100) + '...';
+      }
+    }
     const json = JSON.stringify(obj, null, expanded ? 2 : 0);
     if (!expanded && json.length > 100) {
       return json.substring(0, 100) + '...';
@@ -93,8 +110,9 @@ export function MQTTDebugModal({ printerId, printerName, onClose }: MQTTDebugMod
     return json;
   };
 
-  const loggingEnabled = data?.logging_enabled ?? false;
-  const logs = useMemo(() => data?.logs ?? [], [data?.logs]);
+  const loggingEnabled = data?.recording ?? false;
+  const logs = useMemo(() => data?.entries ?? [], [data?.entries]);
+  const sizeBytes = data?.size_bytes ?? 0;
 
   // Filter logs based on search query and direction filter
   const filteredLogs = useMemo(() => {
@@ -172,6 +190,24 @@ export function MQTTDebugModal({ printerId, printerName, onClose }: MQTTDebugMod
             >
               <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
             </Button>
+            <a
+              href={api.mqttRecordingDownloadUrl(printerId)}
+              className={`inline-flex items-center gap-1 rounded px-2 py-1 text-sm ${
+                sizeBytes > 0
+                  ? 'text-bambu-gray hover:text-white'
+                  : 'pointer-events-none opacity-40 text-bambu-gray'
+              }`}
+              title={t('mqttDebug.download')}
+            >
+              <Download className="w-4 h-4" />
+              {t('mqttDebug.download')}
+            </a>
+            {/* ⚠️ Nothing caps a recording. The size is what makes one nobody
+                remembers starting visible rather than discovered when the disk
+                fills — the same reason the printer card carries it. */}
+            {sizeBytes > 0 && (
+              <span className="text-xs text-bambu-gray tabular-nums">{formatBytes(sizeBytes)}</span>
+            )}
             <div className="flex-1" />
             <label className="flex items-center gap-2 text-sm text-bambu-gray cursor-pointer">
               <input

@@ -3357,12 +3357,15 @@ export interface MQTTLogEntry {
   timestamp: string;
   topic: string;
   direction: 'in' | 'out';
-  payload: Record<string, unknown>;
+  // A line whose payload was not JSON comes back as the raw string rather than
+  // being dropped — a half-written last line must not blank the view.
+  payload: Record<string, unknown> | string;
 }
 
-export interface MQTTLogsResponse {
-  logging_enabled: boolean;
-  logs: MQTTLogEntry[];
+export interface MQTTRecordingResponse {
+  recording: boolean;
+  size_bytes: number;
+  entries: MQTTLogEntry[];
 }
 
 // K-Profile types
@@ -5957,21 +5960,22 @@ export const api = {
       { method: 'POST' },
     ),
 
-  // MQTT Debug Logging
-  enableMQTTLogging: (printerId: number) =>
-    request<{ logging_enabled: boolean }>(`/printers/${printerId}/logging/enable`, {
+  // MQTT recording. One mechanism: the recorder writes a file and this reads it
+  // back. The in-memory buffer this replaced held a hundred messages and saw
+  // only the commands that went through send_command.
+  setMQTTRecording: (printerId: number, enabled: boolean) =>
+    request<{ enabled: boolean; file: string }>(`/printers/${printerId}/mqtt-recording`, {
       method: 'POST',
+      body: JSON.stringify({ enabled }),
     }),
-  disableMQTTLogging: (printerId: number) =>
-    request<{ logging_enabled: boolean }>(`/printers/${printerId}/logging/disable`, {
-      method: 'POST',
-    }),
-  getMQTTLogs: (printerId: number) =>
-    request<MQTTLogsResponse>(`/printers/${printerId}/logging`),
-  clearMQTTLogs: (printerId: number) =>
-    request<{ status: string }>(`/printers/${printerId}/logging`, {
+  getMQTTRecording: (printerId: number, limit = 500) =>
+    request<MQTTRecordingResponse>(`/printers/${printerId}/mqtt-recording?limit=${limit}`),
+  clearMQTTRecording: (printerId: number) =>
+    request<{ removed: number }>(`/printers/${printerId}/mqtt-recording`, {
       method: 'DELETE',
     }),
+  mqttRecordingDownloadUrl: (printerId: number) =>
+    `/api/v1/printers/${printerId}/mqtt-recording/download`,
 
   // Printer File Manager
   // ``storage`` is optional everywhere: omitted, the backend answers with the

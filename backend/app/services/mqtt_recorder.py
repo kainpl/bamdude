@@ -30,6 +30,7 @@ that offers it says what it adds.
 
 from __future__ import annotations
 
+import json
 import logging
 import queue
 import threading
@@ -43,6 +44,10 @@ logger = logging.getLogger(__name__)
 # failure here: a recorder must never become backpressure on the client that
 # feeds every other feature.
 _QUEUE_MAX = 10_000
+# How much of the tail to read for a screenful. Generous enough that a few
+# hundred lines always fit, small enough that the size of the file does not
+# matter to whoever is reading it.
+_TAIL_BYTES = 1_000_000
 
 
 class MqttRecorder:
@@ -170,10 +175,99 @@ class MqttRecorder:
         return self._files.get(printer_id)
 
     def size_bytes(self, printer_id: int) -> int:
+        """Size of the RUNNING recording, or 0.
+
+        ⚠️ Deliberately not the file on disk: the printer card shows this beside
+        the badge, and a number next to no badge would read as a recording that
+        is still going. Whoever wants the stored file's size asks
+        :meth:`size_on_disk`.
+        """
         path = self._files.get(printer_id)
         if path is None or not path.exists():
             return 0
         return path.stat().st_size
+
+    def size_on_disk(self, printer_id: int) -> int:
+        """Total size of this printer's stored recordings, running or not."""
+        total = 0
+        for path in self.paths_for(printer_id):
+            try:
+                total += path.stat().st_size
+            except OSError:
+                continue
+        return total
+
+    def paths_for(self, printer_id: int) -> list[Path]:
+        """Every recording on disk for this printer, oldest first.
+
+        ⚠️ Not ``file_for``: that only knows a path while the recording runs, and
+        a stopped recording is exactly the one somebody wants to read. Lookup
+        goes by the naming convention instead, which is why the printer id is
+        the last segment of the name.
+        """
+        directory = self.log_dir / "mqtt"
+        if not directory.is_dir():
+            return []
+        return sorted(directory.glob(f"mqtt-*-{printer_id}.log"))
+
+    def tail(self, printer_id: int, limit: int = 500) -> list[dict]:
+        """The last ``limit`` recorded messages, newest last.
+
+        ⚠️ Reads only the end of the file. Nothing caps a recording's size, so
+        loading it whole to show a screenful is how the debugging aid becomes
+        the thing that falls over.
+
+        A line whose payload is not JSON comes back as the raw string rather
+        than being dropped — a truncated last line (the writer appends while
+        this reads) must not blank the view.
+        """
+        paths = self.paths_for(printer_id)
+        if not paths:
+            return []
+        path = paths[-1]
+        try:
+            with path.open("rb") as fh:
+                fh.seek(0, 2)
+                size = fh.tell()
+                fh.seek(max(0, size - _TAIL_BYTES))
+                chunk = fh.read()
+        except OSError:
+            return []
+
+        text = chunk.decode("utf-8", "replace")
+        if len(chunk) == _TAIL_BYTES and "\n" in text:
+            # The window almost certainly cut the first line in half.
+            text = text.split("\n", 1)[1]
+
+        entries: list[dict] = []
+        for line in text.splitlines()[-limit:]:
+            parts = line.split("\t", 3)
+            if len(parts) != 4:
+                continue
+            stamp, direction, topic, raw = parts
+            try:
+                payload = json.loads(raw)
+            except ValueError:
+                payload = raw
+            entries.append({"timestamp": stamp, "direction": direction, "topic": topic, "payload": payload})
+        return entries
+
+    def delete(self, printer_id: int) -> int:
+        """Remove this printer's recordings; returns how many files went.
+
+        ⚠️ Does NOT stop an active recording — clearing means "start the
+        transcript over", and the badge stays on. Stopping here would leave the
+        badge lying about what is happening. The writer recreates the file on
+        its next append.
+        """
+        removed = 0
+        for path in self.paths_for(printer_id):
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                logger.debug("could not remove recording %s", path, exc_info=True)
+        return removed
 
     def recording_printer_ids(self) -> list[int]:
         return sorted(self._handlers)

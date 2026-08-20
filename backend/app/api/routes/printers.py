@@ -522,6 +522,85 @@ async def set_mqtt_recording(
     return {"enabled": printer.mqtt_recording, "file": str(mqtt_recorder.file_for(printer_id) or "")}
 
 
+@router.get("/{printer_id}/mqtt-recording")
+async def get_mqtt_recording(
+    printer_id: int,
+    limit: int = 500,
+    _=RequirePermission(Permission.PRINTERS_READ),
+    db: AsyncSession = Depends(get_db),
+):
+    """The tail of this printer's recording, for the debug dialog.
+
+    ⚠️ Reads the FILE, not an in-memory buffer. The buffer this replaced held a
+    hundred messages, so the beginning of anything interesting had already
+    scrolled out of it by the time somebody looked — and it saw only the
+    commands that went through ``send_command``, which is not the path the
+    commands worth reading take.
+
+    Works on a stopped recording too: the file is the artefact, and reading one
+    back is most of why it is written.
+    """
+    from backend.app.services.mqtt_recorder import mqtt_recorder
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(404, "Printer not found")
+
+    return {
+        "recording": mqtt_recorder.is_recording(printer_id),
+        "size_bytes": mqtt_recorder.size_on_disk(printer_id),
+        "entries": mqtt_recorder.tail(printer_id, limit=max(1, min(limit, 5000))),
+    }
+
+
+@router.get("/{printer_id}/mqtt-recording/download")
+async def download_mqtt_recording(
+    printer_id: int,
+    _=RequirePermission(Permission.PRINTERS_READ),
+    db: AsyncSession = Depends(get_db),
+):
+    """The recording itself, for keeping or sending on.
+
+    Raw, exactly as the support bundle carries it: it is the operator's own copy
+    of their own farm, and redacting the serial would make two machines
+    impossible to tell apart.
+    """
+    from fastapi.responses import FileResponse
+
+    from backend.app.services.mqtt_recorder import mqtt_recorder
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(404, "Printer not found")
+
+    paths = mqtt_recorder.paths_for(printer_id)
+    if not paths:
+        raise HTTPException(404, "No recording for this printer")
+    path = paths[-1]
+    return FileResponse(path, media_type="text/plain", filename=path.name)
+
+
+@router.delete("/{printer_id}/mqtt-recording")
+async def clear_mqtt_recording(
+    printer_id: int,
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Throw the transcript away and start over.
+
+    ⚠️ Does not stop a running recording — the badge stays on and the writer
+    starts a fresh file on its next message. Stopping here would leave the badge
+    saying something is being recorded when it is not.
+    """
+    from backend.app.services.mqtt_recorder import mqtt_recorder
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(404, "Printer not found")
+
+    return {"removed": mqtt_recorder.delete(printer_id)}
+
+
 @router.post("/{printer_id}/archive")
 async def archive_printer(
     printer_id: int,
@@ -2322,92 +2401,6 @@ async def get_printer_storage(
     storage_info = await get_storage_info_async(printer.ip_address, printer.access_code, printer_model=printer.model)
 
     return storage_info or {"used_bytes": None, "free_bytes": None}
-
-
-# ============================================
-# MQTT Debug Logging Endpoints
-# ============================================
-
-
-@router.post("/{printer_id}/logging/enable")
-async def enable_mqtt_logging(
-    printer_id: int,
-    _=RequirePermission(Permission.PRINTERS_CONTROL),
-    db: AsyncSession = Depends(get_db),
-):
-    """Enable MQTT message logging for a printer."""
-    result = await db.execute(select(Printer).where(Printer.id == printer_id))
-    printer = result.scalar_one_or_none()
-    if not printer:
-        raise HTTPException(404, "Printer not found")
-
-    success = printer_manager.enable_logging(printer_id, True)
-    if not success:
-        raise HTTPException(400, "Printer not connected")
-
-    return {"logging_enabled": True}
-
-
-@router.post("/{printer_id}/logging/disable")
-async def disable_mqtt_logging(
-    printer_id: int,
-    _=RequirePermission(Permission.PRINTERS_CONTROL),
-    db: AsyncSession = Depends(get_db),
-):
-    """Disable MQTT message logging for a printer."""
-    result = await db.execute(select(Printer).where(Printer.id == printer_id))
-    printer = result.scalar_one_or_none()
-    if not printer:
-        raise HTTPException(404, "Printer not found")
-
-    success = printer_manager.enable_logging(printer_id, False)
-    if not success:
-        raise HTTPException(400, "Printer not connected")
-
-    return {"logging_enabled": False}
-
-
-@router.get("/{printer_id}/logging")
-async def get_mqtt_logs(
-    printer_id: int,
-    _=RequirePermission(Permission.PRINTERS_READ),
-    db: AsyncSession = Depends(get_db),
-):
-    """Get MQTT message logs for a printer."""
-    result = await db.execute(select(Printer).where(Printer.id == printer_id))
-    printer = result.scalar_one_or_none()
-    if not printer:
-        raise HTTPException(404, "Printer not found")
-
-    logs = printer_manager.get_logs(printer_id)
-    return {
-        "logging_enabled": printer_manager.is_logging_enabled(printer_id),
-        "logs": [
-            {
-                "timestamp": log.timestamp,
-                "topic": log.topic,
-                "direction": log.direction,
-                "payload": log.payload,
-            }
-            for log in logs
-        ],
-    }
-
-
-@router.delete("/{printer_id}/logging")
-async def clear_mqtt_logs(
-    printer_id: int,
-    _=RequirePermission(Permission.PRINTERS_CONTROL),
-    db: AsyncSession = Depends(get_db),
-):
-    """Clear MQTT message logs for a printer."""
-    result = await db.execute(select(Printer).where(Printer.id == printer_id))
-    printer = result.scalar_one_or_none()
-    if not printer:
-        raise HTTPException(404, "Printer not found")
-
-    printer_manager.clear_logs(printer_id)
-    return {"status": "cleared"}
 
 
 # ============================================

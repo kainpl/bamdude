@@ -3034,6 +3034,7 @@ export default {
     startLogging: 'Start Logging',
     stopLogging: 'Stop Logging',
     clearLog: 'Clear Log',
+    download: 'Download',
     all: 'All'
   },
 

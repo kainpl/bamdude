@@ -3052,6 +3052,7 @@ export default {
     startLogging: 'Почати запис',
     stopLogging: 'Зупинити запис',
     clearLog: 'Очистити журнал',
+    download: 'Завантажити',
     all: 'Усі'
   },
 

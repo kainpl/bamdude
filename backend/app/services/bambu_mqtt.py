@@ -14,7 +14,6 @@ import os
 import ssl
 import threading
 import time
-from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -597,16 +596,6 @@ def _merge_vt_tray(existing: object, incoming: list) -> list:
             combined[field_name] = value
         merged.append(combined)
     return merged
-
-
-@dataclass
-class MQTTLogEntry:
-    """Log entry for MQTT message debugging."""
-
-    timestamp: str
-    topic: str
-    direction: str  # "in" or "out"
-    payload: dict
 
 
 # BS ``HMSMessageLevel`` (DeviceCore/DevHMS.h). **Lower is worse**, and 0 means
@@ -1842,8 +1831,6 @@ class BambuMQTTClient:
         self._last_valid_layer_num: int = 0  # Last non-zero layer (firmware resets on cancel)
         self._startup_reconcile_done: bool = False  # one-shot guard for reconcile_printer_prints
         self._is_dual_nozzle: bool = False  # Set when device.extruder.info has >= 2 entries
-        self._message_log: deque[MQTTLogEntry] = deque(maxlen=100)
-        self._logging_enabled: bool = False
         self._last_message_time: float = 0.0  # Track when we last received a message
         # Count of report-topic messages received since the last (re)connect.
         # Lets check_staleness() distinguish "printer never sent a status
@@ -2411,15 +2398,6 @@ class BambuMQTTClient:
                 # printer telemetry; anything we send lands twice, once on
                 # publish and once on the broker's echo, and that pair is itself
                 # evidence the command reached the broker.
-                if self._logging_enabled:
-                    self._message_log.append(
-                        MQTTLogEntry(
-                            timestamp=datetime.now(timezone.utc).isoformat(),
-                            topic=msg.topic,
-                            direction="out",
-                            payload=payload,
-                        )
-                    )
                 self._handle_request_message(payload)
                 return
 
@@ -2428,16 +2406,6 @@ class BambuMQTTClient:
             if msg.topic == self.topic_subscribe:
                 self._report_messages_since_connect += 1
 
-            # Log message if logging is enabled
-            if self._logging_enabled:
-                self._message_log.append(
-                    MQTTLogEntry(
-                        timestamp=datetime.now(timezone.utc).isoformat(),
-                        topic=msg.topic,
-                        direction="in",
-                        payload=payload,
-                    )
-                )
             self._process_message(payload)
         except json.JSONDecodeError:
             pass  # Ignore non-JSON MQTT messages (e.g. binary or malformed payloads)
@@ -7431,16 +7399,6 @@ class BambuMQTTClient:
     def send_command(self, command: dict):
         """Send a command to the printer."""
         if self._client and self.state.connected:
-            # Log outgoing message if logging is enabled
-            if self._logging_enabled:
-                self._message_log.append(
-                    MQTTLogEntry(
-                        timestamp=datetime.now(timezone.utc).isoformat(),
-                        topic=self.topic_publish,
-                        direction="out",
-                        payload=command,
-                    )
-                )
             # Returned so callers can pair our sequence id with paho's mid; see
             # send_gcode. Additive — every existing caller ignores it.
             return self._client.publish(self.topic_publish, json.dumps(command), qos=1)
@@ -7522,24 +7480,6 @@ class BambuMQTTClient:
         except Exception:
             logger.exception("[%s] publish_raw failed for topic=%s", self.serial_number, topic)
             return False
-
-    def enable_logging(self, enabled: bool = True):
-        """Enable or disable MQTT message logging."""
-        self._logging_enabled = enabled
-        # Don't clear logs when stopping - user can manually clear with clear_logs()
-
-    def get_logs(self) -> list[MQTTLogEntry]:
-        """Get all logged MQTT messages."""
-        return list(self._message_log)
-
-    def clear_logs(self):
-        """Clear the message log."""
-        self._message_log.clear()
-
-    @property
-    def logging_enabled(self) -> bool:
-        """Check if logging is enabled."""
-        return self._logging_enabled
 
     def send_drying_command(
         self, ams_id: int, temp: int, duration: int, mode: int = 1, filament: str = "", rotate_tray: bool = False

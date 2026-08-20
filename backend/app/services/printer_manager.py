@@ -15,7 +15,6 @@ from backend.app.schemas.printer import AirductFan
 from backend.app.services.bambu_mqtt import (
     FAN_CTRL,
     BambuMQTTClient,
-    MQTTLogEntry,
     PrinterState,
     airduct_fan_control,
     airduct_mode_effective,
@@ -1381,32 +1380,6 @@ class PrinterManager:
             elapsed += check_interval
 
         logger.warning("Printer %s cooldown timeout after %ss", printer_id, timeout)
-        return False
-
-    def enable_logging(self, printer_id: int, enabled: bool = True) -> bool:
-        """Enable or disable MQTT logging for a printer."""
-        if printer_id in self._clients:
-            self._clients[printer_id].enable_logging(enabled)
-            return True
-        return False
-
-    def get_logs(self, printer_id: int) -> list[MQTTLogEntry]:
-        """Get MQTT logs for a printer."""
-        if printer_id in self._clients:
-            return self._clients[printer_id].get_logs()
-        return []
-
-    def clear_logs(self, printer_id: int) -> bool:
-        """Clear MQTT logs for a printer."""
-        if printer_id in self._clients:
-            self._clients[printer_id].clear_logs()
-            return True
-        return False
-
-    def is_logging_enabled(self, printer_id: int) -> bool:
-        """Check if logging is enabled for a printer."""
-        if printer_id in self._clients:
-            return self._clients[printer_id].logging_enabled
         return False
 
     def send_drying_command(

@@ -532,67 +532,6 @@ class TestPrinterManager:
         assert manager.is_print_active(999) is False
 
     # ========================================================================
-    # Tests for logging methods
-    # ========================================================================
-
-    def test_enable_logging_calls_client(self, manager, mock_client):
-        """Verify enable_logging calls client method."""
-        manager._clients[1] = mock_client
-
-        result = manager.enable_logging(1, True)
-
-        mock_client.enable_logging.assert_called_once_with(True)
-        assert result is True
-
-    def test_enable_logging_returns_false_for_unknown(self, manager):
-        """Verify enable_logging returns False for unknown printer."""
-        result = manager.enable_logging(999, True)
-        assert result is False
-
-    def test_get_logs_returns_logs(self, manager, mock_client):
-        """Verify get_logs returns client logs."""
-        mock_logs = [MagicMock(), MagicMock()]
-        mock_client.get_logs.return_value = mock_logs
-        manager._clients[1] = mock_client
-
-        result = manager.get_logs(1)
-
-        assert result == mock_logs
-
-    def test_get_logs_returns_empty_for_unknown(self, manager):
-        """Verify get_logs returns empty list for unknown printer."""
-        result = manager.get_logs(999)
-        assert result == []
-
-    def test_clear_logs_calls_client(self, manager, mock_client):
-        """Verify clear_logs calls client method."""
-        manager._clients[1] = mock_client
-
-        result = manager.clear_logs(1)
-
-        mock_client.clear_logs.assert_called_once()
-        assert result is True
-
-    def test_clear_logs_returns_false_for_unknown(self, manager):
-        """Verify clear_logs returns False for unknown printer."""
-        result = manager.clear_logs(999)
-        assert result is False
-
-    def test_is_logging_enabled_returns_status(self, manager, mock_client):
-        """Verify is_logging_enabled returns client status."""
-        mock_client.logging_enabled = True
-        manager._clients[1] = mock_client
-
-        result = manager.is_logging_enabled(1)
-
-        assert result is True
-
-    def test_is_logging_enabled_returns_false_for_unknown(self, manager):
-        """Verify is_logging_enabled returns False for unknown printer."""
-        result = manager.is_logging_enabled(999)
-        assert result is False
-
-    # ========================================================================
     # Tests for request_status_update
     # ========================================================================
 

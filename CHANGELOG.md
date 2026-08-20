@@ -82,6 +82,12 @@
 
 - **Telegram can now aim a job at a room, not just at a printer model.** "Any P1S" is a useful answer on a one-room farm and a poor one when the P1S you meant is upstairs. Choosing a model in the bot now offers the places that actually hold one, and the job is routed there — the same location filter the print dialog has had, reaching the shelves inside a workshop you pick. The step is skipped entirely when there is nothing to choose between, so a farm with no locations set up sees no extra tap.
 
+### Changed
+
+- **The MQTT debug log now shows everything, keeps it, and lets you take it away.** It read a rolling buffer of the last hundred messages held in memory, so on a printer that reports every second the beginning of anything interesting had already scrolled out before you opened the dialog — and it never showed BamDude's own commands, only the handful sent through one particular code path. It now reads the recording file instead: both sides of the conversation, nothing dropped, and still there after a restart. The dialog gained a download button and shows how large the recording has grown, and Clear now throws the file away rather than a buffer. Recording is the same switch as before, in the printer card's menu.
+
+    ⚠️ **A recording is not capped and now outlives the dialog.** That is the point — it runs until stopped so an intermittent fault can be caught unattended — but it does mean a session you forget about keeps writing. The size beside the download button is there to make that visible.
+
 ### Fixed
 
 - **Assigning a spool to the external holder no longer makes it look unassigned.** The card kept showing the previous spool, the spool itself appeared unlinked, and only reconfiguring the slot by hand put it right — while the slicer showed the new spool correctly the whole time, which is the clue to what was happening. Nothing was wrong on the printer: it confirmed the change and reported the slot in full. What followed was a one-line update carrying just the new colour and no slot number — sent, as it turns out, in reply to BamDude's own calibration command a heartbeat later. With no slot number to match it to, BamDude replaced everything it knew about that slot with that single line, losing the material, the filament and the slot number itself. Losing the number is what made it stick: from then on nothing could be matched, so every later update replaced the slot again, and only a full re-read of the printer's state could recover — which is exactly what reconfiguring by hand did.
