@@ -52,6 +52,7 @@ class MqttRecorder:
         self._log_dir = log_dir
         self._manager = printer_manager
         self._handlers: dict[int, object] = {}
+        self._publish_handlers: dict[int, object] = {}
         # The client each handler is attached to, so a rebuilt session is
         # detected rather than assumed away. See start().
         self._clients: dict[int, object] = {}
@@ -103,6 +104,7 @@ class MqttRecorder:
             # The session was rebuilt underneath us. Drop the dead handle and
             # re-register on the live client, keeping the same file.
             self._handlers.pop(printer_id, None)
+            self._publish_handlers.pop(printer_id, None)
             logger.info("MQTT recording re-attached for printer %s after its session was rebuilt", printer_id)
 
         # Same file across a re-attach: a rebuilt session is the same recording
@@ -117,20 +119,33 @@ class MqttRecorder:
         def _handler(topic: str, payload: bytes, _pid=printer_id) -> None:
             # paho's network thread. Enqueue and return; never write here.
             try:
-                self._queue.put_nowait((_pid, time.time(), topic, payload))
+                self._queue.put_nowait((_pid, time.time(), "in", topic, payload))
+            except queue.Full:
+                pass
+
+        def _sent(topic: str, payload: bytes, _pid=printer_id) -> None:
+            try:
+                self._queue.put_nowait((_pid, time.time(), "out", topic, payload))
             except queue.Full:
                 pass
 
         self._files[printer_id] = path
         self._handlers[printer_id] = _handler
+        self._publish_handlers[printer_id] = _sent
         self._clients[printer_id] = client
         client.register_raw_message_handler(_handler)
+        # Both halves, or the transcript cannot be read. The case that proved it:
+        # an external-slot assignment the printer answered "success", then wiped
+        # with a delta one message later - diagnosing it needed what we asked for
+        # as well as what came back.
+        client.register_raw_publish_handler(_sent)
         self._ensure_writer()
         logger.info("MQTT recording started for printer %s -> %s", printer_id, path)
         return path
 
     def stop(self, printer_id: int) -> None:
         handler = self._handlers.pop(printer_id, None)
+        sent = self._publish_handlers.pop(printer_id, None)
         if handler is None:
             return
         client = self._get_client(printer_id)
@@ -139,6 +154,11 @@ class MqttRecorder:
                 client.unregister_raw_message_handler(handler)
             except Exception:
                 logger.debug("unregister failed for printer %s", printer_id, exc_info=True)
+            if sent is not None:
+                try:
+                    client.unregister_raw_publish_handler(sent)
+                except Exception:
+                    logger.debug("publish unregister failed for printer %s", printer_id, exc_info=True)
         self._files.pop(printer_id, None)
         self._clients.pop(printer_id, None)
         logger.info("MQTT recording stopped for printer %s", printer_id)
@@ -171,7 +191,7 @@ class MqttRecorder:
                 time.sleep(0.01)
                 continue
             try:
-                printer_id, ts, topic, payload = self._queue.get(timeout=0.2)
+                printer_id, ts, direction, topic, payload = self._queue.get(timeout=0.2)
             except queue.Empty:
                 continue
             path = self._files.get(printer_id)
@@ -183,7 +203,7 @@ class MqttRecorder:
                 stamp = datetime.fromtimestamp(ts, timezone.utc).isoformat()
                 line = payload.decode("utf-8", "replace")
                 with path.open("a", encoding="utf-8") as fh:
-                    fh.write(f"{stamp}\t{topic}\t{line}\n")
+                    fh.write(f"{stamp}\t{direction}\t{topic}\t{line}\n")
             except Exception:
                 logger.debug("MQTT recorder write failed for printer %s", printer_id, exc_info=True)
 

@@ -1856,6 +1856,7 @@ class BambuMQTTClient:
         # printer's pushes verbatim to slicers connected to a virtual printer).
         # Handlers receive (topic, payload_bytes) before JSON parsing.
         self._raw_message_handlers: list[Callable[[str, bytes], None]] = []
+        self._raw_publish_handlers: list[Callable[[str, bytes], None]] = []
         self._disconnection_event: threading.Event | None = None
         self._previous_ams_hash: str | None = None  # Track AMS changes
         # Track external-spool identity changes separately: the AMS hash above is
@@ -6681,6 +6682,7 @@ class BambuMQTTClient:
         # all need QoS=1 for reliability). The 0.4.x watchdog reconnect
         # stays as defence-in-depth.
         self._client.max_inflight_messages_set(1000)
+        self._tee_publishes(self._client)
 
         self._client.username_pw_set("bblp", self.access_code)
         self._client.on_connect = self._on_connect
@@ -7443,6 +7445,50 @@ class BambuMQTTClient:
             # send_gcode. Additive — every existing caller ignores it.
             return self._client.publish(self.topic_publish, json.dumps(command), qos=1)
         return None
+
+    def _tee_publishes(self, paho_client) -> None:
+        """Fan every outgoing publish out to ``_raw_publish_handlers``.
+
+        ⚠️ **Wrapped here, at the one place the paho client is built, and not at
+        the call sites.** This class publishes from 59 of them, and the one
+        method that did carry an outgoing hook — ``send_command`` — is not the
+        one commands like ``ams_filament_setting`` go through, which is why the
+        old in-memory debug buffer recorded a transcript missing exactly the
+        messages worth reading.
+
+        A handler must never be able to stop a command reaching the printer, so
+        the fan-out is wrapped and the publish happens regardless.
+        """
+        original = paho_client.publish
+
+        def _publish(topic, payload=None, qos=0, retain=False, properties=None):
+            if self._raw_publish_handlers and payload is not None:
+                raw = payload.encode("utf-8") if isinstance(payload, str) else payload
+                for handler in list(self._raw_publish_handlers):
+                    try:
+                        handler(topic, raw)
+                    except Exception:
+                        logger.debug("[%s] raw-publish handler crashed", self.serial_number, exc_info=True)
+            return original(topic, payload, qos, retain, properties)
+
+        paho_client.publish = _publish
+
+    def register_raw_publish_handler(self, handler: Callable[[str, bytes], None]) -> None:
+        """Register a handler invoked for every outgoing MQTT publish.
+
+        Mirrors :meth:`register_raw_message_handler` for the other direction, so
+        a recording holds both halves of the conversation. Handlers run on the
+        caller's thread and must not block; exceptions are caught.
+        """
+        if handler not in self._raw_publish_handlers:
+            self._raw_publish_handlers.append(handler)
+
+    def unregister_raw_publish_handler(self, handler: Callable[[str, bytes], None]) -> None:
+        """Unregister a previously-registered raw-publish handler."""
+        try:
+            self._raw_publish_handlers.remove(handler)
+        except ValueError:
+            pass
 
     def register_raw_message_handler(self, handler: Callable[[str, bytes], None]) -> None:
         """Register a handler invoked for every incoming MQTT message.

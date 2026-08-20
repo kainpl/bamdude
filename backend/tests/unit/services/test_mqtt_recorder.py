@@ -24,6 +24,7 @@ class _Client:
 
     def __init__(self):
         self.handlers = []
+        self.publish_handlers = []
         self.connect_calls = 0
 
     def register_raw_message_handler(self, h):
@@ -31,6 +32,16 @@ class _Client:
 
     def unregister_raw_message_handler(self, h):
         self.handlers.remove(h)
+
+    def register_raw_publish_handler(self, h):
+        self.publish_handlers.append(h)
+
+    def unregister_raw_publish_handler(self, h):
+        self.publish_handlers.remove(h)
+
+    def publish(self, topic, payload):
+        for h in list(self.publish_handlers):
+            h(topic, json.dumps(payload).encode())
 
     def connect(self, *a, **kw):
         self.connect_calls += 1
@@ -196,3 +207,47 @@ def test_re_attaching_does_not_double_register(recorder):
 
     assert len(client.handlers) == 1
     r.stop(3)
+
+
+class TestBothHalvesOfTheConversation:
+    """⚠️ A recording that holds only what the printer said is half a transcript.
+
+    The case that proved it: an external-slot spool assignment where the printer
+    replied ``result: "success"`` and then, one message later, sent a delta that
+    wiped our cache. Reading it needed BOTH sides — what we asked for and what
+    came back — and until now the file carried only the second.
+
+    Outgoing is teed at the paho client, once, because
+    ``BambuMQTTClient`` publishes from 59 places and ``send_command`` is only
+    one of them; the old in-memory debug buffer hooked that one method and so
+    missed every command that mattered here.
+    """
+
+    def test_a_command_we_send_lands_in_the_file(self, recorder):
+        rec, client = recorder
+        path = rec.start(7)
+
+        client.publish("device/X/request", {"print": {"command": "ams_filament_setting"}})
+
+        assert _wait_for(path, lambda t: "ams_filament_setting" in t)
+
+    def test_each_line_says_which_way_it_went(self, recorder):
+        rec, client = recorder
+        path = rec.start(7)
+
+        client.publish("device/X/request", {"print": {"command": "extrusion_cali_sel"}})
+        client.emit("device/X/report", {"print": {"command": "push_status"}})
+
+        assert _wait_for(path, lambda t: "push_status" in t and "extrusion_cali_sel" in t)
+        rows = [ln.split("\t") for ln in path.read_text(encoding="utf-8").splitlines() if ln]
+        directions = {r[1] for r in rows}
+        assert directions == {"out", "in"}, "a transcript that cannot tell the sides apart is not readable"
+        sent = next(r for r in rows if "extrusion_cali_sel" in r[3])
+        assert sent[1] == "out"
+
+    def test_stopping_detaches_the_outgoing_side_too(self, recorder):
+        rec, client = recorder
+        rec.start(7)
+        rec.stop(7)
+
+        assert client.publish_handlers == [], "a stopped recording kept teeing our commands"
