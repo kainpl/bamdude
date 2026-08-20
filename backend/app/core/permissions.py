@@ -106,6 +106,8 @@ class Permission(StrEnum):
     # resource from smart_plugs on purpose: a sensor has no on/off, no energy
     # and no printer binding, so "smart_plugs:delete" to remove one would be
     # borrowing a name that means something else.
+    LABEL_TEMPLATES_READ = "label_templates:read"
+    LABEL_TEMPLATES_WRITE = "label_templates:write"
     SMART_SENSORS_READ = "smart_sensors:read"
     SMART_SENSORS_CREATE = "smart_sensors:create"
     SMART_SENSORS_UPDATE = "smart_sensors:update"
@@ -286,6 +288,10 @@ PERMISSION_CATEGORIES = {
         Permission.SMART_SENSORS_CREATE,
         Permission.SMART_SENSORS_UPDATE,
         Permission.SMART_SENSORS_DELETE,
+    ],
+    "Label Templates": [
+        Permission.LABEL_TEMPLATES_READ,
+        Permission.LABEL_TEMPLATES_WRITE,
     ],
     "Camera": [
         Permission.CAMERA_VIEW,
@@ -491,6 +497,9 @@ DEFAULT_GROUPS = {
             # Settings - read only
             Permission.SETTINGS_READ.value,
             # WebSocket
+            # Label templates — design the labels, and print them
+            Permission.LABEL_TEMPLATES_READ.value,
+            Permission.LABEL_TEMPLATES_WRITE.value,
             Permission.WEBSOCKET_CONNECT.value,
         ],
         "is_system": True,
@@ -528,6 +537,7 @@ DEFAULT_GROUPS = {
             Permission.STATS_READ.value,
             Permission.SYSTEM_READ.value,
             Permission.SETTINGS_READ.value,
+            Permission.LABEL_TEMPLATES_READ.value,
             Permission.WEBSOCKET_CONNECT.value,
         ],
         "is_system": True,

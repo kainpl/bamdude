@@ -238,6 +238,7 @@ async def init_db():
         git_backup,
         group,
         kprofile_note,
+        label_template,
         library,
         library_file_makerworld_meta,
         library_file_note,

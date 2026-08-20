@@ -1063,6 +1063,7 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     Permission.SMART_PLUGS_READ: "can_read_status",
     # A sensor reading is status, exactly as a plug reading is — so it rides
     # the scope a key already has rather than growing a column of its own.
+    Permission.LABEL_TEMPLATES_READ: "can_read_status",
     Permission.SMART_SENSORS_READ: "can_read_status",
     Permission.CAMERA_VIEW: "can_read_status",
     Permission.MAINTENANCE_READ: "can_read_status",
@@ -1180,6 +1181,10 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
 # load-bearing check.
 _APIKEY_DENIED_PERMISSIONS: frozenset[Permission] = frozenset(
     {
+        # ⚠️ A group permission, never a key one. There is no automation
+        # reason to redesign a label, and the consequence of a bad one shows
+        # up on every label printed afterwards.
+        Permission.LABEL_TEMPLATES_WRITE,
         # Settings administration (cred storage; rewriting these reaches SMTP/LDAP/MQTT).
         Permission.SETTINGS_UPDATE,
         Permission.SETTINGS_BACKUP,
