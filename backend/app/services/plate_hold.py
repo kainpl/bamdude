@@ -53,6 +53,58 @@ async def should_hold_for_plate_clear(db: AsyncSession, printer_id: int, *, plat
     return bool(require)
 
 
+async def clean_up_finished_row(
+    db: AsyncSession, queue_item: PrintQueueItem, *, queue_status: str, plate_auto_cleared: bool
+) -> bool:
+    """Delete a finished queue row, unless somebody is about to be asked about it.
+
+    Returns whether the row was deleted.
+
+    Completed rows used to go the instant the print ended — they live on through
+    their archive, and the queue counters are archive-backed. But a printer that
+    confirms its plate now offers two answers, Clear and Repeat, and Repeat
+    re-arms this very row. So where a gate will arm, the row waits.
+
+    ⚠️ Failed / cancelled / skipped are untouched, so the operator can still
+    retry them from the queue.
+
+    ⚠️ **Lives here, not in the live completion handler, because there are TWO
+    paths that finish a row and only one of them used to tidy up.**
+    ``on_print_complete`` advances rows it finds in ``printing``;
+    ``print_reconciliation`` advances the row of an archive it closes. When the
+    sweep won the race the row was completed by one path and cleaned by neither
+    — the live handler then found nothing in ``printing`` and skipped its whole
+    block. Reported from a farm, thirty milliseconds apart in the log. The sweep
+    re-arms on every MQTT client recreation, so this is routine rather than
+    exotic, and during a network outage it is close to guaranteed.
+    """
+    from backend.app.services.queue_counters import detach_print_queue_refs
+
+    if queue_status != "completed" or queue_item.archive_id is None:
+        return False
+
+    # ⚠️ Looked up rather than read off ``queue_item.printer_id``: that is a
+    # convenience property that walks the ``queue`` relationship, and touching a
+    # lazy relationship here raises MissingGreenlet under the async session.
+    printer_id = await db.scalar(select(PrinterQueue.printer_id).where(PrinterQueue.id == queue_item.queue_id))
+    if printer_id is not None and await should_hold_for_plate_clear(
+        db, printer_id, plate_auto_cleared=plate_auto_cleared
+    ):
+        logger.info(
+            "Holding completed queue item %s — printer %s is waiting for a plate answer",
+            queue_item.id,
+            printer_id,
+        )
+        return False
+
+    item_id, archive_id, queue_id = queue_item.id, queue_item.archive_id, queue_item.queue_id
+    await detach_print_queue_refs(db, [item_id])
+    await db.delete(queue_item)
+    await db.commit()
+    logger.info("Auto-cleaned completed queue item %s (archive %s, queue %s)", item_id, archive_id, queue_id)
+    return True
+
+
 async def answer_by_clearing(db: AsyncSession, printer_id: int) -> int:
     """The operator took the part off: drop the row and let the queue move on.
 

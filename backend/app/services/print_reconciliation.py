@@ -367,6 +367,22 @@ async def _reconcile_complete_archive(
             await set_queue_idle(db, item.queue_id)
         await update_queue_counters(db, item.queue_id)
 
+        # ⚠️ Finishing a row is not the same as tidying it, and this path used
+        # to do only the first half. ``on_print_complete`` selects rows still in
+        # ``printing``, so once this has advanced one the live handler finds
+        # nothing and skips its whole block — auto-clean included. The row was
+        # then completed by one path and cleaned by neither. Reported from a
+        # farm: a swap printer left a finished row sitting in its queue.
+        #
+        # ⚠️ ``plate_auto_cleared=False``, deliberately: a recovered print's
+        # plate is physically still on the bed, which is the same reason the
+        # gate is armed a few lines below. A printer that confirms its plate
+        # therefore keeps the row and is asked about it, exactly as after a
+        # supervised print.
+        from backend.app.services.plate_hold import clean_up_finished_row
+
+        await clean_up_finished_row(db, item, queue_status=status, plate_auto_cleared=False)
+
     # Arm the plate-clear gate unconditionally — the recovered print's
     # plate is physically still on the bed after an unsupervised gap, so
     # the next job must wait for the operator's clear-plate confirmation.
