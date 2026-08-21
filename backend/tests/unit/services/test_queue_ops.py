@@ -10,6 +10,11 @@ import uuid
 import pytest
 from sqlalchemy import select
 
+# ⚠️ Side effect, not the name: Printer declares its PrinterLocation
+# relationship by string, and SQLAlchemy cannot resolve it unless this module
+# has been imported. Without it the file passes only when another test in the
+# run imported it first.
+import backend.app.models.printer_location  # noqa: F401
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
@@ -425,3 +430,97 @@ class TestSetStatusForBatch:
 
     async def test_empty_batch_returns_zero(self, db_session):
         assert await queue_ops.set_status_for_batch(db_session, "no-such-batch", "cancelled") == 0
+
+
+class TestACloneCarriesEveryPrintOption:
+    """⚠️ A hand-written copy list rots, and this one had.
+
+    ``_copy_item_fields`` listed 19 of the model's columns. Everything added
+    since — the tri-state calibration modes (m106), the preheat overrides
+    (m103), ``require_previous_success`` (m116), gcode injection, the H2C
+    nozzle mapping, the selected macros — was silently dropped, so a cloned or
+    retried job printed with different settings than the one it copied. Losing
+    settings quietly is worse than refusing to clone.
+
+    Behavioural on purpose: it sets every column, clones, and compares. A
+    column added tomorrow and forgotten fails here rather than on somebody's
+    printer.
+    """
+
+    # Set by the clone logic, or deliberately not carried over. Each entry is a
+    # decision, which is the point of listing them by hand.
+    NOT_COPIED = {
+        "id",  # identity
+        "created_at",
+        "queue_id",  # the clone's queue is chosen by the caller
+        "position",  # appended to the end
+        "batch_id",  # the caller decides sibling vs solo
+        "status",  # a clone starts pending
+        "started_at",  # lifecycle — this print has not run
+        "completed_at",
+        "error_message",
+        "waiting_reason",
+        "gate_acknowledged",
+        # ⚠️ The retry cap (m108) counts attempts at dispatching THIS row. A
+        # fresh row starts at zero, or a clone would inherit a spent budget.
+        "dispatch_attempts",
+        # ⚠️ The auto-queue partner belongs to the row that was routed. Copying
+        # it would give two queue items one router row, and deleting either
+        # would take the other's link with it.
+        "source_auto_item_id",
+        # ⚠️ Deliberately dropped, both of them. A clone is a normal print, not
+        # a second run of that calibration session: carrying the flag without
+        # the session breaks the completion hook that looks for one, and
+        # carrying both flips the same session twice.
+        "is_calibration",
+        "calibration_session_id",
+    }
+
+    def _distinctive(self, column):
+        """A value unlike any default, so a field that is not copied shows up."""
+        import datetime as _dt
+
+        from sqlalchemy import Boolean, DateTime, Integer
+
+        if isinstance(column.type, Boolean):
+            return not bool(column.default.arg) if column.default is not None else True
+        if isinstance(column.type, DateTime):
+            return _dt.datetime(2026, 8, 21, 12, 0)
+        if isinstance(column.type, Integer):
+            return 4242
+        return "sentinel"
+
+    def test_every_option_column_survives_a_clone(self):
+        src = PrintQueueItem()
+        columns = PrintQueueItem.__table__.columns
+        for column in columns:
+            setattr(src, column.key, self._distinctive(column))
+
+        clone = queue_ops._copy_item_fields(src, "batch-1", 7)
+
+        dropped = [
+            column.key
+            for column in columns
+            if column.key not in self.NOT_COPIED and getattr(clone, column.key) != getattr(src, column.key)
+        ]
+        assert dropped == [], (
+            "these columns are lost when a queue item is cloned or retried — "
+            "add them to _copy_item_fields, or to NOT_COPIED with the reason"
+        )
+
+    def test_the_lifecycle_fields_are_not_carried(self):
+        """The other half: a clone must not inherit the original's outcome."""
+        src = PrintQueueItem()
+        for column in PrintQueueItem.__table__.columns:
+            setattr(src, column.key, self._distinctive(column))
+
+        clone = queue_ops._copy_item_fields(src, None, 3)
+
+        assert clone.status == "pending"
+        assert clone.position == 3
+        assert clone.batch_id is None
+        assert clone.completed_at is None
+        assert clone.error_message is None
+        assert clone.dispatch_attempts in (0, None), "a clone must not inherit a spent retry budget"
+        assert clone.source_auto_item_id is None
+        assert clone.is_calibration in (False, None)
