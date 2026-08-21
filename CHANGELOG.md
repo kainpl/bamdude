@@ -108,6 +108,8 @@
 
     ⚠️ **A recording is not capped and now outlives the dialog.** That is the point — it runs until stopped so an intermittent fault can be caught unattended — but it does mean a session you forget about keeps writing. The size beside the download button is there to make that visible.
 
+- **The `:dev` image now tracks the latest pre-release instead of the latest commit.** It used to be rebuilt on every push, by a workflow that ran alongside the tests rather than after them — so the one image aimed at testers was the one image nobody checked, and a commit with failing tests published it anyway. It is now published together with each beta, and passes the same green-CI gate as a stable release. Anyone pinning `:dev` gets fewer updates and tested ones.
+
 ### Fixed
 
 - **Scanning a network folder no longer freezes the rest of BamDude.** Point the library at a NAS share and press Scan, and everything else could start failing with *database is locked* — dispatching a print, logging in, saving a setting. The scan held the database open from the first file to the last, and on a share of any size that is minutes; it also read every file on the thread that answers requests, so the browser lost its connection to BamDude while it ran and could not get it back.
@@ -144,7 +146,6 @@
 
 - **A spool with no brand no longer reads "· PLA".** Anywhere a naming template puts a separator between two fields — the Filaments list, the spool hover card, the label itself — a field that happens to be empty used to leave its separator behind, so a spool missing one value looked like a spool with broken data. The separator now goes with the value it was separating; a line where nothing is filled in disappears entirely rather than printing a lone dot. Punctuation inside a value is untouched: `PLA-CF` is still `PLA-CF`.
 
-
 - **A file sent with "Print now" is no longer overtaken by the queue.** Sending a file to a printer and then adding a second one to that printer's queue could start the second file instead, leaving the first never printed — but only while the first had not started yet. Nothing in that window recorded that the printer was already taken: the claim the queue reads was written when the printer *reported* the print, which is a good while after the file was sent, and the printer's own status reads idle the whole time it is receiving a file. A print now claims its printer the moment it is dispatched and holds it until it finishes, whether it was sent from BamDude, started from the printer's screen, or pushed straight from a slicer. That running print is also visible in the printer's queue for as long as it runs, and can be stopped from there.
 
 - **A print stage BamDude cannot name now leaves a trace in the log.** The stage table is maintained by hand and every new printer model adds to it, so a machine occasionally reports a number that is not in it and the card reads "Unknown stage (72)" — an H2C did exactly that. Stage changes were logged only in debug mode, off in normal running, so the only record it had happened was the card itself, and by the time anyone looked the printer had moved on. An unnamed stage is now logged once per number, with the model, the stage it came from and what the printer was doing — which is what naming it afterwards takes. Named stages log nothing new.
@@ -172,7 +173,6 @@
     **Deactivating a user now kills their keys.** Their credentials kept working at full authority, on every route including the webhook API. That API was also the way around the new check — it reaches its scopes by a different path — so it is checked there explicitly: the same key refused printer control on the normal route can no longer stop a print through the webhook.
 
 - **`/auth/me` told an API key it was an administrator.** It answered with a synthetic account: id 0, the admin role, and every permission in the system. None of it was true — a key cannot reach an administrative route at all — so a client building its interface from that response drew buttons that fail on use, and had no way to learn the id its own prints are filed under. It now reports the key's owner, and exactly the permissions that key can actually exercise. A key with no owner still gets an anonymous identity, minus the claim to be an admin.
-
 
 - **A slice that came back without the printer's start G-code is now refused instead of printed.** That block is where a Bambu printer's AMS load and its preparation-stage announcements live. Without it a job still dispatches, still heats the bed and still moves the toolhead — it just extrudes nothing, reports no stage, and sits at layer 0, which is indistinguishable from a print that has not started yet. Nothing downstream can tell those apart, so the check is on the bytes the slicer just handed back, and the error names the actual fix: rebuild the slicer sidecar image.
 
@@ -306,7 +306,6 @@
 
 - **Staggered start no longer lets the whole farm heat at once.** Clearing the plates on eleven printers set to "two at a time" started all eleven inside two seconds — enough to trip the mains. A printer that has just been sent a job still reports the *previous* print as finished for the eight to thirty seconds it takes to upload the file and begin, and the stagger was reading that as "this one is done" and handing the slot straight back. Each dispatch freed the slots the dispatches before it had taken, so the limit was never reached. The slot is now held until the printer is actually seen starting — and released as before once it does, or after three minutes if a print never begins.
 
-
 - **A job aimed at a printer model named the way Bambu names it no longer waits for ever.** Bambu's own files call a P1S "C12" and an X2D "N6", and those codes reach BamDude from the sliced file and from the API. The queue compared such a code against the printer list without translating it, matched nothing, and said "No active C12 printers eligible" — which reads like you named a machine you don't own. The translation now happens where the question is asked, so it holds for jobs created from the web, from Telegram and from the virtual printer alike.
 
 - **Filament is now charged to the spool that actually printed it.** When a spool runs out mid-print and the AMS switches to a backup slot, the printer starts reporting the *substitute* tray as the one in use. BamDude read that at the end of the print, so the whole job was deducted from the spool that only finished it, and the spool that ran dry was deducted nothing. It now believes the assignment the print was dispatched with, and splits the weight across the trays that fed it.
@@ -340,10 +339,6 @@
     The template now grants it, and the Virtual Printer's own diagnostic says so out loud: when a port below 1024 fails to open, it checks whether this service is even permitted to open one and tells you the line to add — for systemd or for Docker. It stays quiet when the ports are fine, on macOS and Windows where the permission does not exist, and on hosts that front those ports another way.
 
 - **The Windows installer can no longer be built from an untested commit.** Publishing a Docker image already refused unless CI was green for that exact commit, but the installer — the file people actually download from a release — skipped that check entirely. It now passes the same gate, which lives in one place instead of two so the two cannot drift apart.
-
-### Changed
-
-- **The `:dev` image now tracks the latest pre-release instead of the latest commit.** It used to be rebuilt on every push, by a workflow that ran alongside the tests rather than after them — so the one image aimed at testers was the one image nobody checked, and a commit with failing tests published it anyway. It is now published together with each beta, and passes the same green-CI gate as a stable release. Anyone pinning `:dev` gets fewer updates and tested ones.
 
 ## [0.5.4] - 2026-08-18
 
@@ -620,7 +615,6 @@ Image: `ghcr.io/kainpl/bamdude:0.5.3` / `kainpl/bamdude:0.5.3` (`:latest` tracks
 
 Elsewhere: a print that finished while BamDude was down now counts properly, a printer whose dispatch was interrupted hands itself back instead of sitting out for ever, and Obico's ML server can be one that asks for a token.
 
-
 ### Security
 
 - **Addresses that point at a cloud provider's metadata service are refused by name, not only by number.** Every address BamDude will fetch from — Home Assistant, Spoolman, the slicer services, Obico, ntfy, Bark, webhooks, and an SSO provider's issuer and icon — is checked before it is saved. That check already rejected the numeric forms of the metadata endpoints cloud servers expose to anything running on them, which is where an attacker would go looking for credentials. It did not reject the **names** for the same thing, so a URL written as `metadata.google.internal` went through where the equivalent IP did not. It no longer does. An address with no host in it at all — `https:///realms/main` — was likewise accepted as though it named a server, and is now refused.
@@ -810,7 +804,6 @@ Elsewhere: tags you create and badges BamDude assigns became one thing with one 
     **The fans are named the way your printer names them.** The same fan position is not the same fan on every model — on the P2S the second auxiliary fan is the **left** one, on the X2D it is the **right** one, and on the X2D it is even called something different in cooling and in heating mode. BamDude reads those names from the Bambu Studio printer definitions it already ships, so each machine gets its own correct labels instead of one guess applied to both. The existing Auxiliary and Chamber badges pick up the same treatment, so a P2S now says "Right Auxiliary" and not just "Auxiliary".
 
     A fan that the current air-duct mode holds off — the P2S's left fan in heating mode, for instance — is shown but not offered as a control, because the printer accepts the command and ignores it.
-
 
 - **A project card now says how many parts came out defective.** The parts figure on the card has always been net of scrap, so on a project with rejects it read lower than the plates produced and nothing on the card explained the gap. The count now sits beside the parts it accounts for, in amber rather than the red used for failed prints — a defective part is not a failed print, the plate finished and some of what it produced was unusable. Projects with no scrap are unchanged: nothing is shown at zero. Hovering says that the number has already been deducted, so the two are not added together by mistake.
 
@@ -1159,7 +1152,6 @@ Elsewhere: tags you create and badges BamDude assigns became one thing with one 
     The same list appears when choosing which filament a new K-profile is for, and it was assembled from the 0.4 mm profiles alone with an intended fallback that could never fire — an empty list counts as a real answer in JavaScript. On a printer with no 0.4 mm profiles at all that dropdown was simply empty. It now draws on the selected nozzle's profiles as well.
 
 - **A queued print could stall forever without saying why.** When a job reached its printer without a slot assignment worked out in advance — anything sent by a virtual printer or added through the API, and any job whose assignment had been left unresolved — working one out failed on an internal error the moment the file listed its filaments. The scheduler swallowed it, wrote one line to the log and moved on, so the job simply sat in the queue, tried again on the next pass, and failed again the same way, silently, for as long as it was there. Jobs queued the usual way from the print window were unaffected, because their assignment was already worked out in the browser.
-
 
 - **A Zigbee plug that measures energy but not power no longer shows an empty wattage without explanation.** Some plugs expose live consumption through a different Zigbee cluster than the common one, and BamDude only ever looked at the common one — such a plug counted energy correctly and reported nothing at all for power, with no message anywhere saying why. It now reads whichever of the two the plug actually has, and a plug with neither says so in the log instead of leaving a blank figure to be interpreted. Plugs that do have the usual cluster are unaffected and pay nothing for this: the extra reading is only ever requested from a plug that needs it. *(No plug of this kind was available to test against; this is written to the standard and covered by tests.)*
 
