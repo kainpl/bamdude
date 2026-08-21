@@ -244,6 +244,7 @@ async def init_db():
         library_file_makerworld_meta,
         library_file_note,
         library_project_links,
+        library_scan,
         local_preset,
         location,
         long_lived_token,
