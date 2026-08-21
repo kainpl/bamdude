@@ -95,7 +95,16 @@ async def answer_by_repeating(db: AsyncSession, printer_id: int) -> PrintQueueIt
 
     row.status = "pending"
     # The archive belongs to the print that finished; this run will get its own.
-    row.archive_id = None
+    #
+    # ⚠️ **Unless it is the only thing the row has.** A print picked up from
+    # BambuStudio or the printer's screen leaves a row with an ``archive_id`` and
+    # no ``library_file_id`` — nothing adds a picked-up file to the library. The
+    # dispatcher fails a row with neither source outright ("No source file
+    # specified"), and that failure errors the whole queue. Reported from a farm
+    # doing exactly that. Keeping it is also the honest reading of "repeat":
+    # dispatch it from whatever it was dispatched from the first time.
+    if row.library_file_id is not None:
+        row.archive_id = None
     row.completed_at = None
     row.started_at = None
     row.error_message = None

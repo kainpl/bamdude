@@ -1164,29 +1164,27 @@ class NotificationService:
                 # Print complete/failed → clear plate button
                 if event_type in ("print_complete", "print_failed"):
                     if tg_chat.has_permission("printers:clear_plate"):
-                        from sqlalchemy import func
-
-                        from backend.app.models.print_queue import PrintQueueItem
                         from backend.app.services.printer_manager import printer_manager
 
                         if printer_manager.is_awaiting_plate_clear(printer_id):
-                            pending = (
-                                await db.execute(
-                                    select(func.count(PrintQueueItem.id)).where(
-                                        PrintQueueItem.status == "pending",
-                                        PrintQueueItem.queue_id == printer_id,
-                                    )
-                                )
-                            ).scalar() or 0
-                            if pending > 0:
-                                buttons.append(
-                                    [
-                                        InlineKeyboardButton(
-                                            text=f"\u2705 {t(lang, NS, 'printers.btn_clear_plate')}",
-                                            callback_data=f"action:clear_plate:{printer_id}",
-                                        )
-                                    ]
-                                )
+                            # \u26a0\ufe0f Two answers, and neither depends on something
+                            # being queued behind. The pair used to be gated on
+                            # ``pending > 0``, so the message announcing the LAST
+                            # print in a queue carried no control at all \u2014 which
+                            # is exactly when repeating is wanted. Repeat re-arms
+                            # the row that just finished; see services/plate_hold.
+                            buttons.append(
+                                [
+                                    InlineKeyboardButton(
+                                        text=f"\U0001f501 {t(lang, NS, 'printers.btn_repeat_print')}",
+                                        callback_data=f"action:repeat_print:{printer_id}",
+                                    ),
+                                    InlineKeyboardButton(
+                                        text=f"\u2705 {t(lang, NS, 'printers.btn_clear_plate')}",
+                                        callback_data=f"action:clear_plate:{printer_id}",
+                                    ),
+                                ]
+                            )
 
                 # Print progress → pause/stop buttons
                 if event_type == "print_progress":
