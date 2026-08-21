@@ -1744,7 +1744,15 @@ class TestRequestTopicFailSafe:
 
 
 class TestRequestTopicAmsMapping:
-    """Tests for capturing ams_mapping from the MQTT request topic."""
+    """Tests for capturing ams_mapping from a ``project_file`` command.
+
+    ⚠️ The request topic is no longer the only place one arrives — the printer
+    echoes the same command back on the report topic, which is the only sighting
+    on a printer that refuses the request subscription. Both topics land in
+    ``_handle_project_file_command``, so these tests cover both; the report
+    topic's extra guard and the plate it also carries live in
+    ``test_project_file_echo_capture.py``.
+    """
 
     @pytest.fixture
     def mqtt_client(self):
@@ -1762,7 +1770,7 @@ class TestRequestTopicAmsMapping:
         """Verify _captured_ams_mapping starts as None."""
         assert mqtt_client._captured_ams_mapping is None
 
-    def test_handle_request_message_captures_ams_mapping(self, mqtt_client):
+    def test_handle_project_file_command_captures_ams_mapping(self, mqtt_client):
         """project_file command with ams_mapping stores the mapping."""
         data = {
             "print": {
@@ -1771,20 +1779,20 @@ class TestRequestTopicAmsMapping:
                 "url": "ftp://192.168.1.100/test.3mf",
             }
         }
-        mqtt_client._handle_request_message(data)
+        mqtt_client._handle_project_file_command(data)
         assert mqtt_client._captured_ams_mapping == [0, 4, -1, -1]
 
-    def test_handle_request_message_ignores_non_print_commands(self, mqtt_client):
+    def test_handle_project_file_command_ignores_non_print_commands(self, mqtt_client):
         """Non-project_file commands don't store ams_mapping."""
         data = {
             "print": {
                 "command": "pause",
             }
         }
-        mqtt_client._handle_request_message(data)
+        mqtt_client._handle_project_file_command(data)
         assert mqtt_client._captured_ams_mapping is None
 
-    def test_handle_request_message_ignores_missing_ams_mapping(self, mqtt_client):
+    def test_handle_project_file_command_ignores_missing_ams_mapping(self, mqtt_client):
         """project_file command without ams_mapping doesn't store anything."""
         data = {
             "print": {
@@ -1792,19 +1800,19 @@ class TestRequestTopicAmsMapping:
                 "url": "ftp://192.168.1.100/test.3mf",
             }
         }
-        mqtt_client._handle_request_message(data)
+        mqtt_client._handle_project_file_command(data)
         assert mqtt_client._captured_ams_mapping is None
 
-    def test_handle_request_message_ignores_non_dict_print(self, mqtt_client):
+    def test_handle_project_file_command_ignores_non_dict_print(self, mqtt_client):
         """Non-dict print value is safely ignored."""
         data = {"print": "not_a_dict"}
-        mqtt_client._handle_request_message(data)
+        mqtt_client._handle_project_file_command(data)
         assert mqtt_client._captured_ams_mapping is None
 
-    def test_handle_request_message_ignores_missing_print(self, mqtt_client):
+    def test_handle_project_file_command_ignores_missing_print(self, mqtt_client):
         """Message without print key is safely ignored."""
         data = {"pushing": {"command": "pushall"}}
-        mqtt_client._handle_request_message(data)
+        mqtt_client._handle_project_file_command(data)
         assert mqtt_client._captured_ams_mapping is None
 
     def test_captured_mapping_overwrites_previous(self, mqtt_client):
@@ -1816,7 +1824,7 @@ class TestRequestTopicAmsMapping:
                 "ams_mapping": [4, 8, -1, -1],
             }
         }
-        mqtt_client._handle_request_message(data)
+        mqtt_client._handle_project_file_command(data)
         assert mqtt_client._captured_ams_mapping == [4, 8, -1, -1]
 
     def test_print_start_callback_includes_ams_mapping(self, mqtt_client):
@@ -1995,7 +2003,7 @@ class TestRequestTopicAmsMapping:
         mqtt_client.on_print_complete = on_complete
 
         # 1. Slicer sends print command (captured from request topic)
-        mqtt_client._handle_request_message(
+        mqtt_client._handle_project_file_command(
             {
                 "print": {
                     "command": "project_file",
@@ -5071,6 +5079,7 @@ class TestPrintRunningObservedCallback:
             "remaining_time",
             "raw_data",
             "ams_mapping",
+            "plate_param",
         }
 
 

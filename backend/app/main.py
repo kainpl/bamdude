@@ -3657,8 +3657,16 @@ async def on_print_start(printer_id: int, data: dict):
         # Legacy archives (pre-m038) carry ``plate_index = NULL``; treat them
         # as plate-agnostic so this filter never excludes a legitimate
         # adoption candidate from an older install.
-        live_plate_id = parse_plate_id(data.get("filename")) or parse_plate_id(
-            (data.get("raw_data") or {}).get("gcode_file")
+        # ⚠️ Third source, and for a slicer-launched print the only one that
+        # answers: both of the first two are empty there — the printer names
+        # such a print by container alone and reports no ``gcode_file`` — while
+        # the dispatch command's ``param`` carries ``Metadata/plate_N.gcode``.
+        # Last, not first: the two above are read from this print's own live
+        # state, whereas the capture is a remembered value.
+        live_plate_id = (
+            parse_plate_id(data.get("filename"))
+            or parse_plate_id((data.get("raw_data") or {}).get("gcode_file"))
+            or parse_plate_id(data.get("plate_param"))
         )
         logger.info(
             "[adopt] check_name=%r live_plate_id=%s (filename=%r gcode_file=%r)",

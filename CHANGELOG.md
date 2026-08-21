@@ -10,9 +10,11 @@
 
     The same pair is in the Telegram bot — which also now offers a plate control after the *last* job in a queue, where previously it showed none at all because the buttons were tied to there being something waiting behind.
 
-    **A print started from BambuStudio or the printer's screen can be repeated too**, and it now repeats onto the right plate. The printer announces such a print by filename alone, with no plate in it, so the plate is only known once the file itself has been fetched and read — and the job now picks it up at that moment rather than staying blank. Blank meant the repeat of a multi-plate file came out as plate 1.
+    **A print started from BambuStudio or the printer's screen can be repeated too**, and it now repeats as it ran — on the plate that was printed and through the AMS slots the file was sliced for, rather than whatever happens to be loaded when you press the button.
 
-    Which AMS slots the file was sliced for is taken from the slicer's own send, when BamDude sees it. It does not always: a slicer working through the cloud rather than over your network never announces the job to BamDude at all, and the printer does not report the slot assignment itself. In that case the job is left honestly empty and the slots are worked out at print time from what is loaded — the same as before. Nothing else about such a print is invented: calibration options, macros and preheat were never sent by BamDude, so a repeat uses that printer's defaults for them.
+    Neither of those used to survive the pickup, and on some printers neither could: BamDude learned what a slicer sent by listening on a channel **the X1 refuses**, closing the connection the moment BamDude subscribes — so it stops asking, and every print sent from a slicer to an X1 arrived anonymous. The printer does repeat the whole instruction back on the channel BamDude already listens to, ten seconds before the print begins; it is read there now, which covers those printers as well.
+
+    Where even that is missing — a print started at the printer's own screen announces nothing — the plate is still recovered from the file once it has been fetched, and the slots are worked out at print time as before. Nothing is invented to fill a gap: calibration options, macros and preheat were never sent by BamDude, so a repeat uses that printer's defaults for them.
 
     A print whose 3MF could not be fetched from the printer cannot be repeated at all, and now says so instead of stopping the queue with an error.
 

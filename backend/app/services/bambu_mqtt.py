@@ -218,6 +218,28 @@ A2L_LITE_NORMALIZED_AMS_ID = 6
 A2L_LITE_GLOBAL_BASE = A2L_LITE_NORMALIZED_AMS_ID * 4  # 24
 
 
+def is_successful_project_file(print_data: object) -> bool:
+    """Whether a ``print`` envelope is a dispatch worth remembering.
+
+    The report topic carries the printer's echo of a ``project_file`` command,
+    and that echo is how a slicer-launched print is seen at all on a printer
+    whose request topic cannot be held open. It carries refusals in the same
+    shape, though.
+
+    ⚠️ A refused dispatch starts no print, so a mapping captured from one would
+    sit there waiting to be attributed to whatever runs next — a print it has
+    nothing to do with.
+
+    ⚠️ Missing ``result`` is success, not failure: the slicer's own send, as it
+    arrives on the request topic, has no result field at all.
+    """
+    return (
+        isinstance(print_data, dict)
+        and print_data.get("command") == "project_file"
+        and print_data.get("result", "success") == "success"
+    )
+
+
 def normalize_am_unit_id(ams_id: int) -> int:
     """Map the A2L AMS-Lite's physical unit id (16) to its normalised id (6).
 
@@ -1059,7 +1081,7 @@ class PrinterState:
     subtask_id: str | None = None
     # Scheme+path of the ``project_file`` dispatch that started the print now
     # running: ``ftp://<name>`` is the card, ``brtc://emmc/<name>`` is internal
-    # storage. Cleared when the print ends — see ``_handle_request_message``.
+    # storage. Cleared when the print ends — see ``_handle_project_file_command``.
     current_project_url: str | None = None
     # The same value, kept sticky for reporting only. The connection diagnostic
     # runs *after* the print that prompted it, so the live field would already
@@ -1907,9 +1929,14 @@ class BambuMQTTClient:
         # We use our tracked value to resolve the correct global ID
         self._last_load_tray_id: int | None = None
 
-        # Captured ams_mapping from print commands on the request topic
-        # Intercepts slicer/BamDude print commands to get the slot-to-tray mapping
+        # Captured from a print command, on whichever topic carried it — the
+        # slicer's own dispatch on the request topic, or the printer's echo of
+        # it on the report topic. Both say what the print was told to use.
         self._captured_ams_mapping: list[int] | None = None
+        # ``param`` from that same command: ``Metadata/plate_N.gcode``, i.e. the
+        # plate. For a print BamDude did not send this is the only sighting of
+        # it before the 3MF has been fetched and read.
+        self._captured_print_param: str | None = None
 
         # True once we've seen (and normalised 16→6) an A2L AMS-Lite unit in the
         # AMS telemetry. Used to globalise the Lite's local ``tray_now`` to
@@ -2398,7 +2425,7 @@ class BambuMQTTClient:
                 # printer telemetry; anything we send lands twice, once on
                 # publish and once on the broker's echo, and that pair is itself
                 # evidence the command reached the broker.
-                self._handle_request_message(payload)
+                self._handle_project_file_command(payload)
                 return
 
             # Count status reports per connection so check_staleness() can tell
@@ -2410,8 +2437,20 @@ class BambuMQTTClient:
         except json.JSONDecodeError:
             pass  # Ignore non-JSON MQTT messages (e.g. binary or malformed payloads)
 
-    def _handle_request_message(self, data: dict) -> None:
-        """Intercept print commands on the request topic to capture ams_mapping."""
+    def _handle_project_file_command(self, data: dict) -> None:
+        """Remember what a ``project_file`` dispatch asked the printer for.
+
+        ⚠️ **Fed by two topics, and on some printers only by the second.** The
+        request topic carries the slicer's command as it is sent; the report
+        topic carries the printer's echo of that same command, whole, with
+        ``result``/``reason`` appended. Measured on hardware (2026-08-21): an X1
+        **disconnects** when we subscribe to its request topic, so BamDude
+        disables that subscription for it permanently — and the report echo is
+        then the only place the mapping is ever visible. It arrived ten seconds
+        before the print started, which is comfortably in time.
+
+        Both entry points land here so the two topics cannot drift apart.
+        """
         print_data = data.get("print", {})
         if not isinstance(print_data, dict):
             return
@@ -2441,6 +2480,20 @@ class BambuMQTTClient:
                     "[%s] Captured ams_mapping from print command: %s",
                     self.serial_number,
                     self._captured_ams_mapping,
+                )
+            # ⚠️ ``param`` is the plate, and for a slicer-launched print it is
+            # the ONLY place it appears: the printer announces such a print by
+            # container name alone (``<name>.gcode.3mf``, no plate in it) and
+            # reports no ``gcode_file`` beside it, so the usual two sources are
+            # both empty. Same ``Metadata/plate_N.gcode`` shape ``parse_plate_id``
+            # already reads.
+            param = print_data.get("param")
+            if isinstance(param, str) and param:
+                self._captured_print_param = param
+                logger.info(
+                    "[%s] Captured plate param from print command: %s",
+                    self.serial_number,
+                    param,
                 )
             # Diagnostic for upstream #1162 follow-up (X2D + FTS routing): when a
             # slicer-launched project_file passes through the request topic, log
@@ -2545,6 +2598,17 @@ class BambuMQTTClient:
 
         if "print" in payload:
             print_data = payload["print"]
+            # ⚠️ The printer echoes the WHOLE ``project_file`` command back on
+            # this topic — every field, plus ``result``/``reason`` — and for a
+            # printer whose request topic we cannot hold open, this echo is the
+            # only sighting of the slicer's dispatch we will ever get. Same
+            # envelope shape, so it goes through the same handler.
+            #
+            # ⚠️ Only on success. A refused dispatch starts no print, and the
+            # capture would then sit there waiting to be attributed to whatever
+            # runs next.
+            if is_successful_project_file(print_data):
+                self._handle_project_file_command(payload)
             # Handle gcode_line ACK - resolve ACK listener for HTTP wait
             if isinstance(print_data, dict) and print_data.get("command") == "gcode_line" and "result" in print_data:
                 seq_id = print_data.get("sequence_id")
@@ -6109,6 +6173,7 @@ class BambuMQTTClient:
                     else None,  # Convert minutes to seconds
                     "raw_data": data,
                     "ams_mapping": self._captured_ams_mapping,
+                    "plate_param": self._captured_print_param,
                 }
             )
         elif running_first_observed and self.on_print_running_observed:
@@ -6128,6 +6193,7 @@ class BambuMQTTClient:
                     "remaining_time": self.state.remaining_time * 60 if self.state.remaining_time > 0 else None,
                     "raw_data": data,
                     "ams_mapping": self._captured_ams_mapping,
+                    "plate_param": self._captured_print_param,
                 }
             )
 
@@ -6240,6 +6306,7 @@ class BambuMQTTClient:
                 }
             )
             self._captured_ams_mapping = None
+            self._captured_print_param = None
 
         self._previous_gcode_state = self.state.state
         if current_file:
