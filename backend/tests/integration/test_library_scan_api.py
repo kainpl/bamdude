@@ -16,6 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.library import LibraryFolder
 from backend.app.models.library_scan import LibraryScanJob
 
+# ⚠️ Bound at import time, BEFORE the autouse fixture below replaces the module
+# attribute with a noop. The one test that needs the real worker needs this
+# reference; going through the module would get the noop.
+from backend.app.services.library_scan import run_scan as real_run_scan
+
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
@@ -179,3 +184,47 @@ async def test_a_deleted_folder_leaves_its_scan_history_harmless(db_session, ext
     # No assertion on presence: PostgreSQL removes it, SQLite keeps it, and
     # neither outcome is a problem. What matters is that the delete succeeded.
     assert (await db_session.get(LibraryFolder, external_folder.id)) is None
+
+
+class TestAFailureReachesTheTabs:
+    """⚠️ Writing `failed` to the row is only half of ending a scan.
+
+    The other half is saying so on the socket. Without it the progress strip
+    spins forever — and the commonest failure here is an unreachable mount,
+    which is exactly the case somebody is sitting and watching.
+    """
+
+    async def test_an_unreachable_mount_announces_itself_and_names_its_folder(
+        self, async_client: AsyncClient, db_session, tmp_path, monkeypatch
+    ):
+        from backend.app.core.websocket import ws_manager
+
+        folder = LibraryFolder(
+            name="NAS", is_external=True, external_path=str(tmp_path / "gone"), external_show_hidden=False
+        )
+        db_session.add(folder)
+        await db_session.commit()
+        await db_session.refresh(folder)
+
+        job = LibraryScanJob(folder_id=folder.id, status="queued")
+        db_session.add(job)
+        await db_session.commit()
+        await db_session.refresh(job)
+
+        sent: list[dict] = []
+
+        async def capture(data: dict) -> None:
+            sent.append(data)
+
+        monkeypatch.setattr(ws_manager, "send_library_scan_finished", capture)
+
+        await real_run_scan(job.id)
+
+        assert sent, "the scan ended without telling anybody"
+        assert sent[0]["status"] == "failed"
+        # ⚠️ The strip is keyed by folder. An event without this clears nothing.
+        assert sent[0]["folder_id"] == folder.id
+        assert "not accessible" in sent[0]["error"]
+
+        await db_session.refresh(job)
+        assert job.status == "failed"

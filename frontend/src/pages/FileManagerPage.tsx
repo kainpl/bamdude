@@ -48,7 +48,7 @@ import {
   ExternalLink,
   Tag as TagIcon,
 } from 'lucide-react';
-import { api } from '../api/client';
+import { api, ApiError } from '../api/client';
 import type {
   LibraryFolderTree,
   LibraryFileListItem,
@@ -60,6 +60,7 @@ import type {
   Archive,
   Permission,
 } from '../api/client';
+import { useLibraryScanProgress, type LibraryScanState } from '../hooks/useLibraryScanProgress';
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { LibraryPlateGalleryModal } from '../components/LibraryPlateGallery';
@@ -2068,6 +2069,26 @@ export function FileManagerPage() {
     return stats.disk_free_bytes < thresholdBytes;
   }, [stats, settings]);
 
+  // An external scan is a background job; these are its numbers as they land.
+  const handleScanFinished = useCallback(
+    (_folderId: number, state: LibraryScanState) => {
+      if (state.status === 'failed') {
+        showToast(t('fileManager.toast.scanFailed', { error: state.error || '' }), 'error');
+        return;
+      }
+      if (state.skippedDeletions) {
+        // Deliberately not a success toast. Nothing was deleted, and the reason
+        // is one the operator has to act on — the strip keeps saying it.
+        showToast(t('fileManager.toast.scanSkippedDeletions'), 'warning');
+        return;
+      }
+      showToast(t('fileManager.toast.folderScanned', { added: state.added, removed: state.removed }), 'success');
+    },
+    [showToast, t]
+  );
+  const { scans, markStarted: markScanStarted, dismiss: dismissScan } = useLibraryScanProgress(handleScanFinished);
+  const activeScan = selectedFolderId ? scans[selectedFolderId] : undefined;
+
   // Mutations
   const createFolderMutation = useMutation({
     mutationFn: (data: LibraryFolderCreate) => api.createLibraryFolder(data),
@@ -2082,30 +2103,39 @@ export function FileManagerPage() {
   const createExternalFolderMutation = useMutation({
     mutationFn: async (data: ExternalFolderCreate) => {
       const folder = await api.createExternalFolder(data);
-      // Auto-scan after creation
-      await api.scanExternalFolder(folder.id);
-      return folder;
+      // Auto-scan after creation. Returns as soon as the job exists — a share
+      // with thousands of files no longer holds this dialog open.
+      const job = await api.scanExternalFolder(folder.id);
+      return { folder, job };
     },
-    onSuccess: (folder) => {
+    onSuccess: ({ folder, job }) => {
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-stats'] });
       setShowExternalFolderModal(false);
       setSelectedFolderId(folder.id);
+      markScanStarted(folder.id, job.job_id);
       showToast(t('fileManager.toast.externalFolderLinked'), 'success');
     },
     onError: (error: Error) => showToast(error.message, 'error'),
   });
 
+  // ⚠️ Starting a scan is all this does now. It used to wait for the counts,
+  // which is why a NAS share could hold the request — and SQLite's write lock —
+  // for minutes. The counts arrive on the socket; see useLibraryScanProgress.
   const scanExternalFolderMutation = useMutation({
     mutationFn: (folderId: number) => api.scanExternalFolder(folderId),
-    onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ['library-files'] });
-      queryClient.invalidateQueries({ queryKey: ['library-folders'] });
-      queryClient.invalidateQueries({ queryKey: ['library-stats'] });
-      showToast(t('fileManager.toast.folderScanned', { added: result.added, removed: result.removed }), 'success');
+    onSuccess: (result, folderId) => {
+      markScanStarted(folderId, result.job_id);
+      showToast(t('fileManager.toast.scanStarted'), 'info');
     },
-    onError: (error: Error) => showToast(error.message, 'error'),
+    onError: (error: Error) => {
+      // A scan of this folder is already running — a fact, not a failure. The
+      // usual way to see one is reloading the tab mid-walk, when the strip that
+      // was following it is gone but the walk is not.
+      const already = error instanceof ApiError && error.status === 409;
+      showToast(already ? t('fileManager.toast.scanAlreadyRunning') : error.message, already ? 'info' : 'error');
+    },
   });
 
   const deleteFolderMutation = useMutation({
@@ -2861,16 +2891,84 @@ export function FileManagerPage() {
                 variant="secondary"
                 size="sm"
                 onClick={() => selectedFolderId && scanExternalFolderMutation.mutate(selectedFolderId)}
-                disabled={scanExternalFolderMutation.isPending}
+                disabled={scanExternalFolderMutation.isPending || activeScan?.status === 'running'}
                 title={t('fileManager.scanFolder')}
               >
-                {scanExternalFolderMutation.isPending ? (
+                {scanExternalFolderMutation.isPending || activeScan?.status === 'running' ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : (
                   <RefreshCw className="w-4 h-4" />
                 )}
                 <span className="ml-1.5">{t('fileManager.scanFolder')}</span>
               </Button>
+            </div>
+          )}
+          {/* Scan progress. The walk runs in the background now, so this strip
+              is the only place its numbers appear — and the only place an
+              unreachable mount is explained. */}
+          {activeScan && activeScan.status === 'running' && (
+            <div className="mb-4 p-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg">
+              <div className="flex items-center gap-3">
+                <Loader2 className="w-4 h-4 text-bambu-green animate-spin flex-shrink-0" />
+                <span className="text-sm text-white">
+                  {activeScan.total > 0
+                    ? t('fileManager.scanProgress.counted', { seen: activeScan.seen, total: activeScan.total })
+                    : t('fileManager.scanProgress.counting')}
+                </span>
+                <span className="text-xs text-bambu-gray ml-auto tabular-nums">
+                  {t('fileManager.scanProgress.counters', {
+                    added: activeScan.added,
+                    updated: activeScan.updated,
+                    removed: activeScan.removed,
+                  })}
+                </span>
+              </div>
+              {activeScan.total > 0 && (
+                <div className="mt-2 h-1 bg-bambu-dark rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-bambu-green transition-all duration-300"
+                    style={{ width: `${Math.min(100, Math.round((activeScan.seen / activeScan.total) * 100))}%` }}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+          {activeScan && activeScan.status === 'failed' && (
+            <div className="flex items-start gap-3 mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+              <AlertTriangle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-red-300">{t('fileManager.scanProgress.failed')}</p>
+                {activeScan.error && (
+                  <p className="text-xs text-bambu-gray mt-0.5 break-words">{activeScan.error}</p>
+                )}
+              </div>
+              <button
+                onClick={() => selectedFolderId && dismissScan(selectedFolderId)}
+                className="text-bambu-gray hover:text-white flex-shrink-0"
+                title={t('common.dismiss')}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+          {activeScan && activeScan.status === 'finished' && activeScan.skippedDeletions && (
+            <div className="flex items-start gap-3 mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+              <AlertTriangle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-amber-300">
+                  {t('fileManager.scanProgress.skippedDeletionsTitle')}
+                </p>
+                <p className="text-xs text-bambu-gray mt-0.5">
+                  {t('fileManager.scanProgress.skippedDeletionsBody')}
+                </p>
+              </div>
+              <button
+                onClick={() => selectedFolderId && dismissScan(selectedFolderId)}
+                className="text-bambu-gray hover:text-white flex-shrink-0"
+                title={t('common.dismiss')}
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
           )}
           {/* Combined toolbar: search/filters/sort (row 1) + selection actions (row 2) */}

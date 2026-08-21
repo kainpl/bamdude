@@ -108,6 +108,16 @@
 
 ### Fixed
 
+- **Scanning a network folder no longer freezes the rest of BamDude.** Point the library at a NAS share and press Scan, and everything else could start failing with *database is locked* — dispatching a print, logging in, saving a setting. The scan held the database open from the first file to the last, and on a share of any size that is minutes; it also read every file on the thread that answers requests, so the browser lost its connection to BamDude while it ran and could not get it back.
+
+    The scan is a background job now. The button returns at once, files appear in the list as they are found, and a strip above them counts how far it has got — through the same live connection the rest of the app uses. Nothing else waits on it. Only one scan runs per folder at a time; pressing Scan again while one is going says so rather than starting a second walk over the same files.
+
+    ⚠️ **A scan that finds an empty folder no longer deletes anything.** It used to be safe to sync deletions in one go at the end, because a scan that fell over rolled back with it. Writing as it goes means a share that goes unreachable mid-scan — which looks exactly like a folder whose files were all deleted — could empty your library for real. So when the walk comes back empty and BamDude still has files listed there, it removes nothing and says why, on screen. Check the mount and scan again.
+
+    A scan that cannot reach the folder at all now says so instead of appearing to run forever, and one interrupted by a restart is marked as such at startup rather than being left "in progress" — which used to block that folder from ever being scanned again.
+
+    ⚠️ **For anyone driving `POST /library/folders/{id}/scan` from a script**: it answers `202` with `{"job_id": …}` now, not `{"added": …, "removed": …}`. Poll `GET /library/scan-jobs/{job_id}` for the counts. The old shape could only be produced by holding the request open for the whole scan, which is the problem this fixes.
+
 - **The Zigbee radio comes back by itself.** Unplug the USB dongle — to move it to a better spot, or because the port glitched — and BamDude noticed it was gone, said so, and then waited forever: every Zigbee plug stayed dead and the only cure was restarting the whole application. It now keeps trying, quietly, every fifteen seconds at first and backing off to five minutes if the radio really is not coming back, and it announces the recovery so a page left open updates on its own.
 
     The same watch covers the cases that used to need a restart for the same reason: a dongle not plugged in when BamDude started, a port Zigbee2MQTT or Home Assistant was holding and has since released, and a port corrected in Settings — including a dongle that returns on a different COM port after being re-plugged, since the settings are re-read on every attempt.

@@ -8431,10 +8431,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  // ⚠️ Answers 202 with a job id, NOT with counts. The counts used to come back
+  // here, which meant holding the request open for the whole walk — and that is
+  // what held SQLite's write lock until unrelated queries died with
+  // `database is locked`. Progress arrives on the socket now.
   scanExternalFolder: (folderId: number) =>
-    request<{ status: string; added: number; removed: number }>(`/library/folders/${folderId}/scan`, {
+    request<{ job_id: number; status: string }>(`/library/folders/${folderId}/scan`, {
       method: 'POST',
     }),
+  getLibraryScanJob: (jobId: number) => request<LibraryScanJob>(`/library/scan-jobs/${jobId}`),
   getLibraryFoldersByProject: (projectId: number) =>
     request<LibraryFolder[]>(`/library/folders/by-project/${projectId}`),
   getLibraryFoldersByArchive: (archiveId: number) =>
@@ -9270,6 +9275,25 @@ export interface LibraryFolderTree {
   // "sort by recent activity" mode.
   latest_activity_at: string | null;
   children: LibraryFolderTree[];
+}
+
+export interface LibraryScanJob {
+  id: number;
+  folder_id: number;
+  status: 'queued' | 'running' | 'finished' | 'failed';
+  files_total: number;
+  files_seen: number;
+  files_added: number;
+  files_updated: number;
+  files_removed: number;
+  folders_added: number;
+  folders_removed: number;
+  /** True when the walk came back empty against a stocked folder, so the
+   *  deletion pass was refused. Usually an unreachable mount, never silence. */
+  skipped_deletions: boolean;
+  error: string | null;
+  started_at: string | null;
+  finished_at: string | null;
 }
 
 export interface LibraryFolder {

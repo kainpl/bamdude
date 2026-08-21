@@ -505,6 +505,30 @@ async def _set_job(job_id: int, **values) -> None:
         await db.commit()
 
 
+async def _announce_finish(payload: dict) -> None:
+    """Tell every open tab that a scan ended.
+
+    Best effort: a socket problem must never turn a scan whose rows are already
+    committed into a failed one.
+    """
+    from backend.app.core.websocket import ws_manager
+
+    with contextlib.suppress(Exception):
+        await ws_manager.send_library_scan_finished(payload)
+
+
+async def _fail_job(job_id: int, folder_id: int | None, error: str) -> None:
+    """Record a failure, and say so on the socket.
+
+    ⚠️ Both halves, always. A row that reads ``failed`` while the tabs were
+    never told leaves a progress strip spinning forever — and the commonest
+    failure here is an unreachable mount, which is exactly when somebody is
+    sitting and watching that strip.
+    """
+    await _set_job(job_id, status="failed", error=error[:2000], finished_at=_now())
+    await _announce_finish({"job_id": job_id, "folder_id": folder_id, "status": "failed", "error": error[:500]})
+
+
 async def run_scan(job_id: int) -> None:
     """Walk the folder, write what changed, and keep the database free meanwhile."""
     from backend.app.core.database import async_session
@@ -519,6 +543,9 @@ async def run_scan(job_id: int) -> None:
         "folders_removed": 0,
     }
     skipped_duplicates = 0
+    # Resolved a few lines down; declared here so every failure path can name
+    # the folder whose strip has to stop spinning.
+    folder_id: int | None = None
 
     try:
         async with async_session() as db:
@@ -527,7 +554,7 @@ async def run_scan(job_id: int) -> None:
                 return
             folder = await db.get(LibraryFolder, job.folder_id)
             if folder is None or not folder.is_external or not folder.external_path:
-                await _set_job(job_id, status="failed", error="folder is not an external mount", finished_at=_now())
+                await _fail_job(job_id, folder.id if folder else None, "folder is not an external mount")
                 return
             root = Path(folder.external_path)
             show_hidden = bool(folder.external_show_hidden)
@@ -539,9 +566,7 @@ async def run_scan(job_id: int) -> None:
         # and on the loop it would stall the process before the scan even began.
         reachable = await asyncio.to_thread(lambda: root.exists() and root.is_dir())
         if not reachable:
-            await _set_job(
-                job_id, status="failed", error=f"external path is not accessible: {root}", finished_at=_now()
-            )
+            await _fail_job(job_id, folder_id, f"external path is not accessible: {root}")
             return
 
         tree = await collect_tree(root, show_hidden)
@@ -628,17 +653,16 @@ async def run_scan(job_id: int) -> None:
             logger.info("scan skipped %d file(s) the library already holds", skipped_duplicates)
 
         await _set_job(job_id, status="finished", finished_at=_now(), skipped_deletions=skipped, **counters)
-        with contextlib.suppress(Exception):
-            await ws_manager.send_library_scan_finished(
-                {
-                    "job_id": job_id,
-                    "folder_id": folder_id,
-                    "status": "finished",
-                    "skipped_deletions": skipped,
-                    "total": total,
-                    **counters,
-                }
-            )
+        await _announce_finish(
+            {
+                "job_id": job_id,
+                "folder_id": folder_id,
+                "status": "finished",
+                "skipped_deletions": skipped,
+                "total": total,
+                **counters,
+            }
+        )
 
     except asyncio.CancelledError:
         # A shutdown mid-scan. The row is deliberately NOT written here — this
@@ -647,11 +671,7 @@ async def run_scan(job_id: int) -> None:
         raise
     except Exception as error:
         logger.exception("external folder scan failed")
-        await _set_job(job_id, status="failed", error=str(error)[:2000], finished_at=_now())
-        with contextlib.suppress(Exception):
-            from backend.app.core.websocket import ws_manager as manager
-
-            await manager.send_library_scan_finished({"job_id": job_id, "status": "failed", "error": str(error)[:500]})
+        await _fail_job(job_id, folder_id, str(error))
     finally:
         _running.pop(job_id, None)
 

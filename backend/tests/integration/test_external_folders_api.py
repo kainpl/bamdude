@@ -129,6 +129,29 @@ class TestExternalFolderCreation:
         assert ext_folder["external_readonly"] is True
 
 
+async def scan_and_wait(async_client: AsyncClient, folder_id: int) -> dict:
+    """Start a scan, wait for the worker, and return the finished job row.
+
+    ⚠️ The endpoint answers 202 the instant the job exists — the walk is a
+    background task now, because doing it inside the request held SQLite's write
+    lock for the whole of it. A test that reads the library straight after the
+    POST is racing the worker, and on a small tmp_path it usually wins.
+    """
+    from backend.app.services import library_scan
+
+    response = await async_client.post(f"/api/v1/library/folders/{folder_id}/scan")
+    assert response.status_code == 202, response.text
+    job_id = response.json()["job_id"]
+
+    task = library_scan._running.get(job_id)
+    if task is not None:
+        await task
+
+    job = (await async_client.get(f"/api/v1/library/scan-jobs/{job_id}")).json()
+    assert job["status"] == "finished", job
+    return job
+
+
 class TestExternalFolderScan:
     """Tests for POST /library/folders/{id}/scan."""
 
@@ -163,19 +186,17 @@ class TestExternalFolderScan:
     @pytest.mark.integration
     async def test_scan_discovers_files(self, async_client: AsyncClient, db_session, external_folder):
         """Verify scan discovers supported files."""
-        response = await async_client.post(f"/api/v1/library/folders/{external_folder['id']}/scan")
-        assert response.status_code == 200
-        result = response.json()
+        job = await scan_and_wait(async_client, external_folder["id"])
         # Should find: benchy.3mf, bracket.stl, print.gcode, subfolder/nested.stl
         # Should skip: readme.txt (unsupported), .hidden.3mf (hidden)
-        assert result["added"] == 4
-        assert result["removed"] == 0
+        assert job["files_added"] == 4
+        assert job["files_removed"] == 0
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_scan_skips_hidden_files(self, async_client: AsyncClient, db_session, external_folder):
         """Verify hidden files are skipped by default."""
-        await async_client.post(f"/api/v1/library/folders/{external_folder['id']}/scan")
+        await scan_and_wait(async_client, external_folder["id"])
 
         # List files in folder
         response = await async_client.get(f"/api/v1/library/files?folder_id={external_folder['id']}")
@@ -196,21 +217,20 @@ class TestExternalFolderScan:
         response = await async_client.post("/api/v1/library/folders/external", json=data)
         folder = response.json()
 
-        response = await async_client.post(f"/api/v1/library/folders/{folder['id']}/scan")
-        result = response.json()
+        job = await scan_and_wait(async_client, folder["id"])
         # Now should also find .hidden.3mf → 5 total
-        assert result["added"] == 5
+        assert job["files_added"] == 5
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_scan_idempotent(self, async_client: AsyncClient, db_session, external_folder):
         """Verify scanning twice doesn't duplicate files."""
-        response1 = await async_client.post(f"/api/v1/library/folders/{external_folder['id']}/scan")
-        assert response1.json()["added"] == 4
+        first = await scan_and_wait(async_client, external_folder["id"])
+        assert first["files_added"] == 4
 
-        response2 = await async_client.post(f"/api/v1/library/folders/{external_folder['id']}/scan")
-        assert response2.json()["added"] == 0
-        assert response2.json()["removed"] == 0
+        second = await scan_and_wait(async_client, external_folder["id"])
+        assert second["files_added"] == 0
+        assert second["files_removed"] == 0
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -230,7 +250,7 @@ class TestExternalFolderScan:
         os.utime(external_dir / "benchy.3mf", (1_600_000_000, 1_600_000_000))
         os.utime(external_dir / "bracket.stl", (1_700_000_000, 1_700_000_000))
 
-        await async_client.post(f"/api/v1/library/folders/{external_folder['id']}/scan")
+        await scan_and_wait(async_client, external_folder["id"])
 
         files = (await async_client.get(f"/api/v1/library/files?folder_id={external_folder['id']}")).json()
         by_name = {f["filename"]: f for f in files}
@@ -256,11 +276,11 @@ class TestExternalFolderScan:
         import os
 
         os.utime(external_dir / "benchy.3mf", (1_600_000_000, 1_600_000_000))
-        await async_client.post(f"/api/v1/library/folders/{external_folder['id']}/scan")
+        await scan_and_wait(async_client, external_folder["id"])
 
         os.utime(external_dir / "benchy.3mf", (1_800_000_000, 1_800_000_000))
-        second = await async_client.post(f"/api/v1/library/folders/{external_folder['id']}/scan")
-        assert second.json()["added"] == 0  # nothing new — this is a refresh
+        second = await scan_and_wait(async_client, external_folder["id"])
+        assert second["files_added"] == 0  # nothing new — this is a refresh
 
         files = (await async_client.get(f"/api/v1/library/files?folder_id={external_folder['id']}")).json()
         benchy = next(f for f in files if f["filename"] == "benchy.3mf")
@@ -272,15 +292,17 @@ class TestExternalFolderScan:
         self, async_client: AsyncClient, db_session, external_folder, external_dir
     ):
         """Verify scan removes entries for files no longer on disk."""
-        await async_client.post(f"/api/v1/library/folders/{external_folder['id']}/scan")
+        await scan_and_wait(async_client, external_folder["id"])
 
         # Delete a file from disk
         (external_dir / "bracket.stl").unlink()
 
-        response = await async_client.post(f"/api/v1/library/folders/{external_folder['id']}/scan")
-        result = response.json()
-        assert result["removed"] == 1
-        assert result["added"] == 0
+        job = await scan_and_wait(async_client, external_folder["id"])
+        assert job["files_removed"] == 1
+        assert job["files_added"] == 0
+        # ⚠️ The walk still saw three files, so the deletion guard had no
+        # reason to fire. It exists for the *empty* walk — see the unit tests.
+        assert job["skipped_deletions"] is False
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -299,7 +321,7 @@ class TestExternalFolderScan:
     @pytest.mark.integration
     async def test_scan_files_marked_external(self, async_client: AsyncClient, db_session, external_folder):
         """Verify scanned files have is_external=True."""
-        await async_client.post(f"/api/v1/library/folders/{external_folder['id']}/scan")
+        await scan_and_wait(async_client, external_folder["id"])
 
         response = await async_client.get(f"/api/v1/library/files?folder_id={external_folder['id']}")
         files = response.json()
@@ -328,7 +350,7 @@ class TestExternalFolderProtections:
         }
         response = await async_client.post("/api/v1/library/folders/external", json=data)
         folder = response.json()
-        await async_client.post(f"/api/v1/library/folders/{folder['id']}/scan")
+        await scan_and_wait(async_client, folder["id"])
         return folder
 
     @pytest.mark.asyncio

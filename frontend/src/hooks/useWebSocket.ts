@@ -499,6 +499,27 @@ export function useWebSocket() {
         debouncedInvalidate('library-stats');
         break;
 
+      // A scan of an external folder is now a background job, so its progress
+      // arrives here rather than in the response to the request that started
+      // it. Re-dispatched as a window event because the file-manager page needs
+      // the individual numbers — a refetch would say nothing about how far a
+      // ten-minute NAS walk has got. Deliberately no query invalidation on
+      // progress: the per-file `library_file_added` above already refreshes the
+      // list as rows land, and doing it twice per file would refetch the whole
+      // library thousands of times during one scan.
+      case 'library_scan_progress':
+        window.dispatchEvent(new CustomEvent('library-scan-progress', { detail: message }));
+        break;
+
+      case 'library_scan_finished':
+        window.dispatchEvent(new CustomEvent('library-scan-finished', { detail: message }));
+        // Removals and folder changes never emit a per-file event, so this is
+        // the only thing that tells the list they happened.
+        debouncedInvalidate('library-files');
+        debouncedInvalidate('library-folders');
+        debouncedInvalidate('library-stats');
+        break;
+
       case 'library_file_notes_changed': {
         // gh#3 - notes count changed somewhere; refresh file lists (which
         // carry notes_count) and any open per-file notes query.
