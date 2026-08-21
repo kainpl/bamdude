@@ -22,6 +22,15 @@
 export type ArchiveFilter = 'active' | 'archived';
 export type UsageFilter = 'all' | 'used' | 'new' | 'lowstock';
 export type StockFilter = 'all' | 'stock' | 'configured';
+/**
+ * Whether the spool sits in a printer at all — deliberately not *which* one.
+ *
+ * ⚠️ Not a narrower storage-location filter. That asks "where in the shelf",
+ * this asks "is it loaded or is it stock", which is the question behind "what
+ * can I actually queue right now" and "what is left on the shelf to take".
+ * Answering it by picking printers one at a time is what this replaces.
+ */
+export type AssignedFilter = 'all' | 'assigned' | 'unassigned';
 export type ViewMode = 'table' | 'cards' | 'forecast';
 
 export const FILTERS_KEY = 'bamdude-inventory-filters';
@@ -35,6 +44,7 @@ export type StoredFilters = {
   categoryFilter: string;
   spoolFilter: string;
   stockFilter: StockFilter;
+  assignedFilter: AssignedFilter;
   search: string;
   viewMode: ViewMode;
 };
@@ -48,6 +58,7 @@ export const DEFAULT_FILTERS: StoredFilters = {
   categoryFilter: '',
   spoolFilter: '',
   stockFilter: 'all',
+  assignedFilter: 'all',
   search: '',
   viewMode: 'table',
 };
@@ -55,6 +66,7 @@ export const DEFAULT_FILTERS: StoredFilters = {
 const ARCHIVE_FILTERS: ArchiveFilter[] = ['active', 'archived'];
 const USAGE_FILTERS: UsageFilter[] = ['all', 'used', 'new', 'lowstock'];
 const STOCK_FILTERS: StockFilter[] = ['all', 'stock', 'configured'];
+const ASSIGNED_FILTERS: AssignedFilter[] = ['all', 'assigned', 'unassigned'];
 const VIEW_MODES: ViewMode[] = ['table', 'cards', 'forecast'];
 
 /**
@@ -82,6 +94,7 @@ export function loadFilters(): StoredFilters {
       categoryFilter: text(raw.categoryFilter),
       spoolFilter: text(raw.spoolFilter),
       stockFilter: oneOf(raw.stockFilter, STOCK_FILTERS, 'all'),
+      assignedFilter: oneOf(raw.assignedFilter, ASSIGNED_FILTERS, 'all'),
       search: text(raw.search),
       viewMode: oneOf(raw.viewMode, VIEW_MODES, 'table'),
     };

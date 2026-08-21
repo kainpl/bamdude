@@ -40,6 +40,7 @@ import {
   type ArchiveFilter,
   type UsageFilter,
   type StockFilter,
+  type AssignedFilter,
   type ViewMode,
 } from '../utils/inventoryFilters';
 import {
@@ -723,6 +724,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const [categoryFilter, setCategoryFilter] = useState(storedFilters.categoryFilter);
   const [spoolFilter, setSpoolFilter] = useState(storedFilters.spoolFilter);
   const [stockFilter, setStockFilter] = useState<StockFilter>(storedFilters.stockFilter);
+  const [assignedFilter, setAssignedFilter] = useState<AssignedFilter>(storedFilters.assignedFilter);
   const [search, setSearch] = useState(storedFilters.search);
   const [viewMode, setViewMode] = useState<ViewMode>(storedFilters.viewMode);
   const [sortState, setSortState] = useState<SortState>(loadSortState);
@@ -1252,6 +1254,16 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       filtered = filtered.filter((s) => !!s.slicer_filament);
     }
 
+    // Loaded in a printer, or on the shelf. Reads the same `assignmentMap` the
+    // Location column renders from, so the filter and the column can never
+    // disagree — and so it answers for BOTH inventory backends: the map is
+    // already merged from local assignments and Spoolman's slot assignments.
+    if (assignedFilter === 'assigned') {
+      filtered = filtered.filter((s) => !!assignmentMap[s.id]);
+    } else if (assignedFilter === 'unassigned') {
+      filtered = filtered.filter((s) => !assignmentMap[s.id]);
+    }
+
     // Global search — tokenised substring match against the synthesised display
     // name so queries like "SUN Bl" find "SUNLU PETG Black". Also keeps the
     // prior per-column fallbacks so a free-text search still hits note /
@@ -1274,7 +1286,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     }
 
     return filtered;
-  }, [spools, archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, categoryFilter, spoolFilter, storageLocationFilter, stockFilter, search, spoolDisplayTemplate, lowStockThreshold, storageLocations]);
+  }, [spools, archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, categoryFilter, spoolFilter, storageLocationFilter, stockFilter, assignedFilter, assignmentMap, search, spoolDisplayTemplate, lowStockThreshold, storageLocations]);
 
   // Reset page on filter changes
   const resetPage = () => setPageIndex(0);
@@ -1320,7 +1332,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const hasUnsetStorageLocation = (spools ?? []).some((s) => !s.location_id && !s.storage_location?.trim());
 
   // Check if any filters are non-default
-  const hasActiveFilters = archiveFilter !== 'active' || usageFilter !== 'all' || !!materialFilter || !!brandFilter || !!colorFilter || !!categoryFilter || !!spoolFilter || !!storageLocationFilter || stockFilter !== 'all' || !!search;
+  const hasActiveFilters = archiveFilter !== 'active' || usageFilter !== 'all' || !!materialFilter || !!brandFilter || !!colorFilter || !!categoryFilter || !!spoolFilter || !!storageLocationFilter || stockFilter !== 'all' || assignedFilter !== 'all' || !!search;
 
   const handleColumnConfigSave = (config: ColumnConfig[]) => {
     setColumnConfig(config);
@@ -1458,10 +1470,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   useEffect(() => {
     saveFilters({
       archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter,
-      categoryFilter, spoolFilter, stockFilter, search, viewMode,
+      categoryFilter, spoolFilter, stockFilter, assignedFilter, search, viewMode,
     });
   }, [archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter,
-      categoryFilter, spoolFilter, stockFilter, search, viewMode]);
+      categoryFilter, spoolFilter, stockFilter, assignedFilter, search, viewMode]);
 
   // Drop the selection whenever the visible set changes underneath it. A
   // toolbar reading "12 selected" over a list that no longer contains those
@@ -1472,7 +1484,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   useEffect(() => {
     setSelectedIds(new Set());
   }, [archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, categoryFilter,
-      spoolFilter, storageLocationFilter, stockFilter, search, groupSimilar, spoolmanMode]);
+      spoolFilter, storageLocationFilter, stockFilter, assignedFilter, search, groupSimilar, spoolmanMode]);
 
   const selectedSpools = useMemo(
     () => filteredSpools.filter((sp) => selectedIds.has(sp.id)),
@@ -1532,6 +1544,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     setSpoolFilter('');
     setStorageLocationFilter('');
     setStockFilter('all');
+    setAssignedFilter('all');
     setSearch('');
     resetPage();
   };
@@ -1546,11 +1559,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           and Archives headers use, and the filter bar further down this page. */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <div className="flex items-center gap-3">
-            <Disc3 className="w-6 h-6 text-bambu-green" />
-            <h1 className="text-2xl font-bold text-white">{t('inventory.title')}</h1>
-          </div>
-          <p className="text-sm text-bambu-gray">{t('inventory.noSpools').split('.')[0] ? '' : ''}</p>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-3"><Disc3 className="w-6 h-6 text-bambu-green" />{t('inventory.title')}</h1>
+            <p className="text-sm text-bambu-gray">{t('inventory.noSpools').split('.')[0] ? '' : ''}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {/* Bulk edit — internal inventory only (not Spoolman mode). Opens a
@@ -1930,6 +1940,45 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             }`}
           >
             {t('inventory.configured')}
+          </button>
+        </div>
+
+        {/* Loaded in a printer, or on the shelf. Three states rather than a
+            checkbox: "not assigned" is a question people ask as often as
+            "assigned" — it is what is left to take — and a two-state tick
+            cannot express it without meaning "all" in one of its positions. */}
+        <div className="flex items-center rounded-lg border border-bambu-dark-tertiary overflow-hidden">
+          <button
+            onClick={() => { setAssignedFilter('all'); resetPage(); }}
+            className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+              assignedFilter === 'all'
+                ? 'bg-bambu-green/20 text-bambu-green'
+                : 'text-bambu-gray hover:bg-bambu-dark-tertiary'
+            }`}
+          >
+            {t('inventory.all')}
+          </button>
+          <button
+            onClick={() => { setAssignedFilter('assigned'); resetPage(); }}
+            title={t('inventory.inPrinterHint')}
+            className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+              assignedFilter === 'assigned'
+                ? 'bg-bambu-green/20 text-bambu-green'
+                : 'text-bambu-gray hover:bg-bambu-dark-tertiary'
+            }`}
+          >
+            {t('inventory.inPrinter')}
+          </button>
+          <button
+            onClick={() => { setAssignedFilter('unassigned'); resetPage(); }}
+            title={t('inventory.onShelfHint')}
+            className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+              assignedFilter === 'unassigned'
+                ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400'
+                : 'text-bambu-gray hover:bg-bambu-dark-tertiary'
+            }`}
+          >
+            {t('inventory.onShelf')}
           </button>
         </div>
 

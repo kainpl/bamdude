@@ -6,6 +6,8 @@
 
 ### Added
 
+- **Filter spools by whether they are in a printer at all.** The filament manager could narrow to a storage location, but not to the plainer question behind most of the day: what is loaded right now, and what is still on the shelf to take. A new pair of chips answers it — **In a printer** / **On the shelf** — without asking which printer or which slot. It reads the same assignment the Location column shows, so the two can never disagree, and it works the same whether spools are kept in BamDude or in Spoolman. Like the other filters it is remembered between visits and cleared by **Clear filters**.
+
 - **A finished print can now be repeated from the printer card.** Where a printer is set to have its plate confirmed, the prompt that appeared after a print offered one answer — Clear plate. It now offers two. **Repeat print** sends the same job again, exactly as it was: it keeps every setting the job had, goes to the front of that printer's queue, and prints with its own entry in the archive — the same thing as pressing reprint on the printer itself. **Clear plate** does what it always did. The finished job now waits on the queue until one of the two is pressed, so you can switch the printers off for the night and answer in the morning; nothing expires.
 
     The same pair is in the Telegram bot — which also now offers a plate control after the *last* job in a queue, where previously it showed none at all because the buttons were tied to there being something waiting behind.
