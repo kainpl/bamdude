@@ -74,12 +74,29 @@ def update_log_retention(days: int) -> None:
     are purged on the next midnight rotation, not immediately —
     operators wanting an instant cleanup can manually delete files
     via the System page UI.
+
+    ⚠️ **Also expires MQTT recordings**, which is why this is the one place the
+    setting is applied. Recordings cannot join the rotating handler — the
+    recorder writes from its own thread, deliberately outside ``logging``, so it
+    never blocks paho's network thread — so they share the operator's knob
+    rather than the mechanism. A second setting meaning the same thing is what
+    this avoids. Unlike the rotated log they go **immediately**, because nothing
+    triggers a rollover for them.
     """
-    if _handler is None:
-        return
     safe_days = max(1, int(days))
-    _handler.backupCount = safe_days
-    logger.info("Log retention updated: %d days", safe_days)
+    if _handler is not None:
+        _handler.backupCount = safe_days
+        logger.info("Log retention updated: %d days", safe_days)
+
+    # Lazy: the recorder pulls in the printer manager, and this module is
+    # imported from ``main`` before any of that exists. Best-effort — a failure
+    # to tidy old captures must never stop retention being applied to the log.
+    try:
+        from backend.app.services.mqtt_recorder import mqtt_recorder
+
+        mqtt_recorder.prune(safe_days)
+    except Exception:
+        logger.debug("Could not prune MQTT recordings", exc_info=True)
 
 
 def app_log_filename_namer(default_name: str) -> str:

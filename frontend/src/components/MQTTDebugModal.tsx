@@ -40,12 +40,12 @@ export function MQTTDebugModal({ printerId, printerName, onClose }: MQTTDebugMod
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['mqtt-recording', printerId] });
 
   const enableMutation = useMutation({
-    mutationFn: () => api.setMQTTRecording(printerId, true),
+    mutationFn: () => api.setMqttRecording(printerId, true),
     onSuccess: invalidate,
   });
 
   const disableMutation = useMutation({
-    mutationFn: () => api.setMQTTRecording(printerId, false),
+    mutationFn: () => api.setMqttRecording(printerId, false),
     onSuccess: invalidate,
   });
 

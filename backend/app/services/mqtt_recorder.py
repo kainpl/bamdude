@@ -252,6 +252,50 @@ class MqttRecorder:
             entries.append({"timestamp": stamp, "direction": direction, "topic": topic, "payload": payload})
         return entries
 
+    def prune(self, days: int) -> int:
+        """Drop recordings older than ``days``; returns how many went.
+
+        Shares ``log_retention_days`` with the application log rather than
+        carrying a setting of its own — one knob, one mental model. Recordings
+        cannot join the rotating handler itself: the writer runs on its own
+        thread, deliberately outside ``logging``, so it never blocks paho's
+        network thread. What they share is when the answer is applied, which is
+        why this hangs off ``core.logging_state.update_log_retention``.
+
+        ⚠️ **Never removes a file a recording is currently writing.** A capture
+        started before the cutoff is still running, and deleting it under the
+        writer throws away exactly what somebody is sitting and waiting for —
+        while the badge goes on saying it is being recorded.
+
+        ⚠️ ``days <= 0`` keeps everything. The setting is clamped elsewhere, but
+        a zero arriving here must not read as "delete today's too".
+        """
+        if days <= 0:
+            return 0
+
+        live = set(self._files.values())
+        cutoff = time.time() - days * 86400
+        directory = self.log_dir / "mqtt"
+        if not directory.is_dir():
+            return 0
+
+        removed = 0
+        # Only our own naming — the folder sits inside the operator's log
+        # directory and is not ours to sweep wholesale.
+        for path in directory.glob("mqtt-*-*.log"):
+            if path in live:
+                continue
+            try:
+                if path.stat().st_mtime >= cutoff:
+                    continue
+                path.unlink()
+                removed += 1
+            except OSError:
+                logger.debug("could not prune recording %s", path, exc_info=True)
+        if removed:
+            logger.info("Pruned %d MQTT recording(s) older than %d days", removed, days)
+        return removed
+
     def delete(self, printer_id: int) -> int:
         """Remove this printer's recordings; returns how many files went.
 

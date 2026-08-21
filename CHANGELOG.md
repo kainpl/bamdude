@@ -84,6 +84,10 @@
 
 ### Changed
 
+- **MQTT recordings now expire with the rest of the logs.** They are written into the log folder but were not covered by **Log retention**, so a recording left running quietly kept its file for ever. The same setting now applies to both, and the recordings go as soon as it is applied rather than waiting for a rollover. A recording that is still running is never removed.
+
+- **One MQTT entry in a printer's menu instead of two.** Starting a recording and reading it were separate items; they are the same job, and the debug dialog does both. The dialog is the one entry, and the recording badge on the card is now a button that opens it — so a running recording is a click away rather than a trip back through the menu.
+
 - **The MQTT debug log now shows everything, keeps it, and lets you take it away.** It read a rolling buffer of the last hundred messages held in memory, so on a printer that reports every second the beginning of anything interesting had already scrolled out before you opened the dialog — and it never showed BamDude's own commands, only the handful sent through one particular code path. It now reads the recording file instead: both sides of the conversation, nothing dropped, and still there after a restart. The dialog gained a download button and shows how large the recording has grown, and Clear now throws the file away rather than a buffer. Recording is the same switch as before, in the printer card's menu.
 
     ⚠️ **A recording is not capped and now outlives the dialog.** That is the point — it runs until stopped so an intermittent fault can be caught unattended — but it does mean a session you forget about keeps writing. The size beside the download button is there to make that visible.

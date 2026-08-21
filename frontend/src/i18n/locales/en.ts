@@ -2323,7 +2323,7 @@ export default {
     keepSensorHistory: 'Keep sensor history for',
     historyRetentionDescription: 'Older humidity and temperature data will be automatically deleted',
     logRetention: 'Log retention',
-    logRetentionDescription: 'How many daily log files (bamdude-YYYY-MM-DD.log) to keep on disk. Older archives are auto-deleted on each midnight rotation. Live bamdude.log is unaffected.',
+    logRetentionDescription: 'How many daily log files (bamdude-YYYY-MM-DD.log) to keep on disk. Older archives are auto-deleted on each midnight rotation. Live bamdude.log is unaffected. MQTT recordings older than this go too, as soon as the setting is applied — a recording still running is never removed.',
     autoQueueRouting: 'Auto-Queue Routing',
     autoQueueRoutingDescription: 'Controls how the auto-queue scheduler picks the next pending job to assign.',
     queueShortestFirst: 'Shortest job first',

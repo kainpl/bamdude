@@ -5963,11 +5963,6 @@ export const api = {
   // MQTT recording. One mechanism: the recorder writes a file and this reads it
   // back. The in-memory buffer this replaced held a hundred messages and saw
   // only the commands that went through send_command.
-  setMQTTRecording: (printerId: number, enabled: boolean) =>
-    request<{ enabled: boolean; file: string }>(`/printers/${printerId}/mqtt-recording`, {
-      method: 'POST',
-      body: JSON.stringify({ enabled }),
-    }),
   getMQTTRecording: (printerId: number, limit = 500) =>
     request<MQTTRecordingResponse>(`/printers/${printerId}/mqtt-recording?limit=${limit}`),
   clearMQTTRecording: (printerId: number) =>

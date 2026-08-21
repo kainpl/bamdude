@@ -15,7 +15,6 @@ import {
   Signal,
   Clock,
   MoreVertical,
-  Radio,
   Trash2,
   RefreshCw,
   Box,
@@ -2218,25 +2217,6 @@ function PrinterCard({
   // metrics and the print picker — so flipping this flag puts the printer out
   // of service across every consumer in one place. Used from the overflow menu
   // and EditPrinterModal.
-  // MQTT recording toggle. Nothing caps the file, so the success toast names
-  // that plainly rather than a cheerful "started" — the operator should leave
-  // knowing they have to come back and switch it off.
-  const mqttRecordingMutation = useMutation({
-    mutationFn: (enabled: boolean) => api.setMqttRecording(printer.id, enabled),
-    onSuccess: (_data, enabled) => {
-      queryClient.invalidateQueries({ queryKey: ['printerStatus', printer.id] });
-      showToast(
-        enabled
-          ? t('printers.mqttRecording.toastStarted', { name: printer.name })
-          : t('printers.mqttRecording.toastStopped', { name: printer.name }),
-        'success',
-      );
-    },
-    // 409 means there is no live connection to tee — surfaced, because a silent
-    // failure would leave the operator believing a recording is running.
-    onError: (error: Error) => showToast(error.message || t('printers.mqttRecording.noClient'), 'error'),
-  });
-
   const maintenanceMutation = useMutation({
     mutationFn: (isActive: boolean) => api.updatePrinter(printer.id, { is_active: isActive }),
     onSuccess: (_data, isActive) => {
@@ -3047,13 +3027,22 @@ function PrinterCard({
                       number is the only thing between a recording somebody forgot
                       and a full disk. Shown in every view mode for the same reason. */}
                   {status?.mqtt_recording && (
-                    <span
-                      className="inline-flex items-center gap-1 text-[length:var(--pc-t10,10px)] font-semibold px-1.5 py-0.5 rounded bg-red-900/50 text-red-300 flex-shrink-0"
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 text-[length:var(--pc-t10,10px)] font-semibold px-1.5 py-0.5 rounded bg-red-900/50 text-red-300 flex-shrink-0 hover:bg-red-900/70 transition-colors"
                       title={t('printers.mqttRecording.tooltip')}
+                      onClick={(e) => {
+                        // ⚠️ The badge is the fast way back into a running
+                        // recording. Stopping it lives in the dialog, so hunting
+                        // through the kebab to reach what is already announcing
+                        // itself on the card would be a step too many.
+                        e.stopPropagation();
+                        setShowMQTTDebug(true);
+                      }}
                     >
                       <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />
                       {t('printers.mqttRecording.badge', { size: formatFileSize(status.mqtt_recording_bytes ?? 0) })}
-                    </span>
+                    </button>
                   )}
                   {/* Connection indicator dot for compact mode */}
                   {viewMode === 'compact' && (() => {
@@ -3186,28 +3175,11 @@ function PrinterCard({
                     <Info className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
                     {t('printers.printerInformation')}
                   </button>
-                  {/* MQTT recording toggle. Kept in the kebab rather than on the
-                      card: it is a debugging tool, and the card already tells you
-                      when one is running. */}
-                  <button
-                    className={`w-full px-4 py-2 text-left text-sm flex items-center gap-2 ${
-                      hasPermission('printers:update')
-                        ? 'hover:bg-bambu-dark-tertiary'
-                        : 'opacity-50 cursor-not-allowed'
-                    }`}
-                    disabled={mqttRecordingMutation.isPending || !hasPermission('printers:update')}
-                    onClick={() => {
-                      if (!hasPermission('printers:update')) return;
-                      setShowMenu(false);
-                      mqttRecordingMutation.mutate(!status?.mqtt_recording);
-                    }}
-                    title={!hasPermission('printers:update') ? t('printers.permission.noEdit') : undefined}
-                  >
-                    <Radio className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
-                    {status?.mqtt_recording
-                      ? t('printers.mqttRecording.stop')
-                      : t('printers.mqttRecording.start')}
-                  </button>
+                  {/* ⚠️ There is no separate "start recording" item here any more.
+                      Two MQTT rows in one kebab were one thing wearing two
+                      labels: starting a recording and reading it are the same
+                      job, and the dialog below does both. The badge on the card
+                      is the second way in, for a recording already running. */}
                   {/* Maintenance Mode toggle (#1476) — leverages backend is_active flag */}
                   <button
                     className={`w-full px-4 py-2 text-left text-sm flex items-center gap-2 ${

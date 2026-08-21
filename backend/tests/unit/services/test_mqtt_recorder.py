@@ -9,6 +9,7 @@ on the farm.
 from __future__ import annotations
 
 import json
+import os
 import time
 from unittest.mock import MagicMock
 
@@ -345,3 +346,77 @@ class TestReadingARecordingBack:
         assert rec.is_recording(7) is True
         client.emit("device/X/report", {"print": {"b": 2}})
         assert _wait_for(rec.file_for(7), lambda t: '"b"' in t)
+
+
+class TestRecordingsAgeOutWithTheLogs:
+    """Recordings expire on the same setting as the application log.
+
+    ⚠️ They cannot join the rotating handler itself — the recorder writes from
+    its own thread, deliberately outside ``logging``, so it never blocks paho's
+    network thread. What they share is the operator's knob: one
+    ``log_retention_days``, one mental model, no second setting for the same
+    idea.
+    """
+
+    def _aged(self, rec, name: str, days_old: float):
+        directory = rec.log_dir / "mqtt"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / name
+        path.write_text("x\n", encoding="utf-8")
+        old = time.time() - days_old * 86400
+        os.utime(path, (old, old))
+        return path
+
+    def test_an_old_recording_goes(self, recorder):
+        rec, _ = recorder
+        stale = self._aged(rec, "mqtt-20260101-7.log", days_old=30)
+
+        assert rec.prune(days=14) == 1
+        assert not stale.exists()
+
+    def test_a_recent_one_stays(self, recorder):
+        rec, _ = recorder
+        fresh = self._aged(rec, "mqtt-20260820-7.log", days_old=2)
+
+        assert rec.prune(days=14) == 0
+        assert fresh.exists()
+
+    def test_the_file_being_written_is_never_removed(self, recorder):
+        """⚠️ A recording started before the cutoff is still running. Deleting it
+        under the writer loses the capture somebody is sitting and waiting for —
+        and the badge would still say it is going."""
+        rec, client = recorder
+        path = rec.start(7)
+        client.emit("device/X/report", {"print": {"a": 1}})
+        assert _wait_for(path, lambda t: '"a"' in t)
+        old = time.time() - 99 * 86400
+        os.utime(path, (old, old))
+
+        assert rec.prune(days=1) == 0
+        assert path.exists()
+
+    def test_it_leaves_other_files_alone(self, recorder):
+        """Only our own naming. The directory is inside the log folder."""
+        rec, _ = recorder
+        other = rec.log_dir / "mqtt" / "notes.txt"
+        other.parent.mkdir(parents=True, exist_ok=True)
+        other.write_text("keep me", encoding="utf-8")
+        old = time.time() - 99 * 86400
+        os.utime(other, (old, old))
+
+        rec.prune(days=1)
+
+        assert other.exists()
+
+    def test_no_directory_is_a_noop(self, recorder):
+        rec, _ = recorder
+        assert rec.prune(days=7) == 0
+
+    def test_zero_or_negative_keeps_everything(self, recorder):
+        """⚠️ ``log_retention_days`` is clamped elsewhere, but a 0 arriving here
+        must not be read as "delete everything today"."""
+        rec, _ = recorder
+        stale = self._aged(rec, "mqtt-20260101-7.log", days_old=99)
+
+        assert rec.prune(days=0) == 0
+        assert stale.exists()
