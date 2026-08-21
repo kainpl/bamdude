@@ -10,7 +10,11 @@
 
     The same pair is in the Telegram bot — which also now offers a plate control after the *last* job in a queue, where previously it showed none at all because the buttons were tied to there being something waiting behind.
 
-    **A print started from BambuStudio or the printer's screen can be repeated too**, and it repeats as it ran: the filament slots the file was sliced for and the plate that was printed are taken from what the printer reported at the start, instead of being worked out again from whatever happens to be loaded at the time — which, on a multi-plate file, previously meant the repeat came out as plate 1. Nothing else about such a print is invented: calibration options, macros and preheat were never sent by BamDude, so a repeat uses that printer's defaults for them. A print whose 3MF could not be fetched from the printer cannot be repeated at all, and now says so instead of stopping the queue with an error.
+    **A print started from BambuStudio or the printer's screen can be repeated too**, and it now repeats onto the right plate. The printer announces such a print by filename alone, with no plate in it, so the plate is only known once the file itself has been fetched and read — and the job now picks it up at that moment rather than staying blank. Blank meant the repeat of a multi-plate file came out as plate 1.
+
+    Which AMS slots the file was sliced for is taken from the slicer's own send, when BamDude sees it. It does not always: a slicer working through the cloud rather than over your network never announces the job to BamDude at all, and the printer does not report the slot assignment itself. In that case the job is left honestly empty and the slots are worked out at print time from what is loaded — the same as before. Nothing else about such a print is invented: calibration options, macros and preheat were never sent by BamDude, so a repeat uses that printer's defaults for them.
+
+    A print whose 3MF could not be fetched from the printer cannot be repeated at all, and now says so instead of stopping the queue with an error.
 
     ⚠️ **One long-standing side effect goes with this.** "Only print if the previous one succeeded" reads the queue's own history, and a successful job used to be removed the instant it finished — so a later success could never clear the block left by an earlier failure, and only acknowledging the failure by hand would. On printers that confirm their plate, the successful job now stays long enough to be seen, and releases it as the setting always said it should.
 

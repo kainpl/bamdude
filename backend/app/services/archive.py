@@ -2702,6 +2702,31 @@ class ArchiveService:
                     if matched_id is not None:
                         archive.library_file_id = matched_id
 
+            # The queue row for this print learns the plate the moment the
+            # archive does. A print picked up from a slicer or the printer's
+            # screen has no plate to know at ``on_print_start``: the printer
+            # names the file ``<something>.gcode.3mf``, with no plate in it and
+            # no ``gcode_file`` beside it, so the row is created blank. The
+            # plate exists only once this method has parsed the container.
+            #
+            # It matters because that row is repeatable — and a repeat with no
+            # plate prints plate 1 of a multi-plate file. Reported from a farm.
+            #
+            # ⚠️ Backfill only, mirroring the archive's own rule above: a value
+            # already on the row was chosen by whoever dispatched or queued it,
+            # and a container holding several plates cannot overrule that.
+            # ⚠️ Keyed on ``archive_id`` — the link between this print and its
+            # row. Keying on the printer would reach every row it ever ran.
+            if archive.plate_index is not None:
+                from backend.app.models.print_queue import PrintQueueItem
+
+                await self.db.execute(
+                    update(PrintQueueItem)
+                    .where(PrintQueueItem.archive_id == archive_id)
+                    .where(PrintQueueItem.plate_id.is_(None))
+                    .values(plate_id=archive.plate_index)
+                )
+
             await self.db.commit()
             await self.db.refresh(archive)
             return True

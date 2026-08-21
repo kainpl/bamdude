@@ -1144,9 +1144,24 @@ def _printer_reported_options(data: dict, archive_id: int | None, plate_id: int 
     whatever is loaded on the printer *now*, and that is the weaker source the
     filament-attribution rule exists to rank last: it charges the repeat to
     today's spools rather than to the slots the print was actually sliced for.
-    A missing ``plate_id`` is worse, and quiet in the same way — the recompute
-    reads the filaments of every plate instead of the printed one, and the
-    repeat of a multi-plate file prints plate 1.
+
+    ⚠️ **Both can still come back None here, and often do.** Measured on a
+    BambuStudio-launched print (2026-08-21): the printer announced it as
+    ``Cube_slicer.gcode.3mf`` with no ``gcode_file``, so the plate was
+    unparseable; and no mapping existed at all — the request-topic interceptor
+    never saw a ``project_file`` command (Studio had not gone through the LAN
+    broker), and the live ``mapping`` field was absent too. That is not a fault
+    to paper over:
+
+    * the **plate** is knowable later, from the file itself, and
+      ``ArchiveService.attach_3mf_to_archive`` carries it to the row when the
+      3MF lands;
+    * the **mapping** is not knowable at all in that case. It stays None, and
+      the recompute above is the honest answer. ⚠️ Do NOT fill it late from the
+      live ``mapping`` field: by then AMS filament backup may have rewritten it
+      to a substitute, and ``PrintQueueItem.ams_mapping`` is ranked ABOVE the
+      live field by the attribution chain — writing it there would launder the
+      weakest source into the second-strongest slot.
 
     Exactly two things are recoverable: the slicer's slot-per-filament mapping,
     which the printer echoes in the print payload, and the plate parsed from the
