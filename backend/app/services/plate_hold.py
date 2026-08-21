@@ -72,6 +72,49 @@ async def answer_by_clearing(db: AsyncSession, printer_id: int) -> int:
     return 1
 
 
+async def answer_by_repeating(db: AsyncSession, printer_id: int) -> PrintQueueItem | None:
+    """The operator took the part off and wants another: re-arm the same row.
+
+    The same row, deliberately — not a copy. ``queue_ops.clone_item`` builds a
+    new item from a hand-written field list, and that list had silently dropped
+    ten print options before it was noticed; re-arming carries everything by
+    construction, because it copies nothing.
+
+    Returns the re-armed row, or None when nothing was waiting.
+
+    ⚠️ Does NOT release the plate gate — the callers do, because they are the
+    ones that know a person pressed something. While it is armed
+    ``_is_printer_idle`` is False and the re-armed row would never dispatch.
+    """
+    from backend.app.services.queue_counters import update_queue_counters
+    from backend.app.services.queue_ops import bump_block_to_top
+
+    row = await waiting_row(db, printer_id)
+    if row is None:
+        return None
+
+    row.status = "pending"
+    # The archive belongs to the print that finished; this run will get its own.
+    row.archive_id = None
+    row.completed_at = None
+    row.started_at = None
+    row.error_message = None
+    row.waiting_reason = None
+    # ⚠️ The m108 cap counts attempts at dispatching THIS row. Left alone, a
+    # series of repeats spends it and the row fails "after N attempts" although
+    # every attempt printed.
+    row.dispatch_attempts = 0
+    await db.flush()
+
+    # "Again" means now: front of the queue, renumbering the rest properly.
+    await bump_block_to_top(db, row.queue_id, [row.id])
+    await update_queue_counters(db, row.queue_id)
+    await db.commit()
+    await db.refresh(row)
+    logger.info("Repeat requested on printer %s — re-armed queue row %s", printer_id, row.id)
+    return row
+
+
 async def waiting_row(db: AsyncSession, printer_id: int) -> PrintQueueItem | None:
     """The finished row this printer is waiting to be asked about, if any.
 

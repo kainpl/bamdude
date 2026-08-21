@@ -3341,6 +3341,40 @@ async def clear_plate(
     return {"success": True, "message": "Plate cleared, next print will start shortly"}
 
 
+@router.post("/{printer_id}/repeat-print")
+async def repeat_print(
+    printer_id: int,
+    _=RequirePermission(Permission.PRINTERS_CLEAR_PLATE),
+    db: AsyncSession = Depends(get_db),
+):
+    """Print the job that just finished again — the card's other answer to a full plate.
+
+    The same thing as pressing reprint on the printer itself: the row that was
+    waiting is re-armed in place, put at the front, and the ordinary dispatcher
+    takes it from there, producing a new archive. The row is re-armed rather
+    than copied because a copy list cannot be trusted to stay complete — the one
+    behind ``clone_item`` had silently dropped ten print options.
+
+    ⚠️ Releases the plate gate as part of the answer. The operator has taken the
+    part off — that is what pressing this means — and while the gate is armed
+    ``_is_printer_idle`` is False, so the re-armed row would never dispatch.
+
+    Same permission as Clear plate: they are two answers to one question.
+    """
+    from backend.app.services.plate_hold import answer_by_repeating
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(404, "Printer not found")
+
+    row = await answer_by_repeating(db, printer_id)
+    if row is None:
+        raise HTTPException(409, "No finished print is waiting on this printer")
+
+    printer_manager.set_awaiting_plate_clear(printer_id, False)
+    return {"success": True, "item_id": row.id}
+
+
 @router.post("/{printer_id}/print/pause")
 async def pause_print(
     printer_id: int,

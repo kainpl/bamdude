@@ -207,7 +207,10 @@ def test_every_place_that_releases_the_gate_answers_the_row():
     for path in root.rglob("*.py"):
         text = path.read_text(encoding="utf-8")
         for match in re.finditer(r"set_awaiting_plate_clear\([^)]*False\)", text):
-            window = text[match.start() : match.start() + 1200]
+            # ⚠️ Both directions: the answer legitimately comes before the
+            # release (repeat_print re-arms first, then opens the gate) as well
+            # as after it (clear_plate releases, then drops the row).
+            window = text[max(0, match.start() - 1200) : match.start() + 1200]
             if any(phrase in window for phrase in allowed):
                 continue
             offenders.append(f"{path.relative_to(root).as_posix()}:{text[: match.start()].count(chr(10)) + 1}")
