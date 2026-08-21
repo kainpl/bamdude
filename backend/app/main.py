@@ -8110,6 +8110,19 @@ async def lifespan(app: FastAPI):
     start_expected_prints_cleanup()
     start_label_reclaim()
 
+    # ⚠️ A scan the previous process was running is gone with it, and the row it
+    # left says `running` — which reads on screen as progress AND makes the
+    # duplicate guard refuse every future scan of that folder. Swept before
+    # anything can look at it.
+    try:
+        from backend.app.services.library_scan import sweep_interrupted_jobs
+
+        swept = await sweep_interrupted_jobs()
+        if swept:
+            logging.getLogger(__name__).info("failed %d library scan(s) left running by a restart", swept)
+    except Exception:
+        logging.getLogger(__name__).warning("library scan sweep failed", exc_info=True)
+
     # Event-loop stall watchdog: dumps all thread stacks to stderr if the loop
     # freezes (#1486 — silent "container hangs after adding a printer" reports).
     from backend.app.services.loop_watchdog import start_loop_watchdog
@@ -8267,6 +8280,10 @@ async def lifespan(app: FastAPI):
         logging.warning("Failed to shut down camera broadcasters: %s", e)
     stop_expected_prints_cleanup()
     stop_label_reclaim()
+
+    from backend.app.services.library_scan import cancel_running_scans
+
+    cancel_running_scans()
     printer_manager.disconnect_all()
     await close_spoolman_client()
 

@@ -19,8 +19,12 @@ def test_a_job_starts_queued():
     assert LibraryScanJob.__table__.c.status.default.arg == "queued"
 
 
-def test_a_job_goes_when_its_folder_goes():
-    """A scan of a folder nobody has any more is not history worth keeping."""
+def test_the_ddl_asks_for_a_cascade():
+    """⚠️ Asked for, and honoured only by PostgreSQL. SQLite does not enforce
+    foreign keys unless ``PRAGMA foreign_keys = ON``, which this codebase never
+    sets — see test_a_deleted_folder_leaves_its_scan_history_harmless for what
+    actually happens there.
+    """
     fk = next(iter(LibraryScanJob.__table__.c.folder_id.foreign_keys))
     assert fk.ondelete == "CASCADE"
 

@@ -23,6 +23,11 @@ class LibraryScanJob(Base):
     __tablename__ = "library_scan_jobs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    #: ⚠️ CASCADE is honoured by PostgreSQL and **not** by SQLite here: this
+    #: codebase never sets ``PRAGMA foreign_keys = ON``, so on SQLite a deleted
+    #: folder leaves its job rows behind. They are inert — nothing lists them and
+    #: they name a folder that is gone — and turning enforcement on globally to
+    #: fix one table would change how every table behaves.
     folder_id: Mapped[int] = mapped_column(Integer, ForeignKey("library_folders.id", ondelete="CASCADE"), index=True)
     #: ``queued`` → ``running`` → ``finished`` | ``failed``.
     #:

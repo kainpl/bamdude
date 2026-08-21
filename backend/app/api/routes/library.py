@@ -15,8 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
-from fastapi.responses import FileResponse as FastAPIFileResponse
-from sqlalchemy import distinct, func, select, update
+from fastapi.responses import FileResponse as FastAPIFileResponse, JSONResponse
+from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -28,7 +28,6 @@ from backend.app.core.auth import (
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
-from backend.app.core.tasks import spawn_background_task
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile, LibraryFileTag, LibraryFolder
 from backend.app.models.library_project_links import library_file_projects, library_folder_projects
@@ -76,7 +75,7 @@ from backend.app.services.library_helpers import (
     sliced_gcode_in_3mf,
     sync_system_tags,
 )
-from backend.app.services.library_ingest import IngestResult, external_hash_is_stale, find_reusable_row
+from backend.app.services.library_ingest import IngestResult, find_reusable_row
 from backend.app.services.library_trash import library_trash_service
 from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing
 from backend.app.services.print_plan import inherit_folder_projects, sync_plan_for_file, sync_plan_for_folder
@@ -1771,349 +1770,75 @@ async def _backfill_external_mesh_thumbnails(folder_ids: list[int]) -> None:
 async def scan_external_folder(
     folder_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
+    user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
 ):
-    """Scan an external folder and sync files to the database.
+    """Start a scan of an external folder and return straight away.
 
-    Discovers new files, removes DB entries for deleted files.
-    Does not copy files - stores the external path directly.
+    ⚠️ **This used to do the work and answer with counts.** It walked the share,
+    wrote every row and only then replied — holding SQLite's write lock the
+    whole time, so on a NAS mount anything else that tried to write failed with
+    ``database is locked`` after fifteen seconds. The answer shape changed
+    because the old one could only be produced by keeping the request open for
+    the entire scan, which was the bug.
+
+    The work now lives in ``services/library_scan``; progress arrives on the
+    WebSocket and the job row can be polled.
     """
+    from backend.app.services.library_scan import active_job_id, start_scan
+
     result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))
     folder = result.scalar_one_or_none()
-
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
     if not folder.is_external or not folder.external_path:
         raise HTTPException(status_code=400, detail="Not an external folder")
 
-    ext_path = Path(folder.external_path)
-    if not ext_path.exists() or not ext_path.is_dir():
-        raise HTTPException(status_code=400, detail=f"External path is not accessible: {folder.external_path}")
-
-    # Collect all existing child external subfolder IDs (walk parent chain to find descendants)
-    all_folder_ids = {folder_id}
-    queue = [folder_id]
-    while queue:
-        parent = queue.pop()
-        children_result = await db.execute(select(LibraryFolder.id).where(LibraryFolder.parent_id == parent))
-        for (child_id,) in children_result.all():
-            all_folder_ids.add(child_id)
-            queue.append(child_id)
-
-    # Get existing DB files across ALL folder IDs (root + subfolders)
-    existing_result = await db.execute(
-        select(LibraryFile).where(LibraryFile.folder_id.in_(all_folder_ids), LibraryFile.is_external.is_(True))
-    )
-    existing_files = {f.file_path: f for f in existing_result.scalars().all()}
-
-    # Build folder cache mapping relative paths to folder IDs
-    folder_cache: dict[str, int] = {"": folder_id}
-
-    # Scan the directory
-    added = 0
-    removed = 0
-    # Discovered files whose content the library already holds. Counted and
-    # reported: the scan is also how people browse a mount, so a silently
-    # skipped file reads as a scan that missed something.
-    skipped_duplicates = 0
-    found_paths = set()
-    # Directory mtimes gathered during the walk (#2680), applied in one pass
-    # after it. Collected by id rather than written inline because the walk sees
-    # a path while the row it belongs to may have been created — or may already
-    # have existed — several statements earlier. Files need no such map: their
-    # rows are live ORM objects here, so the scan assigns straight to them.
-    folder_mtimes: dict[int, datetime] = {}
-
-    for dirpath, dirnames, filenames in os.walk(ext_path):
-        # Filter hidden directories unless configured
-        if not folder.external_show_hidden:
-            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-
-        # Compute relative directory path from ext_path
-        rel_dir = str(Path(dirpath).relative_to(ext_path)).replace("\\", "/")
-        if rel_dir == ".":
-            rel_dir = ""
-
-        # Create subfolder chain in DB when new directories are encountered
-        target_folder_id = folder_cache.get(rel_dir)
-        if target_folder_id is None:
-            parts = rel_dir.split("/")
-            current_path = ""
-            current_parent_id = folder_id
-            for part in parts:
-                current_path = f"{current_path}/{part}" if current_path else part
-                if current_path in folder_cache:
-                    current_parent_id = folder_cache[current_path]
-                else:
-                    # Create subfolder in DB
-                    new_folder = LibraryFolder(
-                        name=part,
-                        parent_id=current_parent_id,
-                        is_external=True,
-                        external_path=str(
-                            ext_path / current_path
-                        ),  # SEC-PATH-OK: current_path = relative_to(ext_path) of an os.walk'd on-disk dir, not request input
-                        external_show_hidden=folder.external_show_hidden,
-                    )
-                    db.add(new_folder)
-                    await db.flush()
-                    folder_cache[current_path] = new_folder.id
-                    all_folder_ids.add(new_folder.id)
-                    current_parent_id = new_folder.id
-            target_folder_id = folder_cache[current_path]
-
-        # The directory's own mtime (#2680). Recorded on every pass, not only
-        # when the row is created: a folder whose contents changed since the
-        # last scan has a new mtime, and that is the whole point of the column.
-        with contextlib.suppress(OSError):
-            folder_mtimes[target_folder_id] = _mtime_to_utc(os.stat(dirpath).st_mtime)
-
-        for filename in filenames:
-            # Skip hidden files unless configured
-            if not folder.external_show_hidden and filename.startswith("."):
-                continue
-
-            filepath = (
-                Path(dirpath) / filename
-            )  # SEC-PATH-OK: dirpath/filename come from os.walk(ext_path); real_path.relative_to(ext_path) symlink-escape guard just below
-            ext = filepath.suffix.lower()
-
-            # Check for compound extensions like .gcode.3mf
-            if ext not in _SCANNABLE_EXTENSIONS:
-                # Check compound
-                compound = "".join(filepath.suffixes[-2:]).lower() if len(filepath.suffixes) >= 2 else ""
-                if compound not in _SCANNABLE_EXTENSIONS:
-                    continue
-
-            # Resolve symlinks and ensure still under external_path
-            try:
-                real_path = filepath.resolve()
-                real_path.relative_to(ext_path.resolve())
-            except (ValueError, OSError):
-                continue  # Symlink escapes the external dir
-
-            file_path_str = str(filepath)
-            found_paths.add(file_path_str)
-
-            # Stat BEFORE the already-tracked check (#2680). A re-scan has to
-            # refresh the mtime of files it already knows about — that is the
-            # normal case for a mount that was added once and edited since, and
-            # skipping straight to ``continue`` is why nothing ever recorded it.
-            try:
-                stat = filepath.stat()
-            except OSError:
-                continue
-            fs_modified_at = _mtime_to_utc(stat.st_mtime)
-
-            tracked = existing_files.get(file_path_str)
-            if tracked is not None:
-                # Assigned only when it actually moved. A no-op write would
-                # still fire ``onupdate`` and stamp ``updated_at`` on every row
-                # of every scan — re-creating the very tie this column exists to
-                # break, for anyone still falling back to it.
-                if tracked.fs_modified_at != fs_modified_at:
-                    tracked.fs_modified_at = fs_modified_at
-                # Re-hash only what changed. ``external_hash_is_stale`` answers
-                # off the size and mtime already stored on the row, so a mount
-                # that has not moved costs no reads at all — which is what makes
-                # hashing mounts affordable in the first place.
-                if external_hash_is_stale(tracked, size=stat.st_size, mtime=fs_modified_at):
-                    try:
-                        tracked.file_hash = calculate_file_hash(filepath)
-                        tracked.file_size = stat.st_size
-                    except OSError:
-                        pass  # unreadable right now; the next scan tries again
-                continue  # Already tracked
-
-            file_type = detect_file_type(filepath.name)
-            # Sliced 3MFs (`.gcode.3mf`) collapse to file_type='gcode' but
-            # still need the 3MF parser path for thumbnail + plate cache.
-            # Branch by container suffix, not primary type.
-            is_3mf_container = filepath.name.lower().endswith(".3mf")
-
-            # Extract thumbnail for 3mf files
-            thumbnail_path = None
-            file_metadata = None
-            if is_3mf_container:
-                try:
-                    parser = ThreeMFParser(str(filepath))
-                    meta = parser.parse()
-                    if meta:
-                        file_metadata = _clean_3mf_metadata(meta)
-                    thumb_data = parser.extract_thumbnail()
-                    if thumb_data:
-                        thumb_dir = get_library_thumbnails_dir()
-                        thumb_filename = f"{uuid.uuid4().hex}.png"
-                        thumb_full = (
-                            thumb_dir / thumb_filename
-                        )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
-                        thumb_full.write_bytes(thumb_data)
-                        thumbnail_path = to_relative_path(thumb_full)
-                    # Same per-plate cache populated as the upload route —
-                    # external 3MFs imported via folder-scan benefit too.
-                    try:
-                        import zipfile as _zf
-
-                        from backend.app.services.archive import parse_plates_from_3mf
-
-                        with _zf.ZipFile(str(filepath), "r") as _zfh:
-                            plates_payload = parse_plates_from_3mf(_zfh)
-                        if plates_payload and file_metadata is not None:
-                            file_metadata["plates"] = plates_payload
-                            file_metadata["is_multi_plate"] = len(plates_payload) > 1
-                    except Exception as _pe:
-                        logger.debug("Per-plate parse for external scan failed (non-critical): %s", _pe)
-                except Exception as e:
-                    logger.debug("Failed to extract metadata from external 3mf %s: %s", filepath, e)
-
-            # Mesh thumbnails (STL + OBJ — trimesh handles both via extension
-            # dispatch) are DEFERRED to a background task spawned after the
-            # scan's db.commit() — see _backfill_external_mesh_thumbnails.
-            # Doing them inline would block the HTTP request for minutes on a
-            # large NAS mount (each file is a trimesh.load + matplotlib render,
-            # ~1-5s) and the FE modal would time out before the commit ran —
-            # the original symptom in upstream Bambuddy #1299 where
-            # subdirectories never showed up because nothing got committed.
-
-            # Extract gcode thumbnail — only for raw .gcode files; sliced
-            # .gcode.3mf already went through the 3MF parser branch above.
-            if file_type == "gcode" and not is_3mf_container and thumbnail_path is None:
-                thumb_data = extract_gcode_thumbnail(filepath)
-                if thumb_data:
-                    thumb_dir = get_library_thumbnails_dir()
-                    thumb_filename = f"{uuid.uuid4().hex}.png"
-                    thumb_full = (
-                        thumb_dir / thumb_filename
-                    )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
-                    thumb_full.write_bytes(thumb_data)
-                    thumbnail_path = to_relative_path(thumb_full)
-
-            # Create thumbnail for image files
-            if ext.lower() in IMAGE_EXTENSIONS and thumbnail_path is None:
-                thumbnail_path_str = create_image_thumbnail(filepath, get_library_thumbnails_dir())
-                if thumbnail_path_str:
-                    thumbnail_path = to_relative_path(Path(thumbnail_path_str))
-
-            # ⚠️ This used to write ``file_hash=None`` — "skip hashing external
-            # files for performance" — which put a whole mount outside
-            # deduplication. That decision predates m129 putting the on-disk
-            # mtime on the row: with size and mtime stored, the first scan pays
-            # a full read and every scan after it re-reads only what changed
-            # (``external_hash_is_stale``). A discovered file whose content the
-            # library already holds gets no row of its own, and the scan says so
-            # rather than looking like it missed something.
-            content_hash = calculate_file_hash(filepath)
-            reusable = await find_reusable_row(db, content_hash=content_hash)
-            if reusable is not None and reusable[1]:
-                skipped_duplicates += 1
-                continue
-
-            db_file = LibraryFile(
-                folder_id=target_folder_id,
-                is_external=True,
-                filename=filename,
-                file_path=file_path_str,
-                file_type=file_type,
-                skip_objects_supported=skip_objects_supported_from_metadata(file_metadata),
-                file_size=stat.st_size,
-                file_hash=content_hash,
-                thumbnail_path=thumbnail_path,
-                file_metadata=_without_print_name(file_metadata),
-                fs_modified_at=fs_modified_at,
-            )
-            db.add(db_file)
-            # Flushed per row rather than once after the scan: the associations
-            # key off the id, and holding every new row unflushed to save a
-            # round trip would make a mid-scan failure lose the whole batch's
-            # tags rather than just its own.
-            await db.flush()
-            await sync_system_tags(db, db_file)
-            added += 1
-
-    # Remove DB entries for files that no longer exist on disk.
-    #
-    # Gate on actual disk presence, NOT merely absence from found_paths:
-    # found_paths only collects extensions in _SCANNABLE_EXTENSIONS, so a record
-    # for any other file the upload path admitted — a .md README being the
-    # reported case (#2520) — would otherwise be read as "deleted from disk" and
-    # purged on EVERY scan while the file sits there untouched. os.path.exists
-    # keeps those records; genuinely-deleted files are still cleaned up. For
-    # external folders file_path is the absolute on-disk path.
-    for path_str, db_file in existing_files.items():
-        if path_str not in found_paths and not os.path.exists(path_str):
-            # Clean up thumbnail if we generated one
-            if db_file.thumbnail_path:
-                try:
-                    abs_thumb = to_absolute_path(db_file.thumbnail_path)
-                    if abs_thumb and abs_thumb.exists():
-                        abs_thumb.unlink()
-                except OSError:
-                    pass
-            await db.delete(db_file)
-            removed += 1
-
-    # Clean up orphaned subfolders (directories that no longer exist on disk)
-    # Re-fetch all child external subfolders
-    all_sub_result = await db.execute(
-        select(LibraryFolder).where(
-            LibraryFolder.id.in_(all_folder_ids),
-            LibraryFolder.id != folder_id,
-        )
-    )
-    all_subfolders = all_sub_result.scalars().all()
-
-    # Process deepest-first (sort by path depth descending)
-    all_subfolders.sort(key=lambda f: f.external_path.count("/") if f.external_path else 0, reverse=True)
-
-    for sub in all_subfolders:
-        if sub.external_path and not Path(sub.external_path).exists():
-            # Delete only if folder has no files and no child folders remaining
-            file_count = await db.execute(select(func.count(LibraryFile.id)).where(LibraryFile.folder_id == sub.id))
-            if (file_count.scalar() or 0) > 0:
-                continue
-            child_count = await db.execute(
-                select(func.count(LibraryFolder.id)).where(LibraryFolder.parent_id == sub.id)
-            )
-            if (child_count.scalar() or 0) > 0:
-                continue
-            await db.delete(sub)
-
-    # Stamp the directories' on-disk mtimes (#2680). After the orphan cleanup so
-    # a folder deleted in the same pass isn't resurrected by an UPDATE — os.walk
-    # only visits directories that exist, so the two sets are disjoint in
-    # practice, but the ordering makes that independent of it staying true.
-    for stamped_folder_id, mtime in folder_mtimes.items():
-        await db.execute(
-            update(LibraryFolder).where(LibraryFolder.id == stamped_folder_id).values(fs_modified_at=mtime)
+    # ⚠️ Reachability is NOT checked here. On a hung mount `exists()` blocks, and
+    # blocking this handler is what the whole change exists to stop — the worker
+    # asks the same question in a thread and fails the job with the reason.
+    existing = await active_job_id(db, folder_id)
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"a scan of this folder is already running (job {existing})",
         )
 
-    await db.commit()
+    job_id = await start_scan(folder_id, user.id if user else None)
+    return JSONResponse(status_code=202, content={"job_id": job_id, "status": "queued"})
 
-    # Spawn mesh-thumbnail backfill in the background — the scan endpoint
-    # returns immediately so the FE modal closes and subdirectories are
-    # visible right away; thumbnails fill in over the following seconds /
-    # minutes as the task processes each STL/OBJ file. Survives FE refresh
-    # — the task lives in the FastAPI event loop, not the request scope.
-    # ``folder_cache.values()`` covers the root + every pre-existing
-    # subfolder + every subfolder created during this scan;
-    # ``all_folder_ids`` on its own would miss the newly-created ones.
-    # Fire-and-forget like the other route-level background scans
-    # (discovery / tasmota); the task opens its own session and the
-    # autouse leaked-task drain handles it in tests (#1299).
-    spawn_background_task(
-        _backfill_external_mesh_thumbnails(list(set(folder_cache.values()))),
-        name=f"mesh-backfill-folder-{folder_id}",
-    )
 
+@router.get("/scan-jobs/{job_id}")
+async def get_scan_job(
+    job_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
+):
+    """One scan's state.
+
+    For a client that missed the socket or reloaded mid-scan — the events are
+    the fast path, not the only one.
+    """
+    from backend.app.models.library_scan import LibraryScanJob
+
+    job = await db.get(LibraryScanJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Scan job not found")
     return {
-        "status": "success",
-        "added": added,
-        "removed": removed,
-        "skipped_duplicates": skipped_duplicates,
+        "id": job.id,
+        "folder_id": job.folder_id,
+        "status": job.status,
+        "files_total": job.files_total,
+        "files_seen": job.files_seen,
+        "files_added": job.files_added,
+        "files_updated": job.files_updated,
+        "files_removed": job.files_removed,
+        "folders_added": job.folders_added,
+        "folders_removed": job.folders_removed,
+        "skipped_deletions": job.skipped_deletions,
+        "error": job.error,
+        "started_at": job.started_at,
+        "finished_at": job.finished_at,
     }
-
-
-# ============ File Endpoints ============
 
 
 @router.get("/files", response_model=list[FileListResponse])
