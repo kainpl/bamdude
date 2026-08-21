@@ -1044,7 +1044,7 @@ async def maybe_register_external_stagger(printer_id: int) -> None:
 
 
 async def mark_queue_printing_for_printer(
-    printer_id: int, item_id: int | None = None, *, archive_id: int | None = None
+    printer_id: int, item_id: int | None = None, *, archive_id: int | None = None, options: dict | None = None
 ) -> None:
     """Ensure the printer's queue reflects the real busy state.
 
@@ -1064,6 +1064,17 @@ async def mark_queue_printing_for_printer(
     ``printing`` on one queue is exactly the state ``on_print_complete`` warns
     about as "BUG: Multiple queue items in 'printing' status", and it would
     attribute the print to whichever came back first.
+
+    ``options`` is what the PRINTER told us about a print BamDude did not send,
+    and it is only ever used for a row being created here. Repeating such a row
+    dispatches it again, so anything dropped now is silently wrong on the
+    repeat — reported from a farm whose repeat of a BambuStudio print went out
+    with no AMS mapping at all.
+
+    ⚠️ Only what the printer actually reports belongs in it. The calibration
+    flags, the macros, the preheat override and the gcode injection are
+    parameters of a ``project_file`` command we never sent and the printer does
+    not report back; they keep their defaults rather than a guess.
     """
     from backend.app.models.print_queue import PrintQueueItem
     from backend.app.models.printer_queue import PrinterQueue
@@ -1100,7 +1111,9 @@ async def mark_queue_printing_for_printer(
                     existing.archive_id = archive_id
                     await db.commit()
             else:
-                created = await claim_printer_for_direct_print(db, printer_id=printer_id, archive_id=archive_id)
+                created = await claim_printer_for_direct_print(
+                    db, printer_id=printer_id, archive_id=archive_id, options=options
+                )
                 if created is not None:
                     item_id = created.id
 
@@ -1116,6 +1129,36 @@ def _get_start_ams_mapping(data: dict, archive_id: int | None) -> list[int] | No
     if not stored_ams_mapping and archive_id:
         stored_ams_mapping = _print_ams_mappings.get(archive_id)
     return stored_ams_mapping
+
+
+def _printer_reported_options(data: dict, archive_id: int | None, plate_id: int | None) -> dict:
+    """The print options a print BamDude did not send can still be known from.
+
+    A print started from BambuStudio or the printer's screen gets a queue row
+    like any other, and that row is repeatable — so an option dropped here is
+    silently wrong on the repeat. Reported from a farm: the row came out with
+    both columns empty.
+
+    ⚠️ Empty does not mean the repeat fails, which is why this went unnoticed.
+    ``PrintScheduler._ensure_ams_mapping`` recomputes a missing mapping from
+    whatever is loaded on the printer *now*, and that is the weaker source the
+    filament-attribution rule exists to rank last: it charges the repeat to
+    today's spools rather than to the slots the print was actually sliced for.
+    A missing ``plate_id`` is worse, and quiet in the same way — the recompute
+    reads the filaments of every plate instead of the printed one, and the
+    repeat of a multi-plate file prints plate 1.
+
+    Exactly two things are recoverable: the slicer's slot-per-filament mapping,
+    which the printer echoes in the print payload, and the plate parsed from the
+    filename.
+
+    ⚠️ Nothing else is guessed. The calibration flags, the macros, the preheat
+    override and the gcode injection are parameters of a ``project_file``
+    command we never sent and the printer does not report back — a plausible
+    default invented here would be indistinguishable from one the operator
+    chose.
+    """
+    return {"ams_mapping": _get_start_ams_mapping(data, archive_id), "plate_id": plate_id}
 
 
 def _extract_filament_data_from_mqtt(data: dict, ams_mapping: list[int] | None = None) -> dict[str, str]:
@@ -3736,8 +3779,14 @@ async def on_print_start(printer_id: int, data: dict):
                 check_name,
             )
             _active_prints[(printer_id, existing_archive.filename)] = existing_archive.id
-            # Ensure queue reflects the busy state.
-            await mark_queue_printing_for_printer(printer_id, archive_id=existing_archive.id)
+            # Ensure queue reflects the busy state. The options are consulted
+            # only if no row exists yet — a re-trigger normally adopts the row
+            # the first pass created, which knows more than we do here.
+            await mark_queue_printing_for_printer(
+                printer_id,
+                archive_id=existing_archive.id,
+                options=_printer_reported_options(data, existing_archive.id, live_plate_id),
+            )
             # Also set up energy tracking if not already tracked (#941: persisted column)
             if existing_archive.energy_start_kwh is None:
                 await _record_energy_start(existing_archive, printer_id, db, context="existing-printing")
@@ -3846,7 +3895,13 @@ async def on_print_start(printer_id: int, data: dict):
             _active_prints[(printer_id, subtask_name)] = archive.id
 
         # Ensure the queue reflects the busy state (external / direct print).
-        await mark_queue_printing_for_printer(printer_id, archive_id=archive.id)
+        # This is where an external print's row is born, so it is also the one
+        # chance to record what the printer told us about it.
+        await mark_queue_printing_for_printer(
+            printer_id,
+            archive_id=archive.id,
+            options=_printer_reported_options(data, archive.id, live_plate_id),
+        )
         await maybe_register_external_stagger(printer_id)
 
         # #941: the plug's lifetime counter, read at the real start of the
@@ -4140,7 +4195,11 @@ async def on_print_start(printer_id: int, data: dict):
                         if subtask_name:
                             _active_prints[(printer_id, f"{subtask_name}.3mf")] = hash_match.id
                             _active_prints[(printer_id, subtask_name)] = hash_match.id
-                        await mark_queue_printing_for_printer(printer_id, archive_id=hash_match.id)
+                        await mark_queue_printing_for_printer(
+                            printer_id,
+                            archive_id=hash_match.id,
+                            options=_printer_reported_options(data, hash_match.id, live_plate_id),
+                        )
                         if hash_match.energy_start_kwh is None:
                             await _record_energy_start(hash_match, printer_id, db, context="hash-adoption")
                         if not notification_sent:

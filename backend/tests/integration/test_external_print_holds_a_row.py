@@ -190,3 +190,83 @@ class TestTheRowSurvivesItsOwnCompletion:
         row = (await _printing_rows(db_session, queue.id))[0]
 
         assert await _completion_belongs_to_item(db_session, row, {"subtask_name": "Something else"}) is False
+
+
+class TestTheRowCarriesWhatThePrinterToldUs:
+    """⚠️ Reported from a farm: repeating a print picked up from BambuStudio went
+    out with no AMS mapping.
+
+    The row was created with no options at all, so every print-option column took
+    its default — and the two the printer DOES tell us about were thrown away.
+    The mapping matters most: without it the reprint is either recomputed from
+    whatever is loaded now, or silently downgraded to the external spool.
+
+    ⚠️ Only what the printer actually reports is filled. The calibration flags,
+    the macros, the preheat override and gcode injection are parameters of a
+    ``project_file`` command BamDude never sent, and the printer does not report
+    them back — those stay at their defaults, and no guess is made.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_slicers_slot_mapping_is_kept(self, db_session, printer_factory, main_db):
+        printer, queue = await _queue(db_session, printer_factory)
+
+        await mark_queue_printing_for_printer(
+            printer.id, archive_id=None, options={"ams_mapping": [2, -1], "plate_id": 3}
+        )
+
+        row = (await _printing_rows(db_session, queue.id))[0]
+        assert row.ams_mapping == "[2, -1]"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_plate_is_kept(self, db_session, printer_factory, main_db):
+        """A multi-plate file repeated without this prints plate 1."""
+        printer, queue = await _queue(db_session, printer_factory)
+
+        await mark_queue_printing_for_printer(printer.id, archive_id=None, options={"plate_id": 3})
+
+        row = (await _printing_rows(db_session, queue.id))[0]
+        assert row.plate_id == 3
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_no_options_still_works(self, db_session, printer_factory, main_db):
+        """A printer that reported neither must still get its row."""
+        printer, queue = await _queue(db_session, printer_factory)
+
+        await mark_queue_printing_for_printer(printer.id)
+
+        row = (await _printing_rows(db_session, queue.id))[0]
+        assert row.ams_mapping is None
+        assert row.plate_id is None
+
+
+class TestOnlyWhatThePrinterSaid:
+    """⚠️ The guard on the helper: two keys, never a third.
+
+    Everything else a print carries is a parameter of a ``project_file`` command
+    BamDude never sent. Inventing a plausible default for one of those would put
+    a value the operator never chose onto a row that gets dispatched for real —
+    and it would look exactly like a value they did choose.
+    """
+
+    def test_it_reports_the_mapping_and_the_plate(self):
+        from backend.app.main import _printer_reported_options
+
+        assert _printer_reported_options({"ams_mapping": [2, -1]}, None, 3) == {
+            "ams_mapping": [2, -1],
+            "plate_id": 3,
+        }
+
+    def test_it_invents_nothing_else(self):
+        from backend.app.main import _printer_reported_options
+
+        assert set(_printer_reported_options({}, None, None)) == {"ams_mapping", "plate_id"}
+
+    def test_a_silent_printer_yields_no_values(self):
+        """Absent is absent — ``_item_columns`` then leaves both columns NULL."""
+        from backend.app.main import _printer_reported_options
+
+        assert _printer_reported_options({}, None, None) == {"ams_mapping": None, "plate_id": None}
