@@ -1228,6 +1228,9 @@ export default {
     savingProgress: 'Збереження {{current}}/{{total}}...',
     nextInQueue: 'Наступний у черзі',
     clearPlate: 'Очистити стіл і почати наступний',
+    repeatPrint: 'Повторити друк',
+    clearPlateShort: 'Очистити стіл',
+    repeatPrintSuccess: 'Друкуємо ще раз',
     clearPlateSuccess: 'Стіл очищено - готовий до наступного друку',
     plateReady: 'Стіл очищено - готовий до наступного друку',
     // Sections

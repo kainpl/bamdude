@@ -204,6 +204,17 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
   });
 
   // Clear plate mutation
+  // The other answer to a full plate — see services/plate_hold on the backend.
+  const repeatPrintMutation = useMutation({
+    mutationFn: () => api.repeatPrint(queue.printer_id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['queue', queue.printer_id] });
+      queryClient.invalidateQueries({ queryKey: ['printerStatus', queue.printer_id] });
+      showToast(t('queue.repeatPrintSuccess'), 'success');
+    },
+    onError: (error: Error) => showToast(error.message, 'error'),
+  });
+
   const clearPlateMutation = useMutation({
     mutationFn: () => api.clearPlate(queue.printer_id),
     onSuccess: () => {
@@ -854,18 +865,32 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
                 {t('queue.plateReady')}
               </div>
             ) : (
-              <button
-                onClick={() => clearPlateMutation.mutate()}
-                disabled={clearPlateMutation.isPending || !hasPermission('printers:clear_plate')}
-                className="w-full py-2 px-3 rounded-lg bg-bambu-green/20 border border-bambu-green/40 text-bambu-green hover:bg-bambu-green/30 transition-colors text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
-              >
-                {clearPlateMutation.isPending ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <CircleCheck className="w-4 h-4" />
-                )}
-                {t('queue.clearPlate')}
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => repeatPrintMutation.mutate()}
+                  disabled={repeatPrintMutation.isPending || !hasPermission('printers:clear_plate')}
+                  className="flex-1 py-2 px-3 rounded-lg bg-bambu-green/20 border border-bambu-green/40 text-bambu-green hover:bg-bambu-green/30 transition-colors text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {repeatPrintMutation.isPending ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <RotateCcw className="w-4 h-4" />
+                  )}
+                  {t('queue.repeatPrint')}
+                </button>
+                <button
+                  onClick={() => clearPlateMutation.mutate()}
+                  disabled={clearPlateMutation.isPending || !hasPermission('printers:clear_plate')}
+                  className="flex-1 py-2 px-3 rounded-lg bg-bambu-green/20 border border-bambu-green/40 text-bambu-green hover:bg-bambu-green/30 transition-colors text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {clearPlateMutation.isPending ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <CircleCheck className="w-4 h-4" />
+                  )}
+                  {t('queue.clearPlateShort')}
+                </button>
+              </div>
             )}
           </div>
         )}

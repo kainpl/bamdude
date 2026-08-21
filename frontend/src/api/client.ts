@@ -5580,6 +5580,12 @@ export const api = {
     request<{ success: boolean; message: string }>(`/printers/${printerId}/clear-plate`, {
       method: 'POST',
     }),
+  // The other answer to a full plate: re-arm the job that just finished and
+  // print it again. Same permission as clearPlate — two answers, one question.
+  repeatPrint: (printerId: number) =>
+    request<{ success: boolean; item_id: number }>(`/printers/${printerId}/repeat-print`, {
+      method: 'POST',
+    }),
   startCalibration: (printerId: number, options: {
     bed_leveling?: boolean;
     vibration?: boolean;

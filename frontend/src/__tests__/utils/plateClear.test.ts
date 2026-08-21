@@ -63,3 +63,46 @@ describe('when there is nothing to clear', () => {
     }
   });
 });
+
+describe('the two plate answers never appear twice', () => {
+  // ⚠️ Now load-bearing for two PAIRS of buttons rather than two single ones:
+  // the yellow pair on the printer card and the green pair in the queue widget.
+  // The operator must still see exactly one pair.
+  const base = { connected: true, needsPlateClear: true, isPrintingOrPaused: false };
+
+  it('shows the card pair when the queue has nothing to offer', () => {
+    // The empty-queue case: PrinterQueueWidget returns null outright on
+    // totalPending === 0, so the card must carry both answers.
+    expect(
+      shouldShowClearPlateButton({ ...base, greenClearCtaVisible: false, viewMode: 'expanded' }),
+    ).toBe(true);
+  });
+
+  it('yields to the widget pair when that one is on screen', () => {
+    expect(
+      shouldShowClearPlateButton({ ...base, greenClearCtaVisible: true, viewMode: 'expanded' }),
+    ).toBe(false);
+  });
+
+  it('shows nothing while a print is running', () => {
+    expect(
+      shouldShowClearPlateButton({
+        ...base,
+        isPrintingOrPaused: true,
+        greenClearCtaVisible: false,
+        viewMode: 'expanded',
+      }),
+    ).toBe(false);
+  });
+
+  it('shows nothing when the plate needs no confirmation', () => {
+    expect(
+      shouldShowClearPlateButton({
+        ...base,
+        needsPlateClear: false,
+        greenClearCtaVisible: false,
+        viewMode: 'expanded',
+      }),
+    ).toBe(false);
+  });
+});

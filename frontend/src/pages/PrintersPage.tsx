@@ -9,6 +9,7 @@ import { buildLocationIndex } from '../utils/locationTree';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
 import {
+  RotateCcw,
   Plus,
   Link,
   Unlink,
@@ -2436,6 +2437,22 @@ function PrinterCard({
     onError: (error: Error) => showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
   });
 
+  // The other answer to a full plate. Drops the gate optimistically exactly as
+  // clearPlate does — the backend releases it too, and leaving it set would keep
+  // the pair on screen after the job has already gone back into the queue.
+  const repeatPrintMutation = useMutation({
+    mutationFn: () => api.repeatPrint(printer.id),
+    onSuccess: () => {
+      showToast(t('queue.repeatPrintSuccess'));
+      queryClient.setQueryData(['printerStatus', printer.id], (old: PrinterStatus | undefined) =>
+        old ? { ...old, awaiting_plate_clear: false } : old
+      );
+      queryClient.invalidateQueries({ queryKey: ['printerStatus', printer.id] });
+      queryClient.invalidateQueries({ queryKey: ['queue', printer.id] });
+    },
+    onError: (error: Error) => showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
+  });
+
   // Chamber light mutation with optimistic update
   const chamberLightMutation = useMutation({
     mutationFn: (on: boolean) => api.setChamberLight(printer.id, on),
@@ -4037,21 +4054,40 @@ function PrinterCard({
               );
             })()}
 
+            {/* Two answers to a full plate, side by side: print it again, or
+                clear and let the queue move on. ⚠️ The `mt-2` lives on the row
+                rather than each button — on both it doubles the gap. */}
             {viewMode === 'expanded' && showClearPlateButton && (
-              <button
-                type="button"
-                onClick={() => clearPlateMutation.mutate()}
-                disabled={clearPlateMutation.isPending || !hasPermission('printers:clear_plate')}
-                className="mt-2 w-full inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-yellow-100 dark:bg-yellow-500/20 border border-yellow-300 dark:border-yellow-400/40 text-yellow-700 dark:text-yellow-400 hover:bg-yellow-500/30 transition-colors text-xs font-medium disabled:opacity-50"
-                title={!hasPermission('printers:clear_plate') ? t('printers.permission.noControl') : t('printers.plateStatus.markCleared')}
-              >
-                {clearPlateMutation.isPending ? (
-                  <Loader2 className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)] animate-spin" />
-                ) : (
-                  <PlateClearedIcon className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
-                )}
-                {t('printers.plateStatus.markCleared')}
-              </button>
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => repeatPrintMutation.mutate()}
+                  disabled={repeatPrintMutation.isPending || !hasPermission('printers:clear_plate')}
+                  className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-yellow-100 dark:bg-yellow-500/20 border border-yellow-300 dark:border-yellow-400/40 text-yellow-700 dark:text-yellow-400 hover:bg-yellow-500/30 transition-colors text-xs font-medium disabled:opacity-50"
+                  title={!hasPermission('printers:clear_plate') ? t('printers.permission.noControl') : t('queue.repeatPrint')}
+                >
+                  {repeatPrintMutation.isPending ? (
+                    <Loader2 className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)] animate-spin" />
+                  ) : (
+                    <RotateCcw className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
+                  )}
+                  {t('queue.repeatPrint')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => clearPlateMutation.mutate()}
+                  disabled={clearPlateMutation.isPending || !hasPermission('printers:clear_plate')}
+                  className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-yellow-100 dark:bg-yellow-500/20 border border-yellow-300 dark:border-yellow-400/40 text-yellow-700 dark:text-yellow-400 hover:bg-yellow-500/30 transition-colors text-xs font-medium disabled:opacity-50"
+                  title={!hasPermission('printers:clear_plate') ? t('printers.permission.noControl') : t('printers.plateStatus.markCleared')}
+                >
+                  {clearPlateMutation.isPending ? (
+                    <Loader2 className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)] animate-spin" />
+                  ) : (
+                    <PlateClearedIcon className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
+                  )}
+                  {t('queue.clearPlateShort')}
+                </button>
+              </div>
             )}
 
             {/* Controls - Fans + Print Buttons */}

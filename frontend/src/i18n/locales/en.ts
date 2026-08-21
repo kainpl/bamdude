@@ -1226,6 +1226,9 @@ export default {
     savingProgress: 'Saving {{current}}/{{total}}...',
     nextInQueue: 'Next in queue',
     clearPlate: 'Clear Plate & Start Next',
+    repeatPrint: 'Repeat print',
+    clearPlateShort: 'Clear plate',
+    repeatPrintSuccess: 'Printing it again',
     clearPlateSuccess: 'Plate cleared - ready for next print',
     plateReady: 'Plate cleared - ready for next print',
     // Sections
