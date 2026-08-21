@@ -50,7 +50,7 @@ _QUEUE_MAX = 10_000
 _TAIL_BYTES = 1_000_000
 
 
-class MqttRecorder:
+class MQTTRecorder:
     """One writer thread; one file per printer per day."""
 
     def __init__(self, log_dir: Path | None = None, printer_manager=None):
@@ -346,7 +346,7 @@ class MqttRecorder:
                 logger.debug("MQTT recorder write failed for printer %s", printer_id, exc_info=True)
 
 
-mqtt_recorder = MqttRecorder()
+mqtt_recorder = MQTTRecorder()
 
 
 async def resume_recordings() -> None:

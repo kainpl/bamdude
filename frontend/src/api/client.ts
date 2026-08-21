@@ -5768,7 +5768,7 @@ export const api = {
    * than swallowed, because a silent failure would leave the operator
    * believing a recording is running.
    */
-  setMqttRecording: (printerId: number, enabled: boolean) =>
+  setMQTTRecording: (printerId: number, enabled: boolean) =>
     request<{ enabled: boolean; file: string }>(`/printers/${printerId}/mqtt-recording`, {
       method: 'POST',
       body: JSON.stringify({ enabled }),
@@ -10159,7 +10159,7 @@ export interface SwapProfile {
 
 export type MacroActionType = 'gcode' | 'mqtt_action';
 
-export interface MqttActionChoice {
+export interface MQTTActionChoice {
   value: string;
   label: string;
   i18n_key: string;
@@ -10167,21 +10167,21 @@ export interface MqttActionChoice {
 
 /** The single argument an MQTT action takes, described by the server so the
  *  editor can render the right control without knowing the action. */
-export interface MqttActionParam {
+export interface MQTTActionParam {
   kind: string;
   i18n_key: string;
   default: string | null;
-  choices: MqttActionChoice[];
+  choices: MQTTActionChoice[];
   min_value: number | null;
   max_value: number | null;
   unit: string | null;
 }
 
-export interface MqttMacroAction {
+export interface MQTTMacroAction {
   id: string;
   label: string;
   i18n_key: string;
-  param: MqttActionParam | null;
+  param: MQTTActionParam | null;
 }
 
 export interface Macro {
@@ -10242,7 +10242,7 @@ export interface MacroMeta {
   swap_events: string[];
   printer_models: Record<string, string>;
   swap_profiles: SwapProfile[];
-  mqtt_actions: MqttMacroAction[];
+  mqtt_actions: MQTTMacroAction[];
 }
 
 export interface MacroExecuteResponse {

@@ -25,7 +25,7 @@ from backend.app.services.bambu_mqtt import BambuMQTTClient
 
 
 @dataclass(frozen=True)
-class MqttActionChoice:
+class MQTTActionChoice:
     """One selectable value of a ``kind="choice"`` parameter."""
 
     value: str
@@ -34,12 +34,12 @@ class MqttActionChoice:
 
 
 @dataclass(frozen=True)
-class MqttActionParamSpec:
+class MQTTActionParamSpec:
     """The single argument an action takes, described for UI + validation."""
 
     kind: str  # "choice" today; "int" is wired but unused
     i18n_key: str
-    choices: tuple[MqttActionChoice, ...] = ()
+    choices: tuple[MQTTActionChoice, ...] = ()
     default: str | None = None
     min_value: int | None = None
     max_value: int | None = None
@@ -73,7 +73,7 @@ class MqttActionParamSpec:
 
 
 @dataclass(frozen=True)
-class MqttMacroAction:
+class MQTTMacroAction:
     """Catalog entry for a named, macro-triggerable MQTT command."""
 
     id: str
@@ -86,31 +86,31 @@ class MqttMacroAction:
     # The second argument is the stored parameter, or None for actions that
     # declare no ``param``.
     dispatch: Callable[[BambuMQTTClient, str | None], bool]
-    param: MqttActionParamSpec | None = None
+    param: MQTTActionParamSpec | None = None
 
 
-MQTT_MACRO_ACTIONS: dict[str, MqttMacroAction] = {
-    "chamber_light": MqttMacroAction(
+MQTT_MACRO_ACTIONS: dict[str, MQTTMacroAction] = {
+    "chamber_light": MQTTMacroAction(
         id="chamber_light",
         label="Chamber light",
         i18n_key="chamberLight",
         dispatch=lambda client, param: client.set_chamber_light(param == "on"),
-        param=MqttActionParamSpec(
+        param=MQTTActionParamSpec(
             kind="choice",
             i18n_key="lightState",
             default="off",
             choices=(
-                MqttActionChoice("on", "On", "on"),
-                MqttActionChoice("off", "Off", "off"),
+                MQTTActionChoice("on", "On", "on"),
+                MQTTActionChoice("off", "Off", "off"),
             ),
         ),
     ),
-    "print_speed": MqttMacroAction(
+    "print_speed": MQTTMacroAction(
         id="print_speed",
         label="Print speed",
         i18n_key="printSpeed",
         dispatch=lambda client, param: client.set_print_speed(int(param)),
-        param=MqttActionParamSpec(
+        param=MQTTActionParamSpec(
             kind="choice",
             i18n_key="speedLevel",
             default="2",
@@ -119,10 +119,10 @@ MQTT_MACRO_ACTIONS: dict[str, MqttMacroAction] = {
                 # 2 normal, 3 rapid, 4 rampage. BS offers all four on every
                 # model and the mirrored printer configs carry no speed flag,
                 # so this list is static, not derived from the model.
-                MqttActionChoice("1", "Silent", "silent"),
-                MqttActionChoice("2", "Standard", "standard"),
-                MqttActionChoice("3", "Sport", "sport"),
-                MqttActionChoice("4", "Ludicrous", "ludicrous"),
+                MQTTActionChoice("1", "Silent", "silent"),
+                MQTTActionChoice("2", "Standard", "standard"),
+                MQTTActionChoice("3", "Sport", "sport"),
+                MQTTActionChoice("4", "Ludicrous", "ludicrous"),
             ),
         ),
     ),
@@ -139,7 +139,7 @@ _LEGACY_ACTION_ALIASES: dict[str, tuple[str, str]] = {
 }
 
 
-def resolve_action(action_id: str, param: str | None = None) -> tuple[MqttMacroAction | None, str | None]:
+def resolve_action(action_id: str, param: str | None = None) -> tuple[MQTTMacroAction | None, str | None]:
     """Resolve an id (canonical or legacy) plus the parameter to dispatch with.
 
     Returns ``(None, None)`` for an unknown id. A legacy id carries its own
@@ -159,7 +159,7 @@ def resolve_action(action_id: str, param: str | None = None) -> tuple[MqttMacroA
     return action, param
 
 
-def get_action(action_id: str) -> MqttMacroAction | None:
+def get_action(action_id: str) -> MQTTMacroAction | None:
     action, _ = resolve_action(action_id)
     return action
 

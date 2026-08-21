@@ -33,7 +33,7 @@ from backend.app.schemas.printer import (
     FilaSwitchResponse,
     HmsActionBody,
     HMSErrorResponse,
-    MqttRecordingRequest,
+    MQTTRecordingRequest,
     NozzleInfoResponse,
     NozzleRackSlot,
     PrinterCreate,
@@ -481,7 +481,7 @@ async def update_printer(
 @router.post("/{printer_id}/mqtt-recording")
 async def set_mqtt_recording(
     printer_id: int,
-    body: MqttRecordingRequest,
+    body: MQTTRecordingRequest,
     _=RequirePermission(Permission.PRINTERS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):

@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from backend.app.services.mqtt_recorder import MqttRecorder
+from backend.app.services.mqtt_recorder import MQTTRecorder
 
 pytestmark = pytest.mark.unit
 
@@ -57,7 +57,7 @@ def recorder(tmp_path):
     client = _Client()
     manager = MagicMock()
     manager.get_client.return_value = client
-    return MqttRecorder(log_dir=tmp_path, printer_manager=manager), client
+    return MQTTRecorder(log_dir=tmp_path, printer_manager=manager), client
 
 
 def _wait_for(path, predicate, timeout=3.0):

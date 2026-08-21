@@ -598,7 +598,7 @@ class DiagnosticRequest(BaseModel):
     access_code: str | None = None
 
 
-class MqttRecordingRequest(BaseModel):
+class MQTTRecordingRequest(BaseModel):
     """Start or stop recording this printer's MQTT traffic to a file.
 
     One flag, deliberately: there is no duration and no size limit to pass.
