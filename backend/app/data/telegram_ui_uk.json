@@ -63,6 +63,9 @@
     "btn_maintenance": "Обслуговування",
     "btn_calibration": "Калібрування",
     "btn_clear_plate": "Стіл очищено",
+    "btn_repeat_print": "Повторити друк",
+    "repeat_print_ok": "Друкуємо ще раз.",
+    "repeat_print_none": "На цьому принтері немає завершеного друку, який чекає.",
     "clear_plate_ok": "Стіл очищено! Наступний друк скоро почнеться.",
     "clear_plate_fail": "Не вдалося підтвердити очищення",
     "next_in_queue": "Наступний: {name}"

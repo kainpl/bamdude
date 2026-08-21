@@ -63,6 +63,9 @@
     "btn_maintenance": "Maintenance",
     "btn_calibration": "Calibration",
     "btn_clear_plate": "Plate cleared",
+    "btn_repeat_print": "Repeat print",
+    "repeat_print_ok": "Printing it again.",
+    "repeat_print_none": "Nothing finished is waiting on this printer.",
     "clear_plate_ok": "Plate cleared! Next print starts shortly.",
     "clear_plate_fail": "Failed to clear plate",
     "next_in_queue": "Next: {name}"
