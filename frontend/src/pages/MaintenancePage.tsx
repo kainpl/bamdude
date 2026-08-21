@@ -214,7 +214,11 @@ function MaintenanceCard({
 
   return (
     <div className={`rounded-xl border p-4 transition-all ${getBgColor()}`}>
-      <div className="flex items-start gap-3 max-[550px]:flex-wrap">
+      {/* ⚠️ Container, not viewport. This said `max-[550px]:` and therefore
+          never fired: the card lives in a 3-column grid, so it is ~400px wide
+          on a 1536px screen and full-width on a 500px one — the wrap protection
+          was armed for exactly the case that does not need it. */}
+      <div className="flex items-start gap-3 @max-[34rem]:flex-wrap">
         {/* Icon with status indicator */}
         <div className={`relative p-2.5 rounded-lg shrink-0 ${
           item.is_due ? 'bg-red-100 dark:bg-red-500/20' :
@@ -284,7 +288,7 @@ function MaintenanceCard({
         </div>
 
         {/* Actions */}
-        <div className="flex items-center gap-2 shrink-0 max-[550px]:w-full max-[550px]:justify-end max-[550px]:mt-1">
+        <div className="flex items-center gap-2 shrink-0 @max-[34rem]:w-full @max-[34rem]:justify-end @max-[34rem]:mt-1">
           <span title={!hasPermission('maintenance:update') ? t('maintenance.noPermissionUpdate') : undefined}>
             <Toggle
               checked={item.enabled}
@@ -353,16 +357,25 @@ function PrinterSection({
   };
 
   return (
-    <Card className="overflow-hidden">
+    // ⚠️ `@container`, and every width rule below reads it rather than the
+    // viewport. These cards sit in `xl:grid-cols-3`, so on a WIDE screen each
+    // one is ~400px — the opposite of what a viewport breakpoint assumes. That
+    // is why the header ran together on a 1080p laptop at 125% scaling while
+    // looking fine on a narrow window, where the grid is one column and the
+    // card is the full width.
+    <Card className="overflow-hidden @container">
       {/* Header */}
       <div className="p-5">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <h2 className="text-xl font-semibold text-white">{overview.printer_name}</h2>
-            <Link to={`/maintenance?printer=${overview.printer_id}`} className="p-1 rounded hover:bg-bambu-dark-tertiary text-bambu-gray hover:text-white transition-colors" title={t('maintenance.viewHistory')}>
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+          <div className="flex items-center gap-3 min-w-0">
+            <h2 className="text-xl font-semibold text-white truncate" title={overview.printer_name}>{overview.printer_name}</h2>
+            <Link to={`/maintenance?printer=${overview.printer_id}`} className="p-1 rounded hover:bg-bambu-dark-tertiary text-bambu-gray hover:text-white transition-colors shrink-0" title={t('maintenance.viewHistory')}>
               <History className="w-4 h-4" />
             </Link>
-            <div className="flex items-center gap-2">
+            {/* The badge is the one thing here that must stay legible whole —
+                a clipped "2 overdue" is worse than a clipped printer name,
+                which the operator already knows. */}
+            <div className="flex items-center gap-2 shrink-0">
               {overview.due_count > 0 && (
                 <span className="px-2.5 py-1 bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-400 text-xs font-medium rounded-full flex items-center gap-1.5">
                   <AlertTriangle className="w-3 h-3" />
@@ -385,7 +398,7 @@ function PrinterSection({
           </div>
           <button
             onClick={() => setExpanded(!expanded)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-bambu-gray hover:text-white hover:bg-bambu-dark rounded-lg transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-bambu-gray hover:text-white hover:bg-bambu-dark rounded-lg transition-colors shrink-0 ml-auto"
           >
             {expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
             {expanded ? t('common.collapse') : t('common.expand')}
@@ -393,9 +406,9 @@ function PrinterSection({
         </div>
 
         {/* Quick stats row */}
-        <div className="flex items-center gap-6 mt-4">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-3 mt-4">
           {/* Print Hours */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 shrink-0">
             <div className="p-2 bg-bambu-dark/50 rounded-lg">
               <Timer className="w-4 h-4 text-bambu-gray" />
             </div>
@@ -437,13 +450,19 @@ function PrinterSection({
             )}
           </div>
 
-          {/* Divider */}
-          <div className="w-px h-10 bg-bambu-dark-tertiary" />
+          {/* Divider. Goes as soon as the row can wrap: once the two blocks sit
+              on separate lines it is a vertical rule dangling off the end of the
+              first one, pointing at nothing. */}
+          <div className="w-px h-10 bg-bambu-dark-tertiary shrink-0 @max-[26rem]:hidden" />
 
-          {/* Next Maintenance */}
+          {/* Next Maintenance. Takes its own line in a narrow card rather than
+              being left to truncate: with `min-w-0` the name would shrink to a
+              few characters instead of wrapping, and "Замі…" answers nothing.
+              Same threshold as the divider above, so the two decisions cannot
+              disagree and leave a rule pointing at a line break. */}
           {nextTask && (
-            <div className="flex items-center gap-3">
-              <div className={`p-2 rounded-lg ${
+            <div className="flex items-center gap-3 min-w-0 @max-[26rem]:w-full">
+              <div className={`p-2 rounded-lg shrink-0 ${
                 nextTask.is_due ? 'bg-red-100 dark:bg-red-500/20' : 'bg-amber-500/20'
               }`}>
                 {(() => {
@@ -451,8 +470,11 @@ function PrinterSection({
                   return <Icon className={`w-4 h-4 ${nextTask.is_due ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-400'}`} />;
                 })()}
               </div>
-              <div>
-                <div className={`text-sm font-medium ${nextTask.is_due ? 'text-red-700 dark:text-red-400' : 'text-amber-700 dark:text-amber-400'}`}>
+              <div className="min-w-0">
+                {/* The name is the long one and the only one that can be
+                    recovered — its status sits right under it, and the full
+                    text is one click away in the expanded list. */}
+                <div className={`text-sm font-medium truncate ${nextTask.is_due ? 'text-red-700 dark:text-red-400' : 'text-amber-700 dark:text-amber-400'}`} title={nextTask.maintenance_type_name}>
                   {nextTask.maintenance_type_name}
                 </div>
                 <div className={`text-xs ${nextTask.is_due ? 'text-red-700/80 dark:text-red-400/70' : 'text-amber-700/80 dark:text-amber-400/70'}`}>
