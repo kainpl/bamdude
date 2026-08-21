@@ -1521,13 +1521,10 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="p-4 md:p-6">
+    <div className="p-4 md:p-6 space-y-4">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="flex items-center gap-3">
-            <Settings className="w-6 h-6 text-bambu-green" />
-            <h1 className="text-2xl font-bold text-white">{t('settings.title')}</h1>
-          </div>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-3"><Settings className="w-6 h-6 text-bambu-green" />{t('settings.title')}</h1>
           <p className="text-sm text-bambu-gray">{t('settings.configureBamdude')}</p>
         </div>
         <SettingsSearchBar

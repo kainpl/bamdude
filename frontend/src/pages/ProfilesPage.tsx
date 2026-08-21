@@ -2841,13 +2841,10 @@ export function ProfilesPage() {
   }
 
   return (
-    <div className="p-4 md:p-6">
+    <div className="p-4 md:p-6 space-y-4">
       {/* Page Header */}
       <div>
-        <div className="flex items-center gap-3">
-          <Cloud className="w-6 h-6 text-bambu-green" />
-          <h1 className="text-2xl font-bold text-white">{t('profiles.title')}</h1>
-        </div>
+        <h1 className="text-2xl font-bold text-white flex items-center gap-3"><Cloud className="w-6 h-6 text-bambu-green" />{t('profiles.title')}</h1>
         <p className="text-sm text-bambu-gray">{t('profiles.subtitle')}</p>
       </div>
 

@@ -21,9 +21,22 @@ import InventoryPageRouter from '../../pages/InventoryPage';
 import { server } from '../mocks/server';
 import systemInfoSource from '../../pages/SystemInfoPage.tsx?raw';
 
-/** h1 → icon row → title block → header row. */
+/**
+ * The header row above a page's `h1` — the flex container that stacks below
+ * `sm` and spreads out from `sm` up.
+ *
+ * ⚠️ Found by what it IS, not by counting parents. This was three
+ * `parentElement` hops until the page titles were unified and the icon moved
+ * inside the `h1`, which removed a level and silently walked the search up to
+ * the page root — two assertions about a header, made against a `<div>` that
+ * was never one. The classes below are the contract; the nesting around them
+ * is not.
+ */
 function headerOf(heading: HTMLElement): HTMLElement {
-  return heading.parentElement!.parentElement!.parentElement as HTMLElement;
+  for (let node = heading.parentElement; node; node = node.parentElement) {
+    if (node.className.includes('sm:flex-row')) return node;
+  }
+  throw new Error(`no header row above "${heading.textContent}" — nothing had sm:flex-row`);
 }
 
 describe('page headers do not widen past the viewport', () => {

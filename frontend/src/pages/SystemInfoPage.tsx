@@ -230,10 +230,7 @@ export function SystemInfoPage() {
           instead of stretching it across the page. */}
       <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <div className="flex items-center gap-3">
-            <Info className="w-6 h-6 text-bambu-green" />
-            <h1 className="text-2xl font-bold text-white">{t('system.title', 'System Information')}</h1>
-          </div>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-3"><Info className="w-6 h-6 text-bambu-green" />{t('system.title', 'System Information')}</h1>
           <p className="text-sm text-bambu-gray">{t('system.subtitle', 'Monitor system resources and database statistics')}</p>
         </div>
 

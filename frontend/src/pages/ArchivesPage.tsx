@@ -3487,9 +3487,8 @@ export function ArchivesPage() {
 
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
         <div>
-          <div className="flex items-center gap-3">
-            <ArchiveIcon className="w-6 h-6 text-bambu-green" />
-            <h1 className="text-2xl font-bold text-white">{t('archives.page.title')}</h1>
+          <div>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-3"><ArchiveIcon className="w-6 h-6 text-bambu-green" />{t('archives.page.title')}</h1>
           </div>
           {viewMode === 'calendar' && (
             <p className="text-bambu-gray text-sm">{t('archives.calendarView')}</p>

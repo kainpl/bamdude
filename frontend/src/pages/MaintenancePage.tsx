@@ -1723,7 +1723,7 @@ export function MaintenancePage() {
       <div className="space-y-3">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <Wrench className="w-7 h-7 text-bambu-green" />
+            <Wrench className="w-6 h-6 text-bambu-green" />
             {t('maintenance.title')}
           </h1>
           <p className="text-sm text-bambu-gray mt-1">

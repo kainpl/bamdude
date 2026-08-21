@@ -9397,7 +9397,7 @@ export function PrintersPage() {
       <div className="space-y-3 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <PrinterIcon className="w-7 h-7 text-bambu-green" />
+            <PrinterIcon className="w-6 h-6 text-bambu-green" />
             {t('printers.title')}
           </h1>
           <StatusSummaryBar printers={printers} />

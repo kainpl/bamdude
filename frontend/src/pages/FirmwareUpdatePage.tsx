@@ -165,7 +165,7 @@ export function FirmwareUpdatePage() {
     <div className="p-4 md:p-6">
       <div className="flex items-center justify-between gap-3 mb-6">
         <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-          <Cpu className="w-7 h-7 text-bambu-green" />
+          <Cpu className="w-6 h-6 text-bambu-green" />
           {t('firmware.bulkTitle')}
         </h1>
         {view === 'update' && (

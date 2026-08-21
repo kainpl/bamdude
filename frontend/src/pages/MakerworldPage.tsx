@@ -509,10 +509,9 @@ export function MakerworldPage() {
   const downloadCount = pickNumber(design, 'downloadCount');
 
   return (
-    <div className="p-4 md:p-6 space-y-6">
-      <div className="flex items-center gap-3">
-        <MakerWorldIcon className="w-6 h-6 text-bambu-green" />
-        <h1 className="text-2xl font-bold text-white">{t('makerworld.title')}</h1>
+    <div className="p-4 md:p-6 space-y-4">
+      <div>
+        <h1 className="text-2xl font-bold text-white flex items-center gap-3"><MakerWorldIcon className="w-6 h-6 text-bambu-green" />{t('makerworld.title')}</h1>
       </div>
 
       {/* Tab Navigation */}

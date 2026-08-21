@@ -95,10 +95,9 @@ export function NotificationsPage() {
   }
 
   return (
-    <div className="p-4 md:p-6 max-w-2xl mx-auto">
-      <div className="flex items-center gap-3 mb-6">
-        <Bell className="w-7 h-7 text-bambu-green" />
-        <h1 className="text-2xl font-bold text-white">{t('notifications.userEmail.title')}</h1>
+    <div className="p-4 md:p-6 space-y-4">
+      <div>
+        <h1 className="text-2xl font-bold text-white flex items-center gap-3"><Bell className="w-6 h-6 text-bambu-green" />{t('notifications.userEmail.title')}</h1>
       </div>
 
       {/* Info card */}
