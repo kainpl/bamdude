@@ -19,6 +19,7 @@ decoding to dry_status 2 (Drying) four seconds later.
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -153,44 +154,75 @@ class TestGuessingFromTheTrays:
 
 class TestTheRequestTopicReachesTheCapture:
     """⚠️ The request topic carries every command travelling TO the printer,
-    Bambu Studio's included — and it used to return before the logging block, so
-    a capture could show only what the printer said, never what it was told.
-    That is why "what does Studio actually put in the drying command?" had no
-    answer from a user's own log.
+    BambuStudio's included — the broker echoes them to us. It used to return
+    before the recording block, so a capture could show only what the printer
+    said, never what it was told. That is why "what does Studio actually put in
+    the drying command?" had no answer from a user's own log.
+
+    Recorded by ``services/mqtt_recorder`` now; the in-memory debug buffer these
+    asserted against was removed when the two capture mechanisms were folded
+    into one. What must not be lost is the SEMANTICS: arriving on our socket
+    makes these inbound, but where they are GOING is what a reader needs, so
+    they are filed beside our own commands.
     """
 
-    def test_a_command_on_the_request_topic_is_recorded(self, client):
-        client.enable_logging(True)
+    def _recorder(self, tmp_path, client):
+        from backend.app.services.mqtt_recorder import MQTTRecorder
 
-        client._on_message(
-            None,
-            None,
-            SimpleNamespace(
-                topic=client.topic_publish,
-                payload=b'{"print": {"command": "ams_filament_setting", "sequence_id": "1"}}',
-            ),
+        manager = MagicMock()
+        manager.get_client.return_value = client
+        return MQTTRecorder(log_dir=tmp_path, printer_manager=manager)
+
+    def _capture(self, recorder, client, topic, payload):
+        recorder.start(1)
+        try:
+            client._on_message(None, None, SimpleNamespace(topic=topic, payload=payload))
+            deadline = time.time() + 3
+            entries = []
+            while time.time() < deadline and not entries:
+                entries = recorder.tail(1, limit=10)
+                time.sleep(0.02)
+            return entries
+        finally:
+            recorder.stop(1)
+
+    def test_a_command_on_the_request_topic_is_recorded(self, client, tmp_path):
+        recorder = self._recorder(tmp_path, client)
+
+        entries = self._capture(
+            recorder,
+            client,
+            client.topic_publish,
+            b'{"print": {"command": "ams_filament_setting", "sequence_id": "1"}}',
         )
 
-        entries = client.get_logs()
         assert len(entries) == 1
-        assert entries[0].topic == client.topic_publish
+        assert entries[0]["topic"] == client.topic_publish
 
-    def test_it_is_filed_as_outbound(self):
+    def test_it_is_filed_as_outbound(self, client, tmp_path):
         """Grouped with our own commands rather than with printer telemetry —
         the direction is about where the message was going, not who saw it."""
-        import inspect
+        recorder = self._recorder(tmp_path, client)
 
-        from backend.app.services.bambu_mqtt import BambuMQTTClient
+        entries = self._capture(recorder, client, client.topic_publish, b'{"print": {"command": "gcode_line"}}')
 
-        source = inspect.getsource(BambuMQTTClient._on_message)
-        block = source[source.index("if msg.topic == self.topic_publish:") :]
-        assert 'direction="out"' in block[: block.index("self._handle_request_message")]
+        assert entries and entries[0]["direction"] == "out"
 
-    def test_nothing_is_recorded_while_logging_is_off(self, client):
+    def test_the_printers_own_reports_stay_inbound(self, client, tmp_path):
+        """The other half — without it, "out" could simply be hardcoded."""
+        recorder = self._recorder(tmp_path, client)
+
+        entries = self._capture(recorder, client, client.topic_subscribe, b'{"print": {"command": "push_status"}}')
+
+        assert entries and entries[0]["direction"] == "in"
+
+    def test_nothing_is_recorded_while_no_recording_runs(self, client, tmp_path):
+        recorder = self._recorder(tmp_path, client)
+
         client._on_message(
             None,
             None,
             SimpleNamespace(topic=client.topic_publish, payload=b'{"print": {"command": "gcode_line"}}'),
         )
 
-        assert client.get_logs() == []
+        assert recorder.tail(1, limit=10) == []

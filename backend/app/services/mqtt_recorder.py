@@ -121,10 +121,19 @@ class MQTTRecorder:
             stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
             path = directory / f"mqtt-{stamp}-{printer_id}.log"
 
+        # ⚠️ The request topic carries every command travelling TO the printer —
+        # BambuStudio's included, because the broker echoes them to us. Arriving
+        # on our socket makes them inbound, but where they are GOING is what a
+        # reader needs, so they are filed "out" beside our own commands. This is
+        # the only way "what does Studio actually put in that command?" can be
+        # answered from an operator's own capture.
+        request_topic = getattr(client, "topic_publish", None)
+
         def _handler(topic: str, payload: bytes, _pid=printer_id) -> None:
             # paho's network thread. Enqueue and return; never write here.
+            direction = "out" if request_topic and topic == request_topic else "in"
             try:
-                self._queue.put_nowait((_pid, time.time(), "in", topic, payload))
+                self._queue.put_nowait((_pid, time.time(), direction, topic, payload))
             except queue.Full:
                 pass
 

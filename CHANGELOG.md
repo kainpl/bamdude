@@ -6,6 +6,12 @@
 
 ### Added
 
+- **A finished print can now be repeated from the printer card.** Where a printer is set to have its plate confirmed, the prompt that appeared after a print offered one answer — Clear plate. It now offers two. **Repeat print** sends the same job again, exactly as it was: it keeps every setting the job had, goes to the front of that printer's queue, and prints with its own entry in the archive — the same thing as pressing reprint on the printer itself. **Clear plate** does what it always did. The finished job now waits on the queue until one of the two is pressed, so you can switch the printers off for the night and answer in the morning; nothing expires.
+
+    The same pair is in the Telegram bot — which also now offers a plate control after the *last* job in a queue, where previously it showed none at all because the buttons were tied to there being something waiting behind.
+
+    ⚠️ **One long-standing side effect goes with this.** "Only print if the previous one succeeded" reads the queue's own history, and a successful job used to be removed the instant it finished — so a later success could never clear the block left by an earlier failure, and only acknowledging the failure by hand would. On printers that confirm their plate, the successful job now stays long enough to be seen, and releases it as the setting always said it should.
+
 - **Labels are drawn with the mouse now.** Settings → Filament gains two sub-tabs, and the new **Marking** one holds everything about labels — the designs and the printers that put them on stock: pick a design, drag the boxes where you want them, and see the result as you go. Text boxes say what they say with the same `{brand}`, `{remaining_g}`, `{purchase_date}` fields the naming template uses — click a field to insert it rather than typing the braces. QR codes, barcodes and the colour block are boxes too.
 
     **The picture in the middle is not a drawing of your label — it is your label.** It comes from the same renderer that will print it, at the printer's own resolution, so a QR whose squares have merged or a line that no longer fits shows up while you are moving things rather than on wasted stock. Anything the renderer objects to is listed under the label in words.
