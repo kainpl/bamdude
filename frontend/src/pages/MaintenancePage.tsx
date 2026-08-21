@@ -235,8 +235,18 @@ function MaintenanceCard({
 
         {/* Content */}
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <h3 className={`font-medium truncate ${item.enabled ? 'text-white' : 'text-bambu-gray'}`}>
+          {/* ⚠️ Wraps. The models badge is `shrink-0` and can be as long as
+              "X1 Carbon, X1, X1E, P1P, P1S", so on one line it took the width
+              the name needed AND still ran off the card: the name collapsed to
+              "Очис…" beside a badge that was itself clipped. Flex breaks lines
+              on the items' own widths before it shrinks anything, so the badge
+              drops to its own line exactly when it does not fit, and the name
+              gets the whole first line. */}
+          <div className="flex flex-wrap items-center gap-2">
+            <h3
+              className={`font-medium truncate ${item.enabled ? 'text-white' : 'text-bambu-gray'}`}
+              title={item.maintenance_type_name}
+            >
               {item.maintenance_type_name}
             </h3>
             {intervalType === 'days' && (
@@ -262,7 +272,10 @@ function MaintenanceCard({
               ) : null;
             })()}
             {hasModelFilter && (
-              <span className="px-1.5 py-0.5 bg-bambu-dark-tertiary text-bambu-gray text-[10px] rounded shrink-0">
+              // `max-w-full` alongside `shrink-0`: the badge keeps its full
+              // width whenever it has one, but a list longer than the card
+              // itself wraps inside the badge instead of running off it.
+              <span className="px-1.5 py-0.5 bg-bambu-dark-tertiary text-bambu-gray text-[10px] rounded shrink-0 max-w-full">
                 {printerModels.map(code => macroMeta?.printer_models?.[code] || code).join(', ')}
               </span>
             )}
