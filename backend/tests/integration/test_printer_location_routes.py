@@ -265,3 +265,76 @@ class TestTheTree:
 
         listed = (await async_client.get("/api/v1/printer-locations")).json()["locations"]
         assert "Big workshop / Shelf" in [row["path"] for row in listed]
+
+
+@pytest.mark.integration
+class TestAnArchivedPrinterIsCountedInOnePlaceAndNotTheOther:
+    """⚠️ The two callers of ``_holders`` ask different questions, and archived
+    printers are where they part.
+
+    An archived printer is retired and hidden everywhere else, so counting it in
+    the row's own summary tells the operator a place holds machines they cannot
+    see. But the delete guard MUST still count it: ``delete_location`` removes
+    the row without nulling anything that pointed at it, so a location deleted
+    out from under an archived printer leaves that printer pointing at nothing.
+    """
+
+    @staticmethod
+    async def _place_with_an_archived_printer(async_client, db_session):
+        from datetime import datetime, timezone
+
+        from backend.app.models.printer import Printer
+
+        created = (await _make(async_client, "Shop 2")).json()
+        db_session.add(
+            Printer(
+                name="retired",
+                ip_address="1.2.3.4",
+                serial_number="S-ARCH",
+                access_code="1",
+                location_id=created["id"],
+                archived=True,
+                archived_at=datetime.now(timezone.utc),
+            )
+        )
+        await db_session.commit()
+        return created
+
+    @pytest.mark.asyncio
+    async def test_the_row_does_not_count_it(self, async_client: AsyncClient, db_session):
+        created = await self._place_with_an_archived_printer(async_client, db_session)
+
+        listed = (await async_client.get("/api/v1/printer-locations")).json()["locations"]
+        row = next(loc for loc in listed if loc["id"] == created["id"])
+
+        assert row["printer_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_an_active_printer_beside_it_still_counts(self, async_client: AsyncClient, db_session):
+        """The filter must exclude the archived one, not every printer."""
+        from backend.app.models.printer import Printer
+
+        created = await self._place_with_an_archived_printer(async_client, db_session)
+        db_session.add(
+            Printer(
+                name="working",
+                ip_address="1.2.3.5",
+                serial_number="S-LIVE",
+                access_code="1",
+                location_id=created["id"],
+            )
+        )
+        await db_session.commit()
+
+        listed = (await async_client.get("/api/v1/printer-locations")).json()["locations"]
+        row = next(loc for loc in listed if loc["id"] == created["id"])
+
+        assert row["printer_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_deleting_the_place_is_still_refused(self, async_client: AsyncClient, db_session):
+        created = await self._place_with_an_archived_printer(async_client, db_session)
+
+        refused = await async_client.delete(f"/api/v1/printer-locations/{created['id']}")
+
+        assert refused.status_code == 409, "an archived printer still points at this row"
