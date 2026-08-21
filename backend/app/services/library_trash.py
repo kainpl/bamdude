@@ -541,6 +541,19 @@ class LibraryTrashService:
         await db.execute(
             update(PrintArchive).where(PrintArchive.library_file_id.in_(row_ids)).values(library_file_id=None)
         )
+        # ⚠️ And the queue, for exactly the same reason. ``print_queue.
+        # library_file_id`` is ``ON DELETE SET NULL`` so a row OUTLIVES the file
+        # it was queued from — that is deliberate, it is the operator's record
+        # of what was asked for. With FK actions off the nulling never happened
+        # here, so a row cancelled when the file went to the trash ended up,
+        # after the retention window, pointing at a library file that no longer
+        # exists. The route-side delete paths already do this; the sweeper did
+        # it for archives and forgot the queue.
+        from backend.app.models.print_queue import PrintQueueItem
+
+        await db.execute(
+            update(PrintQueueItem).where(PrintQueueItem.library_file_id.in_(row_ids)).values(library_file_id=None)
+        )
         await db.execute(delete(LibraryFile).where(LibraryFile.id.in_(row_ids)))
         await db.commit()
         logger.info("Library trash sweeper: hard-deleted %d row(s) past %d-day retention", deleted, retention)

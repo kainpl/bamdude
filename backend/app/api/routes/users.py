@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -432,12 +432,20 @@ async def delete_user(
         )
         await detach_print_queue_refs(db, list(_pq_ids))
         await db.execute(delete(PrintQueueItem).where(PrintQueueItem.created_by_id == user_id))
+        # ⚠️ Unhook ANOTHER user's queue rows from the files about to go. The
+        # delete above only takes rows this user created; a colleague can have
+        # queued the same library file, and ``print_queue.library_file_id`` is
+        # ``ON DELETE SET NULL`` — which SQLite never applies, because
+        # foreign_keys is off. Without this their row is left pointing at a file
+        # that no longer exists. Must run BEFORE the files are deleted.
+        _doomed_files = select(LibraryFile.id).where(LibraryFile.created_by_id == user_id)
+        await db.execute(
+            update(PrintQueueItem).where(PrintQueueItem.library_file_id.in_(_doomed_files)).values(library_file_id=None)
+        )
         await db.execute(delete(LibraryFile).where(LibraryFile.created_by_id == user_id))
     else:
         # Explicitly set created_by_id to NULL for all items (ensures consistent behavior
         # across different database backends, including SQLite without foreign key support)
-        from sqlalchemy import update
-
         await db.execute(update(PrintArchive).where(PrintArchive.created_by_id == user_id).values(created_by_id=None))
         await db.execute(
             update(PrintQueueItem).where(PrintQueueItem.created_by_id == user_id).values(created_by_id=None)

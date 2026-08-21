@@ -116,3 +116,108 @@ async def test_history_is_not_rewritten(db_session, printer_factory):
     await db_session.refresh(item)
     assert item.status == "completed"
     assert item.waiting_reason is None
+
+
+class TestTheSweeperLeavesNoDanglingLink:
+    """Trashing cancels the row; the sweeper, later, must unhook it.
+
+    ⚠️ The row is meant to OUTLIVE the file — ``PrintQueueItem.library_file_id``
+    is declared ``ON DELETE SET NULL`` precisely so the operator keeps the
+    history of what was queued. But SQLite runs with ``foreign_keys=OFF``, so
+    that clause never fires and the nulling has to be done by hand. The sweeper
+    already does exactly this for ``PrintArchive.library_file_id``, with a
+    comment explaining why — and did not do it for the queue, so a cancelled row
+    ended up pointing at a library file that no longer exists.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_purged_file_leaves_its_queue_row_unhooked(self, db_session, printer_factory, monkeypatch):
+        from datetime import datetime, timedelta, timezone
+
+        printer = await printer_factory(name="S1")
+        file = await _file(db_session)
+        item = await _queued(db_session, file.id, printer.id, status="cancelled")
+        item_id = item.id
+        file.deleted_at = datetime.now(timezone.utc) - timedelta(days=99)
+        await db_session.commit()
+
+        await library_trash_service._sweep(db_session)
+
+        row = (
+            await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))
+        ).scalar_one_or_none()
+        assert row is not None, "the row must survive its file — that is what SET NULL means"
+        assert row.library_file_id is None, "it still points at a library file that is gone"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_rows_for_files_that_stay_are_untouched(self, db_session, printer_factory):
+        """⚠️ The unhook is scoped to the ids actually purged. Nulling by any
+        wider rule would quietly disconnect live jobs from their files."""
+        from datetime import datetime, timedelta, timezone
+
+        printer = await printer_factory(name="S2")
+        doomed = await _file(db_session)
+        keeper = await _file(db_session)
+        keeper.file_path = "files/keeper.gcode.3mf"
+        doomed_item = await _queued(db_session, doomed.id, printer.id, status="cancelled")
+        # Same queue: PrinterQueue is one row per printer.
+        keeper_item = PrintQueueItem(
+            queue_id=doomed_item.queue_id, library_file_id=keeper.id, position=2, status="pending"
+        )
+        db_session.add(keeper_item)
+        await db_session.flush()
+        keeper_id, keeper_file_id = keeper_item.id, keeper.id
+        doomed.deleted_at = datetime.now(timezone.utc) - timedelta(days=99)
+        await db_session.commit()
+
+        await library_trash_service._sweep(db_session)
+
+        await db_session.refresh(doomed_item)
+        kept = (await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.id == keeper_id))).scalar_one()
+        assert doomed_item.library_file_id is None
+        assert kept.library_file_id == keeper_file_id
+
+
+class TestDeletingAUserUnhooksOtherPeoplesRows:
+    """⚠️ The same gap from the other side.
+
+    Deleting a user "with their content" removes the queue rows THEY created and
+    the library files they own — but a colleague can have queued one of those
+    files. That row is not theirs to delete, and ``ON DELETE SET NULL`` never
+    fires on SQLite, so it was left pointing at a file that no longer exists.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_colleagues_row_survives_unhooked(self, db_session, printer_factory):
+        from backend.app.api.routes.users import delete_user
+        from backend.app.models.user import User
+
+        owner = User(username="leaver")
+        colleague = User(username="stays")
+        db_session.add_all([owner, colleague])
+        await db_session.flush()
+
+        printer = await printer_factory(name="U1")
+        file = await _file(db_session)
+        file.created_by_id = owner.id
+        theirs = await _queued(db_session, file.id, printer.id)
+        theirs.created_by_id = colleague.id
+        theirs_id = theirs.id
+        await db_session.commit()
+
+        admin = User(username="admin", role="admin")
+        db_session.add(admin)
+        await db_session.flush()
+        await delete_user(user_id=owner.id, delete_items=True, current_user=admin, db=db_session)
+
+        row = (
+            await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.id == theirs_id))
+        ).scalar_one_or_none()
+        assert row is not None, "another user's queue row is not ours to delete"
+        assert row.library_file_id is None, "it still points at a library file that is gone"
+        assert (
+            await db_session.execute(select(LibraryFile).where(LibraryFile.id == file.id))
+        ).scalar_one_or_none() is None

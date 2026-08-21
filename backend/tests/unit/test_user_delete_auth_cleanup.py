@@ -16,6 +16,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+# ⚠️ Imported for its side effect, not its name: ``Printer`` declares a
+# relationship to ``PrinterLocation`` by string, and SQLAlchemy cannot resolve
+# it unless that module has been imported. ``delete_user`` touches the printer
+# mapper through the queue, so without this the file passes only when some
+# other test in the run happens to have imported it first.
+import backend.app.models.printer_location  # noqa: F401
 from backend.app.models.api_key import APIKey
 from backend.app.models.long_lived_token import LongLivedToken
 from backend.app.models.oidc_provider import UserOIDCLink
