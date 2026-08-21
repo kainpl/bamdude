@@ -4885,6 +4885,57 @@ async def _completion_belongs_to_item(db, queue_item, data: dict) -> bool:
     return False
 
 
+async def _auto_clean_completed_item(db, queue_item, *, queue_status: str, plate_auto_cleared: bool) -> bool:
+    """Delete a finished queue row, unless somebody is about to be asked about it.
+
+    Returns whether the row was deleted.
+
+    Completed rows used to go the instant the print ended — they live on through
+    their archive, and the queue counters are archive-backed. But a printer that
+    confirms its plate now offers two answers, Clear and Repeat, and Repeat
+    re-arms this very row. So where a gate will arm, the row waits; see
+    ``services/plate_hold``.
+
+    ⚠️ Failed / cancelled / skipped are untouched here exactly as before, so the
+    operator can still retry them from the queue.
+    """
+    if queue_status != "completed" or queue_item.archive_id is None:
+        return False
+
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.plate_hold import should_hold_for_plate_clear
+
+    # ⚠️ Looked up rather than read off ``queue_item.printer_id``: that is a
+    # convenience property that walks the ``queue`` relationship, and touching a
+    # lazy relationship here raises MissingGreenlet under the async session.
+    printer_id = await db.scalar(select(PrinterQueue.printer_id).where(PrinterQueue.id == queue_item.queue_id))
+    if printer_id is not None and await should_hold_for_plate_clear(
+        db, printer_id, plate_auto_cleared=plate_auto_cleared
+    ):
+        logging.getLogger(__name__).info(
+            "Holding completed queue item %s — printer %s is waiting for a plate answer",
+            queue_item.id,
+            printer_id,
+        )
+        return False
+
+    from backend.app.services.queue_counters import detach_print_queue_refs
+
+    _completed_item_id = queue_item.id
+    _completed_archive_id = queue_item.archive_id
+    _completed_queue_id = queue_item.queue_id
+    await detach_print_queue_refs(db, [queue_item.id])
+    await db.delete(queue_item)
+    await db.commit()
+    logging.getLogger(__name__).info(
+        "Auto-cleaned completed queue item %s (archive %s, queue %s)",
+        _completed_item_id,
+        _completed_archive_id,
+        _completed_queue_id,
+    )
+    return True
+
+
 async def on_print_complete(printer_id: int, data: dict):
     """Handle print completion - update the archive status."""
     import time
@@ -5864,25 +5915,16 @@ async def on_print_complete(printer_id: int, data: dict):
                     except Exception as e:
                         logger.warning("Failed to schedule queue auto-off for printer %s: %s", printer_id, e)
 
-                # Auto-cleanup: completed queue items now live on via their
-                # linked archive (counters re-computed from print_archives
-                # post-m019). Failed / cancelled / skipped stay put so the
-                # operator can retry from the queue UI.
-                if queue_status == "completed" and queue_item.archive_id is not None:
-                    _completed_item_id = queue_item.id
-                    _completed_archive_id = queue_item.archive_id
-                    _completed_queue_id = queue_item.queue_id
-                    from backend.app.services.queue_counters import detach_print_queue_refs
-
-                    await detach_print_queue_refs(db, [queue_item.id])
-                    await db.delete(queue_item)
-                    await db.commit()
-                    logger.info(
-                        "Auto-cleaned completed queue item %s (archive %s, queue %s)",
-                        _completed_item_id,
-                        _completed_archive_id,
-                        _completed_queue_id,
-                    )
+                # Auto-cleanup: completed queue items live on via their linked
+                # archive (counters re-computed from print_archives post-m019).
+                # ⚠️ Unless the printer confirms its plate — then the row waits
+                # for Clear or Repeat instead. See ``_auto_clean_completed_item``.
+                await _auto_clean_completed_item(
+                    db,
+                    queue_item,
+                    queue_status=queue_status,
+                    plate_auto_cleared=_plate_auto_cleared_by_swap,
+                )
 
                 # Queue may now be empty — fire the queue-completed
                 # notification. Must live in the ``if queue_item:`` branch:
