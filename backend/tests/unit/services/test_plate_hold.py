@@ -18,7 +18,10 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services.plate_hold import should_hold_for_plate_clear, waiting_row
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
+# ⚠️ No explicit asyncio mark: ``asyncio_mode = "auto"`` in pyproject already
+# runs the coroutines here, and marking the module would tag the synchronous
+# structural guard at the bottom as async too.
+pytestmark = pytest.mark.integration
 
 
 async def _queue(db_session, printer_factory, **kwargs):
@@ -148,3 +151,64 @@ async def test_a_failed_print_is_untouched_as_before(db_session, printer_factory
 
     assert deleted is False
     assert (await db_session.get(PrintQueueItem, item_id)) is not None
+
+
+async def test_clearing_removes_the_waiting_row(db_session, printer_factory):
+    from backend.app.services.plate_hold import answer_by_clearing
+
+    printer, queue = await _queue(db_session, printer_factory, require_plate_clear=True)
+    done = PrintQueueItem(queue_id=queue.id, status="completed", position=0, archive_id=1)
+    db_session.add(done)
+    await db_session.commit()
+    done_id = done.id
+
+    assert await answer_by_clearing(db_session, printer.id) == 1
+    assert (await db_session.get(PrintQueueItem, done_id)) is None
+
+
+async def test_clearing_with_nothing_waiting_is_a_noop(db_session, printer_factory):
+    """⚠️ Reached constantly: a swap printer, a gate armed by the reconnect
+    sweep, or a farm upgrading mid-print all release a gate with no row behind
+    it. Raising here would turn Clear plate into an error message."""
+    from backend.app.services.plate_hold import answer_by_clearing
+
+    printer, _ = await _queue(db_session, printer_factory)
+    assert await answer_by_clearing(db_session, printer.id) == 0
+
+
+async def test_clearing_leaves_the_pending_queue_alone(db_session, printer_factory):
+    from backend.app.services.plate_hold import answer_by_clearing
+
+    printer, queue = await _queue(db_session, printer_factory, require_plate_clear=True)
+    nxt = PrintQueueItem(queue_id=queue.id, status="pending", position=1)
+    db_session.add_all([nxt, PrintQueueItem(queue_id=queue.id, status="completed", position=0, archive_id=1)])
+    await db_session.commit()
+    nxt_id = nxt.id
+
+    await answer_by_clearing(db_session, printer.id)
+
+    assert (await db_session.get(PrintQueueItem, nxt_id)) is not None
+
+
+def test_every_place_that_releases_the_gate_answers_the_row():
+    """⚠️ A structural guard, because the failure is invisible.
+
+    ``set_awaiting_plate_clear(..., False)`` appears in a handful of places: the
+    HTTP route, the Telegram action, and the swap path in on_print_complete
+    (which holds no row). A fourth added without answering the held row leaks a
+    row that nothing else will ever remove — and nothing would go red.
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[3] / "app"
+    allowed = ("answer_by_clearing", "answer_by_repeating", "cleared the plate")
+    offenders = []
+    for path in root.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for match in re.finditer(r"set_awaiting_plate_clear\([^)]*False\)", text):
+            window = text[match.start() : match.start() + 1200]
+            if any(phrase in window for phrase in allowed):
+                continue
+            offenders.append(f"{path.relative_to(root).as_posix()}:{text[: match.start()].count(chr(10)) + 1}")
+    assert offenders == [], "these release the plate gate without answering the held queue row: " + ", ".join(offenders)

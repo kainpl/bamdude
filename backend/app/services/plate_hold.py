@@ -45,6 +45,33 @@ async def should_hold_for_plate_clear(db: AsyncSession, printer_id: int, *, plat
     return bool(require)
 
 
+async def answer_by_clearing(db: AsyncSession, printer_id: int) -> int:
+    """The operator took the part off: drop the row and let the queue move on.
+
+    This is what used to happen the moment the print ended, only later — which
+    is the whole change. Returns how many rows went, so a caller can log it.
+
+    ⚠️ Silent when nothing is waiting, and that path is common: a swap printer,
+    a gate armed by the reconnect sweep with no row behind it, or a farm that
+    upgraded mid-print. Clear plate must never fail because there was nothing to
+    tidy.
+    """
+    from backend.app.services.queue_counters import detach_print_queue_refs, update_queue_counters
+
+    row = await waiting_row(db, printer_id)
+    if row is None:
+        return 0
+
+    queue_id = row.queue_id
+    row_id = row.id
+    await detach_print_queue_refs(db, [row_id])
+    await db.delete(row)
+    await update_queue_counters(db, queue_id)
+    await db.commit()
+    logger.info("Plate cleared on printer %s — dropped the finished queue row %s", printer_id, row_id)
+    return 1
+
+
 async def waiting_row(db: AsyncSession, printer_id: int) -> PrintQueueItem | None:
     """The finished row this printer is waiting to be asked about, if any.
 

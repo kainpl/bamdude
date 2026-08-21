@@ -205,6 +205,14 @@ async def cb_clear_plate(callback: CallbackQuery, tg_chat: TelegramChat | None =
 
     try:
         printer_manager.set_awaiting_plate_clear(printer_id, False)
+        # \u26a0\ufe0f The same answer as the card's Clear plate, so the held row goes here
+        # too. Without this, clearing from Telegram leaks a row that nothing
+        # else will ever remove.
+        from backend.app.core.database import async_session
+        from backend.app.services.plate_hold import answer_by_clearing
+
+        async with async_session() as _db:
+            await answer_by_clearing(_db, printer_id)
         await callback.answer(f"\u2705 {t(lang, NS, 'printers.clear_plate_ok')}")
     except Exception:
         await callback.answer(t(lang, NS, "printers.clear_plate_fail"), show_alert=True)

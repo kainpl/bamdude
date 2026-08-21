@@ -3333,6 +3333,11 @@ async def clear_plate(
 
     printer_manager.set_awaiting_plate_clear(printer_id, False)
 
+    # The finished row was held for this answer — see ``services/plate_hold``.
+    from backend.app.services.plate_hold import answer_by_clearing
+
+    await answer_by_clearing(db, printer_id)
+
     return {"success": True, "message": "Plate cleared, next print will start shortly"}
 
 
