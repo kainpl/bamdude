@@ -3374,6 +3374,114 @@ export function SettingsPage() {
             </CardContent>
           </Card>
 
+          {/* G-code Injection (#422) — per-printer-model start/end snippets
+              spliced into plate gcode at print time. Toggle lives in PrintModal;
+              this card is the place where operators define the snippets.
+
+              Directly under Macros on purpose: both are "gcode this install
+              sends that the slicer did not", and they were a column apart with
+              unrelated cards between them. */}
+          <Card>
+            <CardHeader>
+              <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                <Code className="w-4 h-4 text-bambu-green" />
+                {t('settings.gcodeInjection')}
+              </h3>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-xs text-bambu-gray">
+                {t('settings.gcodeInjectionDescription')}
+              </p>
+              {(() => {
+                const gcodeSnippets: Record<string, { start_gcode: string; end_gcode: string }> = (() => {
+                  try {
+                    return localSettings.gcode_snippets ? JSON.parse(localSettings.gcode_snippets) : {};
+                  } catch {
+                    return {};
+                  }
+                })();
+                const printerModels = [...new Set((printers || []).filter((p) => p.model).map((p) => p.model as string))].sort();
+
+                const updateSnippet = (model: string, field: 'start_gcode' | 'end_gcode', value: string) => {
+                  const updated = { ...gcodeSnippets };
+                  if (!updated[model]) {
+                    updated[model] = { start_gcode: '', end_gcode: '' };
+                  }
+                  updated[model][field] = value;
+                  if (!updated[model].start_gcode && !updated[model].end_gcode) {
+                    delete updated[model];
+                  }
+                  const newValue = Object.keys(updated).length > 0 ? JSON.stringify(updated) : '';
+                  setLocalSettings(prev => prev ? { ...prev, gcode_snippets: newValue } : null);
+                };
+
+                const saveGcodeSnippets = () => {
+                  if (localSettings.gcode_snippets !== settings?.gcode_snippets) {
+                    updateMutation.mutate({ gcode_snippets: localSettings.gcode_snippets });
+                  }
+                };
+
+                if (printerModels.length === 0) {
+                  return (
+                    <p className="text-sm text-bambu-gray italic">
+                      {t('settings.gcodeInjectionNoPrinters')}
+                    </p>
+                  );
+                }
+
+                return printerModels.map((model) => {
+                  const snippet = gcodeSnippets[model] || { start_gcode: '', end_gcode: '' };
+                  const hasContent = !!(snippet.start_gcode || snippet.end_gcode);
+                  return (
+                    <details
+                      key={model}
+                      open={hasContent}
+                      className="border border-bambu-dark-tertiary rounded-lg px-3 py-2 group"
+                    >
+                      <summary className="cursor-pointer flex items-center gap-2 list-none">
+                        <ChevronDown className="w-4 h-4 text-bambu-gray transition-transform group-open:rotate-180" />
+                        <h4 className="text-sm font-medium text-white">{model}</h4>
+                        {hasContent && (
+                          <span className="text-xs px-1.5 py-0.5 rounded bg-bambu-green/20 text-bambu-green">
+                            {t('settings.gcodeConfigured')}
+                          </span>
+                        )}
+                      </summary>
+                      <div className="space-y-2 mt-2">
+                        <div>
+                          <label className="block text-xs text-bambu-gray mb-1">
+                            {t('settings.gcodeStartLabel')}
+                          </label>
+                          <textarea
+                            value={snippet.start_gcode}
+                            onChange={(e) => updateSnippet(model, 'start_gcode', e.target.value)}
+                            onBlur={saveGcodeSnippets}
+                            placeholder={t('settings.gcodeStartPlaceholder')}
+                            rows={3}
+                            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-xs font-mono focus:outline-none focus:border-bambu-green resize-y"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-bambu-gray mb-1">
+                            {t('settings.gcodeEndLabel')}
+                          </label>
+                          <textarea
+                            value={snippet.end_gcode}
+                            onChange={(e) => updateSnippet(model, 'end_gcode', e.target.value)}
+                            onBlur={saveGcodeSnippets}
+                            placeholder={t('settings.gcodeEndPlaceholder')}
+                            rows={3}
+                            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-xs font-mono focus:outline-none focus:border-bambu-green resize-y"
+                          />
+                        </div>
+                      </div>
+                    </details>
+                  );
+                });
+              })()}
+            </CardContent>
+          </Card>
+
           {/* Queue & Scheduling */}
           <Card>
             <CardHeader>
@@ -3668,110 +3776,6 @@ export function SettingsPage() {
                 <span className="font-medium text-bambu-gray/90">{t('settings.preheatHardwareTitle')}</span>{' '}
                 {t('settings.preheatHardwareDetail')}
               </p>
-            </CardContent>
-          </Card>
-
-          {/* G-code Injection (#422) — per-printer-model start/end snippets
-              spliced into plate gcode at print time. Toggle lives in PrintModal;
-              this card is the place where operators define the snippets. */}
-          <Card>
-            <CardHeader>
-              <h3 className="text-base font-semibold text-white flex items-center gap-2">
-                <Code className="w-4 h-4 text-bambu-green" />
-                {t('settings.gcodeInjection')}
-              </h3>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <p className="text-xs text-bambu-gray">
-                {t('settings.gcodeInjectionDescription')}
-              </p>
-              {(() => {
-                const gcodeSnippets: Record<string, { start_gcode: string; end_gcode: string }> = (() => {
-                  try {
-                    return localSettings.gcode_snippets ? JSON.parse(localSettings.gcode_snippets) : {};
-                  } catch {
-                    return {};
-                  }
-                })();
-                const printerModels = [...new Set((printers || []).filter((p) => p.model).map((p) => p.model as string))].sort();
-
-                const updateSnippet = (model: string, field: 'start_gcode' | 'end_gcode', value: string) => {
-                  const updated = { ...gcodeSnippets };
-                  if (!updated[model]) {
-                    updated[model] = { start_gcode: '', end_gcode: '' };
-                  }
-                  updated[model][field] = value;
-                  if (!updated[model].start_gcode && !updated[model].end_gcode) {
-                    delete updated[model];
-                  }
-                  const newValue = Object.keys(updated).length > 0 ? JSON.stringify(updated) : '';
-                  setLocalSettings(prev => prev ? { ...prev, gcode_snippets: newValue } : null);
-                };
-
-                const saveGcodeSnippets = () => {
-                  if (localSettings.gcode_snippets !== settings?.gcode_snippets) {
-                    updateMutation.mutate({ gcode_snippets: localSettings.gcode_snippets });
-                  }
-                };
-
-                if (printerModels.length === 0) {
-                  return (
-                    <p className="text-sm text-bambu-gray italic">
-                      {t('settings.gcodeInjectionNoPrinters')}
-                    </p>
-                  );
-                }
-
-                return printerModels.map((model) => {
-                  const snippet = gcodeSnippets[model] || { start_gcode: '', end_gcode: '' };
-                  const hasContent = !!(snippet.start_gcode || snippet.end_gcode);
-                  return (
-                    <details
-                      key={model}
-                      open={hasContent}
-                      className="border border-bambu-dark-tertiary rounded-lg px-3 py-2 group"
-                    >
-                      <summary className="cursor-pointer flex items-center gap-2 list-none">
-                        <ChevronDown className="w-4 h-4 text-bambu-gray transition-transform group-open:rotate-180" />
-                        <h4 className="text-sm font-medium text-white">{model}</h4>
-                        {hasContent && (
-                          <span className="text-xs px-1.5 py-0.5 rounded bg-bambu-green/20 text-bambu-green">
-                            {t('settings.gcodeConfigured')}
-                          </span>
-                        )}
-                      </summary>
-                      <div className="space-y-2 mt-2">
-                        <div>
-                          <label className="block text-xs text-bambu-gray mb-1">
-                            {t('settings.gcodeStartLabel')}
-                          </label>
-                          <textarea
-                            value={snippet.start_gcode}
-                            onChange={(e) => updateSnippet(model, 'start_gcode', e.target.value)}
-                            onBlur={saveGcodeSnippets}
-                            placeholder={t('settings.gcodeStartPlaceholder')}
-                            rows={3}
-                            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-xs font-mono focus:outline-none focus:border-bambu-green resize-y"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs text-bambu-gray mb-1">
-                            {t('settings.gcodeEndLabel')}
-                          </label>
-                          <textarea
-                            value={snippet.end_gcode}
-                            onChange={(e) => updateSnippet(model, 'end_gcode', e.target.value)}
-                            onBlur={saveGcodeSnippets}
-                            placeholder={t('settings.gcodeEndPlaceholder')}
-                            rows={3}
-                            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-xs font-mono focus:outline-none focus:border-bambu-green resize-y"
-                          />
-                        </div>
-                      </div>
-                    </details>
-                  );
-                });
-              })()}
             </CardContent>
           </Card>
 
