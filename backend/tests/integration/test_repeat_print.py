@@ -196,33 +196,48 @@ class TestARowWhoseOnlySourceIsItsArchive:
     dispatched from the first time.
     """
 
-    async def _external(self, db_session, printer_factory):
+    async def _external(self, db_session, printer_factory, archive_factory, tmp_path, monkeypatch):
+        """An external print: an archive whose 3MF really landed, and no library
+        file — nothing adds a picked-up file to the library."""
+        from backend.app.core.config import settings
+
+        monkeypatch.setattr(settings, "base_dir", tmp_path)
+        real = tmp_path / "archives" / "picked-up.gcode.3mf"
+        real.parent.mkdir(parents=True, exist_ok=True)
+        real.write_bytes(b"PK")
+
         printer = await printer_factory(require_plate_clear=True)
         queue = PrinterQueue(id=printer.id, printer_id=printer.id)
         db_session.add(queue)
         await db_session.flush()
+        archive = await archive_factory(printer.id, file_path="archives/picked-up.gcode.3mf")
         row = PrintQueueItem(
             queue_id=queue.id,
             status="completed",
             position=0,
-            archive_id=7,
+            archive_id=archive.id,
             library_file_id=None,
         )
         db_session.add(row)
         await db_session.commit()
         return printer, row
 
-    async def test_the_archive_is_kept_when_it_is_the_only_source(self, db_session, printer_factory):
-        printer, _ = await self._external(db_session, printer_factory)
+    async def test_the_archive_is_kept_when_it_is_the_only_source(
+        self, db_session, printer_factory, archive_factory, tmp_path, monkeypatch
+    ):
+        printer, row = await self._external(db_session, printer_factory, archive_factory, tmp_path, monkeypatch)
+        kept = row.archive_id
 
         again = await answer_by_repeating(db_session, printer.id)
 
-        assert again.archive_id == 7, "clearing it leaves the row with nothing to print"
+        assert again.archive_id == kept, "clearing it leaves the row with nothing to print"
         assert again.status == "pending"
 
-    async def test_it_is_still_let_go_when_a_library_file_backs_the_row(self, db_session, printer_factory):
+    async def test_it_is_still_let_go_when_a_library_file_backs_the_row(
+        self, db_session, printer_factory, archive_factory, tmp_path, monkeypatch
+    ):
         """The ordinary case is unchanged: the new run gets its own archive."""
-        printer, row = await self._external(db_session, printer_factory)
+        printer, row = await self._external(db_session, printer_factory, archive_factory, tmp_path, monkeypatch)
         row.library_file_id = 3
         await db_session.commit()
 
@@ -231,11 +246,72 @@ class TestARowWhoseOnlySourceIsItsArchive:
         assert again.archive_id is None
         assert again.library_file_id == 3
 
-    async def test_a_re_armed_external_row_still_has_a_source_the_dispatcher_accepts(self, db_session, printer_factory):
+    async def test_a_re_armed_external_row_still_has_a_source_the_dispatcher_accepts(
+        self, db_session, printer_factory, archive_factory, tmp_path, monkeypatch
+    ):
         """The failure as the operator met it: the dispatcher refuses a row with
         neither source, and that refusal errors the whole queue."""
-        printer, _ = await self._external(db_session, printer_factory)
+        printer, _ = await self._external(db_session, printer_factory, archive_factory, tmp_path, monkeypatch)
 
         again = await answer_by_repeating(db_session, printer.id)
 
         assert (again.archive_id is not None) or (again.library_file_id is not None)
+
+
+class TestRepeatingSomethingWithNoFileIsRefused:
+    """⚠️ The hole left by keeping the archive: it may have no file behind it.
+
+    A print picked up from BambuStudio is archived at start with ``file_path=""``
+    and the 3MF fetched afterwards — and that fetch fails outright on P1S / A1 /
+    P2S, whose firmware locks the file while printing (#1533). Repeating such a
+    row put it back in the queue with an archive that has nothing to upload.
+
+    ``_dispatch_item`` does not catch it either: it checks ``file_path.exists()``
+    and an empty path resolves to the DATA DIRECTORY, which exists. The dispatch
+    would proceed with a directory as its source and fail messily — and a failed
+    dispatch errors the queue, which is the thing this whole feature is trying
+    not to do. Refused up front instead, where the operator is standing.
+    """
+
+    async def _external(self, db_session, printer_factory, archive_factory, **archive_kwargs):
+        printer = await printer_factory(require_plate_clear=True)
+        queue = PrinterQueue(id=printer.id, printer_id=printer.id)
+        db_session.add(queue)
+        await db_session.flush()
+        archive = await archive_factory(printer.id, **archive_kwargs)
+        row = PrintQueueItem(
+            queue_id=queue.id, status="completed", position=0, archive_id=archive.id, library_file_id=None
+        )
+        db_session.add(row)
+        await db_session.commit()
+        return printer, row
+
+    async def test_an_archive_with_no_file_is_refused(self, db_session, printer_factory, archive_factory):
+        from backend.app.services.plate_hold import RepeatNotPossible
+
+        printer, row = await self._external(db_session, printer_factory, archive_factory, file_path="")
+
+        with pytest.raises(RepeatNotPossible):
+            await answer_by_repeating(db_session, printer.id)
+
+        await db_session.refresh(row)
+        assert row.status == "completed", "the row must stay waiting, not be half re-armed"
+
+    async def test_the_route_says_why(self, async_client, db_session, printer_factory, archive_factory):
+        printer, _ = await self._external(db_session, printer_factory, archive_factory, file_path="")
+
+        resp = await async_client.post(f"/api/v1/printers/{printer.id}/repeat-print")
+
+        assert resp.status_code == 409
+        assert "file" in resp.json()["detail"].lower()
+
+    async def test_a_row_backed_by_a_library_file_is_unaffected(self, db_session, printer_factory, archive_factory):
+        """The archive is let go there anyway, so its file is beside the point."""
+        printer, row = await self._external(db_session, printer_factory, archive_factory, file_path="")
+        row.library_file_id = 3
+        await db_session.commit()
+
+        again = await answer_by_repeating(db_session, printer.id)
+
+        assert again.status == "pending"
+        assert again.archive_id is None

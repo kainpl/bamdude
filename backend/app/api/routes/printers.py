@@ -3361,13 +3361,18 @@ async def repeat_print(
 
     Same permission as Clear plate: they are two answers to one question.
     """
-    from backend.app.services.plate_hold import answer_by_repeating
+    from backend.app.services.plate_hold import RepeatNotPossible, answer_by_repeating
 
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     if result.scalar_one_or_none() is None:
         raise HTTPException(404, "Printer not found")
 
-    row = await answer_by_repeating(db, printer_id)
+    try:
+        row = await answer_by_repeating(db, printer_id)
+    except RepeatNotPossible as e:
+        # Said out loud rather than queued and failed later: a failed dispatch
+        # errors the whole queue, which is what this feature exists to avoid.
+        raise HTTPException(409, str(e)) from e
     if row is None:
         raise HTTPException(409, "No finished print is waiting on this printer")
 

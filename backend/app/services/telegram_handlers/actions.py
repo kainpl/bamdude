@@ -239,11 +239,17 @@ async def cb_repeat_print(callback: CallbackQuery, tg_chat: TelegramChat | None 
     printer_id = int(callback.data.split(":")[2])
 
     from backend.app.core.database import async_session
-    from backend.app.services.plate_hold import answer_by_repeating
+    from backend.app.services.plate_hold import RepeatNotPossible, answer_by_repeating
 
     try:
         async with async_session() as _db:
             row = await answer_by_repeating(_db, printer_id)
+    except RepeatNotPossible as e:
+        # Nothing to send again — said plainly rather than queued and failed.
+        await callback.answer(str(e), show_alert=True)
+        return
+
+    try:
         if row is None:
             # ⚠️ The gate stays armed: the plate has not been dealt with, and
             # dropping it would let the queue dispatch onto a bed nobody cleared.

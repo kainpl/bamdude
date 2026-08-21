@@ -31,6 +31,14 @@ from backend.app.models.printer_queue import PrinterQueue
 logger = logging.getLogger(__name__)
 
 
+class RepeatNotPossible(Exception):
+    """Repeat was asked for, but the row has nothing printable behind it.
+
+    ⚠️ Raised BEFORE anything is mutated, so a refused repeat leaves the row
+    exactly as it was — still waiting for an answer.
+    """
+
+
 async def should_hold_for_plate_clear(db: AsyncSession, printer_id: int, *, plate_auto_cleared: bool) -> bool:
     """Whether this printer's finished row waits for an answer.
 
@@ -92,6 +100,29 @@ async def answer_by_repeating(db: AsyncSession, printer_id: int) -> PrintQueueIt
     row = await waiting_row(db, printer_id)
     if row is None:
         return None
+
+    # ⚠️ Refuse before touching anything when the archive is the row's only
+    # source and has no file behind it. A print picked up from BambuStudio is
+    # archived at start with ``file_path=""`` and the 3MF fetched afterwards —
+    # and that fetch fails outright on P1S / A1 / P2S, whose firmware locks the
+    # file while printing (#1533).
+    #
+    # ``_dispatch_item`` would NOT catch it: it checks ``file_path.exists()``,
+    # and an empty path resolves to the data directory, which exists. The
+    # dispatch would proceed with a directory as its source. Worse, a failed
+    # dispatch errors the queue — the exact outcome this feature exists to
+    # avoid — so the refusal belongs here, where the operator is standing.
+    if row.library_file_id is None:
+        from backend.app.core.config import settings
+        from backend.app.models.archive import PrintArchive
+
+        archive = await db.get(PrintArchive, row.archive_id) if row.archive_id else None
+        path = (settings.base_dir / archive.file_path) if archive and archive.file_path else None
+        if path is None or not path.is_file():
+            raise RepeatNotPossible(
+                "This print has no file to send again — it was picked up from the printer "
+                "and its 3MF was never retrieved."
+            )
 
     row.status = "pending"
     # The archive belongs to the print that finished; this run will get its own.
