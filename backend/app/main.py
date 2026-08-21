@@ -7735,6 +7735,16 @@ async def lifespan(app: FastAPI):
             from backend.app.services.zigbee.poller import zigbee_poller as _zb_poller
 
             _zb_poller.start(_zb_driver, _zb_session)
+
+        # ⚠️ Outside the "did the radio come up" block on purpose. The
+        # supervisor's whole job is the case where it did not: a dongle absent
+        # at boot, a port another program is holding, or a radio that dies
+        # later. Starting it only when the radio is already healthy would leave
+        # every one of those needing a full application restart, which is the
+        # bug it was written for.
+        from backend.app.services.zigbee.supervisor import zigbee_supervisor as _zb_supervisor
+
+        _zb_supervisor.start(_zb_session)
     except Exception as _zb_exc:
         logging.getLogger(__name__).warning("Zigbee coordinator not started: %s", _zb_exc)
 
@@ -8292,8 +8302,13 @@ async def lifespan(app: FastAPI):
     try:
         from backend.app.services.zigbee.coordinator import zigbee_coordinator
         from backend.app.services.zigbee.poller import zigbee_poller
+        from backend.app.services.zigbee.supervisor import zigbee_supervisor
 
-        # Poller first: it reads through the radio the coordinator owns, so
+        # Supervisor first, before anything it might restart: left running, it
+        # would answer the coordinator's stop by bringing the radio back up
+        # mid-teardown, and hold the lock while doing it.
+        await zigbee_supervisor.stop()
+        # Poller next: it reads through the radio the coordinator owns, so
         # stopping that out from under an in-flight read is how shutdown starts
         # logging exceptions nobody can act on.
         await zigbee_poller.stop()

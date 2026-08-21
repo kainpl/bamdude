@@ -30,6 +30,10 @@ from backend.app.models.user import User
 from backend.app.schemas.printer_location import PrinterLocationOut
 from backend.app.schemas.smart_sensor import SmartSensorCreate, SmartSensorOut, SmartSensorUpdate
 from backend.app.schemas.zigbee_settings import DeviceSettingsUpdate
+
+# Imported as a module so the lock and the restart sequence are visibly the same
+# objects the supervisor uses, not copies that could drift apart.
+from backend.app.services.zigbee import supervisor as _supervisor
 from backend.app.services.zigbee.coordinator import CoordinatorState, zigbee_coordinator
 from backend.app.services.zigbee.device_settings import resolve_reporting
 from backend.app.services.zigbee.devices import DeviceKind, describe_device, describe_for_ui
@@ -322,7 +326,12 @@ async def permit_join(
 
 # One restart at a time. The radio lock is a *file* lock and only distinguishes
 # processes, so it cannot see a second call inside this one.
-_restart_lock = asyncio.Lock()
+#
+# ⚠️ Shared with the supervisor rather than owned here. It performs the same
+# restart on its own timer, so a lock private to this module would let a retry
+# run straight through an operator disconnecting the radio or resetting the
+# network — and the file lock, being per-process, would not notice either.
+_restart_lock = _supervisor.restart_lock
 
 
 @router.post("/restart")
@@ -342,35 +351,8 @@ async def restart_coordinator(
     feature would be the wrong signal, and this endpoint is also how the
     coordinator gets stopped after the box is unticked.
     """
-    from backend.app.api.routes.settings import get_setting
-    from backend.app.models.smart_plug import SmartPlug
-    from backend.app.services.zigbee import reporting
-    from backend.app.services.zigbee.driver import zigbee_smart_plug_service
-
-    settings = {
-        key: (await get_setting(db, key) or "") for key in ("zigbee_enabled", "zigbee_transport", "zigbee_path")
-    }
-
     async with _restart_lock:
-        await zigbee_coordinator.stop()
-
-        # Every cached listener belongs to a cluster object that stop() just
-        # orphaned. Keeping them would leave reports silently unwired while
-        # commands and polling carried on working — the shape of half-broken
-        # this subsystem keeps rediscovering. A read still in flight holds those
-        # same orphaned clusters, so it goes with them.
-        await zigbee_smart_plug_service.cancel_refreshes()
-        zigbee_smart_plug_service._listeners.clear()
-
-        await zigbee_coordinator.start(settings)
-
-        if zigbee_coordinator.app is not None:
-            rows = (await db.execute(select(SmartPlug).where(SmartPlug.plug_type == "zigbee"))).scalars().all()
-            if rows:
-                # Resolved through the module so a test can patch it, and so the
-                # import cannot go stale against a reload.
-                wired = await reporting.subscribe_all(zigbee_smart_plug_service, rows)
-                logger.info("Zigbee reporting re-established for %s/%s plug(s)", wired, len(rows))
+        await _supervisor.restart_radio(db)
 
     status = zigbee_coordinator.status
     return {"state": status.state.value, "reason": status.reason, **_radio_identity()}

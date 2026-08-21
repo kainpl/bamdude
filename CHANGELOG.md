@@ -108,6 +108,12 @@
 
 ### Fixed
 
+- **The Zigbee radio comes back by itself.** Unplug the USB dongle — to move it to a better spot, or because the port glitched — and BamDude noticed it was gone, said so, and then waited forever: every Zigbee plug stayed dead and the only cure was restarting the whole application. It now keeps trying, quietly, every fifteen seconds at first and backing off to five minutes if the radio really is not coming back, and it announces the recovery so a page left open updates on its own.
+
+    The same watch covers the cases that used to need a restart for the same reason: a dongle not plugged in when BamDude started, a port Zigbee2MQTT or Home Assistant was holding and has since released, and a port corrected in Settings — including a dongle that returns on a different COM port after being re-plugged, since the settings are re-read on every attempt.
+
+    Recovering the radio also re-establishes reporting for every plug, which is the part that made a hand-rolled reconnect worse than none: the radio comes back up looking healthy and switches plugs on command, while readings never arrive and status sits on "unreachable".
+
 - **Duplicating or retrying a queued job no longer loses its print settings.** Both actions built the new job from a hand-written list of fields that had not kept up with the settings added since: the calibration modes, the preheat override and its chamber target, "only run if the previous print succeeded", G-code injection, the per-slot nozzle assignment for rack printers and the chosen event macros were all dropped. The copy came out looking identical and printed differently — quietly, which is the worst way for it to be wrong. Everything a job carries is copied now, and a test fails if a new setting is ever added without deciding whether it should be.
 
 - **A queue line no longer points at a library file that has been deleted.** Deleting a file cancels the jobs queued from it and leaves the lines in place on purpose — they are the record of what was asked for. But once the file was finally removed from the trash, those lines kept pointing at it, and so did any line belonging to a colleague when a user was deleted along with their files. The link is now cleared, so the line stays as history without claiming a file that is gone.

@@ -18,7 +18,7 @@ is why the lifecycle is testable without hardware.
 from __future__ import annotations
 
 import logging
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -35,6 +35,42 @@ logger = logging.getLogger(__name__)
 _BUSY_RADIO_REASON = (
     "The Zigbee radio is already in use. Another BamDude instance, or Zigbee2MQTT / Home Assistant, may be holding it."
 )
+
+#: zigpy's own log line for the one teardown failure that is not a failure.
+_DEAD_RADIO_DISCONNECT = "Failed to disconnect from radio"
+
+
+@contextmanager
+def _quiet_dead_radio_disconnect(radio_is_gone: bool):
+    """Drop zigpy's disconnect complaint when we already know the radio left.
+
+    Shutting a controller down whose radio is gone reaches
+    ``bellows.ezsp.disconnect``, which awaits a gateway that is already ``None``
+    and raises ``TypeError``. zigpy catches that **itself**, logs it with a
+    traceback, and completes the rest of the teardown — so the call is safe and
+    the only cost is the noise.
+
+    ⚠️ Which is why the shutdown is still called rather than skipped. The rest
+    of that teardown is real, and the supervisor now stops a dead radio on every
+    retry: skipping would turn a log line into a leak, once per attempt, for as
+    long as a dongle stays unplugged.
+
+    ⚠️ Scoped to one message, one logger, and only while we know the radio is
+    gone — a genuine disconnect failure on a live radio still gets through.
+    """
+    if not radio_is_gone:
+        yield
+        return
+
+    def _drop(record: logging.LogRecord) -> bool:
+        return _DEAD_RADIO_DISCONNECT not in record.getMessage()
+
+    target = logging.getLogger("zigpy.application")
+    target.addFilter(_drop)
+    try:
+        yield
+    finally:
+        target.removeFilter(_drop)
 
 
 class CoordinatorState(str, Enum):
@@ -56,6 +92,11 @@ class ZigbeeCoordinator:
         self._lock = RadioLock(self._data_dir / "zigbee" / "radio.lock")
         self._app = None
         self._status = CoordinatorStatus(CoordinatorState.DISABLED)
+        # Set by ``connection_lost``, read once by ``stop``. Not a second copy
+        # of the status: it answers "did the radio leave under us", which is a
+        # different question from "is Zigbee down" — a radio that never opened
+        # is also down, and its teardown has nothing to stay quiet about.
+        self._radio_lost = False
         # What each sensor was last configured with, and what it accepted. Held
         # in memory: after a restart the applied state is unknown, which the
         # next contact repairs — configure_reporting is idempotent, so
@@ -143,9 +184,11 @@ class ZigbeeCoordinator:
         must not take the teardown down with it.
         """
         app, self._app = self._app, None
+        radio_is_gone, self._radio_lost = self._radio_lost, False
         if app is not None:
             try:
-                await app.shutdown()
+                with _quiet_dead_radio_disconnect(radio_is_gone):
+                    await app.shutdown()
             except Exception as exc:  # noqa: BLE001 — teardown must complete
                 logger.warning("Zigbee shutdown raised, continuing: %s", describe_exception(exc))
         self._lock.release()
@@ -298,6 +341,7 @@ class ZigbeeCoordinator:
         endpoint still reported ``up``.
         """
         try:
+            self._radio_lost = True
             self._status = CoordinatorStatus(
                 CoordinatorState.ERROR,
                 f"Connection to the Zigbee radio was lost: {describe_exception(exc)}",
