@@ -75,21 +75,41 @@ export function PrinterLocationsCard() {
     <div>
       {locations.length === 0 && <p className="text-sm text-bambu-gray mb-3">{t('printers.locations.empty')}</p>}
 
-      <ul className="space-y-2 mb-3">
+      {/* ⚠️ One grid for the whole list, not a flex row per item.
+          Every column here is content-sized — the name, the parent picker, the
+          counts, Delete — and under `flex justify-between` each row sized its
+          own, so a row whose parent reads "Top level" pushed its picker wider
+          and further left than the row below it. Four ragged columns, and the
+          list read as broken rather than as a table.
+          Grid tracks are shared BETWEEN rows, which is the whole point: the
+          picker column is as wide as the widest picker, once. `contents` on the
+          `li` is what lets the cells participate in the parent's grid while the
+          list keeps its markup. */}
+      <ul className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-x-3 gap-y-2 mb-3">
         {locations.map((loc) => (
-          <li key={loc.id} className="flex items-center justify-between gap-3">
+          <li key={loc.id} className="contents">
             {/* Indented by depth: the tree is the point, and a flat list of
                 paths repeats every parent on every row. */}
-            <span className="text-white" style={{ paddingLeft: (loc.depth - 1) * 16 }} title={loc.path}>
+            <span
+              className="text-white truncate"
+              style={{ paddingLeft: (loc.depth - 1) * 16 }}
+              title={loc.path}
+            >
               {loc.name}
             </span>
 
-            <label className="sr-only" htmlFor={`parent-of-${loc.id}`}>
-              {t('printers.locations.parent')} {loc.name}
-            </label>
+            {/* ⚠️ `aria-label`, not a sibling `<label class="sr-only">`.
+                `contents` on the `li` promotes every child to a grid item, and
+                a visually-hidden label is still a child — it would take a
+                column of its own and push the row one cell to the right. The
+                accessible name is identical either way. */}
             <select
               id={`parent-of-${loc.id}`}
-              className="text-xs bg-bambu-dark border border-bambu-dark-tertiary rounded px-1.5 py-1 text-bambu-gray"
+              aria-label={`${t('printers.locations.parent')} ${loc.name}`}
+              // `w-full` so every picker fills the shared column instead of
+              // sitting at its own content width inside it — the track is
+              // already as wide as the widest one.
+              className="w-full text-xs bg-bambu-dark border border-bambu-dark-tertiary rounded px-1.5 py-1 text-bambu-gray"
               value={loc.parent_id ?? ''}
               onChange={(e) => move.mutate({ id: loc.id, parent_id: e.target.value ? Number(e.target.value) : null })}
             >
@@ -106,14 +126,18 @@ export function PrinterLocationsCard() {
                 ))}
             </select>
 
-            <span className="text-xs text-bambu-gray">
+            <span className="text-xs text-bambu-gray whitespace-nowrap">
               {t('printers.locations.counts', {
                 printers: loc.printer_count,
                 sensors: loc.sensor_count,
                 queued: loc.queued_count,
               })}
             </span>
-            <button type="button" className="text-status-error text-sm" onClick={() => remove.mutate(loc.id)}>
+            <button
+              type="button"
+              className="text-status-error text-sm justify-self-end whitespace-nowrap"
+              onClick={() => remove.mutate(loc.id)}
+            >
               {t('common.delete')}
             </button>
           </li>
