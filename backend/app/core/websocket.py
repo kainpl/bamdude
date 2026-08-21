@@ -158,6 +158,20 @@ class ConnectionManager:
         """Notify clients that a file was added to the library."""
         await self.broadcast({"type": "library_file_added", "data": file_data})
 
+    async def send_library_scan_progress(self, data: dict):
+        """How far an external-folder scan has got.
+
+        ⚠️ Throttled by the caller, not here. Per-file progress on a
+        five-thousand-file share is five thousand messages to every open tab —
+        the per-file ``library_file_added`` earns its noise because it carries a
+        row somebody wants to see appear, but a percentage does not.
+        """
+        await self.broadcast({"type": "library_scan_progress", "data": data})
+
+    async def send_library_scan_finished(self, data: dict):
+        """A scan ended — with its counters, and whether it refused to delete."""
+        await self.broadcast({"type": "library_scan_finished", "data": data})
+
     async def send_library_file_notes_changed(self, file_id: int, notes_count: int):
         """Notify clients that a library file's notes changed (gh#3).
 
