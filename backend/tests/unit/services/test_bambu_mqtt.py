@@ -1557,10 +1557,16 @@ class TestRequestTopicFailSafe:
 
     @pytest.fixture(autouse=True)
     def clear_request_topic_cache(self):
-        """Clear class-level cache before each test to avoid cross-test pollution."""
+        """Clear class-level state before each test to avoid cross-test pollution.
+
+        ⚠️ Both dicts. The strike counter is as class-level as the cache, so a
+        test that leaves one strike behind silently halves the next test's
+        threshold.
+        """
         from backend.app.services.bambu_mqtt import BambuMQTTClient
 
         BambuMQTTClient._request_topic_cache.clear()
+        BambuMQTTClient._request_topic_strikes.clear()
 
     @pytest.fixture
     def mqtt_client(self):
@@ -1614,7 +1620,28 @@ class TestRequestTopicFailSafe:
         assert mqtt_client._request_topic_supported is True
 
     def test_disconnect_after_subscription_disables_topic(self, mqtt_client):
-        """Disconnect within 10s of subscription attempt disables request topic."""
+        """Two disconnects within 10s of a subscription attempt disable it.
+
+        ⚠️ Two, not one — changed deliberately after 2026-08-21, when a
+        fleet-wide network outage made every reconnect die young and five
+        printers that were happy with the request topic had it switched off by
+        an event that had nothing to do with them. A printer that genuinely
+        refuses does so every time, so it still latches, one reconnect later.
+        Full reasoning in ``test_mqtt_client_is_not_abandoned.py``.
+        """
+        import time
+
+        for _ in range(2):
+            mqtt_client._request_topic_sub_time = time.time()
+            mqtt_client._request_topic_confirmed = False
+            mqtt_client._last_message_time = 0.0
+            mqtt_client._on_disconnect(None, None)
+
+        assert mqtt_client._request_topic_supported is False
+        assert mqtt_client._request_topic_sub_time == 0.0
+
+    def test_a_single_disconnect_does_not_disable_the_topic(self, mqtt_client):
+        """The other half of the rule above, so a revert to one strike fails."""
         import time
 
         mqtt_client._request_topic_sub_time = time.time()
@@ -1623,8 +1650,7 @@ class TestRequestTopicFailSafe:
 
         mqtt_client._on_disconnect(None, None)
 
-        assert mqtt_client._request_topic_supported is False
-        assert mqtt_client._request_topic_sub_time == 0.0
+        assert mqtt_client._request_topic_supported is True
 
     def test_disconnect_after_confirmation_does_not_disable(self, mqtt_client):
         """Disconnect after SUBACK confirmation keeps request topic enabled."""
@@ -1680,11 +1706,13 @@ class TestRequestTopicFailSafe:
         )
         assert client1._request_topic_supported is True
 
-        # Simulate disconnect-after-subscribe disabling the topic
-        client1._request_topic_sub_time = __import__("time").time()
-        client1._request_topic_confirmed = False
-        client1._last_message_time = 0.0
-        client1._on_disconnect(None, None)
+        # Simulate disconnect-after-subscribe disabling the topic. Twice: one
+        # is no longer enough to convict — see the fail-safe tests above.
+        for _ in range(2):
+            client1._request_topic_sub_time = __import__("time").time()
+            client1._request_topic_confirmed = False
+            client1._last_message_time = 0.0
+            client1._on_disconnect(None, None)
         assert client1._request_topic_supported is False
 
         # New instance for same serial should inherit the cached state

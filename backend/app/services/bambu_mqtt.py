@@ -218,6 +218,12 @@ A2L_LITE_NORMALIZED_AMS_ID = 6
 A2L_LITE_GLOBAL_BASE = A2L_LITE_NORMALIZED_AMS_ID * 4  # 24
 
 
+#: Consecutive disconnects-just-after-subscribing before the request topic is
+#: written off for a printer. Two, because one is indistinguishable from the
+#: network dropping at the wrong moment — and the verdict lasts until restart.
+_REQUEST_TOPIC_STRIKES = 2
+
+
 def is_successful_project_file(print_data: object) -> bool:
     """Whether a ``print`` envelope is a dispatch worth remembering.
 
@@ -1720,6 +1726,10 @@ class BambuMQTTClient:
     # Class-level cache: serial_number -> False when request topic is known unsupported.
     # Persists across client instances so reconnects don't re-trigger failed subscriptions.
     _request_topic_cache: dict[str, bool] = {}
+    # serial_number -> consecutive "died right after subscribing" disconnects.
+    # Cleared by an accepted subscription; see _on_disconnect for why one is
+    # not enough to convict.
+    _request_topic_strikes: dict[str, int] = {}
     # Counter for generating unique MQTT client IDs across instances.
     _client_instance_counter: int = 0
 
@@ -1933,6 +1943,10 @@ class BambuMQTTClient:
         # slicer's own dispatch on the request topic, or the printer's echo of
         # it on the report topic. Both say what the print was told to use.
         self._captured_ams_mapping: list[int] | None = None
+        # Why the last connection attempt did not produce a connection. Read by
+        # ``connection_watchdog`` when a session rebuild fails; None means the
+        # attempt has not failed (yet), never "we did not look".
+        self._last_connect_error: str | None = None
         # ``param`` from that same command: ``Metadata/plate_N.gcode``, i.e. the
         # plate. For a print BamDude did not send this is the only sighting of
         # it before the 3MF has been fetched and read.
@@ -2306,6 +2320,14 @@ class BambuMQTTClient:
             if self.on_state_change:
                 self.on_state_change(self.state)
         else:
+            # ⚠️ This branch used to be one line: set the flag, say nothing.
+            # ``connection_watchdog`` reports ``_last_connect_error`` when a
+            # session rebuild fails — and nothing ever wrote it, so five failed
+            # rebuilds during a fleet-wide outage all logged "Last connect
+            # error: none recorded" and the outage could not be diagnosed from
+            # the log at all.
+            self._last_connect_error = str(rc)
+            logger.warning("[%s] MQTT connect refused: rc=%s", self.serial_number, rc)
             self.state.connected = False
 
     def _on_subscribe(self, client, userdata, mid, reason_code_list, properties=None):
@@ -2330,6 +2352,11 @@ class BambuMQTTClient:
                     )
                     self._request_topic_confirmed = True
                     BambuMQTTClient._request_topic_cache[self.serial_number] = True
+                    # The subscription was accepted, so whatever killed the
+                    # earlier attempts was not this. Strikes are consecutive by
+                    # design — otherwise a printer that drops once a month
+                    # eventually convicts itself.
+                    BambuMQTTClient._request_topic_strikes.pop(self.serial_number, None)
             self._request_topic_sub_mid = None
             self._request_topic_sub_time = 0.0
 
@@ -2373,12 +2400,36 @@ class BambuMQTTClient:
             and not self._request_topic_confirmed
             and time.time() - self._request_topic_sub_time < 10.0
         ):
-            logger.warning(
-                "[%s] Disconnected shortly after request topic subscription. Disabling request topic for this printer.",
-                self.serial_number,
-            )
-            self._request_topic_supported = False
-            BambuMQTTClient._request_topic_cache[self.serial_number] = False
+            # ⚠️ Two strikes, not one. This cannot tell a broker refusing the
+            # subscription from the network dying three seconds later — and
+            # during a fleet-wide outage every reconnect dies young, so on
+            # 2026-08-21 five printers that were perfectly happy with the
+            # request topic had it switched off, permanently, by a network
+            # event that had nothing to do with them.
+            #
+            # A printer that really refuses does it every single time, so it
+            # still latches — one reconnect later. A storm does not, because
+            # the counter is cleared the moment a subscription is confirmed or
+            # a connection lives long enough to prove itself.
+            strikes = BambuMQTTClient._request_topic_strikes.get(self.serial_number, 0) + 1
+            BambuMQTTClient._request_topic_strikes[self.serial_number] = strikes
+            if strikes >= _REQUEST_TOPIC_STRIKES:
+                logger.warning(
+                    "[%s] Disconnected shortly after request topic subscription %s times. "
+                    "Disabling request topic for this printer.",
+                    self.serial_number,
+                    strikes,
+                )
+                self._request_topic_supported = False
+                BambuMQTTClient._request_topic_cache[self.serial_number] = False
+            else:
+                logger.info(
+                    "[%s] Disconnected shortly after request topic subscription (%s/%s). "
+                    "Keeping it for now — a network drop looks the same from here.",
+                    self.serial_number,
+                    strikes,
+                    _REQUEST_TOPIC_STRIKES,
+                )
         self._request_topic_sub_mid = None
         self._request_topic_sub_time = 0.0
 
@@ -6701,6 +6752,30 @@ class BambuMQTTClient:
                   If not provided, will try to get the running loop.
         """
         self._loop = loop
+        # ⚠️ A live client here is not a harmless overwrite — it is a leak, and
+        # an invisible one. The abandoned paho client keeps its network thread,
+        # keeps ``on_disconnect`` bound to THIS instance, and reconnects by
+        # itself (paho's ``reconnect_on_failure`` defaults to True). So the
+        # printer ends up with two sessions under two client ids, both of which
+        # log under one serial, while ``disconnect()`` can only ever retire the
+        # newer one. Every rebuild then adds another.
+        #
+        # Measured 2026-08-21: from one instant onward every disconnect was
+        # logged TWICE in the same millisecond, per printer, and the fleet only
+        # came back after restarting the process.
+        #
+        # Callers are supposed to retire the old client first and all of them
+        # do — but that was a convention, and this is the one place that can
+        # enforce it. Loud on purpose: if this fires, a caller has a bug.
+        if self._client is not None:
+            logger.warning(
+                "[%s] connect() called while a client was still live — retiring it first. "
+                "This is a caller bug: the abandoned client would keep reconnecting on its own.",
+                self.serial_number,
+            )
+            self._retire_paho_client(self._client)
+            self._client = None
+
         BambuMQTTClient._client_instance_counter += 1
         client_id = f"bamdude_{self.serial_number}_{os.getpid()}_{BambuMQTTClient._client_instance_counter}"
         self._client = mqtt.Client(
@@ -6746,8 +6821,19 @@ class BambuMQTTClient:
         # trigger false disconnects.  Stale detection (60s no messages) handles
         # the P1S/P1P firmware bug where the broker stops publishing but the
         # TCP connection stays alive.
-        self._client.connect_async(self.ip_address, self.MQTT_PORT, keepalive=30)
-        self._client.loop_start()
+        # ⚠️ Cleared here, not in ``__init__``: this object outlives individual
+        # connections, and a reason left over from a failure two attempts ago
+        # would be read back as the reason for the current one.
+        self._last_connect_error = None
+        try:
+            self._client.connect_async(self.ip_address, self.MQTT_PORT, keepalive=30)
+            self._client.loop_start()
+        except Exception as exc:
+            # A failure before the socket even opens never reaches _on_connect,
+            # so it has to be recorded here or the watchdog reports nothing.
+            self._last_connect_error = f"{type(exc).__name__}: {exc}"
+            logger.warning("[%s] MQTT connect could not be started: %s", self.serial_number, self._last_connect_error)
+            raise
 
     def start_print(
         self,
@@ -7452,6 +7538,23 @@ class BambuMQTTClient:
         )
 
         return True
+
+    @staticmethod
+    def _retire_paho_client(client) -> None:
+        """Send the broker a DISCONNECT and stop the network thread.
+
+        Both halves matter and neither may raise: without the DISCONNECT the
+        broker holds the session until its keepalive lapses, and without the
+        ``loop_stop`` the thread stays up and reconnects on its own.
+        """
+        try:
+            client.disconnect()
+        except Exception:  # noqa: BLE001 — retiring must always complete
+            logger.debug("Retiring MQTT client: disconnect raised", exc_info=True)
+        try:
+            client.loop_stop()
+        except Exception:  # noqa: BLE001
+            logger.debug("Retiring MQTT client: loop_stop raised", exc_info=True)
 
     def disconnect(self, timeout: float = 0):
         """Disconnect from the printer."""
