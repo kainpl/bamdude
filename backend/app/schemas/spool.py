@@ -22,10 +22,6 @@ class SpoolBase(BaseModel):
     weight_used_baseline: float = 0
     slicer_filament: str | None = None
     slicer_filament_name: str | None = None
-    # Normalized GF-form filament_id for K-profile / colour matching
-    # (base-resolved for custom presets). LEGACY: set by the old spool form;
-    # kept for backward compatibility, mirrored into filament_family_id.
-    resolved_filament_id: str | None = Field(default=None, max_length=50)
     # Family link (spec A §5.1) — the catalog identity the spool is tied to
     # ("GFG99" / "P122e532"); the family picker sets this.
     filament_family_id: str | None = Field(default=None, max_length=50)
@@ -87,7 +83,6 @@ class SpoolUpdate(BaseModel):
     weight_used_baseline: float | None = None  # PATCH-able for "Reset usage to 0" parity (#1390)
     slicer_filament: str | None = None
     slicer_filament_name: str | None = None
-    resolved_filament_id: str | None = Field(default=None, max_length=50)
     filament_family_id: str | None = Field(default=None, max_length=50)
     nozzle_temp_min: int | None = None
     nozzle_temp_max: int | None = None

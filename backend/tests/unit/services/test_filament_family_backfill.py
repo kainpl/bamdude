@@ -20,8 +20,7 @@ async def test_backfill_paths_and_idempotency(db_session):
     db_session.add_all(
         [
             _spool(slicer_filament="GFSG99_00", material=""),  # -> catalog (raw)
-            _spool(slicer_filament="weird", resolved_filament_id="GFA00", material=""),  # -> legacy column
-            _spool(slicer_filament="PFUS_UNKNOWN_XX", resolved_filament_id=None, material=""),  # -> NULL
+            _spool(slicer_filament="PFUS_UNKNOWN_XX", material=""),  # -> NULL
             _spool(filament_family_id="GFB00", material=""),  # -> already linked, untouched
         ]
     )
@@ -30,18 +29,16 @@ async def test_backfill_paths_and_idempotency(db_session):
     summary = await backfill_spool_families(db_session)
     assert summary == {
         "resolved_raw": 1,
-        "resolved_legacy_column": 1,
         "unresolved": 1,
         "already_linked": 1,
     }
 
     spools = (await db_session.execute(select(Spool).order_by(Spool.id))).scalars().all()
     assert spools[0].filament_family_id == "GFG99"
-    assert spools[1].filament_family_id == "GFA00"
-    assert spools[2].filament_family_id is None  # NULL, never garbage
-    assert spools[3].filament_family_id == "GFB00"
+    assert spools[1].filament_family_id is None  # NULL, never garbage
+    assert spools[2].filament_family_id == "GFB00"
 
     # Second run touches nothing new.
     summary2 = await backfill_spool_families(db_session)
-    assert summary2["resolved_raw"] == 0 and summary2["resolved_legacy_column"] == 0
-    assert summary2["already_linked"] == 3
+    assert summary2["resolved_raw"] == 0
+    assert summary2["already_linked"] == 2

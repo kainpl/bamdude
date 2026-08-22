@@ -181,7 +181,6 @@ async def test_engine():
         settings,
         shopping_list,
         slicer_pipeline,
-        slot_preset,
         smart_plug,
         smart_plug_energy_snapshot,
         smart_plug_power_history,

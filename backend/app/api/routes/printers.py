@@ -23,7 +23,6 @@ from backend.app.core.tasks import spawn_background_task
 from backend.app.models.ams_label import AmsLabel
 from backend.app.models.printer import Printer
 from backend.app.models.printer_location import PrinterLocation
-from backend.app.models.slot_preset import SlotPresetMapping
 from backend.app.models.user import User
 from backend.app.schemas.printer import (
     AmsLabelBody,
@@ -818,7 +817,6 @@ def _printer_cascade_models() -> tuple[type, ...]:
         FilamentCalibration,
         FirmwareBatchItem,
         PrinterSettingAudit,
-        SlotPresetMapping,
         SpoolAssignment,
         SpoolKProfile,
         SpoolmanKProfile,

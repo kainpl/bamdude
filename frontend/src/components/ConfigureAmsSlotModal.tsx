@@ -328,7 +328,7 @@ export function ConfigureAmsSlotModal({
     const seen = new Set<string>();
     const out: { id: string; hex_color: string; color_name: string }[] = [];
     for (const spool of spoolsData) {
-      const fid = spool.filament_family_id || spool.resolved_filament_id;
+      const fid = spool.filament_family_id;
       if (fid !== selectedPresetId) continue;
       const hex = (spool.rgba || '').slice(0, 6).toUpperCase();
       if (!hex || seen.has(hex)) continue;

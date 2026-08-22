@@ -621,10 +621,9 @@ export function SpoolFormModal({
     return Array.from(set).sort();
   }, [allSpoolsForCategories]);
 
-  // Resolve the spool's filament_id (base-resolved for custom P-presets) to
-  // persist as ``resolved_filament_id`` at submit — drives backend K-profile
-  // auto-link. Shares the react-query cache key with PAProfileSection, so the
-  // P-preset detail is fetched at most once.
+  // Resolve a legacy P-preset's family (via cloud base_id) so an old-style
+  // spool derives its filament_family_id at submit. Shares the react-query
+  // cache key with PAProfileSection, so the detail is fetched at most once.
   const resolveCloudDetailQuery = useQuery({
     queryKey: ['cloud-setting-detail', formData.slicer_filament],
     queryFn: () => api.getCloudSettingDetail(formData.slicer_filament!),

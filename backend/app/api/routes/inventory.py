@@ -1156,8 +1156,6 @@ async def create_spool(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     spool = Spool(**payload)
-    if not spool.filament_family_id and spool.resolved_filament_id:
-        spool.filament_family_id = spool.resolved_filament_id  # legacy client mirror
     db.add(spool)
     await db.commit()
     await db.refresh(spool)
@@ -1240,7 +1238,7 @@ async def bulk_update_spools(
             setattr(spool, field, value)
     await db.commit()
 
-    if "filament_family_id" in update_data or "resolved_filament_id" in update_data or "slicer_filament" in update_data:
+    if "filament_family_id" in update_data or "slicer_filament" in update_data:
         for spool in spools:
             await _safe_autolink(db, spool)
 
@@ -1363,13 +1361,11 @@ async def update_spool(
     await _validate_family_id(db, update_data.get("filament_family_id"))
     for field, value in update_data.items():
         setattr(spool, field, value)
-    if "filament_family_id" not in update_data and not spool.filament_family_id and spool.resolved_filament_id:
-        spool.filament_family_id = spool.resolved_filament_id  # legacy client mirror
 
     await db.commit()
     # Re-link when the family / resolved filament_id changed (or on any save —
     # cheap and keeps links current with the spool's current preset).
-    if "filament_family_id" in update_data or "resolved_filament_id" in update_data or "slicer_filament" in update_data:
+    if "filament_family_id" in update_data or "slicer_filament" in update_data:
         await _safe_autolink(db, spool)
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == spool_id))
     return result.scalar_one()
