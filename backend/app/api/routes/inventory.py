@@ -66,6 +66,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/inventory", tags=["inventory"])
 
 
+async def _validate_family_id(db: AsyncSession, family_id: str | None) -> None:
+    """422 on a family id the catalog+mirrors cannot resolve — the picker
+    only offers known ones, so garbage means a broken client."""
+    if not family_id:
+        return
+    from backend.app.services.filament_identity import resolve_tray
+
+    if (await resolve_tray(db, family_id)).family is None:
+        raise HTTPException(status_code=422, detail="unknown filament family")
+
+
 async def _safe_autolink(db: AsyncSession, spool: Spool) -> None:
     """Auto-link K-profiles for a spool, fail-silent so a link error never
     fails the spool write (mirrors printer_manager's sync wrapper)."""
@@ -475,8 +486,8 @@ async def apply_spool_to_slot_via_mqtt(
         derive_effective_filament_id,
     )
 
-    effective_filament_id = derive_effective_filament_id(
-        spool=spool, slot_tray_info_idx=effective_tray_info_idx or None
+    effective_filament_id = await derive_effective_filament_id(
+        spool=spool, slot_tray_info_idx=effective_tray_info_idx or None, db=db
     )
     nozzle_vt = str(getattr(state, "nozzle_volume_type", "standard") or "standard")
     if effective_filament_id:
@@ -1429,11 +1440,14 @@ async def create_spool(
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Create a new spool."""
+    await _validate_family_id(db, spool_data.filament_family_id)
     try:
         payload = await prepare_internal_spool_payload(db, spool_data.model_dump(), set(spool_data.model_fields_set))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     spool = Spool(**payload)
+    if not spool.filament_family_id and spool.resolved_filament_id:
+        spool.filament_family_id = spool.resolved_filament_id  # legacy client mirror
     db.add(spool)
     await db.commit()
     await db.refresh(spool)
@@ -1510,12 +1524,13 @@ async def bulk_update_spools(
     if not spools:
         raise HTTPException(404, "No spools found")
 
+    await _validate_family_id(db, update_data.get("filament_family_id"))
     for spool in spools:
         for field, value in update_data.items():
             setattr(spool, field, value)
     await db.commit()
 
-    if "resolved_filament_id" in update_data or "slicer_filament" in update_data:
+    if "filament_family_id" in update_data or "resolved_filament_id" in update_data or "slicer_filament" in update_data:
         for spool in spools:
             await _safe_autolink(db, spool)
 
@@ -1635,13 +1650,16 @@ async def update_spool(
     if "weight_used" in update_data and "weight_locked" not in update_data:
         update_data["weight_locked"] = True
 
+    await _validate_family_id(db, update_data.get("filament_family_id"))
     for field, value in update_data.items():
         setattr(spool, field, value)
+    if "filament_family_id" not in update_data and not spool.filament_family_id and spool.resolved_filament_id:
+        spool.filament_family_id = spool.resolved_filament_id  # legacy client mirror
 
     await db.commit()
-    # Re-link when the resolved filament_id changed (or on any save — cheap
-    # and keeps links current with the spool's current preset).
-    if "resolved_filament_id" in update_data or "slicer_filament" in update_data:
+    # Re-link when the family / resolved filament_id changed (or on any save —
+    # cheap and keeps links current with the spool's current preset).
+    if "filament_family_id" in update_data or "resolved_filament_id" in update_data or "slicer_filament" in update_data:
         await _safe_autolink(db, spool)
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == spool_id))
     return result.scalar_one()

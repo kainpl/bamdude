@@ -528,7 +528,9 @@ async def auto_assign_spool(
                 derive_effective_filament_id,
             )
 
-            effective_filament_id = derive_effective_filament_id(spool=spool, slot_tray_info_idx=tray_info_idx or None)
+            effective_filament_id = await derive_effective_filament_id(
+                spool=spool, slot_tray_info_idx=tray_info_idx or None, db=db
+            )
             fired = False
             if effective_filament_id:
                 fired, fc = await apply_active_calibration_to_slot(

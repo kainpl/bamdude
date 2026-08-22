@@ -952,24 +952,28 @@ def test_parse_nozzle_vol_type_fallbacks():
 # ---------- derive_effective_filament_id ----------
 
 
-def test_derive_effective_filament_id_prefers_bambu_id():
-    spool = MagicMock(bambu_filament_id="GFG96", slicer_filament="GFSL05")
-    assert derive_effective_filament_id(spool=spool, slot_tray_info_idx="GFB99") == "GFG96"
+@pytest.mark.asyncio
+async def test_derive_effective_filament_id_prefers_bambu_id(db_session):
+    spool = MagicMock(filament_family_id=None, bambu_filament_id="GFG96", slicer_filament="GFSL05")
+    assert await derive_effective_filament_id(spool=spool, slot_tray_info_idx="GFB99", db=db_session) == "GFG96"
 
 
-def test_derive_effective_filament_id_falls_back_to_slicer():
-    spool = MagicMock(bambu_filament_id=None, slicer_filament="GFSL05_07")
-    # normalize_slicer_filament strips version suffix and inverts S
-    assert derive_effective_filament_id(spool=spool, slot_tray_info_idx="GFB99") == "GFL05"
+@pytest.mark.asyncio
+async def test_derive_effective_filament_id_falls_back_to_slicer(db_session):
+    spool = MagicMock(filament_family_id=None, bambu_filament_id=None, slicer_filament="GFSL05_07")
+    # the resolver strips the version suffix and maps setting_id -> family
+    assert await derive_effective_filament_id(spool=spool, slot_tray_info_idx="GFB99", db=db_session) == "GFL05"
 
 
-def test_derive_effective_filament_id_falls_back_to_slot():
-    spool = MagicMock(bambu_filament_id=None, slicer_filament=None)
-    assert derive_effective_filament_id(spool=spool, slot_tray_info_idx="GFB99") == "GFB99"
+@pytest.mark.asyncio
+async def test_derive_effective_filament_id_falls_back_to_slot(db_session):
+    spool = MagicMock(filament_family_id=None, bambu_filament_id=None, slicer_filament=None)
+    assert await derive_effective_filament_id(spool=spool, slot_tray_info_idx="GFB99", db=db_session) == "GFB99"
 
 
-def test_derive_effective_filament_id_returns_none_when_nothing():
-    assert derive_effective_filament_id(spool=None, slot_tray_info_idx=None) is None
+@pytest.mark.asyncio
+async def test_derive_effective_filament_id_returns_none_when_nothing(db_session):
+    assert await derive_effective_filament_id(spool=None, slot_tray_info_idx=None, db=db_session) is None
 
 
 # ---------- apply_active_calibration_to_slot ----------

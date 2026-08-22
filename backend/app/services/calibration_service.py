@@ -1375,23 +1375,18 @@ def parse_nozzle_vol_type(nozzle_id: str | None) -> str:
     return _NOZZLE_PREFIX_TO_VOL_TYPE.get(prefix, "standard")
 
 
-def derive_effective_filament_id(*, spool=None, slot_tray_info_idx: str | None = None) -> str | None:
-    """Pick the filament_id used for combo lookup.
-
-    Precedence: spool's RFID-tagged ``bambu_filament_id`` → derived from
-    ``slicer_filament`` → the slot's reported ``tray_info_idx``.
+async def derive_effective_filament_id(*, spool=None, slot_tray_info_idx: str | None = None, db=None) -> str | None:
+    """Family used for the K-combo lookup — a thin wrapper over the resolver
+    (spec A §5.1): the spool's family link outranks RFID outranks the legacy
+    string. ``db`` is required when a spool is given; without it only the
+    slot fallback answers.
     """
-    if spool is not None:
-        bambu_id = getattr(spool, "bambu_filament_id", None)
-        if bambu_id:
-            return bambu_id
-        slicer = getattr(spool, "slicer_filament", None)
-        if slicer:
-            from backend.app.utils.filament_ids import normalize_slicer_filament
+    if spool is not None and db is not None:
+        from backend.app.services.filament_identity import resolve_spool
 
-            tray_info_idx, _setting_id = normalize_slicer_filament(slicer)
-            if tray_info_idx:
-                return tray_info_idx
+        resolved = await resolve_spool(db, spool)
+        if resolved.family:
+            return resolved.family.filament_id
     return slot_tray_info_idx or None
 
 

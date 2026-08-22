@@ -364,7 +364,9 @@ async def _apply_calibrations_for_print(
             ).scalar_one_or_none()
             spool = assignment_row.spool if assignment_row else None
 
-            filament_id = derive_effective_filament_id(spool=spool, slot_tray_info_idx=tray_info_idx or None)
+            filament_id = await derive_effective_filament_id(
+                spool=spool, slot_tray_info_idx=tray_info_idx or None, db=db
+            )
             if not filament_id:
                 continue
             try:
@@ -425,7 +427,9 @@ async def _apply_calibrations_for_print(
             ).scalar_one_or_none()
             spool = assignment_row.spool if assignment_row else None
 
-            filament_id = derive_effective_filament_id(spool=spool, slot_tray_info_idx=tray_info_idx or None)
+            filament_id = await derive_effective_filament_id(
+                spool=spool, slot_tray_info_idx=tray_info_idx or None, db=db
+            )
             if not filament_id:
                 continue
             try:

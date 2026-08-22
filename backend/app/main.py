@@ -2368,8 +2368,8 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                         else:
                                             slot_extruder = state.ams_extruder_map.get(str(ams_id)) or 0
 
-                                    effective_filament_id = derive_effective_filament_id(
-                                        spool=spool, slot_tray_info_idx=tray_info_idx or None
+                                    effective_filament_id = await derive_effective_filament_id(
+                                        spool=spool, slot_tray_info_idx=tray_info_idx or None, db=db
                                     )
                                     if effective_filament_id:
                                         # Helper fires only when the live cali_idx

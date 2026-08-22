@@ -153,7 +153,10 @@ async def autolink_spool(*, db: AsyncSession, spool) -> int:
         )
 
     return await _apply_links(
-        db=db, existing_rows=list(existing), filament_id=spool.resolved_filament_id, make_row=_make
+        db=db,
+        existing_rows=list(existing),
+        filament_id=spool.filament_family_id or spool.resolved_filament_id,
+        make_row=_make,
     )
 
 
@@ -192,6 +195,14 @@ async def propagate_calibration_to_spools(*, db: AsyncSession, printer_id: int, 
     fids = {f for f in filament_ids if f}
     if not fids:
         return
-    spools = (await db.execute(select(Spool).where(Spool.resolved_filament_id.in_(fids)))).scalars().all()
+    spools = (
+        (
+            await db.execute(
+                select(Spool).where((Spool.filament_family_id.in_(fids)) | (Spool.resolved_filament_id.in_(fids)))
+            )
+        )
+        .scalars()
+        .all()
+    )
     for sp in spools:
         await autolink_spool(db=db, spool=sp)

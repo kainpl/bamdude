@@ -4576,7 +4576,9 @@ async def _apply_pa_after_refresh(printer_id: int, ams_id: int, slot_id: int):
                 else:
                     slot_extruder = state.ams_extruder_map.get(str(ams_id)) or 0
 
-            effective_filament_id = derive_effective_filament_id(spool=spool, slot_tray_info_idx=tray_info_idx or None)
+            effective_filament_id = await derive_effective_filament_id(
+                spool=spool, slot_tray_info_idx=tray_info_idx or None, db=db
+            )
             if not effective_filament_id:
                 return
 

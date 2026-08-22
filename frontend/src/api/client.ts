@@ -3953,6 +3953,8 @@ export interface InventorySpool {
   slicer_filament: string | null;
   slicer_filament_name: string | null;
   resolved_filament_id?: string | null;
+  // Family link (spec A §5.1): the catalog identity ("GFG99" / "P122e532").
+  filament_family_id?: string | null;
   nozzle_temp_min: number | null;
   nozzle_temp_max: number | null;
   note: string | null;
