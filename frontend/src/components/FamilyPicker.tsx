@@ -22,6 +22,8 @@ interface FamilyPickerProps {
   disabled?: boolean;
   /** Muted hint shown when no family is linked (e.g. the legacy preset name). */
   legacyHint?: string;
+  /** When set, the dropdown grows a "Create new family…" footer row (spec B §4). */
+  onCreateNew?: () => void;
 }
 
 const PANEL_MAX_PX = 288;
@@ -29,7 +31,7 @@ const GAP_PX = 4;
 const EDGE_PX = 8;
 const MIN_PANEL_PX = 140;
 
-export function FamilyPicker({ value, onChange, disabled, legacyHint }: FamilyPickerProps) {
+export function FamilyPicker({ value, onChange, disabled, legacyHint, onCreateNew }: FamilyPickerProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -152,6 +154,21 @@ export function FamilyPicker({ value, onChange, disabled, legacyHint }: FamilyPi
           </button>
         ))}
       </div>
+      {onCreateNew && (
+        <button
+          type="button"
+          className="w-full px-3 py-2 text-left text-sm text-bambu-green hover:bg-bambu-darker border-t border-gray-700"
+          onMouseDown={(e) => {
+            // mousedown + preventDefault so the search input's blur cannot
+            // swallow the click before it lands.
+            e.preventDefault();
+            setOpen(false);
+            onCreateNew();
+          }}
+        >
+          + {t('familyPicker.createNew')}
+        </button>
+      )}
     </div>
   ) : null;
 

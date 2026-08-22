@@ -2186,6 +2186,40 @@ export interface FilamentFamily {
   origin: string; // 'system' | 'cloud_bambu' | 'cloud_orca' | 'authored' | 'local'
 }
 
+// Authoring (spec B): the Create Filament dialog contract.
+export interface AuthoringOptions {
+  filament_types: string[];
+  push: Record<string, boolean>;
+}
+
+export interface CreateFamilyRequest {
+  vendor: string;
+  filament_type: string;
+  serial: string;
+  printer_ids: number[];
+  source_mode: 'type' | 'preset';
+  source?: string | null;
+  source_id?: string | null;
+  push_to_bambu?: boolean;
+}
+
+export interface ClonedRootOut {
+  printer_id: number;
+  printer_name: string | null;
+  local_preset_id: number | null;
+  preset_name: string | null;
+  error: string | null;
+}
+
+export interface CreateFamilyResponse {
+  filament_id: string;
+  name: string;
+  attached: boolean;
+  roots: ClonedRootOut[];
+  warnings: string[];
+  push: Array<{ name?: string; status: string; setting_id?: string | null; detail?: string | null }> | null;
+}
+
 export interface FamilyPresetInfo {
   name: string;
   setting_id: string;
@@ -7733,6 +7767,20 @@ export const api = {
       `/filament-families/${encodeURIComponent(filamentId)}/presets?printer_name=${encodeURIComponent(printerName)}`,
     ),
   triggerFilamentPresetSync: () => request<{ queued: boolean }>(`/filament-families/sync`, { method: 'POST' }),
+  // Authoring (spec B)
+  getFilamentAuthoringOptions: () => request<AuthoringOptions>(`/filament-families/authoring-options`),
+  createFilamentFamily: (data: CreateFamilyRequest) =>
+    request<CreateFamilyResponse>(`/filament-families`, { method: 'POST', body: JSON.stringify(data) }),
+  deleteFilamentFamily: (filamentId: string, alsoCloud = false) =>
+    request<{ presets_deleted: number; cloud_deleted: number }>(
+      `/filament-families/${encodeURIComponent(filamentId)}?also_cloud=${alsoCloud}`,
+      { method: 'DELETE' },
+    ),
+  pushFilamentFamily: (filamentId: string) =>
+    request<{ results: Array<{ name: string; status: string; setting_id: string | null; detail: string | null }> }>(
+      `/filament-families/${encodeURIComponent(filamentId)}/push`,
+      { method: 'POST' },
+    ),
 
   // Inventory
   getSpools: (includeArchived = false) =>

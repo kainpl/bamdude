@@ -12,6 +12,7 @@ import { extractBrandsFromPresets, fetchPrinterCalibrations, loadRecentColors, n
 import { MATERIALS } from './spool-form/constants';
 import { FilamentSection } from './spool-form/FilamentSection';
 import { FamilyPicker } from './FamilyPicker';
+import { CreateFilamentFamilyModal } from './CreateFilamentFamilyModal';
 import { ColorSection } from './spool-form/ColorSection';
 import { AdditionalSection } from './spool-form/AdditionalSection';
 import { SpoolmanFilamentPicker } from './spool-form/SpoolmanFilamentPicker';
@@ -88,6 +89,7 @@ export function SpoolFormModal({
   // Cloud presets
   const [cloudPresets, setCloudPresets] = useState<SlicerSetting[]>([]);
   const [pickedFamily, setPickedFamily] = useState<FilamentFamily | null>(null);
+  const [createFamilyOpen, setCreateFamilyOpen] = useState(false);
 
   // Spool catalog
   const [spoolCatalog, setSpoolCatalog] = useState<SpoolCatalogEntry[]>([]);
@@ -956,6 +958,24 @@ export function SpoolFormModal({
                       }
                     }}
                     legacyHint={spool?.slicer_filament_name || undefined}
+                    onCreateNew={() => setCreateFamilyOpen(true)}
+                  />
+                  <CreateFilamentFamilyModal
+                    open={createFamilyOpen}
+                    onClose={() => setCreateFamilyOpen(false)}
+                    onCreated={(fid, alias) => {
+                      updateField('filament_family_id', fid);
+                      // Synthetic row until the families query refetches — the
+                      // submit path reads alias from here.
+                      setPickedFamily({
+                        filament_id: fid,
+                        ecosystem: 'local',
+                        alias,
+                        vendor: null,
+                        filament_type: null,
+                        origin: 'authored',
+                      });
+                    }}
                   />
                   {errors.filament_family_id && (
                     <p className="mt-1 text-xs text-red-700 dark:text-red-400">{errors.filament_family_id}</p>
