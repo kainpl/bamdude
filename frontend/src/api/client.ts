@@ -4043,7 +4043,12 @@ export interface LabelBarcodeElement extends LabelElementBox {
 export interface LabelSwatchElement extends LabelElementBox {
   type: 'swatch';
   content: string;
+  /** The outline the colour is poured into. ⚠️ Multi-colour banding survives
+   *  every shape — a two-colour spool is two colours whatever the outline. */
+  shape: LabelSwatchShape;
 }
+
+export type LabelSwatchShape = 'rect' | 'circle' | 'rounded';
 
 export type LabelTemplateElement =
   | LabelTextElement
@@ -4057,6 +4062,10 @@ export interface LabelTemplate {
   width_mm: number;
   height_mm: number;
   shape: 'rect' | 'round';
+  /** Which printer this design is drawn for. `driver` goes out as PDF and may
+   *  use colour — it could be landing on an inkjet or a laser; `thermal` goes
+   *  to a one-bit head, where a colour element is refused rather than dropped. */
+  target: LabelTarget;
   elements: LabelTemplateElement[];
   /** ⚠️ A row that carries one is read-only: the name is a public contract
    *  the print API accepts, so an automation must not start printing something
@@ -4073,8 +4082,11 @@ export interface LabelTemplateInput {
   width_mm: number;
   height_mm: number;
   shape: 'rect' | 'round';
+  target: LabelTarget;
   elements: LabelTemplateElement[];
 }
+
+export type LabelTarget = 'driver' | 'thermal';
 
 export interface LabelPlaceholder {
   key: string;
@@ -4083,11 +4095,12 @@ export interface LabelPlaceholder {
   example: string;
 }
 
-export interface LabelSheet {
-  id: number;
+export type LabelPageSize = 'A4' | 'A5' | 'letter';
+
+/** A page geometry before it has an id. */
+export interface LabelSheetInput {
   name: string;
-  builtin_key: string | null;
-  page_size: 'A4' | 'letter';
+  page_size: LabelPageSize;
   cell_width_mm: number;
   cell_height_mm: number;
   cols: number;
@@ -4096,6 +4109,27 @@ export interface LabelSheet {
   margin_left_mm: number;
   gap_x_mm: number;
   gap_y_mm: number;
+}
+
+export interface LabelSheet {
+  id: number;
+  name: string;
+  builtin_key: string | null;
+  page_size: LabelPageSize;
+  cell_width_mm: number;
+  cell_height_mm: number;
+  cols: number;
+  rows: number;
+  margin_top_mm: number;
+  margin_left_mm: number;
+  gap_x_mm: number;
+  gap_y_mm: number;
+  /** Seeded, and read-only for the same reason a built-in design is. */
+  is_builtin: boolean;
+  /** What about this grid does not fit its paper, in words. Recomputed on every
+   *  read — a geometry can stop fitting without anyone editing it, by changing
+   *  the paper under it. */
+  overflow: string[];
 }
 
 /** A rendered preview plus whatever went wrong drawing it. */
@@ -7554,6 +7588,40 @@ export const api = {
     request<void>(`/label-templates/${id}`, { method: 'DELETE' }),
   getLabelPlaceholders: () => request<LabelPlaceholder[]>('/label-templates/placeholders'),
   getLabelSheets: () => request<LabelSheet[]>('/label-templates/sheets'),
+  createLabelSheet: (body: LabelSheetInput) =>
+    request<LabelSheet>('/label-templates/sheets', { method: 'POST', body: JSON.stringify(body) }),
+  updateLabelSheet: (id: number, body: LabelSheetInput) =>
+    request<LabelSheet>(`/label-templates/sheets/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  duplicateLabelSheet: (id: number) =>
+    request<LabelSheet>(`/label-templates/sheets/${id}/duplicate`, { method: 'POST' }),
+  deleteLabelSheet: (id: number) =>
+    request<void>(`/label-templates/sheets/${id}`, { method: 'DELETE' }),
+
+  /**
+   * The whole page, with a design laid into every cell.
+   *
+   * ⚠️ The geometry travels in the body and the design by id — the geometry is
+   * what you are editing, the design is what you are checking it against. Comes
+   * back as a PDF, because a page is what a PDF is for.
+   */
+  previewLabelSheet: async (body: { sheet: LabelSheetInput; template_id: number }): Promise<LabelPreview> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/label-templates/sheets/preview`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    const raw = response.headers.get('X-Label-Warnings');
+    return {
+      blob: await response.blob(),
+      warnings: raw ? raw.split(' | ').filter(Boolean) : [],
+    };
+  },
 
   /**
    * Render a design that has not been saved.

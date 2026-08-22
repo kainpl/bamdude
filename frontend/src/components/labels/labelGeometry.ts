@@ -196,7 +196,7 @@ export function newElement(
         symbology: 'ean13',
       };
     case 'swatch':
-      return { type: 'swatch', ...box, w_mm: roundMm(shortest * 0.2), content: '{color_hex_all}' };
+      return { type: 'swatch', ...box, w_mm: roundMm(shortest * 0.2), content: '{color_hex_all}', shape: 'rect' };
     case 'text':
     default:
       return {

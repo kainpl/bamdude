@@ -8,7 +8,7 @@
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { Trash2 } from 'lucide-react';
-import { api, type LabelPlaceholder, type LabelTemplateElement } from '../../api/client';
+import { api, type LabelPlaceholder, type LabelSwatchShape, type LabelTemplateElement } from '../../api/client';
 import { Button } from '../Button';
 import { MIN_SIDE_MM, roundMm } from './labelGeometry';
 
@@ -224,7 +224,21 @@ export function ElementInspector({
       )}
 
       {element.type === 'swatch' && (
-        <p className="text-xs text-bambu-gray">{t('labelEditor.swatchHint')}</p>
+        <>
+          <label className="block text-xs text-bambu-gray">
+            {t('labelEditor.swatchShape')}
+            <select
+              value={element.shape ?? 'rect'}
+              onChange={(e) => onChange({ ...element, shape: e.target.value as LabelSwatchShape })}
+              className="mt-1 w-full px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+            >
+              <option value="rect">{t('labelEditor.swatchShapeRect')}</option>
+              <option value="circle">{t('labelEditor.swatchShapeCircle')}</option>
+              <option value="rounded">{t('labelEditor.swatchShapeRounded')}</option>
+            </select>
+          </label>
+          <p className="text-xs text-bambu-gray">{t('labelEditor.swatchHint')}</p>
+        </>
       )}
     </div>
   );

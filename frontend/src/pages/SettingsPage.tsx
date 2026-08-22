@@ -59,6 +59,7 @@ import { PrintOptionsPreferencesPanel } from '../components/settings/PrintOption
 import { ArchivedPrintersPanel } from '../components/settings/ArchivedPrintersPanel';
 import { LabelDevicesSettings } from '../components/settings/LabelDevicesSettings';
 import { LabelTemplateEditor } from '../components/labels/LabelTemplateEditor';
+import { LabelSheetEditor } from '../components/labels/LabelSheetEditor';
 import { RetentionCard } from '../components/settings/RetentionCard';
 import { PrinterLocationsCard } from '../components/settings/PrinterLocationsCard';
 import { PreheatFilamentTargetsEditor } from '../components/PreheatFilamentTargetsEditor';
@@ -80,6 +81,7 @@ registerSettingsSearch({ labelKey: 'settings.tabs.general', tab: 'general', keyw
 registerSettingsSearch({ labelKey: 'settings.tabs.printing', tab: 'printing', keywords: 'printing bed leveling flow calibration vibration first layer timelapse staggered batch delay start group plate clear confirm auto queue gcode injection farmloop swapmod autoclear drying presets temperature humidity ams ftp retry upload', anchor: 'tab-printing' });
 registerSettingsSearch({ labelKey: 'printOptionsPrefs.cardTitle', labelFallback: 'Saved Print Profiles', tab: 'printing', keywords: 'print options profile preferences saved per user model toggles bed leveling flow timelapse mesh swap macros copy', anchor: 'card-print-options-prefs' });
 registerSettingsSearch({ labelKey: 'labelEditor.title', tab: 'filament', subTab: 'marking', keywords: 'label template design editor sticker niimbot barcode qr code placeholder print printer bridge cassette', anchor: 'card-label-designs' });
+registerSettingsSearch({ labelKey: 'labelSheets.title', tab: 'filament', subTab: 'marking', keywords: 'sheet sheets avery paper page grid columns rows margin gap label stickers a4 a5 letter', anchor: 'card-label-sheets' });
 registerSettingsSearch({ labelKey: 'settings.tabs.filament', tab: 'filament', keywords: 'filament checks warning runout remaining print modal custom mapping ams thresholds humidity temperature history retention spoolman tracking inventory sync remote integration spool catalog color catalog brand material import export', anchor: 'tab-filament' });
 registerSettingsSearch({ labelKey: 'settings.tabs.notifications', tab: 'notifications', keywords: 'notifications providers telegram discord email webhook ntfy pushover home assistant message templates notification text edit digest log viewer', anchor: 'tab-notifications' });
 registerSettingsSearch({ labelKey: 'settings.tabs.smartPlugs', tab: 'plugs', keywords: 'smart plugs energy power automation tapo kasa tplink shelly tasmota discovery kwh monitoring', anchor: 'tab-plugs' });
@@ -5296,6 +5298,16 @@ export function SettingsPage() {
           <Card id="card-label-designs">
             <CardContent>
               <LabelTemplateEditor />
+            </CardContent>
+          </Card>
+
+          {/* ⚠️ Beside the designs, not inside them. A sheet is paper and says
+              nothing about what goes in a cell — putting it in the design
+              editor would suggest the two are bound, which is exactly the
+              shape the model refuses. */}
+          <Card id="card-label-sheets">
+            <CardContent>
+              <LabelSheetEditor />
             </CardContent>
           </Card>
 

@@ -38,6 +38,7 @@ import {
   type LabelTemplate,
   type LabelTemplateElement,
   type LabelTemplateInput,
+  type LabelTarget,
 } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { Button } from '../Button';
@@ -70,6 +71,7 @@ const asInput = (template: LabelTemplate): LabelTemplateInput => ({
   width_mm: template.width_mm,
   height_mm: template.height_mm,
   shape: template.shape,
+  target: template.target,
   elements: template.elements,
 });
 
@@ -296,6 +298,10 @@ export function LabelTemplateEditor() {
         width_mm: 50,
         height_mm: 30,
         shape: 'rect',
+        // A new design defaults to the driver, like every row that predates
+        // m149: colour is available until somebody says this is for a thermal
+        // head, and taking it away is the deliberate act.
+        target: 'driver',
         elements: [newElement('text', 50, 30)],
       }),
     onSuccess: (row) => {
@@ -400,11 +406,39 @@ export function LabelTemplateEditor() {
                     onChange={(e) => commit({ ...draft, name: e.target.value })}
                     className="flex-1 min-w-40 px-2 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded"
                   />
-                  {(['text', 'qr', 'barcode', 'swatch'] as const).map((type) => (
-                    <Button key={type} variant="secondary" size="sm" disabled={readOnly} onClick={() => addElement(type)}>
-                      {t(`labelEditor.elementType.${type}`)}
-                    </Button>
-                  ))}
+                  {/* ⚠️ The swatch is missing from a thermal design, not
+                      disabled-with-a-tooltip: the point of declaring the target
+                      is that colour is not a thing you reach for and are told
+                      no about. The backend refuses it on save either way. */}
+                  {(['text', 'qr', 'barcode', 'swatch'] as const)
+                    .filter((type) => type !== 'swatch' || draft.target !== 'thermal')
+                    .map((type) => (
+                      <Button key={type} variant="secondary" size="sm" disabled={readOnly} onClick={() => addElement(type)}>
+                        {t(`labelEditor.elementType.${type}`)}
+                      </Button>
+                    ))}
+                </div>
+
+                {/* Which printer this design is drawn for. Colour survives one
+                    of them and not the other, which is the whole reason the
+                    two are told apart. */}
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-bambu-gray" htmlFor="label-target">
+                    {t('labelEditor.target.label')}
+                  </label>
+                  <select
+                    id="label-target"
+                    value={draft.target}
+                    disabled={readOnly}
+                    onChange={(e) => commit({ ...draft, target: e.target.value as LabelTarget })}
+                    className="px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  >
+                    <option value="driver">{t('labelEditor.target.driver')}</option>
+                    <option value="thermal">{t('labelEditor.target.thermal')}</option>
+                  </select>
+                  <span className="text-xs text-bambu-gray">
+                    {draft.target === 'thermal' ? t('labelEditor.target.thermalHint') : t('labelEditor.target.driverHint')}
+                  </span>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-1">
