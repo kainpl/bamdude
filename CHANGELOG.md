@@ -6,11 +6,13 @@
 
 ### Added
 
-- **The print dialog offers the labels you actually have.** It used to show six fixed buttons that had nothing to do with the designs in Settings: drawing a new one added no button, and renaming one renamed nothing. Now it lists the catalogue — every design, with its own name and a line saying what it is for, both of which you write in the editor.
+- **The print dialog offers the labels you actually have.** It used to show six fixed buttons that had nothing to do with the designs in Settings: drawing a new one added no button, and renaming one renamed nothing. Now it reads the catalogue — every design, with the name and the one-line description you write in the editor, and its size on the right.
 
-    **Paper is a separate question from design**, which is what makes any label printable on any sheet. Pick a design, then pick the stock: one per page, or laid out on Avery L7160, or on a page geometry you drew yourself. A design too big for that paper's cells is greyed out with the measurements, rather than accepted and quietly shrunk — a label shrunk to fit is a label whose barcode no longer scans.
+    **Pick the paper, pick the design, press Print.** Paper is a separate question, which is what makes any label printable on any sheet: one per page, laid out on Avery L7160, or on a page geometry you drew yourself. A design too big for that paper's cells is offered greyed out with both measurements, rather than accepted and quietly shrunk — a label shrunk to fit is a label whose barcode no longer scans.
 
-    **When a label printer is set up, the dialog asks how the batch should go out first**, and then shows only the designs drawn for that — colour ones for the printer on your computer, one-bit ones for the printer on the desk. With no label printer set up the question is never asked, because there is nothing to answer.
+    **The finished PDF opens in a tab**, where you print it or save it as you like. It used to land in Downloads instead: the sheet takes a moment to render, and by the time it was ready the browser no longer counted the tab as something you had asked for, so it was blocked and the code fell back to a download.
+
+    **When a label printer is set up, the dialog asks how the batch should go out first**, and then shows only the designs drawn for that — colour ones for the printer on your computer, one-bit ones for the printer on your desk. On that side there is no PDF and no Print button at all: you choose the design and press the printer. A printer whose loaded stock is smaller than the design says so on its own row, because two desk printers can have different rolls in them. With no label printer set up the question is never asked.
 
 - **Sheets of stickers can be drawn, not only chosen from.** Settings → Filament → Marking gains a **Sheets of stickers** panel beside the label designs: the paper, how many across and down, the margins and the gaps. Two Avery layouts came with BamDude and there was no way to add a third; now there is, including **A5**, which the renderer previously mistook for US Letter. A grid that runs off its paper is refused when you save it and flagged in the list — that is a mistake you would otherwise find on a sheet of adhesive stock. **Preview the page** lays a design you already have into every cell, so "does the grid fit the paper" and "does the label fit a cell" are both answered before printing. The two Avery layouts BamDude ships can be corrected in place, like the designs: their published dimensions are what they are, and somebody who measures their own stock and finds it half a millimetre off should be able to fix the row that is wrong rather than leave it beside a corrected copy.
 
@@ -135,6 +137,8 @@
 - **The `:dev` image now tracks the latest pre-release instead of the latest commit.** It used to be rebuilt on every push, by a workflow that ran alongside the tests rather than after them — so the one image aimed at testers was the one image nobody checked, and a commit with failing tests published it anyway. It is now published together with each beta, and passes the same green-CI gate as a stable release. Anyone pinning `:dev` gets fewer updates and tested ones.
 
 ### Fixed
+
+- **The spool list in the print dialog no longer crowds out the controls under it.** Left to take all the height going, it ran about half the dialog and pushed the paper, the design and Print far enough down that the choice you came to make was off-screen.
 
 - **The label-design update no longer stops the server from starting.** The migration that adds a design's printer type called a helper with the wrong arguments, so upgrading died at "Applying migration 149" and the app never came up — with the reason printed to a console rather than the log. Nothing in the test suite ran that line: test databases build their schema directly and mark migrations as already applied, so a migration's own code was never executed. Both label migrations are fixed, verified against a copy of a real database, and every migration's helper calls are now checked by a test that reads the files.
 

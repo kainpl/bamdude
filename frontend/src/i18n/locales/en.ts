@@ -5446,7 +5446,12 @@ export default {
         none: 'One label per page',
       },
       deviceDesign: 'Design:',
+      design: 'Design',
+      pickDesign: 'Choose a label…',
       deviceDesignAuto: 'Match whatever is loaded',
+      deviceDesignAutoHint: 'Uses the design whose size matches the stock this printer reports.',
+      doesNotFitCassette:
+        'This design is {{w}} × {{h}} mm and this printer has {{cw}} × {{ch}} mm loaded. A label prints at its own size or not at all — change the roll, or pick a design that fits it.',
       doesNotFitCell:
         'This design is {{w}} × {{h}} mm and the cells on that paper are {{cw}} × {{ch}} mm. A label prints at its own size or not at all — shrinking one to fit destroys the bar widths a scanner reads by.',
       noDesigns: 'No design is drawn for this. You can draw one under Settings → Filament → Marking.',

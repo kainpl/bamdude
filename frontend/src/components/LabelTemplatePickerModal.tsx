@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Loader2, Printer, CheckSquare, Square, Search, FileText } from 'lucide-react';
-import { api, type InventorySpool } from '../api/client';
+import { api, type InventorySpool, type LabelTemplate } from '../api/client';
 import { getSwatchStyle } from '../utils/colors';
 import { Button } from './Button';
+import { CardSelect, type CardOption } from './labels/CardSelect';
 import { useToast } from '../contexts/ToastContext';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import type { LabelDevice } from '../api/client';
@@ -43,19 +44,39 @@ const FIT_TOLERANCE_MM = 0.5;
  *  bridge running there. */
 type PrintRoute = 'driver' | 'device';
 
-function openBlobInNewTab(blob: Blob): void {
-  const url = window.URL.createObjectURL(blob);
-  // Do NOT pass `noopener,noreferrer`: per the WindowFeatures spec, `noopener`
-  // forces window.open to return `null` even on success, which made the
-  // `if (!win)` popup-block fallback below fire on EVERY click — so the blob
-  // tab opened (downloading a random-named PDF on systems without an inline
-  // viewer) AND the `<a download>` fallback fired (downloading a second copy
-  // named bamdude-labels.pdf). Two identical PDFs per click — issue #1628.
-  // The blob is same-origin, the destination is a passive PDF tab with no
-  // script context, and `noreferrer` is a no-op for blob URLs, so dropping
-  // these flags has no security impact.
-  const win = window.open(url, '_blank');
-  if (!win) {
+/**
+ * Show the finished PDF in a tab. What happens to it is the person's call —
+ * print it, save it, or look and close it.
+ *
+ * ⚠️ **The tab is opened by the CLICK, not by the response.** Rendering a sheet
+ * takes a round trip, and by the time it lands the user gesture has expired: a
+ * ``window.open`` there is a popup, blocked by default, and the code fell
+ * through to a download nobody asked for. So the blank tab is claimed
+ * synchronously and pointed at the blob when it arrives.
+ *
+ * ⚠️ Do NOT pass `noopener,noreferrer`: per the WindowFeatures spec, `noopener`
+ * forces window.open to return `null` even on success, which made the popup
+ * fallback fire on EVERY click — the blob tab opened AND a second copy
+ * downloaded as bamdude-labels.pdf. Two identical PDFs per click, issue #1628.
+ * The blob is same-origin, the destination is a passive PDF tab with no script
+ * context, and `noreferrer` is a no-op for blob URLs.
+ */
+function claimTab(): Window | null {
+  return window.open('', '_blank');
+}
+
+function showPdfInTab(tab: Window | null, blob: Blob): void {
+  // A blob with no type is downloaded rather than displayed, whatever the
+  // response said — Content-Disposition describes the response, not a blob URL
+  // built from its bytes.
+  const pdf = blob.type === 'application/pdf' ? blob : new Blob([blob], { type: 'application/pdf' });
+  const url = window.URL.createObjectURL(pdf);
+
+  if (tab) {
+    tab.location.href = url;
+  } else {
+    // Popups blocked even for the click itself. A download is worse than a tab
+    // but much better than nothing happening at all.
     const a = document.createElement('a');
     a.href = url;
     a.download = 'bamdude-labels.pdf';
@@ -147,6 +168,9 @@ export function LabelTemplatePickerModal({
   const [route, setRoute] = useState<PrintRoute | null>(null);
   const [sheetId, setSheetId] = useState<number | null>(null);
   const [deviceTemplateId, setDeviceTemplateId] = useState<number | null>(null);
+  // ⚠️ Separate from the device one, because null means different things:
+  // here it is 'nothing chosen yet' and there it is 'match the loaded stock'.
+  const [driverTemplateId, setDriverTemplateId] = useState<number | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [search, setSearch] = useState('');
   const [materialFilter, setMaterialFilter] = useState<string>('');
@@ -189,6 +213,33 @@ export function LabelTemplatePickerModal({
   const wantedTarget = effectiveRoute === 'device' ? 'thermal' : 'driver';
   const designs = (templates ?? []).filter((row) => row.target === wantedTarget);
   const sheet = (sheets ?? []).find((row) => row.id === sheetId) ?? null;
+
+  /** Why this printer cannot take the chosen design, or null if it can.
+   *
+   * ⚠️ Asked per PRINTER, not once per design. Two desk printers can have
+   * different stock loaded, so "does not fit" is a fact about a pair — showing
+   * it on the design alone would be wrong as soon as there are two machines.
+   *
+   * ⚠️ Only LARGER is refused, exactly as ``assert_fits`` does on the server. A
+   * design smaller than the stock prints fine with a margin, and greying it out
+   * would forbid something that works. A printer that has not reported its
+   * cassette is not judged at all — it cannot rule on what it was never told.
+   */
+  const cassetteComplaint = (device: LabelDevice): string | null => {
+    const design = designs.find((row) => row.id === deviceTemplateId);
+    if (!design || !device.cassette_width_mm || !device.cassette_height_mm) return null;
+    const fits =
+      design.width_mm <= device.cassette_width_mm + FIT_TOLERANCE_MM &&
+      design.height_mm <= device.cassette_height_mm + FIT_TOLERANCE_MM;
+    return fits
+      ? null
+      : t('inventory.labels.doesNotFitCassette', {
+          w: design.width_mm,
+          h: design.height_mm,
+          cw: device.cassette_width_mm,
+          ch: device.cassette_height_mm,
+        });
+  };
 
   /** Why this design cannot go on the chosen paper, or null if it can.
    *
@@ -233,6 +284,7 @@ export function LabelTemplatePickerModal({
       setRoute(null);
       setSheetId(null);
       setDeviceTemplateId(null);
+      setDriverTemplateId(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
@@ -328,6 +380,47 @@ export function LabelTemplatePickerModal({
    * better answer than this modal guessing, because only the printer knows
    * what is actually in it.
    */
+
+  /** Paper: one label to a page, or one of the sheet geometries that exist.
+   *
+   * ⚠️ ``null`` is a real answer here, not "unset" — most label printing is one
+   * per page, so it leads. */
+  const paperOptions: CardOption[] = [
+    { id: null, title: t('inventory.labels.sheet.none') },
+    ...(sheets ?? []).map((row) => ({
+      id: row.id,
+      title: row.name,
+      description: t(`labelSheets.page.${row.page_size}`, { defaultValue: row.page_size }),
+      meta: `${row.cols}×${row.rows}`,
+    })),
+  ];
+
+  const asOption = (design: LabelTemplate, complaint: string | null): CardOption => ({
+    id: design.id,
+    title: design.name,
+    description: design.description,
+    meta: `${design.width_mm}×${design.height_mm}`,
+    complaint,
+  });
+
+  /** ⚠️ The driver list opens on a placeholder, not on the first design. The
+   * print button is a deliberate act and it should not arrive pre-aimed at
+   * whatever happens to sort first. */
+  const driverOptions: CardOption[] = [
+    { id: null, title: t('inventory.labels.pickDesign') },
+    ...designs.map((design) => asOption(design, cellComplaint(design))),
+  ];
+
+  /** ⚠️ ``null`` means something else here: let the server match the design to
+   * the stock the printer reports. That is a choice somebody can want, so it is
+   * not a placeholder and printing with it selected is allowed. */
+  const deviceOptions: CardOption[] = [
+    { id: null, title: t('inventory.labels.deviceDesignAuto'), description: t('inventory.labels.deviceDesignAutoHint') },
+    ...designs.map((design) => asOption(design, null)),
+  ];
+
+  const driverReady = driverTemplateId !== null && !driverOptions.find((o) => o.id === driverTemplateId)?.complaint;
+
   async function sendToDevice(device: LabelDevice) {
     if (noSelection || sending !== null) return;
     const ids = sortedSpools.filter((s) => selectedIds.has(s.id)).map((s) => s.id);
@@ -351,6 +444,8 @@ export function LabelTemplatePickerModal({
 
   async function handlePick(templateId: number) {
     if (noSelection || pending) return;
+    // ⚠️ Before the await, while this is still the user's click — see claimTab.
+    const tab = claimTab();
     // Order matters: the backend (labels.py) prints labels in the same
     // order we send IDs. Use the sorted list so a "by colour" sort
     // flows through to the PDF instead of being clobbered by an
@@ -374,9 +469,12 @@ export function LabelTemplatePickerModal({
       const blob = spoolmanMode
         ? await api.printSpoolmanSpoolLabels(body)
         : await api.printSpoolLabels(body);
-      openBlobInNewTab(blob);
+      showPdfInTab(tab, blob);
       onClose();
     } catch (err) {
+      // The blank tab is ours and now pointless — leaving it is litter the
+      // person has to close to find the error message behind it.
+      tab?.close();
       const msg = err instanceof Error ? err.message : String(err);
       showToast(
         t('inventory.labels.error', { msg, defaultValue: 'Could not generate labels: {{msg}}' }),
@@ -523,9 +621,15 @@ export function LabelTemplatePickerModal({
         </div>
 
         {/* Spool list — ``min-h-0`` overrides the implicit min-height: auto on
-            flex items so the list can yield height to keep all 5 templates +
-            Cancel visible on tight viewports (upstream #1230 / 61314cf2). */}
-        <div className="flex-1 overflow-y-auto px-2 pb-2 min-h-0">
+            flex items so the list can yield height, which is what keeps the
+            controls below it visible on a tight viewport (upstream #1230 /
+            61314cf2).
+
+            ⚠️ Capped as well as flexible. Left to take everything going it ran
+            about half the dialog, pushing the paper, the design and Print far
+            enough down that the choice you came to make was off-screen. The
+            list is the part you scroll; those are the part you act on. */}
+        <div className="flex-1 overflow-y-auto px-2 pb-2 min-h-0 max-h-[38vh]">
           {visibleSpools.length === 0 ? (
             <div className="text-center text-sm text-bambu-gray py-6">
               {sortedSpools.length === 0
@@ -639,116 +743,105 @@ export function LabelTemplatePickerModal({
               </button>
             )}
 
-            {/* ⚠️ Paper is a driver-only question. A desk label printer feeds a
-                roll: there is no page to tile, and offering one would be a
-                setting that cannot do anything. */}
+            {/* ⚠️ **Paper first, design second, print last — and print is its
+                own button.** The design used to be a grid where clicking a card
+                printed immediately, which read well with six of them and stops
+                reading at all once somebody has drawn a dozen: the list grows
+                downward forever and the choice is destroyed by the same click
+                that acts on it. Two dropdowns and a button say what will happen
+                before it happens, and stay the same size. */}
             {effectiveRoute === 'driver' && (sheets ?? []).length > 0 && (
-              <label className="flex flex-wrap items-center gap-2 text-xs text-bambu-gray">
-                {t('inventory.labels.sheet.label')}
-                <select
-                  value={sheetId ?? ''}
-                  onChange={(e) => setSheetId(e.target.value === '' ? null : Number(e.target.value))}
-                  className="px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                >
-                  <option value="">{t('inventory.labels.sheet.none')}</option>
-                  {(sheets ?? []).map((row) => (
-                    <option key={row.id} value={row.id}>
-                      {row.name} · {row.cols}×{row.rows}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <CardSelect
+                label={t('inventory.labels.sheet.label')}
+                options={paperOptions}
+                value={sheetId}
+                onChange={setSheetId}
+                disabled={pending !== null}
+              />
             )}
 
-            {/* The design. This is the catalogue — six hard-coded buttons used
-                to sit here while the table they were meant to represent was
-                ignored, so adding a design added nothing and renaming one
-                renamed nothing. */}
             {designs.length === 0 ? (
               <p className="text-sm text-bambu-gray p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark">
                 {t('inventory.labels.noDesigns')}
               </p>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {designs.map((design) => {
-                  const complaint = cellComplaint(design);
+              effectiveRoute === 'driver' && (
+                <>
+                  <CardSelect
+                    label={t('inventory.labels.design')}
+                    options={driverOptions}
+                    value={driverTemplateId}
+                    onChange={setDriverTemplateId}
+                    disabled={pending !== null}
+                  />
+                  <Button
+                    className="w-full"
+                    disabled={noSelection || pending !== null || !driverReady}
+                    onClick={() => driverTemplateId !== null && handlePick(driverTemplateId)}
+                  >
+                    {pending !== null && <Loader2 className="w-4 h-4 animate-spin" />}
+                    {t('common.print')}
+                  </Button>
+                </>
+              )
+            )}
+
+            {/* Choose the design, then press a printer — the printer button is
+                what prints, because there is nothing to open and decide about.
+                ⚠️ No design GRID here at all: every card in one renders a PDF,
+                which is a download nobody wants for a printer on the desk. */}
+            {effectiveRoute === 'device' && designs.length > 0 && (
+              <div className="p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark space-y-2">
+                <div className="text-xs font-medium text-white">{t('inventory.labels.sendToDevice')}</div>
+
+                <CardSelect
+                  label={t('inventory.labels.design')}
+                  options={deviceOptions}
+                  value={deviceTemplateId}
+                  onChange={setDeviceTemplateId}
+                  disabled={sending !== null}
+                />
+
+                {devices.map((device) => {
+                  const complaint = cassetteComplaint(device);
                   return (
                     <button
-                      key={design.id}
-                      disabled={noSelection || pending !== null || complaint !== null}
-                      onClick={() => handlePick(design.id)}
-                      title={complaint ?? [design.name, design.description].filter(Boolean).join(' — ')}
-                      className="w-full text-left p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark hover:border-bambu-green disabled:opacity-50 disabled:hover:border-bambu-dark-tertiary flex items-center gap-2"
+                      key={device.id}
+                      disabled={noSelection || sending !== null || complaint !== null}
+                      onClick={() => sendToDevice(device)}
+                      title={complaint ?? undefined}
+                      className="w-full text-left p-2 rounded-lg border border-bambu-dark-tertiary hover:border-bambu-green disabled:opacity-50 disabled:hover:border-bambu-dark-tertiary flex items-center gap-2"
                     >
+                      <Printer className="w-4 h-4 text-bambu-gray shrink-0" />
                       <div className="flex-1 min-w-0">
-                        <div className="font-medium text-white text-sm truncate">{design.name}</div>
-                        <div className="text-xs text-bambu-gray mt-0.5 truncate">
-                          {complaint ?? design.description}
+                        <div className="text-sm text-white truncate">
+                          {device.name || device.model || device.installation_id}
+                        </div>
+                        {/* ⚠️ The complaint REPLACES the cassette line rather
+                            than joining it: what is loaded is exactly what the
+                            complaint is about, and saying it twice in different
+                            words reads as two problems. */}
+                        <div
+                          className={`text-xs truncate ${
+                            complaint ? 'text-amber-600 dark:text-amber-400' : 'text-bambu-gray'
+                          }`}
+                        >
+                          {complaint ??
+                            (device.cassette_width_mm && device.cassette_height_mm
+                              ? t('inventory.labels.deviceCassette', {
+                                  width: device.cassette_width_mm,
+                                  height: device.cassette_height_mm,
+                                })
+                              : t('inventory.labels.deviceCassetteUnknown'))}
+                          {!complaint && !device.printer_reachable && ` — ${t('inventory.labels.deviceOffline')}`}
                         </div>
                       </div>
-                      <span className="text-xs text-bambu-gray shrink-0">
-                        {design.width_mm}×{design.height_mm}
-                      </span>
-                      {pending === design.id && (
+                      {sending === device.id && (
                         <Loader2 className="w-4 h-4 animate-spin text-bambu-green shrink-0" />
                       )}
                     </button>
                   );
                 })}
-              </div>
-            )}
-
-            {/* Which printer, once the design is settled. Sending happens on
-                this click — the design above is the batch's shape, the device
-                below is where it goes. */}
-            {effectiveRoute === 'device' && (
-              <div className="p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark space-y-2">
-                <div className="text-xs font-medium text-white">{t('inventory.labels.sendToDevice')}</div>
-                <label className="flex flex-wrap items-center gap-2 text-xs text-bambu-gray">
-                  {t('inventory.labels.deviceDesign')}
-                  <select
-                    value={deviceTemplateId ?? ''}
-                    onChange={(e) => setDeviceTemplateId(e.target.value === '' ? null : Number(e.target.value))}
-                    className="px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                  >
-                    {/* ⚠️ Auto is not "some default": the server picks the design
-                        whose size matches the stock the printer says is loaded,
-                        and refuses rather than guessing when nothing matches. */}
-                    <option value="">{t('inventory.labels.deviceDesignAuto')}</option>
-                    {designs.map((design) => (
-                      <option key={design.id} value={design.id}>
-                        {design.name} · {design.width_mm}×{design.height_mm}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {devices.map((device) => (
-                  <button
-                    key={device.id}
-                    disabled={noSelection || pending !== null || sending !== null}
-                    onClick={() => sendToDevice(device)}
-                    className="w-full text-left p-2 rounded-lg border border-bambu-dark-tertiary hover:border-bambu-green disabled:opacity-50 flex items-center gap-2"
-                  >
-                    <Printer className="w-4 h-4 text-bambu-gray shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm text-white truncate">
-                        {device.name || device.model || device.installation_id}
-                      </div>
-                      <div className="text-xs text-bambu-gray truncate">
-                        {device.cassette_width_mm && device.cassette_height_mm
-                          ? t('inventory.labels.deviceCassette', {
-                              width: device.cassette_width_mm,
-                              height: device.cassette_height_mm,
-                            })
-                          : t('inventory.labels.deviceCassetteUnknown')}
-                        {!device.printer_reachable && ` — ${t('inventory.labels.deviceOffline')}`}
-                      </div>
-                    </div>
-                    {sending === device.id && (
-                      <Loader2 className="w-4 h-4 animate-spin text-bambu-green shrink-0" />
-                    )}
-                  </button>
-                ))}
               </div>
             )}
           </div>
