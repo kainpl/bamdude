@@ -804,7 +804,6 @@ def _printer_cascade_models() -> tuple[type, ...]:
     from backend.app.models.filament_calibration import FilamentCalibration
     from backend.app.models.firmware import FirmwareBatchItem
     from backend.app.models.printer_setting_audit import PrinterSettingAudit
-    from backend.app.models.slot_preset import SlotPresetMapping
     from backend.app.models.spool_assignment import SpoolAssignment
     from backend.app.models.spool_k_profile import SpoolKProfile
     from backend.app.models.spoolman_k_profile import SpoolmanKProfile
@@ -2651,152 +2650,6 @@ async def get_calibration_options(
 # ============================================================================
 
 
-def _slot_preset_key(ams_id: int, tray_id: int) -> int:
-    """Mirrors frontend ``getGlobalTrayId`` (amsHelpers.ts).
-
-    AMS-HT (ams_id 128-135) is single-slot and shares its global tray id with
-    the unit id itself — keying by ``ams_id * 4 + tray_id`` would put every HT
-    unit at offset 512+ and silently miss the frontend lookup, making the
-    Configure modal show "Generic" after a custom preset was saved. Regular
-    AMS and external (255) use the classic ``ams_id * 4 + tray_id`` formula.
-    Upstream #1053.
-    """
-    if 128 <= ams_id <= 135:
-        return ams_id
-    return ams_id * 4 + tray_id
-
-
-@router.get("/{printer_id}/slot-presets")
-async def get_slot_presets(
-    printer_id: int,
-    _=RequirePermission(Permission.PRINTERS_READ),
-    db: AsyncSession = Depends(get_db),
-):
-    """Get all saved slot-to-preset mappings for a printer."""
-    result = await db.execute(select(SlotPresetMapping).where(SlotPresetMapping.printer_id == printer_id))
-    mappings = result.scalars().all()
-
-    return {
-        _slot_preset_key(mapping.ams_id, mapping.tray_id): {
-            "ams_id": mapping.ams_id,
-            "tray_id": mapping.tray_id,
-            "preset_id": mapping.preset_id,
-            "preset_name": mapping.preset_name,
-        }
-        for mapping in mappings
-    }
-
-
-@router.get("/{printer_id}/slot-presets/{ams_id}/{tray_id}")
-async def get_slot_preset(
-    printer_id: int,
-    ams_id: int,
-    tray_id: int,
-    _=RequirePermission(Permission.PRINTERS_READ),
-    db: AsyncSession = Depends(get_db),
-):
-    """Get the saved preset for a specific slot."""
-    result = await db.execute(
-        select(SlotPresetMapping).where(
-            SlotPresetMapping.printer_id == printer_id,
-            SlotPresetMapping.ams_id == ams_id,
-            SlotPresetMapping.tray_id == tray_id,
-        )
-    )
-    mapping = result.scalar_one_or_none()
-
-    if not mapping:
-        return None
-
-    return {
-        "ams_id": mapping.ams_id,
-        "tray_id": mapping.tray_id,
-        "preset_id": mapping.preset_id,
-        "preset_name": mapping.preset_name,
-    }
-
-
-@router.put("/{printer_id}/slot-presets/{ams_id}/{tray_id}")
-async def save_slot_preset(
-    printer_id: int,
-    ams_id: int,
-    tray_id: int,
-    preset_id: str,
-    preset_name: str,
-    preset_source: str = "cloud",
-    _=RequirePermission(Permission.PRINTERS_UPDATE),
-    db: AsyncSession = Depends(get_db),
-):
-    """Save a preset mapping for a specific slot."""
-    # Check printer exists
-    result = await db.execute(select(Printer).where(Printer.id == printer_id))
-    if not result.scalar_one_or_none():
-        raise HTTPException(404, "Printer not found")
-
-    # Check for existing mapping
-    result = await db.execute(
-        select(SlotPresetMapping).where(
-            SlotPresetMapping.printer_id == printer_id,
-            SlotPresetMapping.ams_id == ams_id,
-            SlotPresetMapping.tray_id == tray_id,
-        )
-    )
-    mapping = result.scalar_one_or_none()
-
-    if mapping:
-        # Update existing
-        mapping.preset_id = preset_id
-        mapping.preset_name = preset_name
-        mapping.preset_source = preset_source
-    else:
-        # Create new
-        mapping = SlotPresetMapping(
-            printer_id=printer_id,
-            ams_id=ams_id,
-            tray_id=tray_id,
-            preset_id=preset_id,
-            preset_name=preset_name,
-            preset_source=preset_source,
-        )
-        db.add(mapping)
-
-    await db.commit()
-    await db.refresh(mapping)
-
-    return {
-        "ams_id": mapping.ams_id,
-        "tray_id": mapping.tray_id,
-        "preset_id": mapping.preset_id,
-        "preset_name": mapping.preset_name,
-        "preset_source": mapping.preset_source,
-    }
-
-
-@router.delete("/{printer_id}/slot-presets/{ams_id}/{tray_id}")
-async def delete_slot_preset(
-    printer_id: int,
-    ams_id: int,
-    tray_id: int,
-    _=RequirePermission(Permission.PRINTERS_UPDATE),
-    db: AsyncSession = Depends(get_db),
-):
-    """Delete a saved preset mapping for a slot."""
-    result = await db.execute(
-        select(SlotPresetMapping).where(
-            SlotPresetMapping.printer_id == printer_id,
-            SlotPresetMapping.ams_id == ams_id,
-            SlotPresetMapping.tray_id == tray_id,
-        )
-    )
-    mapping = result.scalar_one_or_none()
-
-    if mapping:
-        await db.delete(mapping)
-        await db.commit()
-
-    return {"success": True}
-
-
 @router.post("/{printer_id}/slots/{ams_id}/{tray_id}/configure")
 async def configure_ams_slot(
     printer_id: int,
@@ -2994,19 +2847,6 @@ async def reset_ams_slot(
 
     if not success:
         raise HTTPException(status_code=500, detail="Failed to send reset command")
-
-    # Also delete any saved slot preset mapping
-    result = await db.execute(
-        select(SlotPresetMapping).where(
-            SlotPresetMapping.printer_id == printer_id,
-            SlotPresetMapping.ams_id == ams_id,
-            SlotPresetMapping.tray_id == tray_id,
-        )
-    )
-    mapping = result.scalar_one_or_none()
-    if mapping:
-        await db.delete(mapping)
-        await db.commit()
 
     # Request fresh status push from printer so frontend gets updated data via WebSocket
     client.request_status_update()

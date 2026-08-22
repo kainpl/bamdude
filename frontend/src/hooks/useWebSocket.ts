@@ -550,7 +550,6 @@ export function useWebSocket() {
       case 'spool_assignment_changed':
         // Spool assigned/unassigned - refresh assignment data across all tabs
         debouncedInvalidate('spool-assignments');
-        debouncedInvalidate('slotPresets');
         break;
 
       case 'spool_assignment_verified': {

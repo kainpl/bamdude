@@ -808,7 +808,7 @@ class TestConfigureAMSSlotAPI:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_configure_pfus_sent_directly(self, async_client: AsyncClient, printer_factory):
-        """PFUS* cloud-synced custom preset IDs are sent to the printer."""
+        """A raw PFUS id degrades to the generic family (spec A §5.2)."""
         printer = await printer_factory(name="H2D")
 
         mock_client = MagicMock()
@@ -837,7 +837,10 @@ class TestConfigureAMSSlotAPI:
 
             assert response.status_code == 200
             call_kwargs = mock_client.ams_set_filament_setting.call_args
-            assert call_kwargs.kwargs["tray_info_idx"] == "PFUS9ac902733670a9"
+            # Family model (spec A §5.2): a raw PFUS setting-id is not a valid
+            # tray id; unmirrored it degrades to the generic family of the
+            # material rather than leaking to the printer.
+            assert call_kwargs.kwargs["tray_info_idx"] == "GFL99"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -889,7 +892,10 @@ class TestConfigureAMSSlotAPI:
             assert response.status_code == 200
             call_kwargs = mock_client.ams_set_filament_setting.call_args
             # Provided preset wins over slot's existing one
-            assert call_kwargs.kwargs["tray_info_idx"] == "PFUS9ac902733670a9"
+            # Family model (spec A §5.2): a raw PFUS setting-id is not a valid
+            # tray id; unmirrored it degrades to the generic family of the
+            # material rather than leaking to the printer.
+            assert call_kwargs.kwargs["tray_info_idx"] == "GFL99"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -934,7 +940,10 @@ class TestConfigureAMSSlotAPI:
             assert response.status_code == 200
             call_kwargs = mock_client.ams_set_filament_setting.call_args
             # Provided preset wins - slot's material is irrelevant
-            assert call_kwargs.kwargs["tray_info_idx"] == "PFUS9ac902733670a9"
+            # Family model (spec A §5.2): a raw PFUS setting-id is not a valid
+            # tray id; unmirrored it degrades to the generic family of the
+            # material rather than leaking to the printer.
+            assert call_kwargs.kwargs["tray_info_idx"] == "GFL99"
 
     @pytest.mark.asyncio
     @pytest.mark.integration

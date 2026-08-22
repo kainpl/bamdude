@@ -7342,18 +7342,6 @@ export const api = {
     }),
 
   // Slot Preset Mappings
-  getSlotPresets: (printerId: number) =>
-    request<Record<number, SlotPresetMapping>>(`/printers/${printerId}/slot-presets`),
-  getSlotPreset: (printerId: number, amsId: number, trayId: number) =>
-    request<SlotPresetMapping | null>(`/printers/${printerId}/slot-presets/${amsId}/${trayId}`),
-  saveSlotPreset: (printerId: number, amsId: number, trayId: number, presetId: string, presetName: string, presetSource = 'cloud') =>
-    request<SlotPresetMapping>(`/printers/${printerId}/slot-presets/${amsId}/${trayId}?preset_id=${encodeURIComponent(presetId)}&preset_name=${encodeURIComponent(presetName)}&preset_source=${encodeURIComponent(presetSource)}`, {
-      method: 'PUT',
-    }),
-  deleteSlotPreset: (printerId: number, amsId: number, trayId: number) =>
-    request<{ success: boolean }>(`/printers/${printerId}/slot-presets/${amsId}/${trayId}`, {
-      method: 'DELETE',
-    }),
 
   // AMS Labels (user-defined friendly names)
   getAmsLabels: (printerId: number) =>

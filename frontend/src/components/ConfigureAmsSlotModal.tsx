@@ -345,6 +345,12 @@ export function ConfigureAmsSlotModal({
 }: ConfigureAmsSlotModalProps) {
   const { t } = useTranslation();
   const [selectedPresetId, setSelectedPresetId] = useState<string>('');
+
+  // Poke the cloud preset mirror once per open (server-side debounced) so a
+  // preset created in BS/Orca moments ago is already resolvable (spec A §3).
+  useEffect(() => {
+    if (isOpen) api.triggerFilamentPresetSync().catch(() => undefined);
+  }, [isOpen]);
   const [selectedKProfile, setSelectedKProfile] = useState<KProfile | null>(null);
   const [colorHex, setColorHex] = useState<string>(''); // Just the 6-char hex, no alpha
   const [colorInput, setColorInput] = useState<string>(''); // User's text input (name or hex)
@@ -637,30 +643,8 @@ export function ConfigureAmsSlotModal({
         k_value: kValue,
       });
 
-      // Save the preset mapping so we can display the correct name in the UI
-      // This is needed because user presets use filament_id (e.g., P285e239) as tray_info_idx,
-      // which can't be resolved to a name via the filamentInfo API
-      const mappingPresetId = isLocal
-        ? `local_${localId}`
-        : isBuiltin
-          ? `builtin_${builtinFilamentId}`
-          : isOrca
-            ? selectedPresetId
-            : selectedPresetId;
-      const mappingSource = isLocal
-        ? 'local'
-        : isBuiltin
-          ? 'builtin'
-          : isOrca
-            ? 'orca_cloud'
-            : 'cloud';
-      try {
-        await api.saveSlotPreset(printerId, slotInfo.amsId, slotInfo.trayId, mappingPresetId, traySubBrands, mappingSource);
-      } catch (e) {
-        console.warn('Failed to save slot preset mapping:', e);
-        // Don't fail the whole operation - slot was configured successfully
-      }
-
+      // (slot_preset_mappings retired — slot display names come from the
+      // identity resolver via /cloud/filament-info, custom families included.)
       return result;
     },
     onSuccess: () => {

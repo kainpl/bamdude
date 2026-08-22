@@ -1953,13 +1953,6 @@ function PrinterCard({
     staleTime: 5 * 60 * 1000, // 5 minutes
   });
 
-  // Fetch slot preset mappings (stores preset name for user-configured slots)
-  const { data: slotPresets } = useQuery({
-    queryKey: ['slotPresets', printer.id],
-    queryFn: () => api.getSlotPresets(printer.id),
-    staleTime: 2 * 60 * 1000, // 2 minutes
-  });
-
   // Fetch plate list for the archive linked to the active print (upstream #881
   // follow-up). Only queried when there's a running print backed by an archive;
   // shared React Query cache with the Queue / Archives pages keeps it cheap.
@@ -4625,8 +4618,6 @@ function PrinterCard({
                                 const isRanOutSlot = previousTray !== null && previousTray === globalTrayId;
                                 // Get cloud preset info if available
                                 const cloudInfo = tray?.tray_info_idx ? filamentInfo?.[tray.tray_info_idx] : null;
-                                // Get saved slot preset mapping (for user-configured slots)
-                                const slotPreset = slotPresets?.[globalTrayId];
 
                                 // Fill level fallback chain: Spoolman link → Spoolman slot-assignment → Inventory → AMS remain
                                 const trayTag = (tray?.tray_uuid || tray?.tag_uid || getFallbackSpoolTag(printer.serial_number, ams.id, slotIdx))?.toUpperCase();
@@ -4675,8 +4666,7 @@ function PrinterCard({
                                   // shows "Devil Design PLA Basic" rather than the vendor-less
                                   // form. Strip the "@<printer>..." suffix that BambuStudio
                                   // appends to user-preset names.
-                                  profile: slotPreset?.preset_name
-                                    || (slotSpoolForFill ? [slotSpoolForFill.brand, slotSpoolForFill.slicer_filament_name?.split('@')[0].trim() || slotSpoolForFill.material].filter(Boolean).join(' ').trim() : null)
+                                  profile: (slotSpoolForFill ? [slotSpoolForFill.brand, slotSpoolForFill.slicer_filament_name?.split('@')[0].trim() || slotSpoolForFill.material].filter(Boolean).join(' ').trim() : null)
                                     || inventoryAssignment?.spool?.slicer_filament_name
                                     || cloudInfo?.name
                                     || tray.tray_sub_brands
@@ -4943,7 +4933,6 @@ function PrinterCard({
                                             trayInfoIdx: tray?.tray_info_idx || undefined,
                                             extruderId: mappedExtruderId,
                                             caliIdx: tray?.cali_idx,
-                                            savedPresetId: slotPreset?.preset_id,
                                           }),
                                         }}
                                       >
@@ -4999,8 +4988,6 @@ function PrinterCard({
                         const isRanOutSlot = previousTray !== null && previousTray === globalTrayId;
                         // Get cloud preset info if available
                         const cloudInfo = tray?.tray_info_idx ? filamentInfo?.[tray.tray_info_idx] : null;
-                        // Get saved slot preset mapping (for user-configured slots)
-                        const slotPreset = slotPresets?.[globalTrayId];
                         const htSlotId = tray?.id ?? 0;
 
                         // Fill level fallback chain: Spoolman → Inventory → AMS remain
@@ -5037,8 +5024,7 @@ function PrinterCard({
                         // Build filament data for hover card
                         const filamentData = tray?.tray_type ? {
                           vendor: (isBambuLabSpool(tray) ? 'Bambu Lab' : 'Generic') as 'Bambu Lab' | 'Generic',
-                          profile: slotPreset?.preset_name
-                            || (htSlotSpoolForFill ? [htSlotSpoolForFill.brand, htSlotSpoolForFill.slicer_filament_name?.split('@')[0].trim() || htSlotSpoolForFill.material].filter(Boolean).join(' ').trim() : null)
+                          profile: (htSlotSpoolForFill ? [htSlotSpoolForFill.brand, htSlotSpoolForFill.slicer_filament_name?.split('@')[0].trim() || htSlotSpoolForFill.material].filter(Boolean).join(' ').trim() : null)
                             || htInventoryAssignment?.spool?.slicer_filament_name
                             || cloudInfo?.name
                             || tray.tray_sub_brands
@@ -5350,7 +5336,6 @@ function PrinterCard({
                                         trayInfoIdx: tray?.tray_info_idx || undefined,
                                         extruderId: mappedExtruderId,
                                         caliIdx: tray?.cali_idx,
-                                        savedPresetId: slotPreset?.preset_id,
                                       }),
                                     }}
                                   >
@@ -5429,7 +5414,6 @@ function PrinterCard({
                                 ? (extTrayId === 254 ? t('printers.extL') : t('printers.extR'))
                                 : '';
                               const extCloudInfo = extTray.tray_info_idx ? filamentInfo?.[extTray.tray_info_idx] : null;
-                              const extSlotPreset = slotPresets?.[255 * 4 + slotTrayId];
 
                               const extTrayTag = (extTray.tray_uuid || extTray.tag_uid || getFallbackSpoolTag(printer.serial_number, 255, slotTrayId))?.toUpperCase();
                               const extLinkedSpool = extTrayTag ? linkedSpools?.[extTrayTag] : undefined;
@@ -5465,8 +5449,7 @@ function PrinterCard({
 
                               const extFilamentData = {
                                 vendor: (isBambuLabSpool(extTray) ? 'Bambu Lab' : 'Generic') as 'Bambu Lab' | 'Generic',
-                                profile: extSlotPreset?.preset_name
-                                  || (extSlotSpoolForFill ? [extSlotSpoolForFill.brand, extSlotSpoolForFill.slicer_filament_name?.split('@')[0].trim() || extSlotSpoolForFill.material].filter(Boolean).join(' ').trim() : null)
+                                profile: (extSlotSpoolForFill ? [extSlotSpoolForFill.brand, extSlotSpoolForFill.slicer_filament_name?.split('@')[0].trim() || extSlotSpoolForFill.material].filter(Boolean).join(' ').trim() : null)
                                   || extInventoryAssignment?.spool?.slicer_filament_name
                                   || extCloudInfo?.name
                                   || extTray.tray_sub_brands
@@ -5664,7 +5647,6 @@ function PrinterCard({
                                           trayInfoIdx: extTray.tray_info_idx || undefined,
                                           extruderId: isDualNozzle ? (extTrayId === 254 ? 1 : 0) : undefined,
                                           caliIdx: extTray.cali_idx,
-                                          savedPresetId: extSlotPreset?.preset_id,
                                         }),
                                       }}
                                     >
@@ -6764,8 +6746,6 @@ function PrinterCard({
           printerModel={mapModelCode(printer.model) || undefined}
           nozzleDiameter={resolveSlotNozzleDiameter(status, configureSlotModal.amsId)}
           onSuccess={() => {
-            // Refresh slot presets to show updated profile name
-            queryClient.invalidateQueries({ queryKey: ['slotPresets', printer.id] });
             // Printer status will update automatically via WebSocket when AMS data changes
             queryClient.invalidateQueries({ queryKey: ['printerStatus', printer.id] });
           }}

@@ -121,6 +121,8 @@
 
 ### Changed
 
+- **Slot cards stopped remembering what was sent and started knowing what is loaded.** The per-slot "preset memory" table (and its API) is gone: the name shown for a tray now comes from resolving the id the printer itself reports — which works offline and stays correct when the slot is changed from Bambu Studio or the printer screen, cases the old memory could not see. Opening the slot dialog nudges the cloud-preset mirror so freshly created presets resolve immediately.
+
 - **AMS slot assignment goes through the family catalog — one path instead of two piles of guesswork.** The printer gets the family id and the proper versioned preset id straight from the catalog; temperatures come from the actual preset for that printer and nozzle (spool overrides still win); multi-colour spools now write **all** their colours to the tray, exactly as Bambu Studio does. A custom family is only sent to printers that declare support for user presets — others get the generic family of the same material, with a note in the log. The old behaviour of copying whatever id happened to be on the tray before is gone: that id belonged to the previous spool.
 
 
