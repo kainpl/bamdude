@@ -70,3 +70,19 @@ async def test_spool_temp_overrides_win(db_session):
         db_session, family_id="GFG99", printer_model="A1 Mini", temp_overrides=(231, 261)
     )
     assert (plan.nozzle_temp_min, plan.nozzle_temp_max) == (231, 261)
+
+
+@pytest.mark.asyncio
+async def test_custom_family_k_profiles_are_matchable(db_session):
+    """P-hash spool -> resolve_spool -> the SAME id the printer's K table uses.
+    Regression for the flattening bug (custom families collapsed to generic)."""
+    from types import SimpleNamespace
+
+    from backend.app.services.calibration_service import derive_effective_filament_id
+
+    db_session.add(
+        UserFilamentFamily(filament_id="P122e532", ecosystem="bambu", alias="test PETG Basic", origin="cloud_bambu")
+    )
+    await db_session.commit()
+    spool = SimpleNamespace(filament_family_id="P122e532", bambu_filament_id=None, slicer_filament="PFUS_CUSTOM_ROOT")
+    assert await derive_effective_filament_id(spool=spool, db=db_session) == "P122e532"
