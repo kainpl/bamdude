@@ -6,6 +6,11 @@
 
 ### Added
 
+- **Filament identity now runs on families, the way Bambu Studio models it.** BamDude gains a built-in catalog of every official Bambu filament — the family behind each preset (`filament_id`), its name, vendor, type, temperatures and which printers it fits — distilled from Bambu Studio and OrcaSlicer themselves rather than hardcoded tables. Your own cloud presets from Bambu Cloud and Orca Cloud are mirrored to the server in the background (every few minutes and the moment a cloud is connected), so a custom filament created in either slicer — its family included — is known to BamDude without any lookup at the moment you use it.
+
+- **Spools link to a filament family.** A spool now carries the same identity a slicer preset does, and existing spools are migrated automatically on first start: whatever the old preset field held — an official id, a cloud preset, a local import, or just a material name — is resolved into a family, and anything that cannot be resolved is left honestly unlinked rather than guessed. K-profile auto-matching keys on the family, which fixes a long-standing blind spot: **custom filaments created in Bambu Studio (your own vendor and name) now match their calibration profiles** instead of being silently collapsed onto Generic.
+
+
 - **The print dialog offers the labels you actually have.** It used to show six fixed buttons that had nothing to do with the designs in Settings: drawing a new one added no button, and renaming one renamed nothing. Now it reads the catalogue — every design, with the name and the one-line description you write in the editor, and its size on the right.
 
     **Pick the paper, pick the design, press Print.** Paper is a separate question, which is what makes any label printable on any sheet: one per page, laid out on Avery L7160, or on a page geometry you drew yourself. A design too big for that paper's cells is offered greyed out with both measurements, rather than accepted and quietly shrunk — a label shrunk to fit is a label whose barcode no longer scans.
@@ -113,6 +118,9 @@
 - **Telegram can now aim a job at a room, not just at a printer model.** "Any P1S" is a useful answer on a one-room farm and a poor one when the P1S you meant is upstairs. Choosing a model in the bot now offers the places that actually hold one, and the job is routed there — the same location filter the print dialog has had, reaching the shelves inside a workshop you pick. The step is skipped entirely when there is nothing to choose between, so a farm with no locations set up sees no extra tap.
 
 ### Changed
+
+- **AMS slot assignment goes through the family catalog — one path instead of two piles of guesswork.** The printer gets the family id and the proper versioned preset id straight from the catalog; temperatures come from the actual preset for that printer and nozzle (spool overrides still win); multi-colour spools now write **all** their colours to the tray, exactly as Bambu Studio does. A custom family is only sent to printers that declare support for user presets — others get the generic family of the same material, with a note in the log. The old behaviour of copying whatever id happened to be on the tray before is gone: that id belonged to the previous spool.
+
 
 - **"N items queued" now counts the jobs, not the printers.** Sending one file to four printers at two copies each queues eight jobs; the message said four. It was counting the requests it sent — one per printer — while each of those writes a job per copy. The number was only ever right when the copy count was one.
 

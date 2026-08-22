@@ -57,7 +57,6 @@ from backend.app.services.spool_csv import (
     serialize,
 )
 from backend.app.services.spoolman import SpoolmanClient, get_spoolman_client, init_spoolman_client
-from backend.app.utils.filament_ids import filament_id_to_setting_id, normalize_slicer_filament
 from backend.app.utils.filament_remaining import grams_used
 from backend.app.utils.tag_normalization import normalize_tag_uid, normalize_tray_uuid
 
@@ -89,43 +88,8 @@ async def _safe_autolink(db: AsyncSession, spool: Spool) -> None:
         logger.warning("Auto-link of K-profiles for spool %s failed: %s", getattr(spool, "id", "?"), e)
 
 
-# Material temperature defaults (nozzle min/max)
-MATERIAL_TEMPS: dict[str, tuple[int, int]] = {
-    "PLA": (190, 230),
-    "PETG": (220, 260),
-    "ABS": (240, 270),
-    "ASA": (240, 270),
-    "TPU": (200, 240),
-    "PA": (260, 290),
-    "PC": (250, 280),
-    "PVA": (190, 210),
-    "PLA-CF": (210, 240),
-    "PETG-CF": (240, 270),
-    "PA-CF": (270, 300),
-}
-
 # FilamentColors.xyz API
 FILAMENT_COLORS_API = "https://filamentcolors.xyz/api"
-
-# Generic Bambu filament IDs by material — fallback when no specific preset
-# is resolvable. Used by both `apply_spool_to_slot_via_mqtt` (helper below)
-# and the slot-reuse fallback in `assign_spool`.
-_GENERIC_FILAMENT_IDS: dict[str, str] = {
-    "PLA": "GFL99",
-    "PETG": "GFG99",
-    "ABS": "GFB99",
-    "ASA": "GFB98",
-    "PC": "GFC99",
-    "PA": "GFN99",
-    "NYLON": "GFN99",
-    "TPU": "GFU99",
-    "PVA": "GFS99",
-    "HIPS": "GFS98",
-    "PLA-CF": "GFL98",
-    "PETG-CF": "GFG98",
-    "PA-CF": "GFN98",
-    "PETG HF": "GFG96",
-}
 
 
 async def apply_spool_to_slot_via_mqtt(
@@ -168,219 +132,17 @@ async def apply_spool_to_slot_via_mqtt(
     )
     tray_color = spool.rgba or "FFFFFFFF"
 
-    _generic_id_values = set(_GENERIC_FILAMENT_IDS.values())
-
-    tray_info_idx = ""
-    setting_id = ""
-    sf = spool.slicer_filament or ""
-
-    if sf:
-        # Cloud-side preset IDs come in three known shapes:
-        #   GFS…   — Bambu official cloud preset
-        #   PFUS…  — cloud user-created preset
-        #   PFCN…  — cloud shared / partner preset (e.g. Polymaker's "(Custom)"
-        #            Bambu Lab H2D variants, #1648)
-        # All three need a cloud-detail lookup to extract the underlying
-        # filament_id; without it the raw cloud id lands in tray_info_idx and
-        # the printer's calibration table can't resolve it (slicer shows "unknown").
-        base_sf = sf.split("_")[0] if "_" in sf else sf
-        if base_sf.startswith("GFS") or base_sf.startswith("PFUS") or base_sf.startswith("PFCN"):
-            # Cloud setting_id — resolve real filament_id via cloud API
-            setting_id = base_sf
-            try:
-                from backend.app.api.routes.cloud import build_authenticated_cloud
-
-                cloud = await build_authenticated_cloud(db, current_user)
-                if cloud is not None and cloud.is_authenticated:
-                    try:
-                        detail = await cloud.get_setting_detail(base_sf)
-                        if detail.get("filament_id"):
-                            tray_info_idx = detail["filament_id"]
-                            logger.info(
-                                "Spool assign: resolved filament_id=%r from cloud for setting_id=%r",
-                                tray_info_idx,
-                                sf,
-                            )
-                            cloud_name = detail.get("name", "")
-                            if cloud_name:
-                                tray_sub_brands = cloud_name.replace(r"@.*$", "").split("@")[0].strip()
-                        elif detail.get("base_id"):
-                            bid = detail["base_id"].split("_")[0]
-                            if bid.startswith("GFS") and len(bid) >= 5:
-                                tray_info_idx = f"GF{bid[3:]}"
-                            else:
-                                tray_info_idx = bid
-                            logger.info(
-                                "Spool assign: derived filament_id=%r from base_id=%r",
-                                tray_info_idx,
-                                detail["base_id"],
-                            )
-                    finally:
-                        await cloud.close()
-                elif cloud is not None:
-                    await cloud.close()
-            except Exception as e:
-                logger.warning("Spool assign: cloud lookup failed for %r: %s", sf, e)
-
-            if not tray_info_idx:
-                tray_info_idx, setting_id = normalize_slicer_filament(sf)
-        elif base_sf.startswith("GF"):
-            tray_info_idx, setting_id = normalize_slicer_filament(sf)
-            logger.info("Spool assign: using official filament_id=%r", tray_info_idx)
-        else:
-            try:
-                local_id = int(sf)
-                from backend.app.models.local_preset import LocalPreset as LP
-
-                lp_result = await db.execute(select(LP).where(LP.id == local_id, LP.preset_type == "filament"))
-                lp = lp_result.scalar_one_or_none()
-                if lp:
-                    # Local preset's setting JSON carries the printer-recognised
-                    # ``filament_id`` (e.g. ``P4d64437``) — use that directly so
-                    # the slicer can resolve the specific preset. Falls through
-                    # to the generic-material id only when the JSON doesn't
-                    # carry one (upstream Bambuddy #1387 / commit dd3e3f80).
-                    lp_filament_id = ""
-                    if lp.setting:
-                        try:
-                            setting_data = json.loads(lp.setting)
-                            raw_fid = setting_data.get("filament_id")
-                            if isinstance(raw_fid, str) and raw_fid:
-                                lp_filament_id = raw_fid
-                        except (json.JSONDecodeError, AttributeError):
-                            pass
-                    if lp_filament_id:
-                        tray_info_idx = lp_filament_id
-                        setting_id = filament_id_to_setting_id(lp_filament_id)
-                    else:
-                        mat = (spool.material or lp.filament_type or "").upper().strip()
-                        tray_info_idx = (
-                            _GENERIC_FILAMENT_IDS.get(mat)
-                            or _GENERIC_FILAMENT_IDS.get(mat.split("-")[0].split(" ")[0])
-                            or ""
-                        )
-                    if lp.name:
-                        tray_sub_brands = lp.name.split("@")[0].strip()
-                    logger.info(
-                        "Spool assign: local preset %d, material=%r, tray_info_idx=%r",
-                        local_id,
-                        mat,
-                        tray_info_idx,
-                    )
-            except (ValueError, TypeError):
-                tray_info_idx, setting_id = normalize_slicer_filament(sf)
-
-    # Cross-check: the cloud API returns the base filament_id for versioned
-    # setting_ids (e.g. GFSL99 → GFL99 for all PLA variants). If the spool
-    # carries a specific preset name (e.g. "Generic PLA Silk"), reverse-look
-    # up the correct filament_id from the built-in table.
-    if tray_info_idx and spool.slicer_filament_name:
-        from backend.app.api.routes.cloud import _BUILTIN_FILAMENT_NAMES
-
-        expected_name = _BUILTIN_FILAMENT_NAMES.get(tray_info_idx, "")
-        if expected_name and expected_name != spool.slicer_filament_name:
-            for fid, fname in _BUILTIN_FILAMENT_NAMES.items():
-                if fname == spool.slicer_filament_name:
-                    logger.info(
-                        "Spool assign: corrected filament_id %r→%r (name=%r)",
-                        tray_info_idx,
-                        fid,
-                        spool.slicer_filament_name,
-                    )
-                    tray_info_idx = fid
-                    setting_id = filament_id_to_setting_id(fid)
-                    break
-
-    # Defend against ``tray_info_idx`` values the slicer cannot resolve.
-    # Two shapes leak through and must be discarded so the generic-material
-    # fallback below can rescue the slot:
-    #   1. Literal material names ("PLA", "PETG-CF") that pass through
-    #      ``normalize_slicer_filament`` unchanged when the spool's
-    #      ``slicer_filament`` is free-text rather than a real preset ID.
-    #   2. PFUS-prefix cloud setting_ids — valid as ``setting_id`` but
-    #      rejected by the slicer as ``tray_info_idx`` (the printer's
-    #      calibration table indexes by ``filament_id``, and a PFUS isn't
-    #      one). This normally gets realigned to a P-prefix local id via
-    #      ``printer_kp`` lookup, but the replay path in
-    #      ``main.py.on_ams_change`` passes ``current_user=None``, which
-    #      skips cloud auth and leaves the raw PFUS in ``tray_info_idx``
-    #      — overwriting the correctly-configured slot from the original
-    #      assign (upstream Bambuddy #1387 / commit dd3e3f80).
-    # Valid ``tray_info_idx`` values: "GF" + letter + digits (Bambu
-    # official) or "P" followed by hex (user/local presets, NOT "PFUS" or
-    # "PFCN" — those are cloud shared/partner presets, e.g. Polymaker's
-    # "(Custom)" H2D variants, #1648, and have the same unresolvable shape).
-    _known_materials = set(MATERIAL_TEMPS.keys()) | set(_GENERIC_FILAMENT_IDS.keys())
-    if tray_info_idx and (
-        tray_info_idx.upper() in _known_materials
-        or tray_info_idx.startswith("PFUS")
-        or tray_info_idx.startswith("PFCN")
-    ):
-        tray_info_idx = ""
-        # Preserve ``setting_id`` when it's still a valid slicer reference: PFUS /
-        # PFCN (cloud user/shared preset) or GFS (Bambu official). The slicer
-        # accepts these as ``setting_id`` even though they're rejected as
-        # ``tray_info_idx``. Without this, the generic-material fallback below
-        # overwrites ``setting_id`` with a "GFS…99" and the slicer shows
-        # "Generic <Material>" instead of the user's custom preset — happens on
-        # the ``on_ams_change`` replay path where the cloud detail lookup is
-        # skipped (upstream Bambuddy #1815). Material-name leaks (e.g.
-        # setting_id="PETG") are still cleared — never valid slicer references.
-        if not (setting_id and (setting_id.startswith(("PFUS", "PFCN", "GFS")))):
-            setting_id = ""
-
-    if not tray_info_idx:
-        # Fallback: reuse slot's existing tray_info_idx (only if it's a specific
-        # preset and slot material matches spool) or a generic ID.
-        if (
-            current_tray_info_idx
-            and current_tray_info_idx not in _generic_id_values
-            and not current_tray_info_idx.startswith("PFUS")
-            and not current_tray_info_idx.startswith("PFCN")
-            and current_tray_info_idx.upper() not in _known_materials
-            and current_tray_type
-            and current_tray_type.upper() == (tray_type or "").upper()
-        ):
-            logger.info(
-                "Spool assign: reusing slot's existing tray_info_idx=%r (same material %r)",
-                current_tray_info_idx,
-                tray_type,
-            )
-            tray_info_idx = current_tray_info_idx
-        elif tray_type:
-            material = tray_type.upper().strip()
-            generic = (
-                _GENERIC_FILAMENT_IDS.get(material)
-                or _GENERIC_FILAMENT_IDS.get(material.split("-")[0].split(" ")[0])
-                or ""
-            )
-            if generic:
-                logger.info("Spool assign: falling back to generic %r for material %r", generic, tray_type)
-                tray_info_idx = generic
-
-    # Ensure ``setting_id`` is always derivable from ``tray_info_idx``.
-    # The local-preset path above sets ``tray_info_idx`` to a generic ID
-    # (e.g. "GFL99") but leaves ``setting_id`` empty — without this
-    # fallback the slicer gets a half-configured slot (filament id without
-    # setting id) and shows empty fields in the slot detail modal
-    # (upstream Bambuddy #1387 / commit dd3e3f80).
-    if tray_info_idx and not setting_id:
-        setting_id = filament_id_to_setting_id(tray_info_idx)
-
-    # Temperature: spool overrides win over material defaults
-    temp_min, temp_max = MATERIAL_TEMPS.get((spool.material or "").upper(), (200, 240))
-    if spool.nozzle_temp_min is not None:
-        temp_min = spool.nozzle_temp_min
-    if spool.nozzle_temp_max is not None:
-        temp_max = spool.nozzle_temp_max
-
     nozzle_diameter = "0.4"
     if state and state.nozzles:
         nd = state.nozzles[0].nozzle_diameter
         if nd:
             nozzle_diameter = nd
+    try:
+        nozzle_dia_float = float(nozzle_diameter)
+    except (TypeError, ValueError):
+        nozzle_dia_float = 0.4
 
-    # Determine slot's extruder from ams_extruder_map
+    # Determine slot's extruder from ams_extruder_map (feeds the K half below)
     slot_extruder = None
     if state and state.ams_extruder_map:
         if ams_id == 255:
@@ -389,66 +151,28 @@ async def apply_spool_to_slot_via_mqtt(
         else:
             slot_extruder = state.ams_extruder_map.get(str(ams_id))
 
-    # Find the right cache row by joining link → filament_calibration. Pick
-    # exact-extruder match first, fall back to extruder-agnostic same-nozzle.
-    # (Joined `filament_calibration` is eager-loaded via lazy="selectin".)
-    try:
-        nozzle_dia_float = float(nozzle_diameter)
-    except (TypeError, ValueError):
-        nozzle_dia_float = 0.4
-    exact_link = None
-    fallback_link = None
-    for link in spool.k_profiles:
-        if link.printer_id != printer_id:
-            continue
-        fc = link.filament_calibration
-        if not fc or abs(fc.nozzle_diameter - nozzle_dia_float) > 0.05:
-            continue
-        if slot_extruder is not None and link.extruder == slot_extruder:
-            exact_link = link
-            break
-        if fallback_link is None:
-            fallback_link = link
-    matching_link = exact_link or fallback_link
-    matching_fc = matching_link.filament_calibration if matching_link else None
+    # ONE identity path (spec A §5.2): the family catalog builds the payload —
+    # tray_info_idx = the spool's family, versioned setting_id from the
+    # catalog, temps from the preset for this printer (spool overrides win
+    # inside the builder). current_tray_info_idx / current_tray_type are
+    # accepted for signature stability but no longer consulted — the family
+    # model does not reuse a foreign tray id.
+    from backend.app.services.slot_assignment import build_slot_assignment
 
-    # Resolve preset realignment via the live printer K-profile (matched on
-    # stable identity, not stored cali_idx — printer may have reordered).
-    printer_kp = None
-    if matching_fc and state and getattr(state, "kprofiles", None):
-        target_k = matching_fc.pa_k_value if matching_fc.pa_k_value is not None else matching_fc.flow_ratio
-        for pkp in state.kprofiles:
-            try:
-                pkp_k = float(pkp.k_value)
-            except (TypeError, ValueError):
-                continue
-            if (
-                pkp.name == matching_fc.name
-                and target_k is not None
-                and abs(pkp_k - float(target_k)) < 1e-6
-                and pkp.filament_id == matching_fc.filament_id
-            ):
-                printer_kp = pkp
-                break
-
-    effective_tray_info_idx = tray_info_idx
-    effective_setting_id = setting_id
-    if printer_kp and printer_kp.filament_id:
-        effective_tray_info_idx = printer_kp.filament_id
-    target_setting_id = (printer_kp.setting_id if printer_kp else None) or (
-        matching_fc.filament_setting_id if matching_fc else None
+    info = printer_manager.get_printer(printer_id)
+    plan = await build_slot_assignment(
+        db,
+        spool=spool,
+        printer_model=info.model if info else None,
+        nozzle_diameter=nozzle_diameter,
+        supports_user_preset=bool(getattr(state, "support_user_preset", False)),
     )
-    if target_setting_id:
-        effective_setting_id = target_setting_id
-    if effective_tray_info_idx != tray_info_idx or effective_setting_id != setting_id:
-        logger.info(
-            "Spool assign: realigning tray_info_idx %r → %r, setting_id %r → %r (source=%s)",
-            tray_info_idx,
-            effective_tray_info_idx,
-            setting_id,
-            effective_setting_id,
-            "printer" if printer_kp else "stored",
-        )
+    for note in plan.warnings:
+        logger.info("Spool assign: %s", note)
+    effective_tray_info_idx = plan.tray_info_idx
+    effective_setting_id = plan.setting_id
+    tray_type = plan.tray_type or tray_type
+    temp_min, temp_max = plan.nozzle_temp_min, plan.nozzle_temp_max
 
     # a. Set filament setting
     client.ams_set_filament_setting(
@@ -461,6 +185,8 @@ async def apply_spool_to_slot_via_mqtt(
         nozzle_temp_min=temp_min,
         nozzle_temp_max=temp_max,
         setting_id=effective_setting_id,
+        cols=plan.cols,
+        ctype=plan.ctype,
     )
 
     # Register a read-back verification so the next AMS pushes can confirm the
@@ -516,10 +242,10 @@ async def apply_spool_to_slot_via_mqtt(
         printer_id=printer_id,
         ams_id=ams_id,
         tray_id=tray_id,
-        tray_info_idx=tray_info_idx,
+        tray_info_idx=effective_tray_info_idx,
         tray_sub_brands=tray_sub_brands,
         tray_type=tray_type,
-        setting_id=setting_id,
+        setting_id=effective_setting_id,
     )
 
     logger.info(

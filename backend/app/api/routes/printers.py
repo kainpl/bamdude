@@ -81,7 +81,6 @@ from backend.app.services.printer_manager import (
     supports_drying_while_printing,
     uniform_tray_drying_hint,
 )
-from backend.app.utils.filament_ids import filament_id_to_setting_id
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.printer_storage import storage_capability_for
 from backend.app.utils.temperature_limits import is_within, limits_for
@@ -2816,6 +2815,7 @@ async def configure_ams_slot(
     kprofile_setting_id: str = Query(""),
     k_value: float = Query(0.0),
     _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
 ):
     """Configure an AMS slot with a specific filament setting and K profile.
 
@@ -2857,101 +2857,35 @@ async def configure_ams_slot(
     if not client:
         raise HTTPException(status_code=400, detail="Printer not connected")
 
-    # Resolve tray_info_idx for the MQTT command.
-    # Priority:
-    #   1. Use the provided tray_info_idx if set (including cloud-synced
-    #      custom presets like PFUS* / P*).
-    #   2. Reuse the slot's existing tray_info_idx if it's a specific
-    #      (non-generic) preset for the same material.
-    #   3. Fall back to a generic Bambu filament ID.
-    _GENERIC_FILAMENT_IDS = {
-        "PLA": "GFL99",
-        "PETG": "GFG99",
-        "ABS": "GFB99",
-        "ASA": "GFB98",
-        "PC": "GFC99",
-        "PA": "GFN99",
-        "NYLON": "GFN99",
-        "TPU": "GFU99",
-        "PVA": "GFS99",
-        "HIPS": "GFS98",
-        "PLA-CF": "GFL98",
-        "PETG-CF": "GFG98",
-        "PA-CF": "GFN98",
-        "PETG HF": "GFG96",
-    }
-    _GENERIC_ID_VALUES = set(_GENERIC_FILAMENT_IDS.values())
-    effective_tray_info_idx = tray_info_idx
+    # ONE identity path (spec A §5.2): the family catalog builds the payload.
+    # ``tray_info_idx`` (when given) is a family id straight from the picker;
+    # otherwise the material name routes to its generic family inside the
+    # builder. The old slot-reuse and generic-table heuristics are gone.
+    from backend.app.services.slot_assignment import build_slot_assignment
 
-    if not tray_info_idx:
-        # No preset provided - try slot reuse or generic fallback
-        current_tray_info_idx = ""
-        current_tray_type = ""
-        state = printer_manager.get_status(printer_id)
-        if state and state.raw_data:
-            from backend.app.api.routes.inventory import _find_tray_in_ams_data
+    state = printer_manager.get_status(printer_id)
+    info = printer_manager.get_printer(printer_id)
+    try:
+        plan = await build_slot_assignment(
+            db,
+            family_id=tray_info_idx or None,
+            preset_setting_id=setting_id or None,
+            printer_model=info.model if info else None,
+            nozzle_diameter=nozzle_diameter,
+            supports_user_preset=bool(getattr(state, "support_user_preset", False)),
+            material_override=tray_type,
+            color_rgba=tray_color,
+            temp_overrides=(nozzle_temp_min or None, nozzle_temp_max or None),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    for note in plan.warnings:
+        logger.info("[configure_ams_slot] %s", note)
+    effective_tray_info_idx = plan.tray_info_idx
+    effective_setting_id = plan.setting_id
 
-            if ams_id == 255:
-                vt_tray = state.raw_data.get("vt_tray") or []
-                ext_id = tray_id + 254
-                for vt in vt_tray:
-                    if isinstance(vt, dict) and int(vt.get("id", 254)) == ext_id:
-                        current_tray_info_idx = vt.get("tray_info_idx", "")
-                        current_tray_type = vt.get("tray_type", "")
-                        break
-            else:
-                ams_data = state.raw_data.get("ams", {})
-                ams_list = (
-                    ams_data.get("ams", [])
-                    if isinstance(ams_data, dict)
-                    else ams_data
-                    if isinstance(ams_data, list)
-                    else []
-                )
-                cur_tray = _find_tray_in_ams_data(ams_list, ams_id, tray_id)
-                if cur_tray:
-                    current_tray_info_idx = cur_tray.get("tray_info_idx", "")
-                    current_tray_type = cur_tray.get("tray_type", "")
-
-        if (
-            current_tray_info_idx
-            and current_tray_info_idx not in _GENERIC_ID_VALUES
-            and current_tray_type
-            and current_tray_type.upper() == tray_type.upper()
-        ):
-            logger.info(
-                "[configure_ams_slot] Reusing slot's existing tray_info_idx=%r (same material %r)",
-                current_tray_info_idx,
-                tray_type,
-            )
-            effective_tray_info_idx = current_tray_info_idx
-        elif tray_type:
-            material = tray_type.upper().strip()
-            generic = (
-                _GENERIC_FILAMENT_IDS.get(material)
-                or _GENERIC_FILAMENT_IDS.get(material.split("-")[0].split(" ")[0])
-                or ""
-            )
-            if generic:
-                logger.info("[configure_ams_slot] Falling back to generic %r for material %r", generic, tray_type)
-                effective_tray_info_idx = generic
-
-    # Send filament setting + K-profile commands
+    # K-profile linkage keeps its own explicit id when the client sent one.
     filament_id_for_kprofile = kprofile_filament_id if kprofile_filament_id else effective_tray_info_idx
-
-    # Back-fill setting_id from the resolved filament id when the client sent
-    # none. Built-in / local / Orca-generic presets in the Configure AMS Slot
-    # modal leave setting_id empty (they carry only a GF* tray_info_idx), and
-    # the printer treats a filament-id-without-setting-id slot as half
-    # configured: it shows the new material briefly, then reverts to its
-    # previously stored profile (upstream #2604). This mirrors the derivation
-    # the inventory/assignment path already does (inventory.py).
-    # ``filament_id_to_setting_id`` leaves P* user presets and already-GFS*
-    # values unchanged, so only the empty-setting_id generic paths are affected;
-    # an explicit setting_id from the client still passes through untouched.
-    effective_setting_id = setting_id
-    if effective_tray_info_idx and not effective_setting_id:
-        effective_setting_id = filament_id_to_setting_id(effective_tray_info_idx)
 
     # Always send ams_set_filament_setting - the user explicitly clicked
     # "Configure Slot", so honor that.  Previous versions skipped this for
@@ -2962,12 +2896,14 @@ async def configure_ams_slot(
         ams_id=ams_id,
         tray_id=tray_id,
         tray_info_idx=effective_tray_info_idx,
-        tray_type=tray_type,
+        tray_type=plan.tray_type or tray_type,
         tray_sub_brands=tray_sub_brands,
         tray_color=tray_color,
-        nozzle_temp_min=nozzle_temp_min,
-        nozzle_temp_max=nozzle_temp_max,
+        nozzle_temp_min=plan.nozzle_temp_min,
+        nozzle_temp_max=plan.nozzle_temp_max,
         setting_id=effective_setting_id,
+        cols=plan.cols,
+        ctype=plan.ctype,
     )
 
     if not success:

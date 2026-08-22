@@ -1318,6 +1318,10 @@ class PrinterState:
     # Capability flags from printer push.func bitfield + cfg overrides
     is_support_pa_calibration: bool = False
     is_support_auto_flow_calibration: bool = False
+    # Whether the device accepts USER filament presets on AMS slots (BS reads
+    # home_flag bit 22 / a literal ``support_user_preset`` push field / fun
+    # bit 11). Gates sending custom P* family ids in slot assignment.
+    support_user_preset: bool = False
     # Live device-calibration support flags (Device page → Calibration dialog),
     # keyed by the MQTT field name (support_lidar_calibration,
     # support_nozzle_offset_calibration, support_high_tempbed_calibration,
@@ -4545,11 +4549,18 @@ class BambuMQTTClient:
         #   json ``support_flow_calibration`` -> pa   (see note below)
         #
         # and clamps each of the first two — see _apply_series_calibration_clamps.
+        # BS also honours a literal push field of the same name (its third
+        # source besides home_flag bit 22 and fun bit 11).
+        if isinstance(data.get("support_user_preset"), bool):
+            self.state.support_user_preset = data["support_user_preset"]
         _home_flag_raw = data.get("home_flag")
         if isinstance(_home_flag_raw, int):
             _hf = _home_flag_raw & 0xFFFFFFFF if _home_flag_raw < 0 else _home_flag_raw
             self.state.is_support_auto_flow_calibration = bool((_hf >> 15) & 0x1)
             self.state.is_support_pa_calibration = bool((_hf >> 16) & 0x1)
+            # BS DeviceManager: ``is_support_user_preset = ((flag >> 22) & 0x1)``
+            # — whether the device accepts USER filament presets on AMS slots.
+            self.state.support_user_preset = bool((_hf >> 22) & 0x1)
             self._apply_series_calibration_clamps()
             # BS ``parse_home_flag``: ``is_220V_voltage = get_flag_bits(flag, 3)``.
             # Feeds the bed ceiling, which is LOWER at 220 V on the X1 and O
@@ -9615,6 +9626,8 @@ class BambuMQTTClient:
         nozzle_temp_min: int,
         nozzle_temp_max: int,
         setting_id: str = "",
+        cols: list[str] | None = None,
+        ctype: int = 0,
     ) -> bool:
         """Set AMS tray filament settings (type, color, temperature).
 
@@ -9625,11 +9638,18 @@ class BambuMQTTClient:
             tray_id: Tray ID within the AMS (0-3)
             tray_info_idx: Filament ID short format (e.g., "GFL05")
             tray_type: Filament type (e.g., "PLA", "PETG")
-            tray_sub_brands: Sub-brand name (e.g., "PLA Basic", "PETG HF")
+            tray_sub_brands: ACCEPTED BUT NO LONGER SENT — BS does not include
+                it in ams_filament_setting; slot display names come from the
+                identity resolver now. The kwarg survives one release for the
+                callers still passing it.
             tray_color: Color in RRGGBBAA hex format (e.g., "FFFF00FF")
             nozzle_temp_min: Minimum nozzle temperature
             nozzle_temp_max: Maximum nozzle temperature
             setting_id: Full setting ID with version (e.g., "GFSL05_07") - optional
+            cols: All colours of a multi-colour spool (RRGGBBAA each,
+                first = tray_color); sent with ``ctype`` only when non-empty —
+                BS payload parity.
+            ctype: Colour type for ``cols`` (1 = gradient/multi).
 
         Returns:
             True if command was sent, False otherwise
@@ -9689,7 +9709,6 @@ class BambuMQTTClient:
                 "slot_id": slot_id,
                 "tray_info_idx": tray_info_idx,
                 "tray_type": tray_type,
-                "tray_sub_brands": tray_sub_brands,
                 "tray_color": tray_color,
                 "nozzle_temp_min": nozzle_temp_min,
                 "nozzle_temp_max": nozzle_temp_max,
@@ -9700,6 +9719,11 @@ class BambuMQTTClient:
         # Include setting_id if provided (helps slicer show correct profile)
         if setting_id:
             command["print"]["setting_id"] = setting_id
+
+        # Multi-colour spools: BS sends every stop plus the colour type.
+        if cols:
+            command["print"]["cols"] = cols
+            command["print"]["ctype"] = ctype
 
         command_json = json.dumps(command)
         logger.info(
