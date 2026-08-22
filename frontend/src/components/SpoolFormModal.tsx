@@ -11,6 +11,7 @@ import { defaultFormData, spoolDetailsRequired, validateForm, SPOOLMAN_LINKED_FI
 import { buildFilamentOptions, extractBrandsFromPresets, fetchPrinterCalibrations, findPresetOption, loadRecentColors, normalizeSlicerCodeToFilamentId, parsePresetName, resolveTargetFilamentId, saveRecentColor } from './spool-form/utils';
 import { MATERIALS } from './spool-form/constants';
 import { FilamentSection } from './spool-form/FilamentSection';
+import { FamilyPicker } from './FamilyPicker';
 import { ColorSection } from './spool-form/ColorSection';
 import { AdditionalSection } from './spool-form/AdditionalSection';
 import { SpoolmanFilamentPicker } from './spool-form/SpoolmanFilamentPicker';
@@ -382,6 +383,7 @@ export function SpoolFormModal({
           core_weight_catalog_id: spool.core_weight_catalog_id ?? null,
           weight_used: isCopying ? 0 : spool.weight_used || 0,
           slicer_filament: spool.slicer_filament || '',
+          filament_family_id: spool.filament_family_id || '',
           note: spool.note || '',
           cost_per_kg: spool.cost_per_kg ?? null,
           // Trim to yyyy-mm-dd for the <input type="date"> control; ISO
@@ -815,6 +817,12 @@ export function SpoolFormModal({
       slicer_filament: formData.slicer_filament || null,
       slicer_filament_name: presetName,
       resolved_filament_id: resolveTargetFilamentId(formData.slicer_filament, resolveCloudDetailQuery.data) || null,
+      // The family link (spec A §5.1): explicit pick wins; otherwise derive it
+      // from the legacy preset resolution so old-style edits stay linked.
+      filament_family_id:
+        formData.filament_family_id
+        || resolveTargetFilamentId(formData.slicer_filament, resolveCloudDetailQuery.data)
+        || null,
       nozzle_temp_min: null,
       nozzle_temp_max: null,
       note: formData.note || null,
@@ -977,6 +985,14 @@ export function SpoolFormModal({
                 <h3 className="text-sm font-semibold text-bambu-gray uppercase tracking-wide mb-3">
                   {t('inventory.filamentInfo')}
                 </h3>
+                <div className="mb-3">
+                  <label className="block text-sm text-bambu-gray mb-1">{t('inventory.filamentFamily')}</label>
+                  <FamilyPicker
+                    value={formData.filament_family_id || null}
+                    onChange={(id) => updateField('filament_family_id', id || '')}
+                    legacyHint={spool?.slicer_filament_name || undefined}
+                  />
+                </div>
                 <FilamentSection
                   formData={formData}
                   updateField={updateField}

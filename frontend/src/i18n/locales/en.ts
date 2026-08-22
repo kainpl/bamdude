@@ -1698,6 +1698,12 @@ export default {
   },
 
   // Settings page
+  familyPicker: {
+    placeholder: 'Link a filament family…',
+    search: 'Search families…',
+    custom: 'custom',
+    empty: 'No families match',
+  },
   labelSheets: {
     title: 'Sheets of stickers',
     subtitle: 'The paper and its grid. A sheet says how big a cell is and nothing about what goes in one.',
@@ -5255,6 +5261,7 @@ export default {
     // Tabs
     filamentInfoTab: 'Filament Info',
     paProfileTab: 'PA Profile',
+    filamentFamily: 'Filament family',
     filamentInfo: 'Filament',
     additional: 'Additional',
     // Cloud

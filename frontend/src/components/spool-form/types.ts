@@ -32,6 +32,8 @@ export interface SpoolFormData {
   core_weight_catalog_id: number | null;
   weight_used: number;
   slicer_filament: string;
+  // Family link (spec A §5.1) — the catalog identity; empty = unlinked.
+  filament_family_id: string;
   note: string;
   cost_per_kg: number | null;
   // ISO yyyy-mm-dd string or empty. Stored separately from ``created_at``
@@ -77,6 +79,7 @@ export const defaultFormData: SpoolFormData = {
   core_weight_catalog_id: null,
   weight_used: 0,
   slicer_filament: '',
+  filament_family_id: '',
   note: '',
   cost_per_kg: null,
   purchase_date: '',

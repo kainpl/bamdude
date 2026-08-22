@@ -1702,6 +1702,12 @@ export default {
   },
 
   // Settings page
+  familyPicker: {
+    placeholder: 'Привʼязати сімʼю філаменту…',
+    search: 'Пошук сімей…',
+    custom: 'кастомна',
+    empty: 'Жодної сімʼї не знайдено',
+  },
   labelSheets: {
     title: 'Аркуші наліпок',
     subtitle: 'Папір і його сітка. Аркуш каже, якого розміру комірка, і нічого про те, що в ній.',
@@ -5290,6 +5296,7 @@ export default {
     // Tabs
     filamentInfoTab: 'Інформація про філамент',
     paProfileTab: 'PA профіль',
+    filamentFamily: 'Сімʼя філаменту',
     filamentInfo: 'Філамент',
     additional: 'Додатково',
     // Cloud

@@ -8,6 +8,8 @@
 
 - **Filament identity now runs on families, the way Bambu Studio models it.** BamDude gains a built-in catalog of every official Bambu filament — the family behind each preset (`filament_id`), its name, vendor, type, temperatures and which printers it fits — distilled from Bambu Studio and OrcaSlicer themselves rather than hardcoded tables. Your own cloud presets from Bambu Cloud and Orca Cloud are mirrored to the server in the background (every few minutes and the moment a cloud is connected), so a custom filament created in either slicer — its family included — is known to BamDude without any lookup at the moment you use it.
 
+- **The spool form gains a family picker.** One searchable control over the whole catalog — official families and your custom ones side by side, each with its vendor and material, custom ones badged. Picking a family is what links the spool for K-profile matching and slot assignment; a spool edited the old way (via a slicer preset) derives its family automatically on save. Opening the picker also nudges the cloud mirror, so a preset created in Bambu Studio a moment ago is already in the list.
+
 - **Spools link to a filament family.** A spool now carries the same identity a slicer preset does, and existing spools are migrated automatically on first start: whatever the old preset field held — an official id, a cloud preset, a local import, or just a material name — is resolved into a family, and anything that cannot be resolved is left honestly unlinked rather than guessed. K-profile auto-matching keys on the family, which fixes a long-standing blind spot: **custom filaments created in Bambu Studio (your own vendor and name) now match their calibration profiles** instead of being silently collapsed onto Generic.
 
 

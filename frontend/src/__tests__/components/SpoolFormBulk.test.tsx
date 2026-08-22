@@ -26,6 +26,8 @@ vi.mock('../../api/client', () => ({
   setAuthToken: vi.fn(),
   getAuthToken: vi.fn(() => 'test-admin-token'),
   api: {
+    getFilamentFamilies: vi.fn().mockResolvedValue([]),
+    triggerFilamentPresetSync: vi.fn().mockResolvedValue({ queued: true }),
     getSettings: vi.fn().mockResolvedValue({}),
     getAuthStatus: vi.fn().mockResolvedValue({ auth_enabled: false }),
     getCloudStatus: vi.fn().mockResolvedValue({ is_authenticated: false }),
