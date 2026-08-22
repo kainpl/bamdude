@@ -20,6 +20,29 @@ difference is small — but it is real, and it is in the CHANGELOG.
 The two permissions are seeded here as well. Administrators are not self-healed
 at startup and our migrations are frozen, so a permission not seeded here is a
 permission nobody ever has.
+
+⚠️ **A design declares which printer it is drawn for** (``target``). One design
+served both output paths at first: the PDF renderer drew a colour swatch, the
+one-bit raster silently skipped it, and the same template printed acceptably
+either way. That holds while colour is a small extra on an otherwise monochrome
+label. It stops holding once colour is something you *design around* — a label
+going out through a driver may be landing on an inkjet, where a filled shape in
+the spool's colour is the point of it, and that is not a design which degrades
+gracefully on a thermal head; it is one that arrives missing its subject. So the
+editor refuses a colour element on a design declared thermal, rather than
+accepting it and dropping it at print time. ``RasterCanvas.swatch`` still skips
+rather than refuses, so anything drawn by hand keeps printing as it did.
+
+⚠️ **``description`` is text, not a translation key**, and that is the trade. The
+print dialog used to be six buttons hard-coded in the frontend, each with a
+translated title and hint, while this table sat there being ignored. Making the
+dialog read the catalogue means the row has to carry the sentence — and a
+sentence somebody can edit cannot also be translated. The seeded ones are in
+English.
+
+Both of those arrived as their own migrations while this one was still
+unreleased, and were folded back in here: a column added to a table nobody has
+yet is that table's column.
 """
 
 from __future__ import annotations
@@ -57,6 +80,14 @@ async def upgrade(conn):
                     width_mm FLOAT NOT NULL,
                     height_mm FLOAT NOT NULL,
                     shape VARCHAR(16) NOT NULL DEFAULT 'rect',
+                    -- Which kind of printer this design is drawn for. 'driver'
+                    -- goes out as PDF and may use colour — it could be landing
+                    -- on an inkjet or a laser; 'thermal' goes to a one-bit head
+                    -- where a colour element is refused rather than dropped.
+                    target VARCHAR(16) NOT NULL DEFAULT 'driver',
+                    -- One line saying what the label is for, shown beside the
+                    -- name wherever a design is offered.
+                    description VARCHAR(300) NOT NULL DEFAULT '',
                     elements {json_type} NOT NULL,
                     builtin_key VARCHAR(64) UNIQUE,
                     created_by INTEGER,

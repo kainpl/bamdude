@@ -24,7 +24,7 @@ class LabelTemplate(Base):
     name: Mapped[str] = mapped_column(String(120))
     #: One line saying what the label is for, shown beside the name in the
     #: print dialog. Editable, which is why it is text and not a translation
-    #: key — see m150.
+    #: key — see m146.
     description: Mapped[str] = mapped_column(String(300), default="", server_default="")
     width_mm: Mapped[float] = mapped_column(Float)
     height_mm: Mapped[float] = mapped_column(Float)
@@ -32,7 +32,7 @@ class LabelTemplate(Base):
     #: Niimbot sells circular stock where a rectangular design loses its
     #: corners, and one column now is cheaper than a migration later.
     shape: Mapped[str] = mapped_column(String(16), default="rect")
-    #: Which kind of printer this design is drawn for — see m149.
+    #: Which kind of printer this design is drawn for — see m146.
     #: ``driver`` goes out through the OS print driver and may use colour;
     #: ``thermal`` goes to a one-bit label printer, where colour cannot survive
     #: and is therefore refused at edit time rather than dropped at print time.

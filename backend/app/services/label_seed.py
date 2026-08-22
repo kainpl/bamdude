@@ -322,7 +322,7 @@ STARTER_TEMPLATES: list[dict[str, Any]] = [
         "width_mm": 40.0,
         "height_mm": 20.0,
         "shape": "rect",
-        # Drawn for the one-bit head; a colour swatch is refused here (m149).
+        # Drawn for the one-bit head; a colour swatch is refused here (m146).
         "target": "thermal",
         "elements": _device_elements(40.0, 20.0, barcode=False, printable_mm=_B1_PRINTABLE_MM),
     },
@@ -332,7 +332,7 @@ STARTER_TEMPLATES: list[dict[str, Any]] = [
         "width_mm": 50.0,
         "height_mm": 30.0,
         "shape": "rect",
-        # Drawn for the one-bit head; a colour swatch is refused here (m149).
+        # Drawn for the one-bit head; a colour swatch is refused here (m146).
         "target": "thermal",
         "elements": _device_elements(50.0, 30.0, barcode=True, printable_mm=_B1_PRINTABLE_MM),
     },

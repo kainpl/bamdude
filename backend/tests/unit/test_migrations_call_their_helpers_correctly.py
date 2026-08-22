@@ -1,12 +1,13 @@
 """A migration that cannot even be called is a migration that fails on restart.
 
-``m149`` shipped calling ``add_column(conn, table, name, type)`` — four
+A label migration called ``add_column(conn, table, name, type)`` — four
 arguments to a three-argument helper, because the column name and its type go in
 one string. Nothing caught it: the integration database builds its schema with
 ``create_all()`` and marks migrations applied, so no test ever executed that
-line. It surfaced as an app that died mid-boot on a real installation, at
-"Applying migration 149", with the traceback going to a console nobody was
-watching.
+line. It surfaced as an app that died mid-boot on a real installation, on
+"Applying migration ...", with the traceback going to a console nobody was
+watching. (That migration has since been folded into the one it amended, so the
+call is not in the tree to look at — the guard is.)
 
 Reading the migration files rather than running them is the point: it costs
 nothing, needs no database, and covers every migration including the ones whose

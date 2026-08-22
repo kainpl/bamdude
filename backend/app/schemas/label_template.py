@@ -24,7 +24,7 @@ class LabelTemplateIn(BaseModel):
     shape: str = "rect"
     #: ``driver`` (through the OS print driver, colour allowed) or ``thermal``
     #: (a one-bit label printer, where a colour element is refused rather than
-    #: silently dropped). Defaults to driver — see m149.
+    #: silently dropped). Defaults to driver — see m146.
     target: str = "driver"
     elements: list[LabelElement] = Field(default_factory=list)
 

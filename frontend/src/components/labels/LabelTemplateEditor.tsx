@@ -299,7 +299,7 @@ export function LabelTemplateEditor() {
         height_mm: 30,
         shape: 'rect',
         // A new design defaults to the driver, like every row that predates
-        // m149: colour is available until somebody says this is for a thermal
+        // colour is available until somebody says this is for a thermal
         // head, and taking it away is the deliberate act.
         target: 'driver',
         elements: [newElement('text', 50, 30)],

@@ -90,16 +90,19 @@ class TestTheGridFitsThePage:
 
 
 class TestAThermalDesignRefusesColour:
-    """⚠️ m149 reverses "one template, two backends" for NEW designs.
+    """⚠️ This is a deliberate retreat from "one template, two backends".
 
-    The raster backend still skips a swatch it is handed, so anything drawn
-    before this keeps printing exactly as it did. What changes is the moment of
-    the decision: a design being saved as thermal is one somebody is drawing
-    now, and letting them place a colour block that will never appear lets them
-    design a label around a subject that is not there.
+    That held while colour was a small extra: the PDF renderer drew the swatch,
+    the one-bit raster skipped it, and the same design printed acceptably either
+    way. It stops holding once colour is what you design AROUND — a label built
+    on a filled block of the spool's colour does not degrade gracefully on a
+    thermal head, it arrives missing its subject.
 
-    A driver design keeps the swatch, because it may well be going to an inkjet
-    or a laser — which is the whole reason the two are told apart.
+    So the refusal happens at SAVE. A driver design keeps the swatch, because it
+    may well be going to an inkjet or a laser — which is the whole reason the two
+    are told apart. The raster still skips rather than refuses, because a driver
+    design can be named for a device print by id and losing a block beats losing
+    the job.
     """
 
     @staticmethod
@@ -125,9 +128,9 @@ class TestAThermalDesignRefusesColour:
         assert spec(**payload).target == "thermal"
 
     def test_the_default_is_the_driver(self):
-        """⚠️ Every row that existed before m149 was printing as PDF. Calling an
-        unmarked design thermal would strip elements from labels that print
-        them today."""
+        """⚠️ An unmarked design is a PDF design. Defaulting the other way
+        would take the colour block off a label the moment somebody saved it
+        without thinking about which printer it was for."""
         payload, spec = self._design("driver", with_swatch=False)
         del payload["target"]
         assert spec(**payload).target == "driver"

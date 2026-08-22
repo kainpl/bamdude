@@ -270,12 +270,16 @@ class LabelTemplateSpec(BaseModel):
     def _colour_belongs_to_a_colour_printer(self) -> LabelTemplateSpec:
         """Refuse a colour element on a design declared thermal.
 
-        ⚠️ **Refused here rather than dropped at print time**, which is the
-        change m149 makes. The raster backend still skips a swatch it is given,
-        so designs predating this keep printing as they always did — but a
-        design being SAVED as thermal is one somebody is drawing now, and
-        letting them place a block that will never appear is letting them design
-        around something that is not there.
+        ⚠️ **Refused here rather than dropped at print time.** A design being
+        SAVED as thermal is one somebody is drawing now, and letting them place
+        a block that will never appear is letting them design around something
+        that is not there.
+
+        ⚠️ ``RasterCanvas.swatch`` still SKIPS a swatch it is handed rather than
+        refusing, and that is not a leftover: ``resolve_template`` does not
+        filter on target, so a caller naming a driver design's ``template_id``
+        for a device print reaches the raster with a colour block in hand. Losing
+        the block is the right answer there; losing the whole job is not.
         """
         if self.target != "thermal":
             return self

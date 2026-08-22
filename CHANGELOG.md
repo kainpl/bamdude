@@ -138,10 +138,6 @@
 
 ### Fixed
 
-- **The spool list in the print dialog no longer crowds out the controls under it.** Left to take all the height going, it ran about half the dialog and pushed the paper, the design and Print far enough down that the choice you came to make was off-screen.
-
-- **The label-design update no longer stops the server from starting.** The migration that adds a design's printer type called a helper with the wrong arguments, so upgrading died at "Applying migration 149" and the app never came up — with the reason printed to a console rather than the log. Nothing in the test suite ran that line: test databases build their schema directly and mark migrations as already applied, so a migration's own code was never executed. Both label migrations are fixed, verified against a copy of a real database, and every migration's helper calls are now checked by a test that reads the files.
-
 - **Scanning a network folder no longer freezes the rest of BamDude.** Point the library at a NAS share and press Scan, and everything else could start failing with *database is locked* — dispatching a print, logging in, saving a setting. The scan held the database open from the first file to the last, and on a share of any size that is minutes; it also read every file on the thread that answers requests, so the browser lost its connection to BamDude while it ran and could not get it back.
 
     The scan is a background job now. The button returns at once, files appear in the list as they are found, and a strip above them counts how far it has got — through the same live connection the rest of the app uses. Nothing else waits on it. Only one scan runs per folder at a time; pressing Scan again while one is going says so rather than starting a second walk over the same files.
