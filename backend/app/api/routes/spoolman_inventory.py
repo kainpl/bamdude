@@ -58,11 +58,6 @@ from backend.app.services.spoolman import (
     init_spoolman_client,
 )
 from backend.app.services.spoolman_tracking import get_fallback_spool_tag_for_slot
-from backend.app.utils.filament_ids import (
-    GENERIC_FILAMENT_IDS,
-    MATERIAL_TEMPS,
-    normalize_slicer_filament,
-)
 from backend.app.utils.filament_remaining import grams_remaining
 
 logger = logging.getLogger(__name__)
@@ -1487,18 +1482,6 @@ async def assign_spoolman_slot(
             if len(tray_color) == 6:
                 tray_color = tray_color + "FF"
 
-            material_upper = tray_type.upper().strip()
-            tray_info_idx = (
-                GENERIC_FILAMENT_IDS.get(material_upper)
-                or GENERIC_FILAMENT_IDS.get(material_upper.split("-")[0].split(" ")[0])
-                or ""
-            )
-            setting_id = ""
-
-            temp_defaults = MATERIAL_TEMPS.get(material_upper, (200, 240))
-            temp_min = mapped.get("nozzle_temp_min") or temp_defaults[0]
-            temp_max = temp_defaults[1]
-
             # Pull printer state from printer_manager. The previous
             # `mqtt_client.printer_state` access via hasattr always returned
             # None (the attribute is `state`, not `printer_state`), so the
@@ -1540,64 +1523,38 @@ async def assign_spoolman_slot(
             matching_link = exact_link or fallback_link
             matching_fc = matching_link.filament_calibration if matching_link else None
 
-            # Resolve the printer-side calibration entry by stable identity
-            # (live cali_idx may have shifted vs cached value).
-            printer_kp = None
-            if matching_fc and state and state.kprofiles:
-                target_k = matching_fc.pa_k_value if matching_fc.pa_k_value is not None else matching_fc.flow_ratio
-                for pkp in state.kprofiles:
-                    try:
-                        pkp_k = float(pkp.k_value)
-                    except (TypeError, ValueError):
-                        continue
-                    if (
-                        pkp.name == matching_fc.name
-                        and target_k is not None
-                        and abs(pkp_k - float(target_k)) < 1e-6
-                        and pkp.filament_id == matching_fc.filament_id
-                    ):
-                        printer_kp = pkp
-                        break
-                if printer_kp is None:
-                    logger.warning(
-                        "Spoolman assign: cached fc id=%s not present in printer's "
-                        "live K-profile list — stored row may be stale.",
-                        matching_fc.id,
-                    )
+            # ONE identity path (spec A §5.2): the family catalog builds the
+            # payload — family from the linked calibration when one exists,
+            # else the generic family of the material, inside the builder.
+            from backend.app.services.slot_assignment import build_slot_assignment  # noqa: PLC0415
 
-            effective_tray_info_idx = tray_info_idx
-            effective_setting_id = setting_id
-            if printer_kp and printer_kp.filament_id:
-                if not printer_kp.filament_id.startswith("PFUS"):
-                    effective_tray_info_idx = printer_kp.filament_id
-                if printer_kp.setting_id:
-                    effective_setting_id = printer_kp.setting_id
-            elif matching_fc and matching_fc.filament_setting_id:
-                derived = normalize_slicer_filament(matching_fc.filament_setting_id)[0]
-                if derived and not derived.startswith("PFUS"):
-                    effective_tray_info_idx = derived
-                effective_setting_id = matching_fc.filament_setting_id
-            if effective_tray_info_idx != tray_info_idx or effective_setting_id != setting_id:
-                logger.info(
-                    "Spoolman assign: realigning tray_info_idx %r → %r, setting_id %r → %r (fc_id=%s, source=%s)",
-                    tray_info_idx,
-                    effective_tray_info_idx,
-                    setting_id,
-                    effective_setting_id,
-                    matching_fc.id if matching_fc else None,
-                    "printer" if printer_kp else "stored",
-                )
+            info = printer_manager.get_printer(body.printer_id)
+            plan = await build_slot_assignment(
+                db,
+                family_id=matching_fc.filament_id if matching_fc else None,
+                material_override=tray_type,
+                color_rgba=tray_color,
+                temp_overrides=(mapped.get("nozzle_temp_min"), None),
+                printer_model=info.model if info else None,
+                nozzle_diameter=nozzle_diameter,
+                supports_user_preset=bool(getattr(state, "support_user_preset", False)),
+            )
+            for note in plan.warnings:
+                logger.info("Spoolman assign: %s", note)
+            effective_tray_info_idx = plan.tray_info_idx
 
             mqtt_client.ams_set_filament_setting(
                 ams_id=body.ams_id,
                 tray_id=body.tray_id,
-                tray_info_idx=effective_tray_info_idx,
-                tray_type=tray_type,
+                tray_info_idx=plan.tray_info_idx,
+                tray_type=plan.tray_type or tray_type,
                 tray_sub_brands=tray_sub_brands,
                 tray_color=tray_color,
-                nozzle_temp_min=temp_min,
-                nozzle_temp_max=temp_max,
-                setting_id=effective_setting_id,
+                nozzle_temp_min=plan.nozzle_temp_min,
+                nozzle_temp_max=plan.nozzle_temp_max,
+                setting_id=plan.setting_id,
+                cols=plan.cols,
+                ctype=plan.ctype,
             )
 
             from backend.app.services.calibration_service import (  # noqa: PLC0415
