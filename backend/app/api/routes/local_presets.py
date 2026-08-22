@@ -118,6 +118,9 @@ async def create_local_preset(
     db.add(preset)
     await db.flush()
     await db.refresh(preset)
+    from backend.app.services.filament_preset_sync import absorb_local_preset
+
+    await absorb_local_preset(db, preset)  # identity mirror (family catalog)
     return LocalPresetResponse.model_validate(preset)
 
 
@@ -154,6 +157,9 @@ async def update_local_preset(
 
     await db.flush()
     await db.refresh(preset)
+    from backend.app.services.filament_preset_sync import absorb_local_preset
+
+    await absorb_local_preset(db, preset)  # keep the identity mirror current
     return LocalPresetResponse.model_validate(preset)
 
 
@@ -169,6 +175,9 @@ async def delete_local_preset(
     if not preset:
         raise HTTPException(404, "Local preset not found")
 
+    from backend.app.services.filament_preset_sync import drop_local_preset_row
+
+    await drop_local_preset_row(db, preset_id)
     await db.delete(preset)
     return {"success": True}
 

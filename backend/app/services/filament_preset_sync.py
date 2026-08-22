@@ -276,6 +276,83 @@ async def sync_orca_presets_for_user(db: AsyncSession, user: User | None) -> Syn
 
 
 # ---------------------------------------------------------------------------
+# Local preset absorption (spec A §3): identity link rows for LocalPresets,
+# written on their own CRUD path, not by the cloud loop.
+# ---------------------------------------------------------------------------
+
+
+async def absorb_local_preset(db: AsyncSession, preset) -> None:
+    """Upsert the identity link row for one filament LocalPreset."""
+    if preset.preset_type != "filament":
+        return
+    try:
+        content = json.loads(preset.setting or "{}")
+    except ValueError:
+        content = {}
+    fid = content.get("filament_id") or _orca_family_id(content)
+    existing = (
+        (await db.execute(select(UserFilamentPreset).where(UserFilamentPreset.local_preset_id == preset.id)))
+        .scalars()
+        .first()
+    )
+    cols = {
+        "name": preset.name,
+        "family_filament_id": str(fid) if fid else None,
+        "base_ref": content.get("inherits") or None,
+        "vendor": _scalar(content.get("filament_vendor")) or preset.filament_vendor,
+        "filament_type": _scalar(content.get("filament_type")) or preset.filament_type,
+        "nozzle_temp_min": preset.nozzle_temp_min,
+        "nozzle_temp_max": preset.nozzle_temp_max,
+    }
+    if existing is None:
+        db.add(
+            UserFilamentPreset(
+                owner_user_id=None,
+                ecosystem="orca",
+                source="local",
+                cloud_id=None,
+                local_preset_id=preset.id,
+                **cols,
+            )
+        )
+    else:
+        for key, value in cols.items():
+            setattr(existing, key, value)
+    if fid:
+        await _upsert_family(
+            db,
+            filament_id=str(fid),
+            ecosystem="orca",
+            name=preset.name,
+            vendor=cols["vendor"],
+            filament_type=cols["filament_type"],
+            origin="local",
+        )
+
+
+async def drop_local_preset_row(db: AsyncSession, preset_id: int) -> None:
+    row = (
+        (await db.execute(select(UserFilamentPreset).where(UserFilamentPreset.local_preset_id == preset_id)))
+        .scalars()
+        .first()
+    )
+    if row is not None:
+        await db.delete(row)
+
+
+async def absorb_all_local_presets(db: AsyncSession) -> int:
+    """Startup pass: absorb every pre-existing filament LocalPreset."""
+    from backend.app.models.local_preset import LocalPreset
+
+    presets = (await db.execute(select(LocalPreset).where(LocalPreset.preset_type == "filament"))).scalars().all()
+    count = 0
+    for preset in presets:
+        await absorb_local_preset(db, preset)
+        count += 1
+    return count
+
+
+# ---------------------------------------------------------------------------
 # The loop
 # ---------------------------------------------------------------------------
 
