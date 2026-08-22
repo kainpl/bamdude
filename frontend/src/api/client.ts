@@ -7005,7 +7005,11 @@ export const api = {
     request<FieldDefinitionsResponse>(`/cloud/fields/${presetType}`),
   getAllCloudFields: () =>
     request<Record<string, FieldDefinitionsResponse>>('/cloud/fields'),
-  getFilamentInfo: (settingIds: string[]) =>
+  // includeContent=true is the calibration wizard's opt-in: it asks the
+  // backend to also fetch cloud preset CONTENT (bed/nozzle/max-vol-speed).
+  // Plain calls (tray tooltips, slot cards) resolve names from the local
+  // catalog with zero cloud round-trips.
+  getFilamentInfo: (settingIds: string[], includeContent = false) =>
     request<
       Record<
         string,
@@ -7021,7 +7025,7 @@ export const api = {
           filament_max_volumetric_speed?: number;
         }
       >
-    >('/cloud/filament-info', {
+    >(`/cloud/filament-info?include_content=${includeContent}`, {
       method: 'POST',
       body: JSON.stringify(settingIds),
     }),

@@ -146,6 +146,9 @@
 
 ### Fixed
 
+- **Filament names on AMS slots and tooltips come from the local catalog — instantly, offline, custom families included.** Every hover used to fire a cloud request per tray (and showed nothing without a Bambu login); the hardcoded 88-name fallback table is gone too. The calibration wizard still fetches full preset content from the cloud for its auto-fill — that is now an explicit opt-in on its one request, not a side effect of every tooltip.
+
+
 - **Scanning a network folder no longer freezes the rest of BamDude.** Point the library at a NAS share and press Scan, and everything else could start failing with *database is locked* — dispatching a print, logging in, saving a setting. The scan held the database open from the first file to the last, and on a share of any size that is minutes; it also read every file on the thread that answers requests, so the browser lost its connection to BamDude while it ran and could not get it back.
 
     The scan is a background job now. The button returns at once, files appear in the list as they are found, and a strip above them counts how far it has got — through the same live connection the rest of the app uses. Nothing else waits on it. Only one scan runs per folder at a time; pressing Scan again while one is going says so rather than starting a second walk over the same files.

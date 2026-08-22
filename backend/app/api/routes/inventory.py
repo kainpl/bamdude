@@ -229,24 +229,8 @@ async def apply_spool_to_slot_via_mqtt(
             spool_id=spool.id,
         )
 
-    # Persist slot preset mapping for UI display (preset_name on hover card).
-    # Shared with the RFID auto-assign path — both must keep this row in sync
-    # with the currently-assigned spool, otherwise the slot card surfaces the
-    # previous spool's preset name (the PrintersPage display chain consults
-    # slot_preset_mappings.preset_name first).
-    from backend.app.services.slot_preset_writer import upsert_slot_preset_for_spool
-
-    await upsert_slot_preset_for_spool(
-        db=db,
-        spool=spool,
-        printer_id=printer_id,
-        ams_id=ams_id,
-        tray_id=tray_id,
-        tray_info_idx=effective_tray_info_idx,
-        tray_sub_brands=tray_sub_brands,
-        tray_type=tray_type,
-        setting_id=effective_setting_id,
-    )
+    # (slot_preset_mappings retired — slot display names come from the
+    # identity resolver now; see /cloud/filament-info.)
 
     logger.info(
         "Auto-configured AMS slot ams=%d tray=%d for spool %d on printer %d",

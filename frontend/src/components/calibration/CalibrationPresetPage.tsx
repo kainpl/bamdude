@@ -362,7 +362,7 @@ export function CalibrationPresetPage({
   // still applies the right values in the gcode regardless).
   const filamentInfoQuery = useQuery({
     queryKey: ['calibration', 'filament-info', filamentRef?.source, filamentRef?.id],
-    queryFn: () => api.getFilamentInfo([filamentRef!.id]),
+    queryFn: () => api.getFilamentInfo([filamentRef!.id], true),
     enabled: needsPresetPicker && filamentRef?.source === 'cloud' && !!filamentRef.id,
     staleTime: 60_000,
   });

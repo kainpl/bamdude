@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -597,97 +597,6 @@ _filament_cache: dict[str, dict] = {}
 _filament_cache_time: float = 0
 FILAMENT_CACHE_TTL = 300  # 5 minutes
 
-# Built-in filament ID → name mapping (fallback when cloud API and local profiles
-# don't have the entry). Based on Bambu Lab's known filament catalogue.
-_BUILTIN_FILAMENT_NAMES: dict[str, str] = {
-    "GFA00": "Bambu PLA Basic",
-    "GFA01": "Bambu PLA Matte",
-    "GFA02": "Bambu PLA Metal",
-    "GFA05": "Bambu PLA Silk",
-    "GFA06": "Bambu PLA Silk+",
-    "GFA07": "Bambu PLA Marble",
-    "GFA08": "Bambu PLA Sparkle",
-    "GFA09": "Bambu PLA Tough",
-    "GFA11": "Bambu PLA Aero",
-    "GFA12": "Bambu PLA Glow",
-    "GFA13": "Bambu PLA Dynamic",
-    "GFA15": "Bambu PLA Galaxy",
-    "GFA16": "Bambu PLA Wood",
-    "GFA50": "Bambu PLA-CF",
-    "GFB00": "Bambu ABS",
-    "GFB01": "Bambu ASA",
-    "GFB02": "Bambu ASA-Aero",
-    "GFB50": "Bambu ABS-GF",
-    "GFB51": "Bambu ASA-CF",
-    "GFB60": "PolyLite ABS",
-    "GFB61": "PolyLite ASA",
-    "GFB98": "Generic ASA",
-    "GFB99": "Generic ABS",
-    "GFC00": "Bambu PC",
-    "GFC01": "Bambu PC FR",
-    "GFC99": "Generic PC",
-    "GFG00": "Bambu PETG Basic",
-    "GFG01": "Bambu PETG Translucent",
-    "GFG02": "Bambu PETG HF",
-    "GFG50": "Bambu PETG-CF",
-    "GFG60": "PolyLite PETG",
-    "GFG96": "Generic PETG HF",
-    "GFG97": "Generic PCTG",
-    "GFG98": "Generic PETG-CF",
-    "GFG99": "Generic PETG",
-    "GFL00": "PolyLite PLA",
-    "GFL01": "PolyTerra PLA",
-    "GFL03": "eSUN PLA+",
-    "GFL04": "Overture PLA",
-    "GFL05": "Overture Matte PLA",
-    "GFL06": "Fiberon PETG-ESD",
-    "GFL50": "Fiberon PA6-CF",
-    "GFL51": "Fiberon PA6-GF",
-    "GFL52": "Fiberon PA12-CF",
-    "GFL53": "Fiberon PA612-CF",
-    "GFL54": "Fiberon PET-CF",
-    "GFL55": "Fiberon PETG-rCF",
-    "GFL95": "Generic PLA High Speed",
-    "GFL96": "Generic PLA Silk",
-    "GFL98": "Generic PLA-CF",
-    "GFL99": "Generic PLA",
-    "GFN03": "Bambu PA-CF",
-    "GFN04": "Bambu PAHT-CF",
-    "GFN05": "Bambu PA6-CF",
-    "GFN06": "Bambu PPA-CF",
-    "GFN08": "Bambu PA6-GF",
-    "GFN96": "Generic PPA-GF",
-    "GFN97": "Generic PPA-CF",
-    "GFN98": "Generic PA-CF",
-    "GFN99": "Generic PA",
-    "GFP95": "Generic PP-GF",
-    "GFP96": "Generic PP-CF",
-    "GFP97": "Generic PP",
-    "GFP98": "Generic PE-CF",
-    "GFP99": "Generic PE",
-    "GFR98": "Generic PHA",
-    "GFR99": "Generic EVA",
-    "GFS00": "Bambu Support W",
-    "GFS01": "Bambu Support G",
-    "GFS02": "Bambu Support For PLA",
-    "GFS03": "Bambu Support For PA/PET",
-    "GFS04": "Bambu PVA",
-    "GFS05": "Bambu Support For PLA/PETG",
-    "GFS06": "Bambu Support for ABS",
-    "GFS97": "Generic BVOH",
-    "GFS98": "Generic HIPS",
-    "GFS99": "Generic PVA",
-    "GFT01": "Bambu PET-CF",
-    "GFT02": "Bambu PPS-CF",
-    "GFT97": "Generic PPS",
-    "GFT98": "Generic PPS-CF",
-    "GFU00": "Bambu TPU 95A HF",
-    "GFU01": "Bambu TPU 95A",
-    "GFU02": "Bambu TPU for AMS",
-    "GFU98": "Generic TPU for AMS",
-    "GFU99": "Generic TPU",
-}
-
 
 async def _enrich_from_local_presets(
     unresolved_ids: list[str],
@@ -742,16 +651,8 @@ async def _enrich_from_local_presets(
     except Exception as e:
         logger.warning("Failed to search local presets for filament info: %s", e)
 
-    # Phase 4: Fall back to built-in filament name table for any still without a name
-    for fid in unresolved_ids:
-        if fid not in result or not result[fid].get("name"):
-            name = _BUILTIN_FILAMENT_NAMES.get(fid, "")
-            if name:
-                # Preserve K value from earlier phases if available
-                existing_k = result.get(fid, {}).get("k")
-                info = {"name": name, "k": existing_k}
-                _filament_cache[fid] = info
-                result[fid] = info
+    # (The old built-in name table fallback is gone: the identity resolver
+    # in Phase 0 IS the catalog and already named everything nameable.)
 
     # Fill remaining unresolved with empty entries
     for fid in unresolved_ids:
@@ -769,14 +670,19 @@ _filament_id_to_setting_id = filament_id_to_setting_id
 @router.post("/filament-info")
 async def get_filament_info(
     setting_ids: list[str] = Body(...),
+    include_content: bool = Query(False),
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
     """
     Get filament preset info (name and K value) for multiple setting IDs.
 
-    Used to enrich AMS tray and nozzle rack tooltips with preset data.
-    Lookup order: cache → cloud → local profiles → built-in table → empty fallback.
+    Lookup order: the identity resolver (catalog + mirrors — NO network)
+    names every id it can; the cloud phase runs only for ids the resolver
+    cannot name, or for ALL ids when ``include_content=true`` — the
+    calibration wizard's opt-in for bed/nozzle/max-vol-speed content values
+    the identity catalog deliberately does not carry. Tooltip/card callers
+    never hit the cloud.
     """
     import time
 
@@ -792,14 +698,38 @@ async def get_filament_info(
     result = {}
     unresolved_ids: list[str] = []
 
-    # Phase 1: Check cache
+    # Phase 0: the identity resolver — catalog + mirrors, zero network.
+    from backend.app.services.filament_identity import resolve_raw, resolve_tray
+
+    resolver_named: set[str] = set()
     for setting_id in setting_ids:
         if not setting_id:
+            continue
+        resolved = await resolve_tray(db, setting_id)
+        if not resolved.family:
+            resolved = await resolve_raw(db, setting_id)
+        if resolved.family and resolved.display_name:
+            entry: dict = {"name": resolved.display_name, "k": None}
+            if resolved.nozzle_temp_min is not None:
+                entry["nozzle_temp_min"] = resolved.nozzle_temp_min
+            if resolved.nozzle_temp_max is not None:
+                entry["nozzle_temp_max"] = resolved.nozzle_temp_max
+            result[setting_id] = entry
+            resolver_named.add(setting_id)
+
+    # Phase 1: Check cache (content-enriched entries from earlier wizard calls)
+    for setting_id in setting_ids:
+        if not setting_id or setting_id in resolver_named:
             continue
         if setting_id in _filament_cache:
             result[setting_id] = _filament_cache[setting_id]
         else:
             unresolved_ids.append(setting_id)
+
+    if include_content:
+        # The wizard wants cloud content values for every id, resolver-named
+        # or not; the cloud loop's entries merge OVER the resolver names.
+        unresolved_ids = [sid for sid in setting_ids if sid]
 
     # Phase 2: Try cloud for uncached IDs
     if unresolved_ids:
@@ -1239,13 +1169,14 @@ async def get_builtin_filaments(
     _: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
     """
-    Get built-in filament names as a fallback source.
+    Get official filament names as a fallback source.
 
-    Returns the static _BUILTIN_FILAMENT_NAMES table as a list of
-    {filament_id, name} objects.  Used by the frontend when cloud
-    and local profiles are unavailable.
+    Served from the distilled system catalog (backend/app/data/
+    filament_catalog/) — the hardcoded table it used to read is gone.
     """
-    return [{"filament_id": fid, "name": name} for fid, name in _BUILTIN_FILAMENT_NAMES.items()]
+    from backend.app.utils import filament_catalog as catalog
+
+    return [{"filament_id": fam.filament_id, "name": fam.alias} for fam in catalog.search_families("", limit=1000)]
 
 
 # Cache for filament_id → name mapping (resolved from cloud preset details)
