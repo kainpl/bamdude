@@ -963,9 +963,16 @@ export function PrintModal({
     const totalCount = selectedPrinters.length * platesToQueue.length;
     setSubmitProgress({ current: 0, total: totalCount });
 
-    const results: { success: number; failed: number; errors: string[] } = {
+    // ⚠️ `success` counts REQUESTS, `queued` counts ROWS, and they are not the
+    // same number. One request carries a quantity and the server writes that
+    // many items — `for i in range(data.quantity)` in `queue_add`. Four
+    // printers at two copies each is four requests and eight queue entries, and
+    // the toast reported four. `success`/`failed` stay a pair of attempt counts
+    // because the partial-failure message pairs them.
+    const results: { success: number; failed: number; queued: number; errors: string[] } = {
       success: 0,
       failed: 0,
+      queued: 0,
       errors: [],
     };
 
@@ -1072,6 +1079,8 @@ export function PrintModal({
             await addToQueueMutation.mutateAsync(getQueueData(printerId, plateId));
           }
           results.success++;
+          // Edit mode replaces one row; everything else writes one per copy.
+          results.queued += mode === 'edit-queue-item' ? 1 : quantityForPlate(plateId);
         } catch (error) {
           results.failed++;
           const printerName = printers?.find(p => p.id === printerId)?.name || `Printer ${printerId}`;
@@ -1094,10 +1103,10 @@ export function PrintModal({
       if (mode !== 'reprint') {
         if (mode === 'edit-queue-item') {
           showToast(t('printModal.queueItemUpdated'));
-        } else if (results.success === 1) {
+        } else if (results.queued === 1) {
           showToast(t('queue.printQueued'));
         } else {
-          showToast(t('queue.itemsQueued', { count: results.success }));
+          showToast(t('queue.itemsQueued', { count: results.queued }));
         }
       }
       queryClient.invalidateQueries({ queryKey: ['queue'] });

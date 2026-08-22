@@ -100,6 +100,8 @@
 
 ### Changed
 
+- **"N items queued" now counts the jobs, not the printers.** Sending one file to four printers at two copies each queues eight jobs; the message said four. It was counting the requests it sent — one per printer — while each of those writes a job per copy. The number was only ever right when the copy count was one.
+
 - **A folder's file count no longer includes the bin.** The numbers beside each folder in the library tree counted files that had been moved to the trash, so a folder emptied into it still showed its old total and never reached zero — disagreeing with what opening the folder actually showed. The library statistics counted them too, and no longer do. **Total size still includes them**, deliberately: a binned file is not in your library any more, but its bytes are on the disk until the trash is swept, and that is the question size answers.
 
 - **Every page draws itself before its data arrives.** Statistics, Settings, Maintenance, Notifications, System Information, the group editor and the Bambu Cloud tab all replaced themselves with a spinner until every number had loaded — title, tabs, search, filters and all. On a farm with a long history that is seconds of a page that looks like it failed to open, and the filters that could have narrowed the very request being waited on were the part you could not reach. The frame of each page is drawn immediately now and only its content waits, with "Loading…" and a spinner in the content's place. Project detail keeps its back button while it loads, since its header is the project itself and there is nothing honest to show yet.
