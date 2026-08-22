@@ -42,6 +42,11 @@ class UserFilamentPreset(Base):
     nozzle_temp_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
     updated_time: Mapped[str | None] = mapped_column(String(40), nullable=True)  # cloud timestamp verbatim
     synced_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # Spec B §5 — Bambu push metadata (m151). pushed_cloud_id is the PFUS id
+    # the cloud returned; NULL = not pushed (or the cloud copy vanished).
+    pushed_cloud_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pushed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    push_dirty: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
 
 
 class UserFilamentFamily(Base):
