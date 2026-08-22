@@ -173,8 +173,8 @@ function QuickStatsWidget({
     <StatTiles
       items={[
         { icon: Package, color: 'text-bambu-green', label: t('stats.totalPrints'), value: `${stats?.total_prints || 0}` },
-        { icon: Clock, color: 'text-blue-600 dark:text-blue-400', label: t('stats.printTime'), value: `${stats?.total_print_time_hours?.toFixed(1) ?? '0'}h` },
         { icon: Package, color: 'text-orange-600 dark:text-orange-400', label: t('stats.filamentUsed'), value: formatWeight(stats?.total_filament_grams || 0) },
+        { icon: Clock, color: 'text-blue-600 dark:text-blue-400', label: t('stats.printTime'), value: `${stats?.total_print_time_hours?.toFixed(1) ?? '0'}h` },
         { icon: DollarSign, color: 'text-green-600 dark:text-green-400', label: t('stats.filamentCost'), value: `${currency} ${stats?.total_cost?.toFixed(2) ?? '0.00'}` },
       ]}
     />
@@ -227,19 +227,19 @@ function EnergyWidget({
           tooltip: t('stats.energyWhilePrintingTooltip'),
         },
         {
-          icon: DollarSign,
-          color: 'text-yellow-500',
-          label: t('stats.energyCostWhilePrinting'),
-          value: `${currency} ${stats?.print_energy_cost?.toFixed(2) ?? '0.00'}`,
-          tooltip: t('stats.energyWhilePrintingTooltip'),
-        },
-        {
           icon: Zap,
           color: 'text-amber-600 dark:text-amber-400',
           label: t('stats.energyAtThePlug'),
           value: `${stats?.total_energy_kwh?.toFixed(3) ?? '0.000'} kWh`,
           warning: warmingUp,
           tooltip: warmingUpTooltip ?? t('stats.energyAtThePlugTooltip'),
+        },
+        {
+          icon: DollarSign,
+          color: 'text-yellow-500',
+          label: t('stats.energyCostWhilePrinting'),
+          value: `${currency} ${stats?.print_energy_cost?.toFixed(2) ?? '0.00'}`,
+          tooltip: t('stats.energyWhilePrintingTooltip'),
         },
         {
           icon: DollarSign,
