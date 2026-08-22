@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useRef, useCallback, type CSSProperties, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { buildFilamentBackground } from '../components/filamentSwatchHelpers';
+import { LoadingBlock } from '../components/LoadingBlock';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -2126,9 +2127,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
 
       {/* Content */}
       {isLoading ? (
-        <div className="flex justify-center py-16">
-          <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
-        </div>
+        <LoadingBlock label={t('common.loading')} />
       ) : viewMode === 'forecast' ? (
         /* Forecast view (upstream #1184) */
         <ForecastPanel spools={spools || []} />

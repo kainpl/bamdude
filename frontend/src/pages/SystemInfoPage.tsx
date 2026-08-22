@@ -193,18 +193,44 @@ export function SystemInfoPage() {
     }
   };
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
-      </div>
-    );
-  }
+  // ⚠️ The title and the Refresh button are drawn before the numbers arrive,
+  // not after. Both branches below used to replace the whole page — one with a
+  // spinner, one with a sentence — so a slow or failing query left nothing on
+  // screen to tell you which page you were even on, and nothing to press to try
+  // again. Only the sections wait.
+  // Header. Same stacking as the Spool Inventory header — fewer buttons, so it
+  // only just overflows at 390px, but the overflow is the same. `items-start`
+  // keeps the action at its own width while stacked instead of stretching it
+  // across the page.
+  const pageHeader = (
+      <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-3"><Info className="w-6 h-6 text-bambu-green" />{t('system.title', 'System Information')}</h1>
+          <p className="text-sm text-bambu-gray">{t('system.subtitle', 'Monitor system resources and database statistics')}</p>
+        </div>
 
-  if (!systemInfo) {
+        <button
+          onClick={() => refetch()}
+          disabled={isFetching}
+          className="flex items-center gap-2 px-4 py-2 bg-bambu-dark-secondary hover:bg-bambu-dark-tertiary rounded-lg transition-colors disabled:opacity-50"
+        >
+          <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin' : ''}`} />
+          {t('common.refresh', 'Refresh')}
+        </button>
+      </div>
+  );
+
+  if (isLoading || !systemInfo) {
     return (
-      <div className="p-6 text-center text-bambu-gray">
-        {t('system.failedToLoad', 'Failed to load system information')}
+      <div className="p-4 md:p-6 space-y-4">
+        {pageHeader}
+        {isLoading ? (
+          <LoadingBlock label={t('common.loading')} className="h-64 text-bambu-gray" />
+        ) : (
+          <div className="p-6 text-center text-bambu-gray">
+            {t('system.failedToLoad', 'Failed to load system information')}
+          </div>
+        )}
       </div>
     );
   }
@@ -225,25 +251,7 @@ export function SystemInfoPage() {
 
   return (
     <div className="p-4 md:p-6 space-y-4">
-      {/* Header. Same stacking as the Spool Inventory header — fewer buttons,
-          so it only just overflows at 390px, but the overflow is the same.
-          ``items-start`` keeps the action at its own width while stacked
-          instead of stretching it across the page. */}
-      <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3"><Info className="w-6 h-6 text-bambu-green" />{t('system.title', 'System Information')}</h1>
-          <p className="text-sm text-bambu-gray">{t('system.subtitle', 'Monitor system resources and database statistics')}</p>
-        </div>
-
-        <button
-          onClick={() => refetch()}
-          disabled={isFetching}
-          className="flex items-center gap-2 px-4 py-2 bg-bambu-dark-secondary hover:bg-bambu-dark-tertiary rounded-lg transition-colors disabled:opacity-50"
-        >
-          <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin' : ''}`} />
-          {t('common.refresh', 'Refresh')}
-        </button>
-      </div>
+      {pageHeader}
 
       {/* Application Info */}
       <Section title={t('system.application', 'Application')} icon={Server}>

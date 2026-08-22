@@ -46,6 +46,7 @@ import { api } from '../api/client';
 import { formatRelativeTime } from '../utils/date';
 import type { SlicerSetting, SlicerSettingsResponse, SlicerSettingDetail, SlicerSettingCreate, Printer, FieldDefinition, Permission } from '../api/client';
 import { Card, CardContent } from '../components/Card';
+import { LoadingBlock } from '../components/LoadingBlock';
 import { Button } from '../components/Button';
 import { FilterDropdown } from '../components/FilterDropdown';
 import { useToast } from '../contexts/ToastContext';
@@ -557,9 +558,7 @@ function PresetDetailModal({
           {/* Content */}
           <div className="flex-1 min-h-0 overflow-y-auto p-4">
             {isLoading ? (
-              <div className="flex items-center justify-center py-16">
-                <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
-              </div>
+              <LoadingBlock label={t('common.loading')} />
             ) : detail ? (
               <pre className="text-xs text-bambu-gray font-mono whitespace-pre-wrap break-all bg-bambu-dark p-4 rounded-lg border border-bambu-dark-tertiary overflow-x-auto max-w-full">
                 {formatJsonForDisplay(detail)}
@@ -2834,9 +2833,7 @@ export function ProfilesPage() {
 
   if (statusLoading) {
     return (
-      <div className="p-4 md:p-8 flex items-center justify-center min-h-[400px]">
-        <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
-      </div>
+      <LoadingBlock label={t('common.loading')} className="min-h-[400px] text-bambu-gray" />
     );
   }
 
@@ -2935,9 +2932,7 @@ export function ProfilesPage() {
               <LoginForm onSuccess={handleLoginSuccess} t={t} />
             </>
           ) : settingsLoading ? (
-            <div className="flex items-center justify-center py-16">
-              <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
-            </div>
+            <LoadingBlock label={t('common.loading')} />
           ) : settings ? (
             <CloudProfilesView
               settings={settings}

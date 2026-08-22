@@ -833,9 +833,7 @@ function FailureAnalysisWidget({ size = 1, dateFrom, dateTo, preset }: {
 
   if (isLoading) {
     return (
-      <div className="flex justify-center py-4">
-        <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
-      </div>
+      <LoadingBlock label={t('common.loading')} className="py-4 text-bambu-gray" />
     );
   }
 
