@@ -13,6 +13,13 @@ vi.mock('../../api/client', () => ({
   setAuthToken: vi.fn(),
   getAuthToken: vi.fn(() => 'test-admin-token'),
   api: {
+    triggerFilamentPresetSync: vi.fn().mockResolvedValue({ queued: true }),
+    getFilamentFamilies: vi.fn().mockResolvedValue([
+      { filament_id: 'GFG99', ecosystem: 'bambu', alias: 'Generic PETG', vendor: 'Generic', filament_type: 'PETG', origin: 'system' },
+      { filament_id: 'GFA00', ecosystem: 'bambu', alias: 'Bambu PLA Basic', vendor: 'Bambu Lab', filament_type: 'PLA', origin: 'system' },
+      { filament_id: 'P122e532', ecosystem: 'bambu', alias: 'test PETG Basic', vendor: 'test', filament_type: 'PETG', origin: 'cloud_bambu' },
+    ]),
+    getSpools: vi.fn().mockResolvedValue([]),
     getCloudSettings: vi.fn(),
     getKProfiles: vi.fn(),
     configureAmsSlot: vi.fn(),
@@ -199,24 +206,24 @@ describe('ConfigureAmsSlotModal', () => {
     expect(colorInput).toHaveValue('Red');
   });
 
-  it('derives tray_info_idx from base_id when filament_id is null', async () => {
-    // Mock the detail API to return base_id but no filament_id
-    (api.getCloudSettingDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
-      filament_id: null,
-      base_id: 'GFSL05_09',
-      name: '# Overture Matte PLA @BBL H2D',
-    });
-
+  it('lists families with cloud badges and sends the family id on configure', async () => {
     render(<ConfigureAmsSlotModal {...defaultProps} />);
-
-    // Wait for presets to load
     await waitFor(() => {
-      expect(api.getCloudSettings).toHaveBeenCalled();
+      expect(screen.getByText('test PETG Basic')).toBeInTheDocument();
     });
+    // Cloud-originated custom family carries the Bambu Cloud source badge.
+    expect(screen.getAllByText('Bambu Cloud').length).toBeGreaterThan(0);
 
-    // Select a user preset (one without filament_id)
-    // Find and click the preset - this would require the preset to be in the list
-    // The actual tray_info_idx derivation happens during the configure mutation
+    fireEvent.click(screen.getByText('test PETG Basic'));
+    fireEvent.click(screen.getByRole('button', { name: /Configure Slot/i }));
+    await waitFor(() => {
+      expect(api.configureAmsSlot).toHaveBeenCalled();
+    });
+    const [, , , payload] = (api.configureAmsSlot as ReturnType<typeof vi.fn>).mock.calls[0];
+    // The FAMILY id goes out as tray_info_idx — the backend builder resolves
+    // the versioned setting_id / temps / type from the catalog.
+    expect(payload.tray_info_idx).toBe('P122e532');
+    expect(payload.setting_id).toBe('');
   });
 
   it('renders configure slot button', async () => {
@@ -231,43 +238,15 @@ describe('ConfigureAmsSlotModal', () => {
     expect(configureButton).toBeInTheDocument();
   });
 
-  it('filters presets by printer model', async () => {
-    // Render with printerModel="H2D"
-    render(<ConfigureAmsSlotModal {...defaultProps} printerModel="H2D" />);
-    // Wait for presets to load - the H2D preset should be visible
-    await waitFor(() => {
-      expect(screen.getByText(/Overture Matte PLA/)).toBeInTheDocument();
-    });
-    // The X1C preset should NOT be visible (filtered out by model)
-    expect(screen.queryByText(/Bambu PLA Basic @BBL X1C/)).not.toBeInTheDocument();
-  });
-
-  it('shows current preset even when it does not match model filter', async () => {
-    // Render with printerModel="H2D" but savedPresetId pointing to the X1C preset
+  it('pre-selects the family the tray itself reports', async () => {
     const slotInfo = {
       ...defaultProps.slotInfo,
-      savedPresetId: 'GFSL05_09',  // X1C preset
-    };
-    render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={slotInfo} printerModel="H2D" />);
-    await waitFor(() => {
-      // Both should be visible - H2D matches model, X1C is saved preset
-      // Use the full preset name to match the list item (not the "Filtering for" label)
-      expect(screen.getByText('Bambu PLA Basic @BBL X1C')).toBeInTheDocument();
-      expect(screen.getByText(/Overture Matte PLA/)).toBeInTheDocument();
-    });
-  });
-
-  it('pre-selects saved preset when opening configured slot', async () => {
-    const slotInfo = {
-      ...defaultProps.slotInfo,
-      savedPresetId: 'GFSL05_09',
+      trayInfoIdx: 'GFA00',
     };
     render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={slotInfo} />);
     await waitFor(() => {
-      // The saved preset should have the selected style (green border)
-      // Use the full preset name to avoid matching the "Filtering for" label
-      const presetButton = screen.getByText('Bambu PLA Basic @BBL X1C').closest('button');
-      expect(presetButton).toHaveClass('bg-bambu-green/20');
+      const familyButton = screen.getByText('Bambu PLA Basic').closest('button');
+      expect(familyButton).toHaveClass('bg-bambu-green/20');
     });
   });
 
@@ -296,89 +275,21 @@ describe('ConfigureAmsSlotModal', () => {
     expect(screen.getByRole('button', { name: /Reset Slot/i })).toBeInTheDocument();
   });
 
-  it('treats Bambu cloud rename @BBL A1M as a match for A1 Mini (#1649)', async () => {
-    // Bambu cloud shifted A1 Mini filament profiles from
-    // "Bambu PLA Basic @BBL A1 Mini ..." to the terse "@BBL A1M" mid-2026.
-    // Without an alias-aware compare, the model filter strips every cloud
-    // profile from the picker when the user selects an A1 Mini printer.
-    (api.getCloudSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
-      filament: [
-        { setting_id: 'GFA00_A1M', name: 'Bambu PLA Basic @BBL A1M', filament_id: 'GFA00' },
-        { setting_id: 'GFA00_A1', name: 'Bambu PLA Basic @BBL A1', filament_id: 'GFA00' },
-      ],
-    });
-    render(<ConfigureAmsSlotModal {...defaultProps} printerModel="A1 Mini" />);
+  it('search narrows the family list', async () => {
+    render(<ConfigureAmsSlotModal {...defaultProps} />);
     await waitFor(() => {
-      expect(screen.getByText('Bambu PLA Basic @BBL A1M')).toBeInTheDocument();
+      expect(screen.getByText('Generic PETG')).toBeInTheDocument();
     });
-    // The A1 (non-mini) preset must still be filtered out — the alias
-    // table must not collapse two physically distinct printers.
-    expect(screen.queryByText('Bambu PLA Basic @BBL A1')).not.toBeInTheDocument();
-  });
-
-  it('still filters cross-model cloud profiles when the printer is A1 Mini', async () => {
-    // Sanity check that the alias addition didn't accidentally widen the
-    // matcher: an X1C cloud preset stays hidden when the picker is for an
-    // A1 Mini printer.
-    render(<ConfigureAmsSlotModal {...defaultProps} printerModel="A1 Mini" />);
+    // Families are model-agnostic (the backend picks the per-printer preset),
+    // so there is no model filter to test — searching filters the list.
+    fireEvent.change(screen.getByPlaceholderText(/Search/i), { target: { value: 'PLA' } });
     await waitFor(() => {
-      expect(screen.getByText('Filament Profile')).toBeInTheDocument();
+      expect(screen.queryByText('Generic PETG')).not.toBeInTheDocument();
     });
-    expect(screen.queryByText('Bambu PLA Basic @BBL X1C')).not.toBeInTheDocument();
-  });
-
-  it('filters cloud presets whose model is in the name body, no @ suffix (#1623)', async () => {
-    // The literal shape that surfaced #1623: the printer model is at the
-    // START of the preset name with no "@BBL" / "@Bambu Lab" suffix, so the
-    // old suffix-only extractor returned null and the profile leaked into
-    // every printer's picker. Body-scan against the registry must classify it.
-    (api.getCloudSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
-      filament: [
-        { setting_id: 'PFUSx1c', name: 'X1C eSUN PETG-Basic Filament', filament_id: null },
-        { setting_id: 'PFUSh2d', name: 'H2D eSUN PETG-Basic Filament', filament_id: null },
-        { setting_id: 'PFUSgen', name: 'Generic PLA', filament_id: null },
-      ],
-    });
-    render(<ConfigureAmsSlotModal {...defaultProps} printerModel="H2D" />);
     await waitFor(() => {
-      // H2D body-model preset matches the printer → visible.
-      expect(screen.getByText('H2D eSUN PETG-Basic Filament')).toBeInTheDocument();
+      expect(screen.getByText('Bambu PLA Basic')).toBeInTheDocument();
     });
-    // X1C body-model preset resolves to a different printer → hidden.
-    expect(screen.queryByText('X1C eSUN PETG-Basic Filament')).not.toBeInTheDocument();
-    // "Generic PLA" carries no model token → unclassifiable → stays visible.
-    expect(screen.getByText('Generic PLA')).toBeInTheDocument();
   });
-
-  it('filters local presets by compatible_printers list (#1623)', async () => {
-    // Imported local presets carry the slicer's own compatible_printers list.
-    // A preset scoped to X1 Carbon must be hidden on an H2D printer; one
-    // scoped to H2D (or with no list at all) stays visible.
-    (api.getLocalPresets as ReturnType<typeof vi.fn>).mockResolvedValue({
-      filament: [
-        { id: 10, name: 'My PETG (X1C)', filament_type: 'PETG', compatible_printers: JSON.stringify(['Bambu Lab X1 Carbon 0.4 nozzle']) },
-        { id: 11, name: 'My PETG (H2D)', filament_type: 'PETG', compatible_printers: JSON.stringify(['Bambu Lab H2D 0.4 nozzle']) },
-        { id: 12, name: 'My PETG (any)', filament_type: 'PETG', compatible_printers: null },
-      ],
-    });
-    render(<ConfigureAmsSlotModal {...defaultProps} printerModel="H2D" />);
-    await waitFor(() => {
-      expect(screen.getByText('My PETG (H2D)')).toBeInTheDocument();
-    });
-    // No compatible_printers → unknown → stays visible (back-compat).
-    expect(screen.getByText('My PETG (any)')).toBeInTheDocument();
-    // Scoped to a different printer → mismatch → hidden.
-    expect(screen.queryByText('My PETG (X1C)')).not.toBeInTheDocument();
-  });
-
-  // --- K-profile matching (#1688 / #1689) ---------------------------------
-  //
-  // The audit row that closed fdcc063d compared only `isMatchingCalibration`
-  // and never looked at this modal. Two consequences shipped: an actively
-  // bound K-profile could vanish from the dropdown (and then get CLEARED on
-  // the printer, because Save only requires a preset and caliIdx falls to -1),
-  // and presets that resolve no filament_id at all had a permanently empty
-  // list.
 
   it('surfaces the bound K-profile of a slot even when it matches neither by id nor name (#1689)', async () => {
     // Profile 7 is bound on the printer (cali_idx 7) but carries a different
@@ -390,11 +301,11 @@ describe('ConfigureAmsSlotModal', () => {
         { id: 7, name: 'Sunlu custom blend', k_value: '0.031', filament_id: 'GFG99', setting_id: '', extruder_id: 1, cali_idx: 7, slot_id: 7 },
       ],
     });
-    const slotInfo = { ...defaultProps.slotInfo, savedPresetId: 'GFSL05_09', caliIdx: 7, extruderId: 1 };
+    const slotInfo = { ...defaultProps.slotInfo, trayInfoIdx: 'GFA00', caliIdx: 7, extruderId: 1 };
     render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={slotInfo} />);
 
     await waitFor(() => {
-      expect(screen.getByText('Bambu PLA Basic @BBL X1C')).toBeInTheDocument();
+      expect(screen.getByText('Bambu PLA Basic')).toBeInTheDocument();
     });
     // The bound profile is present despite matching nothing about the preset.
     await waitFor(() => {
@@ -408,11 +319,11 @@ describe('ConfigureAmsSlotModal', () => {
         { id: 7, name: 'Sunlu custom blend', k_value: '0.031', filament_id: 'GFG99', setting_id: '', extruder_id: 1, cali_idx: 7, slot_id: 7 },
       ],
     });
-    const slotInfo = { ...defaultProps.slotInfo, savedPresetId: 'GFSL05_09', caliIdx: 0, extruderId: 1 };
+    const slotInfo = { ...defaultProps.slotInfo, trayInfoIdx: 'GFA00', caliIdx: 0, extruderId: 1 };
     render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={slotInfo} />);
 
     await waitFor(() => {
-      expect(screen.getByText('Bambu PLA Basic @BBL X1C')).toBeInTheDocument();
+      expect(screen.getByText('Bambu PLA Basic')).toBeInTheDocument();
     });
     expect(screen.queryByText(/Sunlu custom blend/)).not.toBeInTheDocument();
   });

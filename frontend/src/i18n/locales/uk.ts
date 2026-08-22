@@ -1706,6 +1706,8 @@ export default {
     placeholder: 'Привʼязати сімʼю філаменту…',
     search: 'Пошук сімей…',
     custom: 'кастомна',
+    customBambu: 'кастомна · Bambu',
+    customOrca: 'кастомна · Orca',
     empty: 'Жодної сімʼї не знайдено',
   },
   labelSheets: {

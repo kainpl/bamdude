@@ -143,7 +143,7 @@ def search_families(q: str, limit: int = 50) -> list[CatalogFamily]:
         for fam in _load(eco).families.values():
             if fam.filament_id in out:
                 continue
-            hay = f"{fam.alias} {fam.vendor or ''} {fam.filament_type or ''}".lower()
+            hay = f"{fam.alias} {fam.vendor or ''} {fam.filament_type or ''} {fam.filament_id}".lower()
             if needle in hay:
                 out[fam.filament_id] = fam
     return sorted(out.values(), key=lambda f: f.alias)[:limit]

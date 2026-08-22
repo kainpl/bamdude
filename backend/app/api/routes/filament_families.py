@@ -22,15 +22,44 @@ async def trigger_preset_sync(_=RequirePermission(Permission.INVENTORY_READ)):
     return {"queued": True}
 
 
+async def _my_family_ids(db: AsyncSession) -> set[str]:
+    """The user's own set — BamDude's equivalent of BS's AppConfig
+    [filaments] "installed" section: families behind the user's cloud/local
+    presets, linked to spools, or calibrated on a printer."""
+    from backend.app.models.filament_calibration import FilamentCalibration
+    from backend.app.models.spool import Spool
+
+    ids: set[str] = set()
+    for row in (await db.execute(select(UserFilamentPreset.family_filament_id).distinct())).scalars():
+        if row:
+            ids.add(row)
+    for row in (await db.execute(select(Spool.filament_family_id).distinct())).scalars():
+        if row:
+            ids.add(row)
+    for row in (await db.execute(select(FilamentCalibration.filament_id).distinct())).scalars():
+        if row:
+            ids.add(row)
+    return ids
+
+
 @router.get("")
 async def list_families(
     q: str = Query("", max_length=100),
     limit: int = Query(50, ge=1, le=200),
+    scope: str = Query("mine", pattern="^(mine|all)$"),
     _=RequirePermission(Permission.INVENTORY_READ),
     db: AsyncSession = Depends(get_db),
 ):
-    """Search families across both tiers: system catalog + user families
-    (custom P-hashes from the cloud mirrors / authoring)."""
+    """Families across both tiers. Default scope='mine' mirrors BS's
+    "installed filaments" behaviour: the browse list is the families the
+    user actually has (own presets' bases, spool links, calibrations,
+    custom families); a non-empty search always sweeps the FULL catalog.
+    Falls back to the full catalog when 'mine' is empty (fresh install)."""
+    mine: set[str] | None = None
+    if scope == "mine" and not q.strip():
+        mine = await _my_family_ids(db)
+        if not mine:
+            mine = None  # fresh install — show everything
     out = [
         {
             "filament_id": f.filament_id,
@@ -40,7 +69,8 @@ async def list_families(
             "filament_type": f.filament_type,
             "origin": "system",
         }
-        for f in catalog.search_families(q, limit)
+        for f in catalog.search_families(q, limit if mine is None else 1000)
+        if mine is None or f.filament_id in mine
     ]
     needle = q.strip().lower()
     user_rows = (
@@ -48,7 +78,7 @@ async def list_families(
     )
     seen = {row["filament_id"] for row in out}
     for fam in user_rows:
-        hay = f"{fam.alias} {fam.vendor or ''} {fam.filament_type or ''}".lower()
+        hay = f"{fam.alias} {fam.vendor or ''} {fam.filament_type or ''} {fam.filament_id}".lower()
         if fam.filament_id not in seen and (not needle or needle in hay):
             out.append(
                 {

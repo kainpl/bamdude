@@ -131,7 +131,7 @@ describe('validateForm with quickAdd', () => {
     const result = validateForm(defaultFormData, false);
     expect(result.isValid).toBe(false);
     expect(result.errors.material).toBeDefined();
-    expect(result.errors.slicer_filament).toBeDefined();
+    expect(result.errors.filament_family_id).toBeDefined();
     expect(result.errors.brand).toBeDefined();
     expect(result.errors.subtype).toBeDefined();
   });

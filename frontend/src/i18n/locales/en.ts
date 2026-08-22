@@ -1702,6 +1702,8 @@ export default {
     placeholder: 'Link a filament family…',
     search: 'Search families…',
     custom: 'custom',
+    customBambu: 'custom · Bambu',
+    customOrca: 'custom · Orca',
     empty: 'No families match',
   },
   labelSheets: {

@@ -60,6 +60,17 @@ export function FamilyPicker({ value, onChange, disabled, legacyHint }: FamilyPi
     return (families || []).find((f) => f.filament_id === value) || null;
   }, [families, value]);
 
+  // The linked family may not be inside the current search page — resolve its
+  // display name through the identity resolver so the trigger NEVER shows a
+  // raw id like "GFA00" to the user.
+  const { data: resolvedInfo } = useQuery({
+    queryKey: ['filamentInfo-family', value],
+    queryFn: () => api.getFilamentInfo([value!]),
+    enabled: !!value && !selected,
+    staleTime: 5 * 60_000,
+  });
+  const resolvedName = value ? resolvedInfo?.[value]?.name || null : null;
+
   const measure = useCallback(() => {
     const rect = trigger.current?.getBoundingClientRect();
     if (!rect) return;
@@ -127,7 +138,11 @@ export function FamilyPicker({ value, onChange, disabled, legacyHint }: FamilyPi
               {fam.alias}
               {fam.origin !== 'system' && (
                 <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-bambu-green/20 text-bambu-green">
-                  {t('familyPicker.custom')}
+                  {fam.origin === 'cloud_bambu'
+                    ? t('familyPicker.customBambu')
+                    : fam.origin === 'cloud_orca'
+                      ? t('familyPicker.customOrca')
+                      : t('familyPicker.custom')}
                 </span>
               )}
             </span>
@@ -160,7 +175,10 @@ export function FamilyPicker({ value, onChange, disabled, legacyHint }: FamilyPi
               </span>
             </>
           ) : value ? (
-            <span className="block text-sm text-white truncate">{value}</span>
+            <>
+              <span className="block text-sm text-white truncate">{resolvedName || value}</span>
+              {resolvedName && <span className="block text-xs text-gray-500 truncate">{value}</span>}
+            </>
           ) : (
             <>
               <span className="block text-sm text-gray-400">{t('familyPicker.placeholder')}</span>

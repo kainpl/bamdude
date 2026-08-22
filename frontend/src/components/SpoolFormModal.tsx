@@ -2,13 +2,13 @@ import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { X, Loader2, Save, Beaker, Palette, Zap, Tag, Unlink } from 'lucide-react';
-import { api, ApiError } from '../api/client';
-import type { InventorySpool, SlicerSetting, SpoolCatalogEntry, LocalPreset, SpoolmanBulkCreateResult, SpoolKProfileInput, SpoolmanFilamentEntry, BuiltinFilament } from '../api/client';
+import { type FilamentFamily, api, ApiError } from '../api/client';
+import type { InventorySpool, SlicerSetting, SpoolCatalogEntry, LocalPreset, SpoolmanBulkCreateResult, SpoolKProfileInput, SpoolmanFilamentEntry } from '../api/client';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
 import type { SpoolFormData, PrinterWithCalibrations, ColorPreset, SpoolFormMode } from './spool-form/types';
 import { defaultFormData, spoolDetailsRequired, validateForm, SPOOLMAN_LINKED_FIELDS } from './spool-form/types';
-import { buildFilamentOptions, extractBrandsFromPresets, fetchPrinterCalibrations, findPresetOption, loadRecentColors, normalizeSlicerCodeToFilamentId, parsePresetName, resolveTargetFilamentId, saveRecentColor } from './spool-form/utils';
+import { extractBrandsFromPresets, fetchPrinterCalibrations, loadRecentColors, normalizeSlicerCodeToFilamentId, parsePresetName, resolveTargetFilamentId, saveRecentColor } from './spool-form/utils';
 import { MATERIALS } from './spool-form/constants';
 import { FilamentSection } from './spool-form/FilamentSection';
 import { FamilyPicker } from './FamilyPicker';
@@ -86,10 +86,8 @@ export function SpoolFormModal({
   const detailsRequired = spoolDetailsRequired(quickAdd, spoolmanMode, resolvedMode);
 
   // Cloud presets
-  const [cloudAuthenticated, setCloudAuthenticated] = useState(false);
-  const [loadingCloudPresets, setLoadingCloudPresets] = useState(false);
   const [cloudPresets, setCloudPresets] = useState<SlicerSetting[]>([]);
-  const [presetInputValue, setPresetInputValue] = useState('');
+  const [pickedFamily, setPickedFamily] = useState<FilamentFamily | null>(null);
 
   // Spool catalog
   const [spoolCatalog, setSpoolCatalog] = useState<SpoolCatalogEntry[]>([]);
@@ -100,7 +98,6 @@ export function SpoolFormModal({
   const [localPresets, setLocalPresets] = useState<LocalPreset[]>([]);
 
   // Built-in filaments (cloud-free fallback / dedup floor)
-  const [builtinFilaments, setBuiltinFilaments] = useState<BuiltinFilament[]>([]);
 
   // Color catalog
   const [colorCatalog, setColorCatalog] = useState<{ manufacturer: string; color_name: string; hex_color: string; material: string | null }[]>([]);
@@ -161,7 +158,6 @@ export function SpoolFormModal({
     let cancelled = false;
     if (isOpen) {
       const fetchData = async () => {
-        setLoadingCloudPresets(true);
         try {
           const [bambuResult, orcaResult] = await Promise.allSettled([
             (async () => {
@@ -179,18 +175,12 @@ export function SpoolFormModal({
             })(),
           ]);
           if (cancelled) return;
-          const bambuConnected = bambuResult.status === 'fulfilled' && bambuResult.value.connected;
-          const orcaConnected = orcaResult.status === 'fulfilled' && orcaResult.value.connected;
           const bambuPresets = bambuResult.status === 'fulfilled' ? bambuResult.value.presets : [];
           const orcaPresets = orcaResult.status === 'fulfilled' ? orcaResult.value.presets : [];
-          setCloudAuthenticated(bambuConnected || orcaConnected);
           setCloudPresets([...bambuPresets, ...orcaPresets]);
         } catch (e) {
           if (cancelled) return;
           console.error('Failed to fetch cloud presets:', e);
-          setCloudAuthenticated(false);
-        } finally {
-          if (!cancelled) setLoadingCloudPresets(false);
         }
       };
       fetchData();
@@ -199,7 +189,6 @@ export function SpoolFormModal({
       }
       api.getColorCatalog().then(setColorCatalog).catch(console.error);
       api.getLocalPresets().then(r => setLocalPresets(r.filament)).catch(console.error);
-      api.getBuiltinFilaments().then(setBuiltinFilaments).catch(console.error);
       api.getLocations().then((locs) => setStorageLocations(locs.map((l) => ({ id: l.id, name: l.name })))).catch(console.error);
 
       // Fetch printer calibrations if not provided via props
@@ -245,15 +234,6 @@ export function SpoolFormModal({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, printersWithCalibrations.length]);
-
-  // Build filament options: union of cloud + local + built-in.
-  // Cloud / local variants are NOT collapsed by base name — every per-printer
-  // / per-nozzle variant renders as its own row (the spool itself is
-  // printer-agnostic; the variant is what gets persisted as slicer_filament).
-  const filamentOptions = useMemo(
-    () => buildFilamentOptions(cloudPresets, new Set(), localPresets, builtinFilaments),
-    [cloudPresets, localPresets, builtinFilaments],
-  );
 
   // Extract brands from presets
   const baseAvailableBrands = useMemo(() => {
@@ -358,12 +338,6 @@ export function SpoolFormModal({
     return [own, ...baseAvailableMaterials];
   }, [baseAvailableMaterials, formData.material]);
 
-  // Find selected preset option
-  const selectedPresetOption = useMemo(
-    () => findPresetOption(formData.slicer_filament, filamentOptions),
-    [formData.slicer_filament, filamentOptions],
-  );
-
   // Reset form when modal opens/closes or spool changes
   useEffect(() => {
     if (isOpen) {
@@ -400,19 +374,7 @@ export function SpoolFormModal({
           purchase_location: spool.purchase_location || '',
           spoolman_filament_id: null,
         });
-        // Resolve the display name from the current preset CODE (the source of
-        // truth), not the denormalized ``slicer_filament_name``. That stored
-        // name goes stale when the preset is changed elsewhere (e.g. bulk edit
-        // updates the code but not the name), so trusting it showed the old
-        // preset's name while "Selected: <code>" showed the right one. Falls
-        // back to the stored name if the code isn't among the loaded options
-        // yet — the sync effect below corrects it once presets finish loading.
-        setPresetInputValue(
-          findPresetOption(spool.slicer_filament || '', filamentOptions)?.displayName ||
-            spool.slicer_filament_name ||
-            spool.slicer_filament ||
-            '',
-        );
+        setPickedFamily(null);
 
         // Load K-profiles for this spool
         if (spool.k_profiles && spool.k_profiles.length > 0) {
@@ -428,7 +390,7 @@ export function SpoolFormModal({
         }
       } else {
         setFormData(defaultFormData);
-        setPresetInputValue('');
+        setPickedFamily(null);
         setSelectedProfiles(new Set());
         setQuickAdd(false);
         setQuantity(1);
@@ -439,10 +401,6 @@ export function SpoolFormModal({
       setLocationIdTouched(false);
     }
     // filamentOptions is read for its value at open time (the initial preset
-    // label) but must NOT be a dependency, or the form would reset whenever the
-    // preset queries refetch. The sync effect below refreshes the label once
-    // options load, so omitting it here is intentional.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, spool, resolvedMode, isCopying]);
 
   // Legacy rows may have storage_location text but no location_id yet — link when catalog loads.
@@ -462,11 +420,6 @@ export function SpoolFormModal({
   // name (the denormalized ``slicer_filament_name`` can be stale). Depends only
   // on the resolved option, so it never clobbers the user's live search text
   // (typing changes the input, not ``slicer_filament`` → not this option).
-  useEffect(() => {
-    if (!isOpen || !spool || !selectedPresetOption) return;
-    setPresetInputValue(selectedPresetOption.displayName);
-  }, [isOpen, spool, selectedPresetOption]);
-
   // Expand all printers in PA profile section when calibrations are available
   useEffect(() => {
     if (isOpen && resolvedCalibrations.length > 0) {
@@ -797,14 +750,11 @@ export function SpoolFormModal({
     const validation = validateForm(formData, quickAdd, spoolmanMode, resolvedMode);
     if (!validation.isValid) {
       setErrors(validation.errors);
-      if (validation.errors.slicer_filament || validation.errors.material || validation.errors.brand || validation.errors.subtype) {
+      if (validation.errors.filament_family_id || validation.errors.material || validation.errors.brand || validation.errors.subtype) {
         setActiveTab('filament');
       }
       return;
     }
-
-    // Find preset name from selected option
-    const presetName = selectedPresetOption?.displayName || presetInputValue || null;
 
     const data: Record<string, unknown> = {
       material: formData.material || null,
@@ -814,11 +764,15 @@ export function SpoolFormModal({
       rgba: formData.rgba || null,
       label_weight: formData.label_weight,
       ...(spoolmanMode ? {} : { core_weight: formData.core_weight, core_weight_catalog_id: formData.core_weight_catalog_id }),
-      slicer_filament: formData.slicer_filament || null,
-      slicer_filament_name: presetName,
-      resolved_filament_id: resolveTargetFilamentId(formData.slicer_filament, resolveCloudDetailQuery.data) || null,
-      // The family link (spec A §5.1): explicit pick wins; otherwise derive it
-      // from the legacy preset resolution so old-style edits stay linked.
+      // ONE identity control (spec A §5.1): the family. The legacy columns get
+      // the family's own id + alias — exactly the format an RFID-scanned Bambu
+      // spool historically wrote there, so every legacy consumer (Inventory
+      // column, search, spool naming) keeps working. A spool edited without
+      // touching the picker keeps its stored legacy values, and the family
+      // derives from them so old-style spools stay linked.
+      slicer_filament: formData.filament_family_id || formData.slicer_filament || null,
+      slicer_filament_name:
+        pickedFamily?.alias ?? (spool?.slicer_filament_name || null),
       filament_family_id:
         formData.filament_family_id
         || resolveTargetFilamentId(formData.slicer_filament, resolveCloudDetailQuery.data)
@@ -986,22 +940,31 @@ export function SpoolFormModal({
                   {t('inventory.filamentInfo')}
                 </h3>
                 <div className="mb-3">
-                  <label className="block text-sm text-bambu-gray mb-1">{t('inventory.filamentFamily')}</label>
+                  <label className="block text-sm font-medium text-bambu-gray mb-1">
+                    {t('inventory.filamentFamily')}{detailsRequired && ' *'}
+                  </label>
                   <FamilyPicker
                     value={formData.filament_family_id || null}
-                    onChange={(id) => updateField('filament_family_id', id || '')}
+                    onChange={(id, family) => {
+                      updateField('filament_family_id', id || '');
+                      setPickedFamily(family);
+                      // BS-style prefill: the family carries vendor + material.
+                      if (family?.filament_type && !formData.material) {
+                        updateField('material', family.filament_type);
+                      }
+                      if (family?.vendor && family.vendor !== 'Generic' && !formData.brand) {
+                        updateField('brand', family.vendor);
+                      }
+                    }}
                     legacyHint={spool?.slicer_filament_name || undefined}
                   />
+                  {errors.filament_family_id && (
+                    <p className="mt-1 text-xs text-red-700 dark:text-red-400">{errors.filament_family_id}</p>
+                  )}
                 </div>
                 <FilamentSection
                   formData={formData}
                   updateField={updateField}
-                  cloudAuthenticated={cloudAuthenticated}
-                  loadingCloudPresets={loadingCloudPresets}
-                  presetInputValue={presetInputValue}
-                  setPresetInputValue={setPresetInputValue}
-                  selectedPresetOption={selectedPresetOption}
-                  filamentOptions={filamentOptions}
                   availableBrands={availableBrands}
                   availableMaterials={availableMaterials}
                   suggestedBrands={suggestedBrands}

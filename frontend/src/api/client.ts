@@ -7727,8 +7727,8 @@ export const api = {
   },
 
   // Filament family catalog (spec A)
-  getFilamentFamilies: (q = '') =>
-    request<FilamentFamily[]>(`/filament-families?q=${encodeURIComponent(q)}`),
+  getFilamentFamilies: (q = '', limit = 200) =>
+    request<FilamentFamily[]>(`/filament-families?q=${encodeURIComponent(q)}&limit=${limit}`),
   getFilamentFamilyPresets: (filamentId: string, printerName = '') =>
     request<FamilyPresetInfo[]>(
       `/filament-families/${encodeURIComponent(filamentId)}/presets?printer_name=${encodeURIComponent(printerName)}`,

@@ -1,9 +1,8 @@
 import { Fragment, useState, useRef, useEffect, useMemo } from 'react';
-import { Search, Loader2, ChevronDown, Cloud, CloudOff } from 'lucide-react';
+import { ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { FilamentSectionProps, FilamentOption } from './types';
+import type { FilamentSectionProps } from './types';
 import { KNOWN_VARIANTS } from './constants';
-import { parsePresetName } from './utils';
 
 /** Emit a "Suggested" / "All" heading when the ranked list crosses from the
  * catalog-paired entries to the rest. The two groups are a hint about which
@@ -46,12 +45,6 @@ function rankBySuggested(all: string[], suggested: string[], search: string) {
 export function FilamentSection({
   formData,
   updateField,
-  cloudAuthenticated,
-  loadingCloudPresets,
-  presetInputValue,
-  setPresetInputValue,
-  selectedPresetOption,
-  filamentOptions,
   availableBrands,
   availableMaterials,
   suggestedBrands,
@@ -63,7 +56,6 @@ export function FilamentSection({
   errors,
 }: FilamentSectionProps) {
   const { t } = useTranslation();
-  const [presetDropdownOpen, setPresetDropdownOpen] = useState(false);
   const [brandDropdownOpen, setBrandDropdownOpen] = useState(false);
   const [subtypeDropdownOpen, setSubtypeDropdownOpen] = useState(false);
   const [materialDropdownOpen, setMaterialDropdownOpen] = useState(false);
@@ -72,7 +64,6 @@ export function FilamentSection({
   const [materialSearch, setMaterialSearch] = useState('');
   const [labelInput, setLabelInput] = useState(String(formData.label_weight));
   const [isLabelFocused, setIsLabelFocused] = useState(false);
-  const presetRef = useRef<HTMLDivElement>(null);
   const brandRef = useRef<HTMLDivElement>(null);
   const subtypeRef = useRef<HTMLDivElement>(null);
   const materialRef = useRef<HTMLDivElement>(null);
@@ -80,9 +71,6 @@ export function FilamentSection({
   // Close dropdowns on outside click
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
-      if (presetRef.current && !presetRef.current.contains(e.target as Node)) {
-        setPresetDropdownOpen(false);
-      }
       if (materialRef.current && !materialRef.current.contains(e.target as Node)) {
         setMaterialDropdownOpen(false);
       }
@@ -96,16 +84,6 @@ export function FilamentSection({
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
   }, []);
-
-  // Filtered presets based on search
-  const filteredPresets = useMemo(() => {
-    if (!presetInputValue) return filamentOptions;
-    const search = presetInputValue.toLowerCase();
-    return filamentOptions.filter(o =>
-      o.displayName.toLowerCase().includes(search) ||
-      o.code.toLowerCase().includes(search),
-    );
-  }, [filamentOptions, presetInputValue]);
 
   const filteredBrands = useMemo(
     () => rankBySuggested(availableBrands, suggestedBrands, brandSearch),
@@ -129,90 +107,8 @@ export function FilamentSection({
     }
   }, [formData.label_weight, isLabelFocused]);
 
-  // Handle preset selection
-  const handlePresetSelect = (option: FilamentOption) => {
-    updateField('slicer_filament', option.code);
-    setPresetInputValue(option.displayName);
-    setPresetDropdownOpen(false);
-
-    // Auto-fill material, brand, subtype from preset name
-    const parsed = parsePresetName(option.name);
-    if (parsed.material) updateField('material', parsed.material);
-    if (parsed.brand) updateField('brand', parsed.brand);
-    if (parsed.variant) updateField('subtype', parsed.variant);
-  };
-
   return (
     <div className="space-y-4">
-      {/* Cloud status indicator */}
-      {!quickAdd && (
-        <div className="flex items-center gap-2 text-xs text-bambu-gray">
-          {loadingCloudPresets ? (
-            <><Loader2 className="w-3 h-3 animate-spin" /> {t('inventory.loadingPresets')}</>
-          ) : cloudAuthenticated ? (
-            <><Cloud className="w-3 h-3 text-bambu-green" /> {t('inventory.cloudConnected')}</>
-          ) : (
-            <><CloudOff className="w-3 h-3" /> {t('inventory.cloudNotConnected')}</>
-          )}
-        </div>
-      )}
-
-      {/* Slicer Preset (autocomplete) - hidden in quick-add mode */}
-      {!quickAdd && (
-        <div>
-          <label className="block text-sm font-medium text-bambu-gray mb-1">
-            {t('inventory.slicerPreset')}{detailsRequired && ' *'}
-          </label>
-          <div className="relative" ref={presetRef}>
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50 pointer-events-none" />
-            <input
-              type="text"
-              className="w-full pl-9 pr-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green"
-              placeholder={t('inventory.searchPresets')}
-              value={presetInputValue}
-              onChange={(e) => {
-                setPresetInputValue(e.target.value);
-                setPresetDropdownOpen(true);
-              }}
-              onFocus={() => {
-                setPresetDropdownOpen(true);
-                setPresetInputValue('');
-              }}
-            />
-            {presetDropdownOpen && (
-              <div className="absolute z-50 w-full mt-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg max-h-64 overflow-y-auto">
-                {filteredPresets.length === 0 ? (
-                  <div className="px-3 py-2 text-sm text-bambu-gray">{t('inventory.noPresetsFound')}</div>
-                ) : (
-                  filteredPresets.map(option => (
-                    <button
-                      key={option.code}
-                      type="button"
-                      className={`w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary truncate ${
-                        selectedPresetOption?.code === option.code
-                          ? 'bg-bambu-green/10 text-bambu-green'
-                          : 'text-white'
-                      }`}
-                      onClick={() => handlePresetSelect(option)}
-                    >
-                      {option.displayName}
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
-          </div>
-          {selectedPresetOption && (
-            <div className="mt-1 text-xs text-bambu-gray">
-              {t('inventory.selectedPreset')}: <span className="font-mono text-bambu-green">{selectedPresetOption.code}</span>
-            </div>
-          )}
-          {errors?.slicer_filament && (
-            <p className="mt-1 text-xs text-red-700 dark:text-red-400">{errors.slicer_filament}</p>
-          )}
-        </div>
-      )}
-
       {/* Material */}
       <div>
         <label className="block text-sm font-medium text-bambu-gray mb-1">{t('inventory.material')} *</label>

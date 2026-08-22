@@ -46,3 +46,27 @@ async def test_family_presets_filter_by_printer(async_client: AsyncClient):
 async def test_sync_trigger_returns_immediately(async_client: AsyncClient):
     resp = await async_client.post("/api/v1/filament-families/sync")
     assert resp.status_code == 200 and resp.json()["queued"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_default_scope_is_the_users_own_set(async_client: AsyncClient, db_session):
+    """Empty-query browse = BS's "installed filaments" analogue: only families
+    the user actually has (spool links / own presets / customs). Search still
+    sweeps the full catalog; an empty own-set falls back to everything."""
+    # Fresh install: no own families -> full catalog fallback (honours limit).
+    resp = await async_client.get("/api/v1/filament-families", params={"limit": 200})
+    assert len(resp.json()) > 50
+
+    # A spool linked to GFA00 narrows the browse list to it.
+    from backend.app.models.spool import Spool
+
+    db_session.add(Spool(material="PLA", filament_family_id="GFA00"))
+    await db_session.commit()
+    resp = await async_client.get("/api/v1/filament-families")
+    ids = {row["filament_id"] for row in resp.json()}
+    assert ids == {"GFA00"}
+
+    # Searching still reaches the whole catalog.
+    resp = await async_client.get("/api/v1/filament-families", params={"q": "petg"})
+    assert any(r["filament_id"] == "GFG99" for r in resp.json())
