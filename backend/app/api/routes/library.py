@@ -860,10 +860,20 @@ async def list_folders(
     )
     rows = result.all()
 
-    # Get file counts per folder
+    # Files each folder HAS — the trash excluded.
+    #
+    # ⚠️ ``deleted_at`` is what "in the bin" means here: the row stays, the
+    # bytes stay, and the file can be restored, so the count has to exclude it
+    # explicitly rather than relying on the row being gone. Without this a
+    # folder emptied into the trash still read its old number and never reached
+    # zero, disagreeing with what opening it showed.
+    #
+    # ⚠️ The two other endpoints that report this number already filtered it,
+    # and so did the activity query below — whose comment claimed to share this
+    # one's WHERE clause. Keep all four together.
     file_counts_result = await db.execute(
         select(LibraryFile.folder_id, func.count(LibraryFile.id))
-        .where(LibraryFile.folder_id.isnot(None))
+        .where(LibraryFile.folder_id.isnot(None), LibraryFile.deleted_at.is_(None))
         .group_by(LibraryFile.folder_id)
     )
     file_counts = dict(file_counts_result.all())
@@ -5384,8 +5394,17 @@ async def get_library_stats(
     if user is not None and not can_read_all:
         file_filters.append(LibraryFile.created_by_id == user.id)
 
+    # ⚠️ Counts exclude the trash; the SIZE below does not, deliberately.
+    # "How many files do I have" and "how much disk is this using" are different
+    # questions and the bin answers them differently: a binned file is not in
+    # the library any more, but its bytes are still on the disk until the
+    # sweeper takes them. Reporting the count including the bin was the same
+    # oversight the folder tree had — a folder emptied into it never reached
+    # zero.
+    live_files = [*file_filters, LibraryFile.deleted_at.is_(None)]
+
     # Total files
-    total_files_result = await db.execute(select(func.count(LibraryFile.id)).where(*file_filters))
+    total_files_result = await db.execute(select(func.count(LibraryFile.id)).where(*live_files))
     total_files = total_files_result.scalar() or 0
 
     # Total folders (folders are shared org structure, not per-user — count all)
@@ -5398,7 +5417,7 @@ async def get_library_stats(
 
     # Files by type
     type_result = await db.execute(
-        select(LibraryFile.file_type, func.count(LibraryFile.id)).where(*file_filters).group_by(LibraryFile.file_type)
+        select(LibraryFile.file_type, func.count(LibraryFile.id)).where(*live_files).group_by(LibraryFile.file_type)
     )
     files_by_type = dict(type_result.all())
 
