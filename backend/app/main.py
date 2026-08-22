@@ -7202,6 +7202,7 @@ async def record_ams_history():
 
 
 _filament_preset_sync_task = None
+_family_backfill_task = None
 
 
 def start_filament_preset_sync():
@@ -7215,11 +7216,14 @@ def start_filament_preset_sync():
 
 
 def stop_filament_preset_sync():
-    """Stop the cloud preset-mirror sync loop."""
-    global _filament_preset_sync_task
+    """Stop the cloud preset-mirror sync loop (and the one-shot backfill)."""
+    global _filament_preset_sync_task, _family_backfill_task
     if _filament_preset_sync_task:
         _filament_preset_sync_task.cancel()
         _filament_preset_sync_task = None
+    if _family_backfill_task:
+        _family_backfill_task.cancel()
+        _family_backfill_task = None
 
 
 def start_ams_history_recording():
@@ -8160,6 +8164,36 @@ async def lifespan(app: FastAPI):
 
     # Start the filament preset-mirror sync loop (family catalog, spec A)
     start_filament_preset_sync()
+
+    # One-shot: absorb pre-existing local presets + backfill spool family
+    # links. Idempotent (fills NULLs only), so ordering vs the first mirror
+    # sync is non-critical — an offline boot resolves what the catalog alone
+    # can; the next boot picks up mirror-dependent ones.
+    async def _family_catalog_startup_backfill():
+        try:
+            from backend.app.core import database
+            from backend.app.services.filament_family_backfill import backfill_spool_families
+            from backend.app.services.filament_preset_sync import (
+                absorb_all_local_presets,
+                request_sync_soon,
+            )
+
+            request_sync_soon()
+            await asyncio.sleep(5)  # give a connected instance a chance to fill mirrors
+            async with database.async_session() as db:
+                absorbed = await absorb_all_local_presets(db)
+                await db.commit()
+                summary = await backfill_spool_families(db)
+            logging.getLogger(__name__).info(
+                "family catalog startup: %d local presets absorbed, backfill %s", absorbed, summary
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.getLogger(__name__).exception("family catalog startup backfill failed")
+
+    global _family_backfill_task
+    _family_backfill_task = asyncio.create_task(_family_catalog_startup_backfill())
 
     # Start printer heater (nozzle/bed/chamber) history recording
     start_printer_sensor_history_recording()
