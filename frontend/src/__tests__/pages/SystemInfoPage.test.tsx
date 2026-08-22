@@ -124,12 +124,11 @@ describe('SystemInfoPage', () => {
 
     render(<SystemInfoPage />);
 
-    await waitFor(() => {
-      expect(screen.getByText('System Information')).toBeInTheDocument();
-    });
-
-    // Check for version
-    expect(screen.getByText('v0.1.5b')).toBeInTheDocument();
+    // ⚠️ Waits for a NUMBER, not for the title. The title is drawn before the
+    // query resolves now — that is the point of the split — so waiting on it
+    // returns immediately and the assertion below would race the data it needs.
+    expect(await screen.findByText('v0.1.5b')).toBeInTheDocument();
+    expect(screen.getByText('System Information')).toBeInTheDocument();
   });
 
   it('displays application section', async () => {

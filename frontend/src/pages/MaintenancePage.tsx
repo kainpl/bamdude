@@ -7,7 +7,6 @@ import { buildLocationIndex, readStoredLocationFilter } from '../utils/locationT
 import { groupByLocation } from '../utils/locationGroups';
 import {
   Wrench,
-  Loader2,
   Check,
   AlertTriangle,
   Clock,
@@ -50,6 +49,7 @@ import {
 import { api, macrosApi, getAuthToken } from '../api/client';
 import type { MaintenanceStatus, PrinterMaintenanceOverview, MaintenanceType, MaintenanceHistoryEntry, Permission, MacroMeta } from '../api/client';
 import { Card, CardContent } from '../components/Card';
+import { LoadingBlock } from '../components/LoadingBlock';
 import { Button } from '../components/Button';
 import { Toggle } from '../components/Toggle';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -1314,8 +1314,8 @@ function HistorySection({ t, printerId }: { t: (key: string, opts?: Record<strin
   if (isLoading) {
     return (
       <Card>
-        <CardContent className="text-center py-16">
-          <Loader2 className="w-8 h-8 mx-auto mb-4 text-bambu-green animate-spin" />
+        <CardContent>
+          <LoadingBlock label={t('common.loading')} />
         </CardContent>
       </Card>
     );
@@ -1637,14 +1637,6 @@ export function MaintenancePage() {
     setHoursMutation.mutate({ printerId, hours });
   };
 
-  if (isLoading) {
-    return (
-      <div className="p-4 md:p-6 flex justify-center">
-        <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
-      </div>
-    );
-  }
-
   const totalDue = overview?.reduce((sum, p) => sum + p.due_count, 0) || 0;
   const totalWarning = overview?.reduce((sum, p) => sum + p.warning_count, 0) || 0;
 
@@ -1727,7 +1719,9 @@ export function MaintenancePage() {
             {t('maintenance.title')}
           </h1>
           <p className="text-sm text-bambu-gray mt-1">
-            {activeTab === 'status' ? (
+            {/* Zeros would read as "nothing due", which is an answer we do
+                not have while the overview is still coming. */}
+            {isLoading ? null : activeTab === 'status' ? (
                 <>
                   {totalDue > 0 && <span className="text-red-700 dark:text-red-400">{t('maintenance.dueCount', { count: totalDue })}</span>}
                   {totalDue > 0 && totalWarning > 0 && ' · '}
@@ -1760,97 +1754,109 @@ export function MaintenancePage() {
       </div>
 
       {/* Tab content */}
-      {activeTab === 'status' ? (
-        <div className="space-y-6">
-          {overview && overview.length > 0 ? (
-            visibleOverviews.length === 0 ? (
+      {/* ⚠️ Only the tabs' content waits. The title and the whole toolbar —
+          search, status filter, location filter, sort, hide-offline — are local
+          state and a separate query, so they stay usable while the overview is
+          still coming. This was an early return that replaced all of it, which
+          meant the filters able to narrow the very request being waited on were
+          the part you could not reach. */}
+      {isLoading ? (
+        <LoadingBlock label={t('common.loading')} />
+      ) : (
+        <>
+        {activeTab === 'status' ? (
+          <div className="space-y-6">
+            {overview && overview.length > 0 ? (
+              visibleOverviews.length === 0 ? (
+                <Card>
+                  <CardContent className="text-center py-12">
+                    <p className="text-bambu-gray">{t('printers.noSearchResults')}</p>
+                  </CardContent>
+                </Card>
+              ) : groupedOverviews ? (
+                groupedOverviews.map((group) => (
+                  <div key={group.locationId ?? 'ungrouped'} className="space-y-3">
+                    <h2 className="text-lg font-semibold text-white flex items-center gap-2 flex-wrap">
+                      <span className="w-2 h-2 rounded-full bg-bambu-green" />
+                      {group.label}
+                      <span className="text-bambu-gray text-sm font-normal">({group.items.length})</span>
+                    </h2>
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start">
+                      {group.items.map((printerOverview) => (
+                        <PrinterSection
+                          key={printerOverview.printer_id}
+                          overview={printerOverview}
+                          types={types || []}
+                          macroMeta={macroMeta}
+                          onPerform={handlePerform}
+                          onToggle={handleToggle}
+                          onSetHours={handleSetHours}
+                          hasPermission={hasPermission}
+                          t={t}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start">
+                  {visibleOverviews.map((printerOverview) => (
+                    <PrinterSection
+                      key={printerOverview.printer_id}
+                      overview={printerOverview}
+                      types={types || []}
+                      macroMeta={macroMeta}
+                      onPerform={handlePerform}
+                      onToggle={handleToggle}
+                      onSetHours={handleSetHours}
+                      hasPermission={hasPermission}
+                      t={t}
+                    />
+                  ))}
+                </div>
+              )
+            ) : (
               <Card>
-                <CardContent className="text-center py-12">
-                  <p className="text-bambu-gray">{t('printers.noSearchResults')}</p>
+                <CardContent className="text-center py-16">
+                  <Wrench className="w-16 h-16 mx-auto mb-4 text-bambu-gray/30" />
+                  <p className="text-lg font-medium text-white mb-2">{t('common.noPrinters')}</p>
+                  <p className="text-bambu-gray">{t('maintenance.configureSettings')}</p>
                 </CardContent>
               </Card>
-            ) : groupedOverviews ? (
-              groupedOverviews.map((group) => (
-                <div key={group.locationId ?? 'ungrouped'} className="space-y-3">
-                  <h2 className="text-lg font-semibold text-white flex items-center gap-2 flex-wrap">
-                    <span className="w-2 h-2 rounded-full bg-bambu-green" />
-                    {group.label}
-                    <span className="text-bambu-gray text-sm font-normal">({group.items.length})</span>
-                  </h2>
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start">
-                    {group.items.map((printerOverview) => (
-                      <PrinterSection
-                        key={printerOverview.printer_id}
-                        overview={printerOverview}
-                        types={types || []}
-                        macroMeta={macroMeta}
-                        onPerform={handlePerform}
-                        onToggle={handleToggle}
-                        onSetHours={handleSetHours}
-                        hasPermission={hasPermission}
-                        t={t}
-                      />
-                    ))}
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start">
-                {visibleOverviews.map((printerOverview) => (
-                  <PrinterSection
-                    key={printerOverview.printer_id}
-                    overview={printerOverview}
-                    types={types || []}
-                    macroMeta={macroMeta}
-                    onPerform={handlePerform}
-                    onToggle={handleToggle}
-                    onSetHours={handleSetHours}
-                    hasPermission={hasPermission}
-                    t={t}
-                  />
-                ))}
-              </div>
-            )
-          ) : (
-            <Card>
-              <CardContent className="text-center py-16">
-                <Wrench className="w-16 h-16 mx-auto mb-4 text-bambu-gray/30" />
-                <p className="text-lg font-medium text-white mb-2">{t('common.noPrinters')}</p>
-                <p className="text-bambu-gray">{t('maintenance.configureSettings')}</p>
-              </CardContent>
-            </Card>
-          )}
-        </div>
-      ) : activeTab === 'history' ? (
-        <HistorySection t={t} printerId={printerIdParam} />
-      ) : (
-        <SettingsSection
-          overview={overview}
-          types={types || []}
-          macroMeta={macroMeta}
-          onUpdateInterval={(id, data) =>
-            updateMutation.mutate({ id, data })
-          }
-          onAddType={async (data, printerIds) => {
-            // Create the type first, then assign to selected printers
-            const newType = await api.createMaintenanceType(data);
-            // Assign to each selected printer
-            for (const printerId of printerIds) {
-              await api.assignMaintenanceType(printerId, newType.id);
+            )}
+          </div>
+        ) : activeTab === 'history' ? (
+          <HistorySection t={t} printerId={printerIdParam} />
+        ) : (
+          <SettingsSection
+            overview={overview}
+            types={types || []}
+            macroMeta={macroMeta}
+            onUpdateInterval={(id, data) =>
+              updateMutation.mutate({ id, data })
             }
-            queryClient.invalidateQueries({ queryKey: ['maintenanceTypes'] });
-            queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
-            showToast(t('maintenance.typeUpdated'));
-          }}
-          onUpdateType={(id, data) => updateTypeMutation.mutate({ id, data })}
-          onDeleteType={(id) => deleteTypeMutation.mutate(id)}
-          onRestoreDefaults={() => restoreDefaultsMutation.mutate()}
-          isRestoringDefaults={restoreDefaultsMutation.isPending}
-          onAssignType={(printerId, typeId) => assignTypeMutation.mutate({ printerId, typeId })}
-          onRemoveItem={(itemId) => removeItemMutation.mutate(itemId)}
-          hasPermission={hasPermission}
-          t={t}
-        />
+            onAddType={async (data, printerIds) => {
+              // Create the type first, then assign to selected printers
+              const newType = await api.createMaintenanceType(data);
+              // Assign to each selected printer
+              for (const printerId of printerIds) {
+                await api.assignMaintenanceType(printerId, newType.id);
+              }
+              queryClient.invalidateQueries({ queryKey: ['maintenanceTypes'] });
+              queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
+              showToast(t('maintenance.typeUpdated'));
+            }}
+            onUpdateType={(id, data) => updateTypeMutation.mutate({ id, data })}
+            onDeleteType={(id) => deleteTypeMutation.mutate(id)}
+            onRestoreDefaults={() => restoreDefaultsMutation.mutate()}
+            isRestoringDefaults={restoreDefaultsMutation.isPending}
+            onAssignType={(printerId, typeId) => assignTypeMutation.mutate({ printerId, typeId })}
+            onRemoveItem={(itemId) => removeItemMutation.mutate(itemId)}
+            hasPermission={hasPermission}
+            t={t}
+          />
+        )}
+        </>
       )}
     </div>
   );

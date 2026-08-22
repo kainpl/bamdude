@@ -2831,67 +2831,79 @@ export function ProfilesPage() {
     queryClient.invalidateQueries({ queryKey: ['cloudStatus'] });
   };
 
+  // Title and tab bar first: both are local state and need nothing from the
+  // cloud, so a slow status check no longer hides the tabs that switch away
+  // from it.
+  const pageChrome = (
+    <>
+        {/* Page Header */}
+        <div>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-3"><Cloud className="w-6 h-6 text-bambu-green" />{t('profiles.title')}</h1>
+          <p className="text-sm text-bambu-gray">{t('profiles.subtitle')}</p>
+        </div>
+
+        {/* Tab Navigation */}
+        <div className="flex border-b border-bambu-dark-tertiary mb-4">
+          <button
+            onClick={() => setActiveTab('cloud')}
+            className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              activeTab === 'cloud'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-white border-transparent'
+            }`}
+          >
+            <Cloud className="w-4 h-4" />
+            {t('profiles.tabs.bambuCloud')}
+          </button>
+          <button
+            onClick={() => setActiveTab('orca_cloud')}
+            className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              activeTab === 'orca_cloud'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-white border-transparent'
+            }`}
+          >
+            <Cloud className="w-4 h-4" />
+            {t('profiles.tabs.orcaCloud')}
+          </button>
+          <button
+            onClick={() => setActiveTab('local')}
+            className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              activeTab === 'local'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-white border-transparent'
+            }`}
+          >
+            <HardDrive className="w-4 h-4" />
+            {t('profiles.tabs.local')}
+          </button>
+          <button
+            onClick={() => setActiveTab('kprofiles')}
+            className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              activeTab === 'kprofiles'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-white border-transparent'
+            }`}
+          >
+            <Gauge className="w-4 h-4" />
+            {t('profiles.tabs.kprofiles')}
+          </button>
+        </div>
+    </>
+  );
+
   if (statusLoading) {
     return (
-      <LoadingBlock label={t('common.loading')} className="min-h-[400px] text-bambu-gray" />
+      <div className="p-4 md:p-6 space-y-4">
+        {pageChrome}
+        <LoadingBlock label={t('common.loading')} className="min-h-[400px] text-bambu-gray" />
+      </div>
     );
   }
 
   return (
     <div className="p-4 md:p-6 space-y-4">
-      {/* Page Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-white flex items-center gap-3"><Cloud className="w-6 h-6 text-bambu-green" />{t('profiles.title')}</h1>
-        <p className="text-sm text-bambu-gray">{t('profiles.subtitle')}</p>
-      </div>
-
-      {/* Tab Navigation */}
-      <div className="flex border-b border-bambu-dark-tertiary mb-4">
-        <button
-          onClick={() => setActiveTab('cloud')}
-          className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
-            activeTab === 'cloud'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-white border-transparent'
-          }`}
-        >
-          <Cloud className="w-4 h-4" />
-          {t('profiles.tabs.bambuCloud')}
-        </button>
-        <button
-          onClick={() => setActiveTab('orca_cloud')}
-          className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
-            activeTab === 'orca_cloud'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-white border-transparent'
-          }`}
-        >
-          <Cloud className="w-4 h-4" />
-          {t('profiles.tabs.orcaCloud')}
-        </button>
-        <button
-          onClick={() => setActiveTab('local')}
-          className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
-            activeTab === 'local'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-white border-transparent'
-          }`}
-        >
-          <HardDrive className="w-4 h-4" />
-          {t('profiles.tabs.local')}
-        </button>
-        <button
-          onClick={() => setActiveTab('kprofiles')}
-          className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
-            activeTab === 'kprofiles'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-white border-transparent'
-          }`}
-        >
-          <Gauge className="w-4 h-4" />
-          {t('profiles.tabs.kprofiles')}
-        </button>
-      </div>
+      {pageChrome}
 
       {/* Cloud Profiles Tab */}
       {activeTab === 'cloud' && (

@@ -7,6 +7,7 @@ import { api } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { Button } from '../components/Button';
+import { LoadingBlock } from '../components/LoadingBlock';
 import { Card, CardContent, CardHeader } from '../components/Card';
 
 export function NotificationsPage() {
@@ -86,19 +87,25 @@ export function NotificationsPage() {
     setIsDirty(true);
   };
 
+  // The title is drawn before the settings arrive; only the cards below wait.
+  const pageHeader = (
+    <div>
+        <h1 className="text-2xl font-bold text-white flex items-center gap-3"><Bell className="w-6 h-6 text-bambu-green" />{t('notifications.userEmail.title')}</h1>
+    </div>
+  );
+
   if (isLoading || isAdvancedAuthLoading || isSettingsLoading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-8 h-8 animate-spin text-bambu-green" />
+      <div className="p-4 md:p-6 space-y-4">
+        {pageHeader}
+        <LoadingBlock label={t('common.loading')} className="h-64 text-bambu-gray" />
       </div>
     );
   }
 
   return (
     <div className="p-4 md:p-6 space-y-4">
-      <div>
-        <h1 className="text-2xl font-bold text-white flex items-center gap-3"><Bell className="w-6 h-6 text-bambu-green" />{t('notifications.userEmail.title')}</h1>
-      </div>
+      {pageHeader}
 
       {/* Info card */}
       <Card className="mb-6 border-blue-300 bg-blue-50 dark:border-blue-500/30 dark:bg-blue-500/5">

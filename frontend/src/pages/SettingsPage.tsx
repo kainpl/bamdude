@@ -10,6 +10,7 @@ import { formatDateOnly, type DateFormat } from '../utils/date';
 import { getCurrencySymbol, SUPPORTED_CURRENCIES } from '../utils/currency';
 import type { AppSettings, AppSettingsUpdate, APIKey, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, Macro, MacroCreate, MacroUpdate, ZigbeeDevice } from '../api/client';
 import { Card, CardContent, CardHeader } from '../components/Card';
+import { LoadingBlock } from '../components/LoadingBlock';
 import { CopyButton } from '../components/CopyButton';
 import { Button } from '../components/Button';
 import { LdapUserPicker } from '../components/LdapUserPicker';
@@ -1510,178 +1511,189 @@ export function SettingsPage() {
     updatePrinterMutation.mutate({ id: printerId, data });
   };
 
+  // ⚠️ Title, search and the tab bar are drawn before the settings arrive.
+  // The gate below used to replace the whole page with a spinner, so the tabs
+  // — which are local state and need nothing from the server — went with it,
+  // and a slow settings query looked like a page that had failed to open.
+  const pageChrome = (
+    <>
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-3"><Settings className="w-6 h-6 text-bambu-green" />{t('settings.title')}</h1>
+            <p className="text-sm text-bambu-gray">{t('settings.configureBamdude')}</p>
+          </div>
+          <SettingsSearchBar
+            onSelect={(entry) => {
+              handleTabChange(entry.tab);
+              // ⚠️ Sub-tabs are not all on the same tab any more. Routing every
+              // one to the users setter left a search hit landing on the right
+              // tab and the wrong section of it.
+              if (entry.subTab === 'marking') setFilamentSubTab('marking');
+              else if (entry.subTab) setUsersSubTab(entry.subTab);
+            }}
+          />
+        </div>
+
+        {/* Tab Navigation */}
+        <div className="flex flex-wrap gap-1 mb-4 border-b border-bambu-dark-tertiary">
+          <button
+            onClick={() => handleTabChange('general')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              activeTab === 'general'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            {t('settings.tabs.general')}
+          </button>
+          <button
+            onClick={() => handleTabChange('printing')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              activeTab === 'printing'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <Printer className="w-4 h-4" />
+            {t('settings.tabs.printing')}
+          </button>
+          <button
+            onClick={() => handleTabChange('filament')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              activeTab === 'filament'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <Cylinder className="w-4 h-4" />
+            {t('settings.tabs.filament')}
+          </button>
+          <button
+            onClick={() => handleTabChange('notifications')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              activeTab === 'notifications'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <Bell className="w-4 h-4" />
+            {t('settings.tabs.notifications')}
+            {notificationProviders && notificationProviders.length > 0 && (
+              <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
+                {notificationProviders.length}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => handleTabChange('plugs')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              activeTab === 'plugs'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <Plug className="w-4 h-4" />
+            {t('settings.tabs.smartPlugs')}
+            {smartPlugs && smartPlugs.length > 0 && (
+              <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
+                {smartPlugs.length}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => handleTabChange('network')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              activeTab === 'network'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <Wifi className="w-4 h-4" />
+            {t('settings.tabs.network')}
+            <span className={`w-2 h-2 rounded-full ${mqttStatus?.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
+          </button>
+          <button
+            onClick={() => handleTabChange('virtual-printer')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              activeTab === 'virtual-printer'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <Printer className="w-4 h-4" />
+            {t('settings.tabs.virtualPrinter')}
+            <span className={`w-2 h-2 rounded-full ${virtualPrinterRunning ? 'bg-green-400' : 'bg-gray-500'}`} />
+          </button>
+          <button
+            onClick={() => handleTabChange('apikeys')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              activeTab === 'apikeys'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <Key className="w-4 h-4" />
+            {t('settings.tabs.apiKeys')}
+            {apiKeys && apiKeys.length > 0 && (
+              <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
+                {apiKeys.length}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => handleTabChange('failure-detection')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              activeTab === 'failure-detection'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <ScanEye className="w-4 h-4" />
+            {t('settings.tabs.failureDetection')}
+            <span className={`w-2 h-2 rounded-full ${obicoActive ? 'bg-green-400' : 'bg-gray-500'}`} />
+          </button>
+          <button
+            onClick={() => handleTabChange('users')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              activeTab === 'users'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <Users className="w-4 h-4" />
+            {t('settings.tabs.users')}
+            {authEnabled && (
+              <span className="w-2 h-2 rounded-full bg-green-400" />
+            )}
+          </button>
+          <button
+            onClick={() => handleTabChange('backup')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              activeTab === 'backup'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <Database className="w-4 h-4" />
+            {t('settings.tabs.backup')}
+            <span className={`w-2 h-2 rounded-full ${cloudAuthStatus?.is_authenticated && gitBackupStatus?.configured && gitBackupStatus?.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
+          </button>
+        </div>
+    </>
+  );
+
   if (isLoading || !localSettings) {
     return (
-      <div className="p-4 md:p-8 flex justify-center">
-        <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
+      <div className="p-4 md:p-6 space-y-4">
+        {pageChrome}
+        <LoadingBlock label={t('common.loading')} />
       </div>
     );
   }
 
   return (
     <div className="p-4 md:p-6 space-y-4">
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3"><Settings className="w-6 h-6 text-bambu-green" />{t('settings.title')}</h1>
-          <p className="text-sm text-bambu-gray">{t('settings.configureBamdude')}</p>
-        </div>
-        <SettingsSearchBar
-          onSelect={(entry) => {
-            handleTabChange(entry.tab);
-            // ⚠️ Sub-tabs are not all on the same tab any more. Routing every
-            // one to the users setter left a search hit landing on the right
-            // tab and the wrong section of it.
-            if (entry.subTab === 'marking') setFilamentSubTab('marking');
-            else if (entry.subTab) setUsersSubTab(entry.subTab);
-          }}
-        />
-      </div>
-
-      {/* Tab Navigation */}
-      <div className="flex flex-wrap gap-1 mb-4 border-b border-bambu-dark-tertiary">
-        <button
-          onClick={() => handleTabChange('general')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
-            activeTab === 'general'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          {t('settings.tabs.general')}
-        </button>
-        <button
-          onClick={() => handleTabChange('printing')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'printing'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <Printer className="w-4 h-4" />
-          {t('settings.tabs.printing')}
-        </button>
-        <button
-          onClick={() => handleTabChange('filament')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'filament'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <Cylinder className="w-4 h-4" />
-          {t('settings.tabs.filament')}
-        </button>
-        <button
-          onClick={() => handleTabChange('notifications')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'notifications'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <Bell className="w-4 h-4" />
-          {t('settings.tabs.notifications')}
-          {notificationProviders && notificationProviders.length > 0 && (
-            <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
-              {notificationProviders.length}
-            </span>
-          )}
-        </button>
-        <button
-          onClick={() => handleTabChange('plugs')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'plugs'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <Plug className="w-4 h-4" />
-          {t('settings.tabs.smartPlugs')}
-          {smartPlugs && smartPlugs.length > 0 && (
-            <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
-              {smartPlugs.length}
-            </span>
-          )}
-        </button>
-        <button
-          onClick={() => handleTabChange('network')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'network'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <Wifi className="w-4 h-4" />
-          {t('settings.tabs.network')}
-          <span className={`w-2 h-2 rounded-full ${mqttStatus?.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
-        </button>
-        <button
-          onClick={() => handleTabChange('virtual-printer')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'virtual-printer'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <Printer className="w-4 h-4" />
-          {t('settings.tabs.virtualPrinter')}
-          <span className={`w-2 h-2 rounded-full ${virtualPrinterRunning ? 'bg-green-400' : 'bg-gray-500'}`} />
-        </button>
-        <button
-          onClick={() => handleTabChange('apikeys')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'apikeys'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <Key className="w-4 h-4" />
-          {t('settings.tabs.apiKeys')}
-          {apiKeys && apiKeys.length > 0 && (
-            <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
-              {apiKeys.length}
-            </span>
-          )}
-        </button>
-        <button
-          onClick={() => handleTabChange('failure-detection')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'failure-detection'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <ScanEye className="w-4 h-4" />
-          {t('settings.tabs.failureDetection')}
-          <span className={`w-2 h-2 rounded-full ${obicoActive ? 'bg-green-400' : 'bg-gray-500'}`} />
-        </button>
-        <button
-          onClick={() => handleTabChange('users')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'users'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <Users className="w-4 h-4" />
-          {t('settings.tabs.users')}
-          {authEnabled && (
-            <span className="w-2 h-2 rounded-full bg-green-400" />
-          )}
-        </button>
-        <button
-          onClick={() => handleTabChange('backup')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'backup'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <Database className="w-4 h-4" />
-          {t('settings.tabs.backup')}
-          <span className={`w-2 h-2 rounded-full ${cloudAuthStatus?.is_authenticated && gitBackupStatus?.configured && gitBackupStatus?.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
-        </button>
-      </div>
+      {pageChrome}
       {/* ══════ GENERAL TAB ══════ */}
       {activeTab === 'general' && (
       <div className="flex flex-col lg:flex-row gap-4">

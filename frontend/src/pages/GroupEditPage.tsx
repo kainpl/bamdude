@@ -6,6 +6,7 @@ import { ArrowLeft, Save, Loader2, Search, Check, Minus, Shield, AlertTriangle }
 import { api } from '../api/client';
 import type { Permission, PermissionCategory } from '../api/client';
 import { Button } from '../components/Button';
+import { LoadingBlock } from '../components/LoadingBlock';
 import { Card } from '../components/Card';
 import { useToast } from '../contexts/ToastContext';
 import { getPermissionCategoryName, getPermissionLabel } from '../utils/permissionI18n';
@@ -152,17 +153,10 @@ export function GroupEditPage() {
 
   const totalPermissions = permissionsData?.all_permissions.length ?? 0;
 
-  if (groupLoading || permissionsLoading) {
-    return (
-      <div className="flex items-center justify-center py-16">
-        <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-6 max-w-5xl mx-auto">
-      {/* Header */}
+  // ⚠️ Header first, and the back button with it. Waiting used to replace the
+  // whole editor, so a slow permission list left no way out of the page but the
+  // browser's own Back.
+  const pageHeader = (
       <div className="flex items-center gap-3">
         <button
           onClick={() => navigate('/settings?tab=users')}
@@ -174,6 +168,20 @@ export function GroupEditPage() {
           {isEditing ? t('groups.editor.title') : t('groups.editor.createTitle')}
         </h1>
       </div>
+  );
+
+  if (groupLoading || permissionsLoading) {
+    return (
+      <div className="space-y-6 max-w-5xl mx-auto">
+        {pageHeader}
+        <LoadingBlock label={t('common.loading')} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6 max-w-5xl mx-auto">
+      {pageHeader}
 
       {/* System group warning */}
       {isEditing && groupData?.is_system && (

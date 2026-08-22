@@ -1,8 +1,9 @@
 import { useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Loader2, AlertTriangle } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
+import { LoadingBlock } from '../components/LoadingBlock';
 import { useTheme } from '../contexts/ThemeContext';
 
 export function ExternalLinkPage() {
@@ -16,12 +17,12 @@ export function ExternalLinkPage() {
     enabled: !!id,
   });
 
+  // Nothing to split here: the page IS the embedded site, so there is no header
+  // or filter of ours to draw first. The label is the whole improvement — a bare
+  // spinner over a blank frame does not say whether it is us or the far end that
+  // is slow.
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
-      </div>
-    );
+    return <LoadingBlock label={t('common.loading')} className="h-full text-bambu-gray" />;
   }
 
   if (error || !link) {

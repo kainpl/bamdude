@@ -46,6 +46,7 @@ import { api, withStreamToken } from '../api/client';
 import { parseUTCDate, formatDateOnly, formatDateTime, formatDuration, formatDurationFromHours, formatETA, type TimeFormat, type DateFormat } from '../utils/date';
 import type { Archive, ProjectUpdate, BOMItem, BOMItemCreate, BOMItemUpdate, LibraryFileListItem, PrintPlanItem, PrintQueueItem } from '../api/client';
 import { Card, CardContent } from '../components/Card';
+import { LoadingBlock } from '../components/LoadingBlock';
 import { Button } from '../components/Button';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -560,9 +561,21 @@ export function ProjectDetailPage() {
   };
 
   if (projectLoading) {
+    // ⚠️ Only the way out is drawn, not a header. On a detail page the header
+    // IS the data — the project's name, its colour, its counts — so there is
+    // nothing honest to show before it arrives. What there is no excuse for is
+    // trapping somebody on a blank page: the back button does not need the
+    // project to work.
     return (
-      <div className="flex items-center justify-center py-24">
-        <Loader2 className="w-8 h-8 animate-spin text-bambu-green" />
+      <div className="p-4 md:p-6 space-y-4">
+        <button
+          onClick={() => navigate('/projects')}
+          className="p-2 rounded-lg bg-bambu-card hover:bg-bambu-dark-tertiary transition-colors"
+          aria-label={t('projectDetail.backToProjects')}
+        >
+          <ArrowLeft className="w-5 h-5 text-bambu-gray" />
+        </button>
+        <LoadingBlock label={t('common.loading')} className="py-24 text-bambu-gray" />
       </div>
     );
   }
