@@ -283,6 +283,7 @@ async def init_db():
         telegram_chat,
         user,
         user_email_pref,
+        user_filament,
         user_otp_code,
         user_totp,
         virtual_printer,

@@ -40,6 +40,11 @@ class Spool(Base):
     # (e.g. "Sunlu PETG крило" → "GFG99" via cloud base_id), resolved by the
     # spool form at save time so backend matching needs no live cloud call.
     resolved_filament_id: Mapped[str | None] = mapped_column(String(50))
+    # Family link (spec A §5.1) — the ONLY forward-path identity: a bare
+    # filament_id string ("GFG99" / "P122e532"), chosen via the family picker
+    # or backfilled. The slicer_filament trio above/below is legacy: no longer
+    # written, read only by resolve_spool's fallback.
+    filament_family_id: Mapped[str | None] = mapped_column(String(50))
     nozzle_temp_min: Mapped[int | None] = mapped_column()  # Override min temp
     nozzle_temp_max: Mapped[int | None] = mapped_column()  # Override max temp
     note: Mapped[str | None] = mapped_column(String(500))
