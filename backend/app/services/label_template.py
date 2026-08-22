@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Placeholder(BaseModel):
@@ -255,7 +255,33 @@ class LabelTemplateSpec(BaseModel):
     #: corners. One column now costs nothing; finding out later costs a
     #: migration and a re-seed.
     shape: Literal["rect", "round"] = "rect"
+    #: Which printer this design is drawn for. ``driver`` may use colour — it
+    #: goes out as PDF and could be landing on an inkjet or a laser; ``thermal``
+    #: goes to a one-bit head where colour cannot survive.
+    target: Literal["driver", "thermal"] = "driver"
     elements: list[LabelElement] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _colour_belongs_to_a_colour_printer(self) -> LabelTemplateSpec:
+        """Refuse a colour element on a design declared thermal.
+
+        ⚠️ **Refused here rather than dropped at print time**, which is the
+        change m149 makes. The raster backend still skips a swatch it is given,
+        so designs predating this keep printing as they always did — but a
+        design being SAVED as thermal is one somebody is drawing now, and
+        letting them place a block that will never appear is letting them design
+        around something that is not there.
+        """
+        if self.target != "thermal":
+            return self
+        offenders = [index for index, element in enumerate(self.elements) if element.type == "swatch"]
+        if offenders:
+            raise ValueError(
+                f"A thermal design cannot carry a colour swatch (element {offenders[0] + 1}): a one-bit "
+                f"printhead has no colour to print it with. Use the hex-code placeholder in a text box, "
+                f"or set this design's target to a driver printer."
+            )
+        return self
 
 
 #: Paper is cut to a tolerance and so is the stock on it; a tenth of a

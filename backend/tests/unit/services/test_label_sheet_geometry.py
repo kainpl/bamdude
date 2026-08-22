@@ -87,3 +87,47 @@ class TestTheGridFitsThePage:
         """The grid that fits A4 does not fit A5 — and now it is told so."""
         assert sheet_overflow(_sheet(page_size="A4")) == []
         assert sheet_overflow(_sheet(page_size="A5"))
+
+
+class TestAThermalDesignRefusesColour:
+    """⚠️ m149 reverses "one template, two backends" for NEW designs.
+
+    The raster backend still skips a swatch it is handed, so anything drawn
+    before this keeps printing exactly as it did. What changes is the moment of
+    the decision: a design being saved as thermal is one somebody is drawing
+    now, and letting them place a colour block that will never appear lets them
+    design a label around a subject that is not there.
+
+    A driver design keeps the swatch, because it may well be going to an inkjet
+    or a laser — which is the whole reason the two are told apart.
+    """
+
+    @staticmethod
+    def _design(target: str, with_swatch: bool):
+        from backend.app.services.label_template import LabelTemplateSpec
+
+        elements = [{"type": "text", "content": "{brand}", "x_mm": 1, "y_mm": 1, "w_mm": 20, "h_mm": 5}]
+        if with_swatch:
+            elements.append({"type": "swatch", "x_mm": 1, "y_mm": 8, "w_mm": 10, "h_mm": 5})
+        return {"name": "d", "width_mm": 40, "height_mm": 20, "target": target, "elements": elements}, LabelTemplateSpec
+
+    def test_a_driver_design_may_carry_one(self):
+        payload, spec = self._design("driver", with_swatch=True)
+        assert spec(**payload).target == "driver"
+
+    def test_a_thermal_design_may_not(self):
+        payload, spec = self._design("thermal", with_swatch=True)
+        with pytest.raises(ValueError, match="one-bit"):
+            spec(**payload)
+
+    def test_a_thermal_design_without_colour_is_fine(self):
+        payload, spec = self._design("thermal", with_swatch=False)
+        assert spec(**payload).target == "thermal"
+
+    def test_the_default_is_the_driver(self):
+        """⚠️ Every row that existed before m149 was printing as PDF. Calling an
+        unmarked design thermal would strip elements from labels that print
+        them today."""
+        payload, spec = self._design("driver", with_swatch=False)
+        del payload["target"]
+        assert spec(**payload).target == "driver"

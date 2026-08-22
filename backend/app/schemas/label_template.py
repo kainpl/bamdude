@@ -19,6 +19,10 @@ class LabelTemplateIn(BaseModel):
     width_mm: float = Field(gt=0, le=500)
     height_mm: float = Field(gt=0, le=500)
     shape: str = "rect"
+    #: ``driver`` (through the OS print driver, colour allowed) or ``thermal``
+    #: (a one-bit label printer, where a colour element is refused rather than
+    #: silently dropped). Defaults to driver — see m149.
+    target: str = "driver"
     elements: list[LabelElement] = Field(default_factory=list)
 
 
@@ -28,6 +32,7 @@ class LabelTemplateOut(BaseModel):
     width_mm: float
     height_mm: float
     shape: str
+    target: str
     elements: list[LabelElement]
     #: Present for the four designs the label API names. A row that has one is
     #: read-only — see the duplicate endpoint.

@@ -28,6 +28,11 @@ class LabelTemplate(Base):
     #: Niimbot sells circular stock where a rectangular design loses its
     #: corners, and one column now is cheaper than a migration later.
     shape: Mapped[str] = mapped_column(String(16), default="rect")
+    #: Which kind of printer this design is drawn for — see m149.
+    #: ``driver`` goes out through the OS print driver and may use colour;
+    #: ``thermal`` goes to a one-bit label printer, where colour cannot survive
+    #: and is therefore refused at edit time rather than dropped at print time.
+    target: Mapped[str] = mapped_column(String(16), default="driver", server_default="driver")
     #: The design itself — a list of boxes, validated by ``LabelTemplateSpec``.
     elements: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     #: ⚠️ The name the label API has always accepted, for the four that had one.

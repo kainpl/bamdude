@@ -52,6 +52,7 @@ def _to_out(row: LabelTemplate) -> LabelTemplateOut:
         width_mm=row.width_mm,
         height_mm=row.height_mm,
         shape=row.shape,
+        target=row.target,
         elements=row.elements or [],
         builtin_key=row.builtin_key,
         is_builtin=row.is_builtin,
@@ -150,6 +151,7 @@ async def create_template(
         width_mm=body.width_mm,
         height_mm=body.height_mm,
         shape=body.shape,
+        target=body.target,
         elements=[e.model_dump() for e in body.elements],
         builtin_key=None,
         created_by=user.id if user else None,
@@ -179,6 +181,7 @@ async def update_template(
     row.width_mm = body.width_mm
     row.height_mm = body.height_mm
     row.shape = body.shape
+    row.target = body.target
     row.elements = [e.model_dump() for e in body.elements]
     row.updated_at = datetime.now(UTC).replace(tzinfo=None)
     await db.commit()
@@ -201,6 +204,7 @@ async def duplicate_template(
         width_mm=source.width_mm,
         height_mm=source.height_mm,
         shape=source.shape,
+        target=source.target,
         elements=list(source.elements or []),
         builtin_key=None,
         created_by=user.id if user else None,
