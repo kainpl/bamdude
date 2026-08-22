@@ -120,10 +120,11 @@ def _roomy_elements(width_mm: float, height_mm: float) -> list[dict[str, Any]]:
     ]
 
 
-def _builtin(key: str, name: str, width_mm: float, height_mm: float) -> dict[str, Any]:
+def _builtin(key: str, name: str, width_mm: float, height_mm: float, description: str = "") -> dict[str, Any]:
     return {
         "builtin_key": key,
         "name": name,
+        "description": description,
         "width_mm": width_mm,
         "height_mm": height_mm,
         "shape": "rect",
@@ -134,10 +135,36 @@ def _builtin(key: str, name: str, width_mm: float, height_mm: float) -> dict[str
 #: The four names ``POST /inventory/labels`` has always accepted for a single
 #: label. Their sizes are the ones ``label_renderer`` declares.
 BUILTIN_TEMPLATES: list[dict[str, Any]] = [
-    _builtin("ams_holder_74x33", "AMS holder 74 × 33", 74.0, 33.0),
-    _builtin("ams_holder_75x55", "AMS holder 75 × 55", 75.0, 55.0),
-    _builtin("box_40x30", "Box label 40 × 30", 40.0, 30.0),
-    _builtin("box_62x29", "Box label 62 × 29", 62.0, 29.0),
+    _builtin(
+        "ams_holder_74x33",
+        "AMS holder 74 × 33",
+        74.0,
+        33.0,
+        "Single label per page; matches the printable label STL from MakerWorld "
+        "model 752566 (AMS Filament Label Holder).",
+    ),
+    _builtin(
+        "ams_holder_75x55",
+        "AMS holder 75 × 55",
+        75.0,
+        55.0,
+        "Single label per page; fits the cardstock-insert variant of the AMS "
+        "Filament Label Holder. Roomy enough for swatch, brand and QR.",
+    ),
+    _builtin(
+        "box_40x30",
+        "Box label 40 × 30",
+        40.0,
+        30.0,
+        "Single label per page; common DK/Brother roll size, good for filament bags and storage bins.",
+    ),
+    _builtin(
+        "box_62x29",
+        "Box label 62 × 29",
+        62.0,
+        29.0,
+        "Single label per page; sized for Brother PT/QL and Dymo small labels.",
+    ),
 ]
 
 #: The other two names describe a page, not a label.

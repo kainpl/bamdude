@@ -1717,7 +1717,6 @@ export default {
       gap_y_mm: 'Gap down, mm',
     },
     builtin: 'built in',
-    builtinHint: 'A built-in sheet. It cannot be edited — an automation printing onto this paper for a year must not find the grid moved under it. Duplicate it to get a copy that is yours.',
     doesNotFit: 'Does not fit the paper',
     preview: 'Preview the page',
     saved: 'Sheet saved',
@@ -1727,6 +1726,10 @@ export default {
     designs: 'Designs',
     newTemplate: 'New design',
     newName: 'Untitled label',
+    name: 'Name',
+    description: 'Description',
+    descriptionPlaceholder: 'What this label is for - shown beside its name in the print dialog',
+    seeded: 'Came with BamDude. You can redraw it; the print API follows your version.',
     pickOne: 'Pick a design on the left, or make a new one.',
     element: 'Selected box',
     pickElement: 'Click a box on the label to change what it says.',
@@ -1771,8 +1774,6 @@ export default {
     symbology: 'Barcode type',
     symbologyHint: 'EAN-13 takes exactly twelve digits. Anything else is reported rather than printed unscannable.',
     swatchHint: 'One band per colour, in whatever shape you pick. Only offered on designs printed through a driver — a label printer has no colour to print it with.',
-    builtinHint:
-      'A built-in design. Its name is what the print API accepts, so it cannot be changed — an automation printing this label for a year must not suddenly print something else. Duplicate it to get a copy you can edit.',
     testPrint: 'Test print',
     testPrintQueued: 'Sent to the printer.',
     duplicate: 'Duplicate',
@@ -5432,6 +5433,23 @@ export default {
       monochrome: 'Monochrome (black & white printer)',
       monochromeHint: 'Drops the colour swatch; the hex line still carries the colour',
       sendToDevice: 'Or send it to a printer on a desk',
+      route: {
+        title: 'How should these print?',
+        driver: 'Through a printer on this computer',
+        driverHint: 'Opens a PDF you print as usual — one per page, or a whole sheet of them.',
+        device: 'On a label printer',
+        deviceHint: 'Sent straight to a printer on a desk through the bridge running there.',
+        back: 'Print a different way',
+      },
+      sheet: {
+        label: 'Paper:',
+        none: 'One label per page',
+      },
+      deviceDesign: 'Design:',
+      deviceDesignAuto: 'Match whatever is loaded',
+      doesNotFitCell:
+        'This design is {{w}} × {{h}} mm and the cells on that paper are {{cw}} × {{ch}} mm. A label prints at its own size or not at all — shrinking one to fit destroys the bar widths a scanner reads by.',
+      noDesigns: 'No design is drawn for this. You can draw one under Settings → Filament → Marking.',
       deviceCassette: 'Loaded: {{width}} × {{height}} mm',
       deviceCassetteUnknown: 'Cassette size not known yet — teach it in Settings',
       deviceOffline: 'printer not answering',
@@ -5451,32 +5469,6 @@ export default {
       noSpoolsToShow: 'No spools to show. Adjust your filter and try again.',
       noMatches: 'No spools match the current search or filter.',
       error: 'Could not generate labels: {{msg}}',
-      templates: {
-        amsHolderSmall: {
-          label: 'AMS holder - small (74 × 33 mm)',
-          hint: 'Single label per page; matches the printable label STL from MakerWorld model 752566 (AMS Filament Label Holder).'
-        },
-        amsHolderLarge: {
-          label: 'AMS holder - large (75 × 55 mm)',
-          hint: 'Single label per page; fits the cardstock-insert variant of the AMS Filament Label Holder. Roomy enough for swatch, brand, material, ID, and QR code.'
-        },
-        box40x30: {
-          label: 'Box label (40 × 30 mm)',
-          hint: 'Single label per page; common DK/Brother roll size, good for filament-bag and storage-bin labels.'
-        },
-        box: {
-          label: 'Box label (62 × 29 mm)',
-          hint: 'Single label per page; sized for Brother PT/QL and Dymo small labels.'
-        },
-        averyL7160: {
-          label: 'Avery L7160 - A4 sheet (38.1 × 63.5 mm × 21)',
-          hint: 'EU sheet stock; 21 labels per A4 page.'
-        },
-        avery5160: {
-          label: 'Avery 5160 - US Letter sheet (25.4 × 66.7 mm × 30)',
-          hint: 'US sheet stock; 30 labels per Letter page.'
-        }
-      }
     }
   },
 

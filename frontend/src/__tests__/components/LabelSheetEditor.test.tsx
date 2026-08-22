@@ -47,6 +47,15 @@ describe('LabelSheetEditor', () => {
     await waitFor(() => expect(screen.getByText('Sheets of stickers')).toBeInTheDocument());
   };
 
+  it('still marks which ones came with BamDude', async () => {
+    // Editable is not the same as indistinguishable — the badge says where a
+    // row came from, it just no longer means "you may not touch this".
+    await show([AVERY, MINE]);
+
+    // The badge shares a line with the grid summary, so match the line.
+    expect(screen.getByText(/built in/)).toBeInTheDocument();
+  });
+
   it('lists the sheets with their grid', async () => {
     await show([AVERY, MINE]);
 
@@ -54,13 +63,14 @@ describe('LabelSheetEditor', () => {
     expect(screen.getAllByText(/A4 · 3×7/).length).toBe(2);
   });
 
-  it('refuses to edit a built-in one', async () => {
-    // ⚠️ Same rule as a built-in design: an automation printing onto this paper
-    // for a year must not find the grid moved under it.
+  it('lets you correct a seeded one', async () => {
+    // ⚠️ This used to be refused, and the reversal is deliberate: Avery's
+    // published numbers are what they are, and somebody who measures their own
+    // stock and finds it 0.4mm off should be able to fix the row that is wrong
+    // rather than leave it in the list beside a corrected copy.
     await show([AVERY]);
 
-    expect((screen.getByLabelText(/Name/) as HTMLInputElement).disabled).toBe(true);
-    expect(screen.getByText(/cannot be edited/)).toBeInTheDocument();
+    expect((screen.getByLabelText(/Name/) as HTMLInputElement).disabled).toBe(false);
   });
 
   it('lets you edit your own', async () => {

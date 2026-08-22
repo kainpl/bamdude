@@ -87,21 +87,45 @@ class TestCatalog:
         assert (await async_client.get(f"/api/v1/label-templates/{created['id']}")).status_code == 404
 
 
-class TestBuiltinsAreFrozen:
-    """⚠️ A built-in's key is a name the label API accepts. An automation that
-    has printed the same label for a year must not start printing a different
-    one because somebody dragged a box in the editor.
+class TestTheSeededOnesAreAStartingSet:
+    """⚠️ These used to be frozen, and the reversal is deliberate.
+
+    The reasoning for freezing them was that a key is a name the label API
+    accepts, so an automation printing the same label for a year must not find
+    it redrawn. That protected the wrong thing: the four seeded designs are the
+    only ones most people ever see, and they were the only ones nobody could
+    adjust — so every small change meant "duplicate, edit the copy", leaving two
+    rows that look almost the same and one of them still wrong.
+
+    An edit now reaches the automations too, which is the point of it. The key
+    keeps its two other jobs: resolving those names, and saying where a row came
+    from.
     """
 
-    async def test_a_builtin_cannot_be_edited(self, async_client: AsyncClient, db_session):
+    async def test_a_seeded_design_can_be_edited(self, async_client: AsyncClient, db_session):
         row = await _seed_builtin(db_session)
-        response = await async_client.put(f"/api/v1/label-templates/{row.id}", json=_design())
-        assert response.status_code == 409
-        assert "duplicate" in response.json()["detail"]
 
-    async def test_a_builtin_cannot_be_deleted(self, async_client: AsyncClient, db_session):
+        response = await async_client.put(f"/api/v1/label-templates/{row.id}", json=_design("Redrawn"))
+
+        assert response.status_code == 200, response.text
+        assert response.json()["name"] == "Redrawn"
+
+    async def test_editing_one_keeps_its_key(self, async_client: AsyncClient, db_session):
+        """⚠️ Losing the key would take the name out of the label API, which is
+        the opposite of what editing is for: the automation should print the
+        redrawn label, not stop finding one."""
         row = await _seed_builtin(db_session)
-        assert (await async_client.delete(f"/api/v1/label-templates/{row.id}")).status_code == 409
+
+        edited = await async_client.put(f"/api/v1/label-templates/{row.id}", json=_design("Redrawn"))
+
+        assert edited.json()["builtin_key"] == row.builtin_key
+        assert edited.json()["is_builtin"] is True
+
+    async def test_a_seeded_design_can_be_deleted(self, async_client: AsyncClient, db_session):
+        row = await _seed_builtin(db_session)
+
+        assert (await async_client.delete(f"/api/v1/label-templates/{row.id}")).status_code == 204
+        assert (await async_client.get(f"/api/v1/label-templates/{row.id}")).status_code == 404
 
     async def test_duplicating_a_builtin_drops_its_key(self, async_client: AsyncClient, db_session):
         """Two rows answering to ``box_40x30`` would make which label prints a
@@ -122,7 +146,8 @@ class TestBuiltinsAreFrozen:
         assert body["elements"] == source["elements"]
 
     async def test_a_copy_is_editable(self, async_client: AsyncClient, db_session):
-        """Which is what "edit a built-in" actually means."""
+        """Duplicating is no longer the only way to change one, but it is still
+        how you keep the original beside a variant."""
         row = await _seed_builtin(db_session)
         copy = (await async_client.post(f"/api/v1/label-templates/{row.id}/duplicate")).json()
         edited = await async_client.put(f"/api/v1/label-templates/{copy['id']}", json=_design("Mine"))

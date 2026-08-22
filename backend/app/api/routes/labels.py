@@ -113,21 +113,52 @@ class LabelRequest(BaseModel):
         """
         if self.template and self.template_id is not None:
             raise ValueError("name either 'template' or 'template_id', not both")
-        if not self.template and self.template_id is None:
-            raise ValueError("one of 'template' or 'template_id' is required")
-        if self.sheet_id is not None and self.template_id is None:
-            raise ValueError("'sheet_id' needs a 'template_id' to lay out on it")
+        # ⚠️ Two of the six names ARE sheets, so a name beside a sheet id is a
+        # request that answers "which paper" twice — and the quiet outcome is
+        # a batch printed on the wrong one. Ask by id if you want to choose.
+        if self.template and self.sheet_id is not None:
+            raise ValueError("name either 'template' or 'sheet_id', not both — a name already says which paper")
+        if not self.template and self.template_id is None and self.sheet_id is None:
+            raise ValueError("one of 'template', 'template_id' or 'sheet_id' is required")
         return self
 
 
 async def _resolve_design(db: AsyncSession, body: LabelRequest) -> tuple[LabelTemplateSpec, LabelSheetSpec | None]:
     """Work out which design, and which paper if any, this request means.
 
-    ⚠️ The seed constants are the fallback when a row is missing. That cannot
-    happen on an install whose migrations ran — but it keeps the endpoint from
-    depending on seed state, and a built-in cannot be edited, so the row and the
-    constant can never disagree.
+    ⚠️ The seed constants are the fallback when a row is missing, which keeps
+    the endpoint from depending on seed state.
+
+    The row wins whenever there is one, and since the seeded designs became
+    editable the two CAN now disagree — deliberately. Somebody who redraws the
+    box label means the box label to be that, including for the automation
+    posting ``{"template": "box_40x30"}``. Deleting the row is what puts the
+    shipped one back.
     """
+    if body.template_id is None and body.sheet_id is not None:
+        # ⚠️ A sheet on its own is answerable, and used to be: the six legacy
+        # names include two sheets, and each builds its design TO THE CELL
+        # rather than pointing at a template row. Refusing the same thing when
+        # it arrives as an id would have made the newer, catalogue-driven path
+        # less capable than the names it replaces — and forced the picker to ask
+        # for a design before it can offer "print on Avery 5160".
+        sheet_row = await db.get(LabelSheet, body.sheet_id)
+        if sheet_row is None:
+            raise HTTPException(404, f"Label sheet {body.sheet_id} not found")
+        sheet_raw = {
+            "name": sheet_row.name,
+            "page_size": sheet_row.page_size,
+            "cell_width_mm": sheet_row.cell_width_mm,
+            "cell_height_mm": sheet_row.cell_height_mm,
+            "cols": sheet_row.cols,
+            "rows": sheet_row.rows,
+            "margin_top_mm": sheet_row.margin_top_mm,
+            "margin_left_mm": sheet_row.margin_left_mm,
+            "gap_x_mm": sheet_row.gap_x_mm,
+            "gap_y_mm": sheet_row.gap_y_mm,
+        }
+        return LabelTemplateSpec(**sheet_cell_template(sheet_row)), LabelSheetSpec(**sheet_raw)
+
     if body.template_id is not None:
         row = await db.get(LabelTemplate, body.template_id)
         if row is None:

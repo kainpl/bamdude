@@ -83,7 +83,13 @@ export function LabelSheetEditor() {
     () => sheets?.find((row) => row.id === selectedId) ?? null,
     [sheets, selectedId],
   );
-  const readOnly = !canWrite || (selected?.is_builtin ?? false);
+  // ⚠️ Permission only. A seeded geometry used to be read-only here too, on the
+  // reasoning that an automation printing onto Avery 5160 must not find the
+  // grid moved. It protected the wrong thing: Avery's published numbers are
+  // what they are, and somebody who measures their own stock and finds it
+  // 0.4mm off should be able to say so on the row that is wrong, rather than
+  // leave a wrong row in the list beside their corrected copy.
+  const readOnly = !canWrite;
 
   // Follow the selection, and pick something on first load so the panel is
   // never an empty frame with controls that act on nothing.
@@ -263,9 +269,6 @@ export function LabelSheetEditor() {
               ))}
             </div>
 
-            {selected?.is_builtin && (
-              <p className="text-xs text-bambu-gray">{t('labelSheets.builtinHint')}</p>
-            )}
             {selected && selected.overflow.length > 0 && (
               <ul className="text-xs text-amber-600 dark:text-amber-400 space-y-1">
                 {selected.overflow.map((line) => <li key={line}>{line}</li>)}

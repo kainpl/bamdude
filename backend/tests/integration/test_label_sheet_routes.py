@@ -4,9 +4,12 @@ The sheet table has existed since m146 with two seeded rows and no way to add a
 third — "choosing between two is fine, drawing a third is not", which is what
 this closes.
 
-⚠️ The rules are the ones the design side already settled, applied to paper:
-a seeded geometry is read-only and duplicated rather than edited, and a grid
-that runs off its page is refused on save rather than discovered on stock.
+⚠️ The rules are the ones the design side settled, applied to paper: a grid that
+runs off its page is refused on save rather than discovered on stock, and a
+seeded geometry is a starting point rather than a frozen one — the same reversal
+the seeded designs got, for the same reason. Avery publish their dimensions and
+they are what they are; a person measuring their own stock and finding it 0.4mm
+off should be able to say so on the row that is wrong.
 """
 
 import pytest
@@ -60,7 +63,7 @@ class TestCreating:
         assert (await async_client.post(BASE, json={**A_SHEET, "page_size": "A3"})).status_code == 422
 
 
-class TestTheSeededOnesAreFrozen:
+class TestTheSeededOnesAreAStartingSet:
     @staticmethod
     async def _a_builtin(async_client: AsyncClient, db_session) -> dict:
         """A seeded row, inserted here rather than taken from the seed.
@@ -79,18 +82,26 @@ class TestTheSeededOnesAreFrozen:
         assert builtin["is_builtin"] is True
         return builtin
 
-    async def test_editing_one_is_refused(self, async_client: AsyncClient, db_session):
+    async def test_a_seeded_geometry_can_be_corrected(self, async_client: AsyncClient, db_session):
         builtin = await self._a_builtin(async_client, db_session)
 
-        refused = await async_client.put(f"{BASE}/{builtin['id']}", json=A_SHEET)
+        edited = await async_client.put(f"{BASE}/{builtin['id']}", json={**A_SHEET, "margin_top_mm": 15.4})
 
-        assert refused.status_code == 409
-        assert "duplicate" in refused.json()["detail"]
+        assert edited.status_code == 200, edited.text
+        assert edited.json()["margin_top_mm"] == 15.4
 
-    async def test_deleting_one_is_refused(self, async_client: AsyncClient, db_session):
+    async def test_a_correction_still_has_to_fit_the_paper(self, async_client: AsyncClient, db_session):
+        """⚠️ Editable is not unchecked. The geometry rule is what stops the
+        last column printing half off the sheet, and it does not care who
+        seeded the row."""
         builtin = await self._a_builtin(async_client, db_session)
 
-        assert (await async_client.delete(f"{BASE}/{builtin['id']}")).status_code == 409
+        assert (await async_client.put(f"{BASE}/{builtin['id']}", json={**A_SHEET, "cols": 4})).status_code == 422
+
+    async def test_a_seeded_geometry_can_be_deleted(self, async_client: AsyncClient, db_session):
+        builtin = await self._a_builtin(async_client, db_session)
+
+        assert (await async_client.delete(f"{BASE}/{builtin['id']}")).status_code == 204
 
     async def test_duplicating_one_gives_an_editable_copy(self, async_client: AsyncClient, db_session):
         builtin = await self._a_builtin(async_client, db_session)
@@ -100,6 +111,9 @@ class TestTheSeededOnesAreFrozen:
         assert copy.status_code == 201
         assert copy.json()["is_builtin"] is False
         assert copy.json()["cols"] == builtin["cols"], "the geometry travels with the copy"
+        # ⚠️ The key does not: the column is UNIQUE, so a second row answering
+        # to the same name would fail to save even if we wanted one.
+        assert copy.json()["builtin_key"] is None
         assert (await async_client.put(f"{BASE}/{copy.json()['id']}", json=A_SHEET)).status_code == 200
 
 

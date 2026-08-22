@@ -4059,6 +4059,10 @@ export type LabelTemplateElement =
 export interface LabelTemplate {
   id: number;
   name: string;
+  /** One line saying what the label is for, shown beside the name wherever a
+   *  design is offered. The print dialog used to hard-code six of these as
+   *  translation keys; making it editable is what stopped that. */
+  description: string;
   width_mm: number;
   height_mm: number;
   shape: 'rect' | 'round';
@@ -4067,9 +4071,12 @@ export interface LabelTemplate {
    *  to a one-bit head, where a colour element is refused rather than dropped. */
   target: LabelTarget;
   elements: LabelTemplateElement[];
-  /** ⚠️ A row that carries one is read-only: the name is a public contract
-   *  the print API accepts, so an automation must not start printing something
-   *  else because somebody moved a box. Duplicate to get an editable copy. */
+  /** Set on the designs that shipped with BamDude. It resolves the names the
+   *  print API accepts and records where the row came from.
+   *
+   *  ⚠️ It does NOT freeze the row — a seeded design is a starting point a
+   *  person may redraw, and the edit reaches those automations too. Deleting
+   *  one falls back to the shipped definition, so it reads as a reset. */
   builtin_key: string | null;
   is_builtin: boolean;
   created_at?: string | null;
@@ -4079,6 +4086,7 @@ export interface LabelTemplate {
 /** What a template looks like before it has an id. */
 export interface LabelTemplateInput {
   name: string;
+  description: string;
   width_mm: number;
   height_mm: number;
   shape: 'rect' | 'round';

@@ -16,7 +16,6 @@ interface ElementInspectorProps {
   element: LabelTemplateElement;
   widthMm: number;
   heightMm: number;
-  disabled: boolean;
   onChange: (next: LabelTemplateElement) => void;
   onDelete: () => void;
 }
@@ -27,7 +26,6 @@ export function ElementInspector({
   element,
   widthMm,
   heightMm,
-  disabled,
   onChange,
   onDelete,
 }: ElementInspectorProps) {
@@ -62,7 +60,7 @@ export function ElementInspector({
         <span className="text-sm font-medium text-white">
           {t(`labelEditor.elementType.${element.type}`)}
         </span>
-        <Button variant="secondary" size="sm" disabled={disabled} onClick={onDelete}>
+        <Button variant="secondary" size="sm" onClick={onDelete}>
           <Trash2 className="w-4 h-4 text-red-600 dark:text-red-400" />
         </Button>
       </div>
@@ -71,7 +69,6 @@ export function ElementInspector({
         <span className="text-xs text-bambu-gray">{t('labelEditor.content')}</span>
         <input
           value={element.content}
-          disabled={disabled}
           onChange={(e) => patch({ content: e.target.value })}
           className="w-full mt-1 px-2 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded"
         />
@@ -85,7 +82,6 @@ export function ElementInspector({
               <button
                 key={placeholder.key}
                 type="button"
-                disabled={disabled}
                 onClick={() => insertPlaceholder(placeholder.key)}
                 title={`${placeholder.description} — ${t('labelEditor.example')}: ${placeholder.example}`}
                 className="px-1.5 py-0.5 text-xs bg-bambu-dark border border-bambu-dark-tertiary rounded hover:border-bambu-green disabled:opacity-50"
@@ -105,7 +101,6 @@ export function ElementInspector({
               type="number"
               step="0.5"
               value={element[field]}
-              disabled={disabled}
               onChange={(e) => {
                 const raw = number(e.target.value, element[field]);
                 const limit =
@@ -128,7 +123,6 @@ export function ElementInspector({
                 type="number"
                 step="0.5"
                 value={element.size_mm}
-                disabled={disabled}
                 onChange={(e) => patch({ size_mm: roundMm(Math.max(0.5, number(e.target.value, element.size_mm))) })}
                 className="w-full mt-1 px-1.5 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded"
               />
@@ -137,7 +131,6 @@ export function ElementInspector({
               <span className="text-xs text-bambu-gray">{t('labelEditor.fit')}</span>
               <select
                 value={element.fit}
-                disabled={disabled}
                 onChange={(e) => patch({ fit: e.target.value as 'shrink' | 'clip' })}
                 className="w-full mt-1 px-1.5 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded"
               >
@@ -155,7 +148,6 @@ export function ElementInspector({
               <span className="text-xs text-bambu-gray">{t('labelEditor.align')}</span>
               <select
                 value={element.align}
-                disabled={disabled}
                 onChange={(e) => patch({ align: e.target.value as 'left' | 'center' | 'right' })}
                 className="w-full mt-1 px-1.5 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded"
               >
@@ -168,7 +160,6 @@ export function ElementInspector({
               <span className="text-xs text-bambu-gray">{t('labelEditor.valign')}</span>
               <select
                 value={element.valign}
-                disabled={disabled}
                 onChange={(e) => patch({ valign: e.target.value as 'top' | 'middle' | 'bottom' })}
                 className="w-full mt-1 px-1.5 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded"
               >
@@ -184,7 +175,6 @@ export function ElementInspector({
               <input
                 type="checkbox"
                 checked={element.bold}
-                disabled={disabled}
                 onChange={(e) => patch({ bold: e.target.checked })}
               />
               {t('labelEditor.bold')}
@@ -193,7 +183,6 @@ export function ElementInspector({
               <input
                 type="checkbox"
                 checked={element.italic}
-                disabled={disabled}
                 onChange={(e) => patch({ italic: e.target.checked })}
               />
               {t('labelEditor.italic')}
@@ -207,7 +196,6 @@ export function ElementInspector({
           <span className="text-xs text-bambu-gray">{t('labelEditor.symbology')}</span>
           <select
             value={element.symbology}
-            disabled={disabled}
             onChange={(e) => patch({ symbology: e.target.value as (typeof SYMBOLOGIES)[number] })}
             className="w-full mt-1 px-1.5 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded"
           >

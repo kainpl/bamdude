@@ -24,7 +24,6 @@ import {
   AlignStartHorizontal,
   Copy,
   Loader2,
-  Lock,
   Plus,
   Printer,
   Redo2,
@@ -68,6 +67,7 @@ const PREVIEW_DOTS_PER_MM = 8;
 
 const asInput = (template: LabelTemplate): LabelTemplateInput => ({
   name: template.name,
+  description: template.description ?? '',
   width_mm: template.width_mm,
   height_mm: template.height_mm,
   shape: template.shape,
@@ -96,7 +96,6 @@ export function LabelTemplateEditor() {
   const [future, setFuture] = useState<LabelTemplateInput[]>([]);
 
   const open = templates?.find((row) => row.id === openId) ?? null;
-  const readOnly = open?.is_builtin ?? false;
 
   // Seed the draft when a different template is opened. Deliberately not
   // reactive to `templates` afterwards: a background refetch must not throw
@@ -197,7 +196,7 @@ export function LabelTemplateEditor() {
   }, [draft]);
 
   const setBox = (index: number, box: Box) => {
-    if (!draft || readOnly) return;
+    if (!draft) return;
     const elements = draft.elements.map((element, i) =>
       i === index ? ({ ...element, ...box } as LabelTemplateElement) : element,
     );
@@ -205,25 +204,25 @@ export function LabelTemplateEditor() {
   };
 
   const setElement = (index: number, next: LabelTemplateElement) => {
-    if (!draft || readOnly) return;
+    if (!draft) return;
     commit({ ...draft, elements: draft.elements.map((element, i) => (i === index ? next : element)) });
   };
 
   const addElement = (type: LabelTemplateElement['type']) => {
-    if (!draft || readOnly) return;
+    if (!draft) return;
     const element = newElement(type, draft.width_mm, draft.height_mm);
     commit({ ...draft, elements: [...draft.elements, element] });
     setSelected(draft.elements.length);
   };
 
   const removeElement = (index: number) => {
-    if (!draft || readOnly) return;
+    if (!draft) return;
     commit({ ...draft, elements: draft.elements.filter((_, i) => i !== index) });
     setSelected(null);
   };
 
   const align = (how: Alignment) => {
-    if (!draft || readOnly || selected === null) return;
+    if (!draft || selected === null) return;
     const element = draft.elements[selected];
     setBox(selected, alignBox(boxOf(element), how, draft.width_mm, draft.height_mm));
   };
@@ -231,7 +230,7 @@ export function LabelTemplateEditor() {
   // ⚠️ A canvas has no focus and cannot receive key events, so the keyboard
   // lives on the window while a template is open.
   useEffect(() => {
-    if (!draft || readOnly) return;
+    if (!draft) return;
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       // Never steal a keystroke from a field somebody is typing in.
@@ -264,7 +263,7 @@ export function LabelTemplateEditor() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [draft, readOnly, selected, undo, redo]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [draft, selected, undo, redo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Mutations ──────────────────────────────────────────────────────────────
 
@@ -295,6 +294,7 @@ export function LabelTemplateEditor() {
     mutationFn: () =>
       api.createLabelTemplate({
         name: t('labelEditor.newName'),
+        description: '',
         width_mm: 50,
         height_mm: 30,
         shape: 'rect',
@@ -376,9 +376,11 @@ export function LabelTemplateEditor() {
                   row.id === openId ? 'bg-bambu-green/15 text-white' : 'text-bambu-gray hover:bg-bambu-dark'
                 }`}
               >
-                {row.is_builtin && <Lock className="w-3 h-3 shrink-0" />}
-                <span className="truncate">{row.name}</span>
-                <span className="ml-auto text-xs shrink-0">
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{row.name}</span>
+                  {row.description && <span className="block truncate text-xs opacity-70">{row.description}</span>}
+                </span>
+                <span className="text-xs shrink-0">
                   {row.width_mm}×{row.height_mm}
                 </span>
               </button>
@@ -392,17 +394,11 @@ export function LabelTemplateEditor() {
 
             {draft && (
               <>
-                {readOnly && (
-                  <div className="flex items-center gap-2 p-2 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 text-xs">
-                    <Lock className="w-3.5 h-3.5 shrink-0" />
-                    <span>{t('labelEditor.builtinHint')}</span>
-                  </div>
-                )}
-
                 <div className="flex flex-wrap items-center gap-2">
                   <input
                     value={draft.name}
-                    disabled={readOnly}
+                    aria-label={t('labelEditor.name')}
+                    placeholder={t('labelEditor.name')}
                     onChange={(e) => commit({ ...draft, name: e.target.value })}
                     className="flex-1 min-w-40 px-2 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded"
                   />
@@ -413,11 +409,19 @@ export function LabelTemplateEditor() {
                   {(['text', 'qr', 'barcode', 'swatch'] as const)
                     .filter((type) => type !== 'swatch' || draft.target !== 'thermal')
                     .map((type) => (
-                      <Button key={type} variant="secondary" size="sm" disabled={readOnly} onClick={() => addElement(type)}>
+                      <Button key={type} variant="secondary" size="sm" onClick={() => addElement(type)}>
                         {t(`labelEditor.elementType.${type}`)}
                       </Button>
                     ))}
                 </div>
+
+                <input
+                  value={draft.description}
+                  aria-label={t('labelEditor.description')}
+                  placeholder={t('labelEditor.descriptionPlaceholder')}
+                  onChange={(e) => commit({ ...draft, description: e.target.value })}
+                  className="w-full px-2 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded"
+                />
 
                 {/* Which printer this design is drawn for. Colour survives one
                     of them and not the other, which is the whole reason the
@@ -429,7 +433,7 @@ export function LabelTemplateEditor() {
                   <select
                     id="label-target"
                     value={draft.target}
-                    disabled={readOnly}
+
                     onChange={(e) => commit({ ...draft, target: e.target.value as LabelTarget })}
                     className="px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   >
@@ -449,16 +453,16 @@ export function LabelTemplateEditor() {
                     <Redo2 className="w-4 h-4" />
                   </Button>
                   <span className="w-px h-5 bg-bambu-dark-tertiary mx-1" />
-                  <Button variant="secondary" size="sm" disabled={readOnly || selected === null} onClick={() => align('left')}>
+                  <Button variant="secondary" size="sm" disabled={selected === null} onClick={() => align('left')}>
                     <AlignStartHorizontal className="w-4 h-4 rotate-90" />
                   </Button>
-                  <Button variant="secondary" size="sm" disabled={readOnly || selected === null} onClick={() => align('hcenter')}>
+                  <Button variant="secondary" size="sm" disabled={selected === null} onClick={() => align('hcenter')}>
                     <AlignCenter className="w-4 h-4" />
                   </Button>
-                  <Button variant="secondary" size="sm" disabled={readOnly || selected === null} onClick={() => align('right')}>
+                  <Button variant="secondary" size="sm" disabled={selected === null} onClick={() => align('right')}>
                     <AlignEndHorizontal className="w-4 h-4 rotate-90" />
                   </Button>
-                  <Button variant="secondary" size="sm" disabled={readOnly || selected === null} onClick={() => align('vcenter')}>
+                  <Button variant="secondary" size="sm" disabled={selected === null} onClick={() => align('vcenter')}>
                     <AlignCenter className="w-4 h-4 rotate-90" />
                   </Button>
                 </div>
@@ -485,7 +489,7 @@ export function LabelTemplateEditor() {
                 )}
 
                 <div className="flex flex-wrap items-center gap-2">
-                  <Button onClick={() => save.mutate()} disabled={readOnly || !dirty || save.isPending}>
+                  <Button onClick={() => save.mutate()} disabled={!dirty || save.isPending}>
                     {save.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                     {t('common.save')}
                   </Button>
@@ -496,7 +500,7 @@ export function LabelTemplateEditor() {
                   <Button
                     variant="secondary"
                     onClick={() => openId && remove.mutate(openId)}
-                    disabled={readOnly || remove.isPending}
+                    disabled={remove.isPending}
                   >
                     <Trash2 className="w-4 h-4 text-red-600 dark:text-red-400" />
                   </Button>
@@ -550,7 +554,6 @@ export function LabelTemplateEditor() {
                 element={draft.elements[selected]}
                 widthMm={draft.width_mm}
                 heightMm={draft.height_mm}
-                disabled={readOnly}
                 onChange={(next) => setElement(selected, next)}
                 onDelete={() => removeElement(selected)}
               />

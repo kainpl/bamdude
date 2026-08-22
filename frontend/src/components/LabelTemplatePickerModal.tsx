@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, Loader2, Printer, CheckSquare, Square, Search } from 'lucide-react';
-import { api, type SpoolLabelTemplate, type InventorySpool } from '../api/client';
+import { X, Loader2, Printer, CheckSquare, Square, Search, FileText } from 'lucide-react';
+import { api, type InventorySpool } from '../api/client';
 import { getSwatchStyle } from '../utils/colors';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
@@ -32,23 +32,16 @@ interface LabelTemplatePickerModalProps {
   spoolDisplayTemplate?: string;
 }
 
-interface TemplateOption {
-  value: SpoolLabelTemplate;
-  i18nKey: string;
-}
+/** ⚠️ The same slack ``label_template.py`` allows, and it has to be: a design
+ *  drawn to exactly the cell size is a design the backend accepts and this
+ *  dialog must not grey out. */
+const FIT_TOLERANCE_MM = 0.5;
 
-// #1426 replaced the incorrect ``ams_30x15`` preset (30×15 mm didn't
-// fit any documented variant of MakerWorld model 752566) with two
-// holder-specific sizes: 74×33 for the printable-label STL, 75×55 for
-// the cardstock-insert variant.
-const TEMPLATE_OPTIONS: TemplateOption[] = [
-  { value: 'ams_holder_74x33', i18nKey: 'amsHolderSmall' },
-  { value: 'ams_holder_75x55', i18nKey: 'amsHolderLarge' },
-  { value: 'box_40x30', i18nKey: 'box40x30' },
-  { value: 'box_62x29', i18nKey: 'box' },
-  { value: 'avery_l7160', i18nKey: 'averyL7160' },
-  { value: 'avery_5160', i18nKey: 'avery5160' },
-];
+/** How a batch is going out. ``driver`` is the OS print driver — a PDF, which
+ *  may be one label per page or a whole sheet of them, and may be in colour.
+ *  ``device`` is a thermal printer on somebody's desk, reached through the
+ *  bridge running there. */
+type PrintRoute = 'driver' | 'device';
 
 function openBlobInNewTab(blob: Blob): void {
   const url = window.URL.createObjectURL(blob);
@@ -145,7 +138,15 @@ export function LabelTemplatePickerModal({
 }: LabelTemplatePickerModalProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
-  const [pending, setPending] = useState<SpoolLabelTemplate | null>(null);
+  // The design being printed, by id — the dialog used to hold one of six
+  // hard-coded names here, which is what kept the catalogue invisible.
+  const [pending, setPending] = useState<number | null>(null);
+  // Which way this batch is going out, once there is a choice to make. Stays
+  // null until somebody picks; when there is no desk printer to pick, the
+  // question is never asked and the driver is simply what happens.
+  const [route, setRoute] = useState<PrintRoute | null>(null);
+  const [sheetId, setSheetId] = useState<number | null>(null);
+  const [deviceTemplateId, setDeviceTemplateId] = useState<number | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [search, setSearch] = useState('');
   const [materialFilter, setMaterialFilter] = useState<string>('');
@@ -168,6 +169,48 @@ export function LabelTemplatePickerModal({
   });
   const devices = (allDevices ?? []).filter((d: LabelDevice) => d.enabled);
 
+  // The catalogue, which is the whole point: adding a design adds an option
+  // here, and renaming one renames it. Sheets are paper and only ever apply to
+  // the driver — a thermal printer feeds a roll, not a page of stickers.
+  const { data: templates } = useQuery({
+    queryKey: ['label-templates'],
+    queryFn: api.getLabelTemplates,
+    enabled: isOpen,
+  });
+  const { data: sheets } = useQuery({
+    queryKey: ['label-sheets'],
+    queryFn: api.getLabelSheets,
+    enabled: isOpen,
+  });
+
+  // A route step nobody can answer is a step that only costs a click.
+  const routeIsAChoice = deviceLabels && devices.length > 0;
+  const effectiveRoute: PrintRoute | null = routeIsAChoice ? route : 'driver';
+  const wantedTarget = effectiveRoute === 'device' ? 'thermal' : 'driver';
+  const designs = (templates ?? []).filter((row) => row.target === wantedTarget);
+  const sheet = (sheets ?? []).find((row) => row.id === sheetId) ?? null;
+
+  /** Why this design cannot go on the chosen paper, or null if it can.
+   *
+   * ⚠️ Said here as well as refused there. A design prints at its own size or
+   * not at all — fractional scaling of a label destroys bar ratios silently —
+   * so the honest answer is a sentence, and it is cheaper to read it before
+   * clicking than after. */
+  const cellComplaint = (design: { width_mm: number; height_mm: number }): string | null => {
+    if (!sheet) return null;
+    const fits =
+      design.width_mm <= sheet.cell_width_mm + FIT_TOLERANCE_MM &&
+      design.height_mm <= sheet.cell_height_mm + FIT_TOLERANCE_MM;
+    return fits
+      ? null
+      : t('inventory.labels.doesNotFitCell', {
+          w: design.width_mm,
+          h: design.height_mm,
+          cw: sheet.cell_width_mm,
+          ch: sheet.cell_height_mm,
+        });
+  };
+
   const [sending, setSending] = useState<number | null>(null);
   const send = useMutation({ mutationFn: api.createLabelJobs });
 
@@ -187,6 +230,9 @@ export function LabelTemplatePickerModal({
       setMonochrome(false);
       setPending(null);
       setSending(null);
+      setRoute(null);
+      setSheetId(null);
+      setDeviceTemplateId(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
@@ -288,7 +334,11 @@ export function LabelTemplatePickerModal({
     const spools = ids.map((id) => ({ id, display_name: displayNameById.get(id) ?? null }));
     setSending(device.id);
     try {
-      const jobs = await send.mutateAsync({ device_id: device.id, spools });
+      const jobs = await send.mutateAsync({
+        device_id: device.id,
+        spools,
+        ...(deviceTemplateId !== null ? { template_id: deviceTemplateId } : {}),
+      });
       showToast(t('inventory.labels.queuedOnDevice', { count: jobs.length }), 'success');
       onClose();
     } catch (err) {
@@ -299,7 +349,7 @@ export function LabelTemplatePickerModal({
     }
   }
 
-  async function handlePick(template: SpoolLabelTemplate) {
+  async function handlePick(templateId: number) {
     if (noSelection || pending) return;
     // Order matters: the backend (labels.py) prints labels in the same
     // order we send IDs. Use the sorted list so a "by colour" sort
@@ -313,11 +363,17 @@ export function LabelTemplatePickerModal({
       id,
       display_name: displayNameById.get(id) ?? null,
     }));
-    setPending(template);
+    setPending(templateId);
+    const body = {
+      spools,
+      template_id: templateId,
+      ...(sheetId !== null ? { sheet_id: sheetId } : {}),
+      monochrome,
+    };
     try {
       const blob = spoolmanMode
-        ? await api.printSpoolmanSpoolLabels({ spools, template, monochrome })
-        : await api.printSpoolLabels({ spools, template, monochrome });
+        ? await api.printSpoolmanSpoolLabels(body)
+        : await api.printSpoolLabels(body);
       openBlobInNewTab(blob);
       onClose();
     } catch (err) {
@@ -536,75 +592,167 @@ export function LabelTemplatePickerModal({
           </label>
         </div>
 
-        {/* A printer on somebody's desk, reached through the bridge running
-            there. Appears only when the subsystem is on AND a device has been
-            adopted — otherwise this is a button that can only disappoint.
-
-            ⚠️ The PDF templates below stay the default and are untouched. This
-            is an additional destination, not a replacement: most people
-            printing labels are printing a sheet of them on ordinary paper. */}
-        {devices.length > 0 && (
-          <div className="px-3 pt-1 pb-2">
-            <div className="p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark space-y-2">
-              <div className="text-xs font-medium text-white">
-                {t('inventory.labels.sendToDevice')}
-              </div>
-              {devices.map((device) => (
-                <button
-                  key={device.id}
-                  disabled={noSelection || pending !== null || sending !== null}
-                  onClick={() => sendToDevice(device)}
-                  className="w-full text-left p-2 rounded-lg border border-bambu-dark-tertiary hover:border-bambu-green hover:bg-bambu-green/10 disabled:opacity-50 disabled:cursor-not-allowed transition flex items-center gap-3"
-                >
-                  <Printer className="w-4 h-4 text-bambu-gray shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm text-white truncate">
-                      {device.name || device.model || device.installation_id}
-                    </div>
-                    <div className="text-xs text-bambu-gray truncate">
-                      {device.cassette_width_mm && device.cassette_height_mm
-                        ? t('inventory.labels.deviceCassette', {
-                            width: device.cassette_width_mm,
-                            height: device.cassette_height_mm,
-                          })
-                        : t('inventory.labels.deviceCassetteUnknown')}
-                      {!device.printer_reachable && ` — ${t('inventory.labels.deviceOffline')}`}
-                    </div>
-                  </div>
-                  {sending === device.id && (
-                    <Loader2 className="w-4 h-4 animate-spin text-bambu-green shrink-0" />
-                  )}
-                </button>
-              ))}
+        {/* ── How this batch goes out ──────────────────────────────────
+            Asked only when there is something to answer: a desk printer that
+            has been adopted and switched on. Otherwise the driver is not a
+            choice, it is simply what happens, and a step with one button is a
+            click that teaches nothing. */}
+        {routeIsAChoice && route === null && (
+          <div className="px-3 pt-1 pb-2 space-y-2">
+            <div className="text-xs font-medium text-white">{t('inventory.labels.route.title')}</div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button
+                disabled={noSelection}
+                onClick={() => setRoute('driver')}
+                className="text-left p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark hover:border-bambu-green disabled:opacity-50 flex items-center gap-2"
+              >
+                <FileText className="w-4 h-4 text-bambu-gray shrink-0" />
+                <span className="min-w-0">
+                  <span className="block font-medium text-white text-sm">{t('inventory.labels.route.driver')}</span>
+                  <span className="block text-xs text-bambu-gray">{t('inventory.labels.route.driverHint')}</span>
+                </span>
+              </button>
+              <button
+                disabled={noSelection}
+                onClick={() => setRoute('device')}
+                className="text-left p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark hover:border-bambu-green disabled:opacity-50 flex items-center gap-2"
+              >
+                <Printer className="w-4 h-4 text-bambu-gray shrink-0" />
+                <span className="min-w-0">
+                  <span className="block font-medium text-white text-sm">{t('inventory.labels.route.device')}</span>
+                  <span className="block text-xs text-bambu-gray">{t('inventory.labels.route.deviceHint')}</span>
+                </span>
+              </button>
             </div>
           </div>
         )}
 
-        {/* Templates — 2-col grid on >= sm so all 5 plus the Cancel footer fit
-            inside max-h-[90vh] even when browser chrome eats into the viewport
-            (upstream #1230 / 4c0a12b9). Stacked single column on mobile widths. */}
-        <div className="px-3 pt-1 pb-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
-          {TEMPLATE_OPTIONS.map((opt) => {
-            const isPending = pending === opt.value;
-            const label = t(`inventory.labels.templates.${opt.i18nKey}.label`);
-            const hint = t(`inventory.labels.templates.${opt.i18nKey}.hint`);
-            return (
+        {effectiveRoute !== null && (
+          <div className="px-3 pt-1 pb-2 space-y-2">
+            {routeIsAChoice && (
               <button
-                key={opt.value}
-                disabled={noSelection || pending !== null}
-                onClick={() => handlePick(opt.value)}
-                title={`${label} — ${hint}`}
-                className="w-full text-left p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark hover:border-bambu-green hover:bg-bambu-green/10 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-bambu-dark-tertiary disabled:hover:bg-bambu-dark transition flex items-center gap-3"
+                onClick={() => setRoute(null)}
+                disabled={pending !== null || sending !== null}
+                className="text-xs text-bambu-gray hover:text-white disabled:opacity-50"
               >
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-white text-sm truncate">{label}</div>
-                  <div className="text-xs text-bambu-gray mt-0.5 truncate">{hint}</div>
-                </div>
-                {isPending && <Loader2 className="w-4 h-4 animate-spin text-bambu-green shrink-0" />}
+                ← {t('inventory.labels.route.back')}
               </button>
-            );
-          })}
-        </div>
+            )}
+
+            {/* ⚠️ Paper is a driver-only question. A desk label printer feeds a
+                roll: there is no page to tile, and offering one would be a
+                setting that cannot do anything. */}
+            {effectiveRoute === 'driver' && (sheets ?? []).length > 0 && (
+              <label className="flex flex-wrap items-center gap-2 text-xs text-bambu-gray">
+                {t('inventory.labels.sheet.label')}
+                <select
+                  value={sheetId ?? ''}
+                  onChange={(e) => setSheetId(e.target.value === '' ? null : Number(e.target.value))}
+                  className="px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                >
+                  <option value="">{t('inventory.labels.sheet.none')}</option>
+                  {(sheets ?? []).map((row) => (
+                    <option key={row.id} value={row.id}>
+                      {row.name} · {row.cols}×{row.rows}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            {/* The design. This is the catalogue — six hard-coded buttons used
+                to sit here while the table they were meant to represent was
+                ignored, so adding a design added nothing and renaming one
+                renamed nothing. */}
+            {designs.length === 0 ? (
+              <p className="text-sm text-bambu-gray p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark">
+                {t('inventory.labels.noDesigns')}
+              </p>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {designs.map((design) => {
+                  const complaint = cellComplaint(design);
+                  return (
+                    <button
+                      key={design.id}
+                      disabled={noSelection || pending !== null || complaint !== null}
+                      onClick={() => handlePick(design.id)}
+                      title={complaint ?? [design.name, design.description].filter(Boolean).join(' — ')}
+                      className="w-full text-left p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark hover:border-bambu-green disabled:opacity-50 disabled:hover:border-bambu-dark-tertiary flex items-center gap-2"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-white text-sm truncate">{design.name}</div>
+                        <div className="text-xs text-bambu-gray mt-0.5 truncate">
+                          {complaint ?? design.description}
+                        </div>
+                      </div>
+                      <span className="text-xs text-bambu-gray shrink-0">
+                        {design.width_mm}×{design.height_mm}
+                      </span>
+                      {pending === design.id && (
+                        <Loader2 className="w-4 h-4 animate-spin text-bambu-green shrink-0" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Which printer, once the design is settled. Sending happens on
+                this click — the design above is the batch's shape, the device
+                below is where it goes. */}
+            {effectiveRoute === 'device' && (
+              <div className="p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark space-y-2">
+                <div className="text-xs font-medium text-white">{t('inventory.labels.sendToDevice')}</div>
+                <label className="flex flex-wrap items-center gap-2 text-xs text-bambu-gray">
+                  {t('inventory.labels.deviceDesign')}
+                  <select
+                    value={deviceTemplateId ?? ''}
+                    onChange={(e) => setDeviceTemplateId(e.target.value === '' ? null : Number(e.target.value))}
+                    className="px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  >
+                    {/* ⚠️ Auto is not "some default": the server picks the design
+                        whose size matches the stock the printer says is loaded,
+                        and refuses rather than guessing when nothing matches. */}
+                    <option value="">{t('inventory.labels.deviceDesignAuto')}</option>
+                    {designs.map((design) => (
+                      <option key={design.id} value={design.id}>
+                        {design.name} · {design.width_mm}×{design.height_mm}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {devices.map((device) => (
+                  <button
+                    key={device.id}
+                    disabled={noSelection || pending !== null || sending !== null}
+                    onClick={() => sendToDevice(device)}
+                    className="w-full text-left p-2 rounded-lg border border-bambu-dark-tertiary hover:border-bambu-green disabled:opacity-50 flex items-center gap-2"
+                  >
+                    <Printer className="w-4 h-4 text-bambu-gray shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm text-white truncate">
+                        {device.name || device.model || device.installation_id}
+                      </div>
+                      <div className="text-xs text-bambu-gray truncate">
+                        {device.cassette_width_mm && device.cassette_height_mm
+                          ? t('inventory.labels.deviceCassette', {
+                              width: device.cassette_width_mm,
+                              height: device.cassette_height_mm,
+                            })
+                          : t('inventory.labels.deviceCassetteUnknown')}
+                        {!device.printer_reachable && ` — ${t('inventory.labels.deviceOffline')}`}
+                      </div>
+                    </div>
+                    {sending === device.id && (
+                      <Loader2 className="w-4 h-4 animate-spin text-bambu-green shrink-0" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="flex justify-end gap-2 px-5 py-2 border-t border-bambu-dark-tertiary">
           <Button variant="secondary" onClick={onClose} disabled={pending !== null}>

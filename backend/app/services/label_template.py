@@ -252,6 +252,7 @@ class LabelTemplateSpec(BaseModel):
     """One label design: how big it is and what sits on it."""
 
     name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=300)
     width_mm: float = Field(gt=0, le=500)
     height_mm: float = Field(gt=0, le=500)
     #: ⚠️ Stored, and only ``rect`` is drawn for now. Niimbot sells round stock —

@@ -184,11 +184,32 @@ class TestNamingADesignDirectly:
         assert response.status_code == 400
         assert "does not fit" in response.json()["detail"]
 
-    async def test_a_sheet_without_a_design_is_refused(self, async_client: AsyncClient, a_spool, seeded):
+    async def test_one_of_the_six_names_beside_a_sheet_is_refused(self, async_client: AsyncClient, a_spool, seeded):
+        """⚠️ Two of those names ARE sheets, so this answers "which paper"
+        twice. Ignoring the loser is the quiet failure — a batch on the wrong
+        stock — so it is refused instead."""
         response = await async_client.post(
             "/api/v1/inventory/labels",
             json={"spools": [{"id": a_spool.id}], "template": "box_40x30", "sheet_id": seeded["avery_5160"]},
         )
+        assert response.status_code == 422
+
+    async def test_a_sheet_on_its_own_prints_a_page_of_them(self, async_client: AsyncClient, a_spool, seeded):
+        """⚠️ It used to be refused, and it should never have been: the legacy
+        name ``avery_5160`` does exactly this — builds the design to the cell —
+        so refusing the same request by id made the newer path the weaker one,
+        and forced the print dialog to demand a design it does not need."""
+        response = await async_client.post(
+            "/api/v1/inventory/labels",
+            json={"spools": [{"id": a_spool.id}], "sheet_id": seeded["avery_5160"]},
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.content.startswith(b"%PDF")
+
+    async def test_naming_nothing_at_all_is_still_refused(self, async_client: AsyncClient, a_spool):
+        response = await async_client.post("/api/v1/inventory/labels", json={"spools": [{"id": a_spool.id}]})
+
         assert response.status_code == 422
 
 

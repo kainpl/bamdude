@@ -16,6 +16,9 @@ from backend.app.services.label_template import LabelElement
 
 class LabelTemplateIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+    #: One line saying what the label is for. Shown beside the name wherever a
+    #: design is offered — the print dialog used to hard-code six of these.
+    description: str = Field(default="", max_length=300)
     width_mm: float = Field(gt=0, le=500)
     height_mm: float = Field(gt=0, le=500)
     shape: str = "rect"
@@ -29,13 +32,17 @@ class LabelTemplateIn(BaseModel):
 class LabelTemplateOut(BaseModel):
     id: int
     name: str
+    description: str = ""
     width_mm: float
     height_mm: float
     shape: str
     target: str
     elements: list[LabelElement]
-    #: Present for the four designs the label API names. A row that has one is
-    #: read-only — see the duplicate endpoint.
+    #: Present for the designs that shipped with BamDude. It resolves the names
+    #: ``POST /inventory/labels`` accepts, and marks where a row came from.
+    #:
+    #: ⚠️ It no longer freezes the row — a seeded design is a starting point a
+    #: person may redraw, which is why the editor offers every one of them.
     builtin_key: str | None
     is_builtin: bool
     created_at: datetime | None = None

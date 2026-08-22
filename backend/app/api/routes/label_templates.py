@@ -4,11 +4,19 @@ Printing is not here — that stays on ``/inventory/labels`` and ``/spoolman/lab
 which now take a ``template_id`` as well as the six names they always took.
 This router only answers what a design *is*.
 
-⚠️ **A built-in cannot be edited or deleted.** Its ``builtin_key`` is a name the
-label API accepts, so an automation that has printed the same label for a year
-must not quietly start printing a different one because somebody dragged a box.
-Duplicating gives an editable copy, which is what "edit a built-in" actually
-means.
+⚠️ **The seeded designs and sheets are a starting set, not a frozen one.** They
+used to be read-only, on the reasoning that ``builtin_key`` is a name the label
+API accepts and an automation printing the same label for a year must not find
+it redrawn. That protected the wrong thing: it left the only designs most people
+ever see as the only ones they could not adjust, and pushed everybody into
+"duplicate, edit the copy, now two rows look almost the same".
+
+What the key still does is resolve those names and record where a row came from.
+An edit therefore reaches the automations too, which is the intended half of
+this: ``{"template": "box_40x30"}`` prints the box label as this installation
+draws it. Deleting the row does not break that name — the resolver falls back to
+the definition BamDude ships, so deleting a seeded design reads as "put it back
+the way it came".
 """
 
 from __future__ import annotations
@@ -57,6 +65,7 @@ def _to_out(row: LabelTemplate) -> LabelTemplateOut:
     return LabelTemplateOut(
         id=row.id,
         name=row.name,
+        description=row.description or "",
         width_mm=row.width_mm,
         height_mm=row.height_mm,
         shape=row.shape,
@@ -217,15 +226,6 @@ async def update_sheet(
     _: User | None = RequirePermission(Permission.LABEL_TEMPLATES_WRITE),
 ) -> LabelSheetOut:
     row = await _load_sheet(db, sheet_id)
-    if row.builtin_key is not None:
-        # ⚠️ Same rule as a built-in design, for the same reason: an automation
-        # printing onto Avery 5160 for a year must not find the grid moved under
-        # it. Duplicating is how you "edit" one.
-        raise HTTPException(
-            409,
-            f"'{row.name}' is a built-in sheet and cannot be edited — duplicate it to make a copy you own.",
-        )
-
     _as_sheet_spec(body)
     for field, value in body.model_dump().items():
         setattr(row, field, value)
@@ -267,8 +267,6 @@ async def delete_sheet(
     _: User | None = RequirePermission(Permission.LABEL_TEMPLATES_WRITE),
 ) -> None:
     row = await _load_sheet(db, sheet_id)
-    if row.builtin_key is not None:
-        raise HTTPException(409, f"'{row.name}' is a built-in sheet and cannot be deleted.")
     # ⚠️ Nothing references a sheet — that is the point of it not holding a
     # design — so there is no in-use check to make here.
     await db.delete(row)
@@ -344,6 +342,7 @@ async def create_template(
     _as_spec(body)
     row = LabelTemplate(
         name=body.name,
+        description=body.description,
         width_mm=body.width_mm,
         height_mm=body.height_mm,
         shape=body.shape,
@@ -366,14 +365,9 @@ async def update_template(
     _: User | None = RequirePermission(Permission.LABEL_TEMPLATES_WRITE),
 ) -> LabelTemplateOut:
     row = await _load(db, template_id)
-    if row.is_builtin:
-        raise HTTPException(
-            409,
-            f"'{row.name}' is a built-in design and cannot be edited — duplicate it to make a copy you own",
-        )
-
     _as_spec(body)
     row.name = body.name
+    row.description = body.description
     row.width_mm = body.width_mm
     row.height_mm = body.height_mm
     row.shape = body.shape
@@ -397,6 +391,7 @@ async def duplicate_template(
     source = await _load(db, template_id)
     copy = LabelTemplate(
         name=f"{source.name} (copy)"[:120],
+        description=source.description,
         width_mm=source.width_mm,
         height_mm=source.height_mm,
         shape=source.shape,
@@ -423,8 +418,6 @@ async def delete_template(
     _: User | None = RequirePermission(Permission.LABEL_TEMPLATES_WRITE),
 ) -> None:
     row = await _load(db, template_id)
-    if row.is_builtin:
-        raise HTTPException(409, f"'{row.name}' is a built-in design and cannot be deleted")
     await db.delete(row)
     await db.commit()
 

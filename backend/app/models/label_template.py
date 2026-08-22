@@ -22,6 +22,10 @@ class LabelTemplate(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120))
+    #: One line saying what the label is for, shown beside the name in the
+    #: print dialog. Editable, which is why it is text and not a translation
+    #: key — see m150.
+    description: Mapped[str] = mapped_column(String(300), default="", server_default="")
     width_mm: Mapped[float] = mapped_column(Float)
     height_mm: Mapped[float] = mapped_column(Float)
     #: ``rect`` or ``round``. Stored from the start and only ``rect`` is drawn:
