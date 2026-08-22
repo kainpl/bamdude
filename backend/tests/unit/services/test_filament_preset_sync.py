@@ -115,3 +115,62 @@ async def test_upsert_family_is_ecosystem_global(db_session):
     rows = (await db_session.execute(select(UserFilamentFamily))).scalars().all()
     assert len(rows) == 1
     assert rows[0].ecosystem == "local" and rows[0].orphaned is False
+
+
+@pytest.mark.asyncio
+async def test_sync_folds_pushed_presets_instead_of_duplicating(db_session, monkeypatch):
+    """Spec B §5 dedup: a listing row whose setting_id equals some row's
+    pushed_cloud_id is the SAME preset; a vanished pushed id is cleared."""
+    db_session.add_all(
+        [
+            UserFilamentPreset(  # pushed, still present in the cloud listing
+                owner_user_id=None,
+                ecosystem="orca",
+                source="local",
+                local_preset_id=None,
+                name="Mine @P1S",
+                family_filament_id="Paaaaaaa",
+                pushed_cloud_id="PFUS_MINE",
+            ),
+            UserFilamentPreset(  # pushed, deleted from BS since
+                owner_user_id=None,
+                ecosystem="orca",
+                source="local",
+                local_preset_id=None,
+                name="Gone @P1S",
+                family_filament_id="Pbbbbbbb",
+                pushed_cloud_id="PFUS_GONE",
+                push_dirty=True,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    listing = {
+        "filament": {
+            "private": [
+                {
+                    "setting_id": "PFUS_MINE",
+                    "name": "Mine @P1S",
+                    "filament_id": "Paaaaaaa",
+                    "filament_type": "PETG",
+                    "nozzle_temperature": [220, 260],
+                },
+            ]
+        }
+    }
+    cloud = AsyncMock()
+    cloud.is_authenticated = True
+    cloud.get_slicer_settings = AsyncMock(return_value=listing)
+    cloud.close = AsyncMock()
+    monkeypatch.setattr(sync, "_build_bambu_cloud", AsyncMock(return_value=cloud))
+
+    outcome = await sync.sync_bambu_presets_for_user(db_session, None)
+    assert outcome.ok
+
+    rows = (await db_session.execute(select(UserFilamentPreset))).scalars().all()
+    assert len(rows) == 2  # no cloud_bambu duplicate was minted
+    by_name = {r.name: r for r in rows}
+    assert by_name["Mine @P1S"].pushed_cloud_id == "PFUS_MINE"
+    gone = by_name["Gone @P1S"]
+    assert gone.pushed_cloud_id is None and gone.push_dirty is False

@@ -140,6 +140,17 @@ async def update_local_preset(
     if data.name is not None:
         preset.name = data.name
 
+    if data.setting is not None and preset.source == "authored":
+        # Identity fields define the family (spec B §3) — pin them to the
+        # stored values; the editor changes content, never identity.
+        try:
+            current = json.loads(preset.setting or "{}")
+        except ValueError:
+            current = {}
+        for key in ("filament_id", "filament_vendor", "filament_type"):
+            if key in current:
+                data.setting[key] = current[key]
+
     if data.setting is not None:
         # Re-resolve and extract core fields
         resolved = await resolve_preset(data.setting, preset.preset_type, db)
@@ -160,6 +171,18 @@ async def update_local_preset(
     from backend.app.services.filament_preset_sync import absorb_local_preset
 
     await absorb_local_preset(db, preset)  # keep the identity mirror current
+
+    if data.setting is not None:
+        from backend.app.models.user_filament import UserFilamentPreset
+
+        mirror = (
+            (await db.execute(select(UserFilamentPreset).where(UserFilamentPreset.local_preset_id == preset.id)))
+            .scalars()
+            .first()
+        )
+        if mirror is not None and mirror.pushed_cloud_id:
+            mirror.push_dirty = True  # explicit Re-push only — never automatic
+
     return LocalPresetResponse.model_validate(preset)
 
 

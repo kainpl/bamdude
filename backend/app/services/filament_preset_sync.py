@@ -214,6 +214,31 @@ async def sync_bambu_presets_for_user(db: AsyncSession, user: User | None) -> Sy
             "nozzle_temp_max": temps[1] if len(temps) > 1 else None,
             "updated_time": row.get("update_time"),
         }
+    # Spec B §5 dedup: a listing row whose setting_id equals a local row's
+    # pushed_cloud_id is OUR pushed copy — the local row IS the identity, so
+    # it never mints a cloud_bambu duplicate. A pushed id gone from the
+    # listing means the copy was deleted in BS: the family shows as
+    # no-longer-pushed.
+    pushed_rows = (
+        (
+            await db.execute(
+                select(UserFilamentPreset).where(
+                    UserFilamentPreset.source == "local",
+                    UserFilamentPreset.pushed_cloud_id.is_not(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in pushed_rows:
+        if row.pushed_cloud_id in incoming:
+            incoming.pop(row.pushed_cloud_id)
+        else:
+            row.pushed_cloud_id = None
+            row.pushed_at = None
+            row.push_dirty = False
+
     owner_id = user.id if user is not None else None
     return await _reconcile(db, owner_id=owner_id, ecosystem="bambu", source="cloud_bambu", incoming=incoming)
 

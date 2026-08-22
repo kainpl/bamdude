@@ -112,6 +112,23 @@ async def add_family_printers(
     )
 
 
+@router.post("/{filament_id}/push")
+async def push_family_endpoint(
+    filament_id: str,
+    ecosystem: str = Query("bambu", pattern="^(bambu|orca)$"),
+    current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
+    db: AsyncSession = Depends(get_db),
+):
+    """Push (or explicitly re-push) the family's presets to the cloud."""
+    from backend.app.services.filament_authoring import AuthoringError
+    from backend.app.services.filament_push import push_family
+
+    try:
+        return {"results": await push_family(db, filament_id=filament_id, ecosystem=ecosystem, user=current_user)}
+    except AuthoringError as e:
+        raise HTTPException(400, str(e))
+
+
 @router.delete("/{filament_id}")
 async def delete_family_endpoint(
     filament_id: str,
