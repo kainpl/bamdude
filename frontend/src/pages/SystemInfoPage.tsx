@@ -30,6 +30,7 @@ import {
 import { api, supportApi, type Printer as PrinterModel } from '../api/client';
 import { Card } from '../components/Card';
 import { LogViewer } from '../components/LogViewer';
+import { LoadingBlock } from '../components/LoadingBlock';
 import { ConnectionDiagnosticModal } from '../components/ConnectionDiagnostic';
 import { SystemHealthPanel } from '../components/SystemHealthPanel';
 import { LogArchivesPanel } from '../components/LogArchivesPanel';
@@ -528,7 +529,7 @@ export function SystemInfoPage() {
         {systemHealth ? (
           <SystemHealthPanel result={systemHealth} />
         ) : (
-          <p className="text-sm text-bambu-gray">{t('common.loading')}</p>
+          <LoadingBlock label={t('common.loading')} className="py-6 text-bambu-gray" />
         )}
       </Section>
 

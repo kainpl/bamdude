@@ -61,6 +61,7 @@ import {
   Archive as ArchiveIcon,
 } from 'lucide-react';
 import { MakerWorldIcon } from '../components/BrandIcons';
+import { LoadingBlock } from '../components/LoadingBlock';
 import { api } from '../api/client';
 import { openInSlicer, type SlicerType } from '../utils/slicer';
 import { printerLabel, comparePrinterLike } from '../utils/printerLabel';
@@ -3902,7 +3903,7 @@ export function ArchivesPage() {
 
       {/* Archives */}
       {isLoading ? (
-        <div className="text-center py-12 text-bambu-gray">{t('archives.loadingArchives')}</div>
+        <LoadingBlock label={t('archives.loadingArchives')} className="py-12 text-bambu-gray" />
       ) : archives?.length === 0 ? (
         <Card>
           <CardContent className="text-center py-12">

@@ -100,6 +100,8 @@
 
 ### Changed
 
+- **Waiting for a page now looks like waiting.** Statistics replaced the whole page — title, timeframe picker, export buttons — with one line of grey text until every number had arrived, so on a farm with a long archive it looked broken for as long as the query took, and the controls that could have narrowed it were the part you could not reach. The page is drawn immediately now and only the dashboard waits. Everywhere a "Loading…" label used to sit motionless — Archives, Printers, System Information, the stream overlay — there is a spinner beside it, because a still label and a page that has given up look exactly alike.
+
 - **Statistics answers the energy question both ways, and the setting is gone.** Cost tracking had an **Energy display mode** that decided whether the energy tiles meant "what the prints drew" or "what the plugs counted" — so the number on the page could not be read without opening Settings to find out which one it was. Both are shown now, in an **Energy** card of their own: **Energy While Printing** and its cost, measured between each print's start and end; **Energy At The Plug** and its cost, everything the smart plugs counted, idle and warm-up included. The gap between the two pairs is what standing still costs, which is the one figure the setting made impossible to see.
 
     Nothing needs changing after the upgrade, and the per-print energy recorded on each archive is untouched. A dashboard you have already arranged puts the new card at the end — drag it, or use **Reset layout**.

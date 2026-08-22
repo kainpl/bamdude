@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ZigbeeStatusBadge } from '../components/zigbee/ZigbeeStatusBadge';
 import { useTranslation } from 'react-i18next';
 import { PrinterLocationSelect } from '../components/PrinterLocationSelect';
+import { LoadingBlock } from '../components/LoadingBlock';
 import { formatFileSize } from '../utils/file';
 import { compareLocationNames } from '../utils/locationOrder';
 import { buildLocationIndex } from '../utils/locationTree';
@@ -9476,7 +9477,7 @@ export function PrintersPage() {
 
 
       {isLoading ? (
-        <div className="text-center py-12 text-bambu-gray">{t('common.loading')}</div>
+        <LoadingBlock label={t('common.loading')} className="py-12 text-bambu-gray" />
       ) : printers?.length === 0 ? (
         <Card>
           <CardContent className="text-center py-12">

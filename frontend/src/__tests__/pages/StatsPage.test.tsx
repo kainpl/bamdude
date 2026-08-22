@@ -534,3 +534,38 @@ describe('StatsPage', () => {
     });
   });
 });
+
+describe('while the numbers are still loading', () => {
+  /**
+   * ⚠️ The page used to be an early return: one line of centred text in place
+   * of EVERYTHING — title, timeframe picker, export buttons. On a farm with a
+   * long archive it looked broken for as long as the query took, and the
+   * controls that could have narrowed the range were exactly the part you
+   * could not reach.
+   */
+  beforeEach(() => {
+    server.use(
+      // Never resolves: the page has to be usable in this state, not merely
+      // survive it.
+      http.get('/api/v1/archives/stats', () => new Promise(() => {})),
+    );
+  });
+
+  it('draws the title straight away', async () => {
+    render(<StatsPage />);
+
+    expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeInTheDocument();
+  });
+
+  it('offers the controls that would narrow the query', async () => {
+    render(<StatsPage />);
+
+    expect(await screen.findByRole('button', { name: /reset layout/i })).toBeInTheDocument();
+  });
+
+  it('says it is working rather than looking empty', async () => {
+    render(<StatsPage />);
+
+    expect(await screen.findByText('Loading statistics...')).toBeInTheDocument();
+  });
+});

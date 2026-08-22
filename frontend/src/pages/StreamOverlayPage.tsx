@@ -3,6 +3,7 @@ import { useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Layers, Clock, Timer, Printer, Flame, Square, Box } from 'lucide-react';
+import { LoadingBlock } from '../components/LoadingBlock';
 import { api, ApiError, withStreamToken } from '../api/client';
 import { formatDuration, formatETA, type TimeFormat } from '../utils/date';
 
@@ -367,7 +368,10 @@ export function StreamOverlayPage() {
   if (!status) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
-        <p className="text-gray-400">{t('common.loading')}</p>
+        {/* Lighter than the page default: this is composited into somebody's
+            broadcast, so it stays quiet — the spinner is the whole point, the
+            chrome around it is not. */}
+        <LoadingBlock label={t('common.loading')} className="text-gray-400" />
       </div>
     );
   }

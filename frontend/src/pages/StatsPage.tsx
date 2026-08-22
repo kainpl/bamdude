@@ -32,6 +32,7 @@ import {
   ResponsiveContainer,
 } from 'recharts';
 import { Button } from '../components/Button';
+import { LoadingBlock } from '../components/LoadingBlock';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { api, type ArchiveSlim, type Printer } from '../api/client';
@@ -1186,14 +1187,6 @@ export function StatsPage() {
   const printerById = new Map((printers || []).map((p) => [String(p.id), p]));
   const printDates = useMemo(() => archives?.map((a) => a.created_at) || [], [archives]);
 
-  if (isLoading) {
-    return (
-      <div className="p-4 md:p-8">
-        <div className="text-center py-12 text-bambu-gray">{t('stats.loadingStats')}</div>
-      </div>
-    );
-  }
-
   // Define dashboard widgets
   // Sizes: 1 = quarter (1/4), 2 = half (1/2), 4 = full width
   // Widgets can use render functions to receive the current size for responsive content
@@ -1427,13 +1420,26 @@ export function StatsPage() {
         </div>
       </div>
 
-      <Dashboard
-        key={dashboardKey}
-        widgets={widgets}
-        storageKey="bambusy-dashboard-layout-v2"
-        stackBelow={640}
-        hideControls
-      />
+      {/* ⚠️ Only the dashboard waits, not the page.
+          This used to be an early return that replaced EVERYTHING — title,
+          timeframe picker, export buttons — with one line of centred text, so
+          on a farm with a long archive the page looked broken for as long as
+          the query took, and the controls that could have narrowed it were the
+          part you could not reach.
+          The widgets themselves already tolerate `stats` being undefined; what
+          they cannot do is say WHY they are empty, which is what the spinner
+          is for. */}
+      {isLoading ? (
+        <LoadingBlock label={t('stats.loadingStats')} />
+      ) : (
+        <Dashboard
+          key={dashboardKey}
+          widgets={widgets}
+          storageKey="bambusy-dashboard-layout-v2"
+          stackBelow={640}
+          hideControls
+        />
+      )}
     </div>
   );
 }
