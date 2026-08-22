@@ -1554,9 +1554,7 @@ export function ProjectDetailPage() {
           )}
 
           {bomLoading ? (
-            <div className="flex items-center justify-center py-4">
-              <Loader2 className="w-6 h-6 animate-spin text-bambu-green" />
-            </div>
+            <LoadingBlock label={t('common.loading')} className="py-4 text-bambu-gray" />
           ) : bomItems && bomItems.length > 0 ? (
             <div className="space-y-2">
               {bomItems
@@ -1765,9 +1763,7 @@ export function ProjectDetailPage() {
           </div>
 
           {timelineLoading ? (
-            <div className="flex items-center justify-center py-4">
-              <Loader2 className="w-6 h-6 animate-spin text-bambu-green" />
-            </div>
+            <LoadingBlock label={t('common.loading')} className="py-4 text-bambu-gray" />
           ) : timeline && timeline.length > 0 ? (
             <div className="space-y-3">
               {(timelineExpanded ? timeline : timeline.slice(0, TIMELINE_COLLAPSED)).map((event, index) => (
@@ -1872,9 +1868,7 @@ export function ProjectDetailPage() {
           </h2>
         </div>
         {archivesLoading ? (
-          <div className="flex items-center justify-center py-8">
-            <Loader2 className="w-6 h-6 animate-spin text-bambu-green" />
-          </div>
+          <LoadingBlock label={t('common.loading')} className="py-8 text-bambu-gray" />
         ) : (
           <ArchiveGrid archives={archives || []} t={t} />
         )}

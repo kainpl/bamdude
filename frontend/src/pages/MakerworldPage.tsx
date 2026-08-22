@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { AlertCircle, ArrowRight, Check, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, ExternalLink, FolderOpen, History, Images, Loader2, Trash2, X } from 'lucide-react';
 import { MakerWorldIcon } from '../components/BrandIcons';
+import { LoadingBlock } from '../components/LoadingBlock';
 import { FolderTreeSelect } from '../components/FolderTreeSelect';
 
 import {
@@ -1034,9 +1035,7 @@ export function MakerworldPage() {
           </div>
 
           {historyQuery.isLoading ? (
-            <div className="flex justify-center py-12">
-              <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
-            </div>
+            <LoadingBlock label={t('common.loading')} className="py-12 text-bambu-gray" />
           ) : historyQuery.data && historyQuery.data.data.length > 0 ? (
             <>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">

@@ -4469,9 +4469,7 @@ export function SettingsPage() {
           )}
 
           {plugsLoading ? (
-            <div className="flex justify-center py-12">
-              <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
-            </div>
+            <LoadingBlock label={t('common.loading')} className="py-12 text-bambu-gray" />
           ) : smartPlugs && smartPlugs.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {smartPlugs.map((plug) => (
@@ -4614,9 +4612,7 @@ export function SettingsPage() {
 
             {/* Provider list - full width, vertical stack */}
             {providersLoading ? (
-              <div className="flex justify-center py-12">
-                <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
-              </div>
+              <LoadingBlock label={t('common.loading')} className="py-12 text-bambu-gray" />
             ) : notificationProviders && notificationProviders.length > 0 ? (
               <div className="space-y-3">
                 {notificationProviders.map((provider) => (
@@ -4653,9 +4649,7 @@ export function SettingsPage() {
             </p>
 
             {templatesLoading ? (
-              <div className="flex justify-center py-8">
-                <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
-              </div>
+              <LoadingBlock label={t('common.loading')} className="py-8 text-bambu-gray" />
             ) : notificationTemplates && notificationTemplates.length > 0 ? (
               (() => {
                 // Per-event metadata: which group it belongs to and which
@@ -5073,9 +5067,7 @@ export function SettingsPage() {
 
             {/* Existing Keys List */}
             {apiKeysLoading ? (
-              <div className="flex justify-center py-12">
-                <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
-              </div>
+              <LoadingBlock label={t('common.loading')} className="py-12 text-bambu-gray" />
             ) : apiKeys && apiKeys.length > 0 ? (
               <div className="space-y-3">
                 {apiKeys.map((key) => (
