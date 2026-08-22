@@ -412,7 +412,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                           dismiss();
                           navigate(`/inventory?spool=${spoolman.linkedSpoolId}`);
                         }}
-                        className="w-full flex items-center justify-start gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-green/20 hover:bg-bambu-green/40 text-bambu-green"
+                        className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-green/20 hover:bg-bambu-green/40 text-bambu-green"
                         title={t('inventory.openInInventory')}
                       >
                         <Package className="w-3.5 h-3.5" />
@@ -466,7 +466,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                             dismiss();
                             navigate(`/inventory?spool=${inventory.assignedSpool!.id}`);
                           }}
-                          className="w-full flex items-center justify-start gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-green/20 hover:bg-bambu-green/40 text-bambu-green"
+                          className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-green/20 hover:bg-bambu-green/40 text-bambu-green"
                           title={t('inventory.openInInventory')}
                         >
                           <Package className="w-3.5 h-3.5" />
@@ -480,7 +480,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                             dismiss();
                             inventory.onUnassignSpool?.();
                           }}
-                          className="w-full flex items-center justify-start gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-red-100 dark:bg-red-500/20 hover:bg-red-200 dark:hover:bg-red-500/40 text-red-700 dark:text-red-400"
+                          className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-red-100 dark:bg-red-500/20 hover:bg-red-200 dark:hover:bg-red-500/40 text-red-700 dark:text-red-400"
                         >
                           <Unlink className="w-3.5 h-3.5" />
                           {t('inventory.unassignSpool')}
@@ -495,7 +495,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                         inventory.onAssignSpool?.();
                       }}
                       disabled={!!inventory.isAssigned}
-                      className={`w-full flex items-center justify-start gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-blue/20 text-bambu-blue ${
+                      className={`w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-blue/20 text-bambu-blue ${
                         inventory.isAssigned ? 'opacity-50 cursor-not-allowed' : 'hover:bg-bambu-blue/40'
                       }`}
                     >
@@ -515,7 +515,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                       dismiss();
                       configureSlot.onConfigure?.();
                     }}
-                    className="w-full flex items-center justify-start gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-blue/20 hover:bg-bambu-blue/40 text-bambu-blue"
+                    className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-blue/20 hover:bg-bambu-blue/40 text-bambu-blue"
                     title={t('ams.configureSlot')}
                   >
                     <Settings2 className="w-3.5 h-3.5" />
@@ -680,7 +680,7 @@ export function EmptySlotHoverCard({ children, className = '', configureSlot, on
                 {onAssignSpool && (
                   <button
                     onClick={(e) => { e.stopPropagation(); dismiss(); onAssignSpool(); }}
-                    className="w-full flex items-center justify-start gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-blue/20 hover:bg-bambu-blue/40 text-bambu-blue"
+                    className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-blue/20 hover:bg-bambu-blue/40 text-bambu-blue"
                   >
                     <Package className="w-3.5 h-3.5" />
                     {t('inventory.assignSpool')}
@@ -693,7 +693,7 @@ export function EmptySlotHoverCard({ children, className = '', configureSlot, on
                       dismiss();
                       configureSlot.onConfigure?.();
                     }}
-                    className="w-full flex items-center justify-start gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-blue/20 hover:bg-bambu-blue/40 text-bambu-blue"
+                    className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-blue/20 hover:bg-bambu-blue/40 text-bambu-blue"
                     title={t('ams.configureSlot')}
                   >
                     <Settings2 className="w-3.5 h-3.5" />
