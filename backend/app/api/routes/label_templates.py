@@ -31,14 +31,22 @@ from backend.app.models.spool import Spool
 from backend.app.models.user import User
 from backend.app.schemas.label_template import (
     LabelPreviewRequest,
+    LabelSheetIn,
     LabelSheetOut,
+    LabelSheetPreviewRequest,
     LabelTemplateIn,
     LabelTemplateOut,
     LabelTestPrintRequest,
 )
 from backend.app.services.label_context import example_context, spool_context
 from backend.app.services.label_raster import render_template_png
-from backend.app.services.label_template import PLACEHOLDERS, LabelTemplateSpec, Placeholder
+from backend.app.services.label_template import (
+    PLACEHOLDERS,
+    LabelSheetSpec,
+    LabelTemplateSpec,
+    Placeholder,
+    sheet_overflow,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,18 +112,36 @@ async def list_placeholders(
     return list(PLACEHOLDERS)
 
 
-@router.get("/sheets", response_model=list[LabelSheetOut])
-async def list_sheets(
-    db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.LABEL_TEMPLATES_READ),
-) -> list[LabelSheetOut]:
-    """Paper geometries. Read-only for now — a sheet editor is its own feature."""
-    result = await db.execute(select(LabelSheet).order_by(LabelSheet.name))
-    return [
-        LabelSheetOut(
-            id=row.id,
+def _sheet_out(row: LabelSheet) -> LabelSheetOut:
+    """One row as the editor sees it — including what does not fit.
+
+    ⚠️ The overflow travels with every read, not only with a save. A geometry
+    can stop fitting without anyone editing it: change the paper from A4 to A5
+    and the same grid runs off the page. Recomputing on read is what makes that
+    visible in the list instead of at the printer.
+    """
+    return LabelSheetOut(
+        id=row.id,
+        name=row.name,
+        builtin_key=row.builtin_key,
+        page_size=row.page_size,
+        cell_width_mm=row.cell_width_mm,
+        cell_height_mm=row.cell_height_mm,
+        cols=row.cols,
+        rows=row.rows,
+        margin_top_mm=row.margin_top_mm,
+        margin_left_mm=row.margin_left_mm,
+        gap_x_mm=row.gap_x_mm,
+        gap_y_mm=row.gap_y_mm,
+        is_builtin=row.builtin_key is not None,
+        overflow=_overflow_of(row),
+    )
+
+
+def _overflow_of(row: LabelSheet) -> list[str]:
+    try:
+        spec = LabelSheetSpec(
             name=row.name,
-            builtin_key=row.builtin_key,
             page_size=row.page_size,
             cell_width_mm=row.cell_width_mm,
             cell_height_mm=row.cell_height_mm,
@@ -126,8 +152,178 @@ async def list_sheets(
             gap_x_mm=row.gap_x_mm,
             gap_y_mm=row.gap_y_mm,
         )
-        for row in result.scalars().all()
-    ]
+    except ValidationError:
+        # A row the current spec cannot express — an old page size, say. Saying
+        # nothing is right: the list still draws, and the editor refuses on save.
+        return []
+    return sheet_overflow(spec)
+
+
+async def _load_sheet(db: AsyncSession, sheet_id: int) -> LabelSheet:
+    row = await db.get(LabelSheet, sheet_id)
+    if row is None:
+        raise HTTPException(404, f"Sheet {sheet_id} not found")
+    return row
+
+
+def _as_sheet_spec(body: LabelSheetIn) -> LabelSheetSpec:
+    """Validate a posted geometry, and refuse one that runs off its paper.
+
+    ⚠️ Refused on save, not merely warned about: a grid wider than its page
+    prints its last column half off the edge, and the discovery costs a sheet of
+    adhesive stock. The editor sees the same sentences while drawing, so nothing
+    arrives here as a surprise.
+    """
+    try:
+        spec = LabelSheetSpec(**body.model_dump())
+    except ValidationError as error:
+        raise HTTPException(422, f"Invalid sheet: {error}") from error
+    problems = sheet_overflow(spec)
+    if problems:
+        raise HTTPException(422, " ".join(problems))
+    return spec
+
+
+@router.get("/sheets", response_model=list[LabelSheetOut])
+async def list_sheets(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.LABEL_TEMPLATES_READ),
+) -> list[LabelSheetOut]:
+    """Paper geometries, each carrying whatever about it does not fit."""
+    result = await db.execute(select(LabelSheet).order_by(LabelSheet.name))
+    return [_sheet_out(row) for row in result.scalars().all()]
+
+
+@router.post("/sheets", response_model=LabelSheetOut, status_code=201)
+async def create_sheet(
+    body: LabelSheetIn,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.LABEL_TEMPLATES_WRITE),
+) -> LabelSheetOut:
+    """A paper geometry of your own — for the sheet that is not in the list."""
+    _as_sheet_spec(body)
+    row = LabelSheet(**body.model_dump(), builtin_key=None)
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    return _sheet_out(row)
+
+
+@router.put("/sheets/{sheet_id}", response_model=LabelSheetOut)
+async def update_sheet(
+    sheet_id: int,
+    body: LabelSheetIn,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.LABEL_TEMPLATES_WRITE),
+) -> LabelSheetOut:
+    row = await _load_sheet(db, sheet_id)
+    if row.builtin_key is not None:
+        # ⚠️ Same rule as a built-in design, for the same reason: an automation
+        # printing onto Avery 5160 for a year must not find the grid moved under
+        # it. Duplicating is how you "edit" one.
+        raise HTTPException(
+            409,
+            f"'{row.name}' is a built-in sheet and cannot be edited — duplicate it to make a copy you own.",
+        )
+
+    _as_sheet_spec(body)
+    for field, value in body.model_dump().items():
+        setattr(row, field, value)
+    await db.commit()
+    await db.refresh(row)
+    return _sheet_out(row)
+
+
+@router.post("/sheets/{sheet_id}/duplicate", response_model=LabelSheetOut, status_code=201)
+async def duplicate_sheet(
+    sheet_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.LABEL_TEMPLATES_WRITE),
+) -> LabelSheetOut:
+    source = await _load_sheet(db, sheet_id)
+    copy = LabelSheet(
+        name=f"{source.name} (copy)",
+        builtin_key=None,  # the copy is yours; the key is what makes one read-only
+        page_size=source.page_size,
+        cell_width_mm=source.cell_width_mm,
+        cell_height_mm=source.cell_height_mm,
+        cols=source.cols,
+        rows=source.rows,
+        margin_top_mm=source.margin_top_mm,
+        margin_left_mm=source.margin_left_mm,
+        gap_x_mm=source.gap_x_mm,
+        gap_y_mm=source.gap_y_mm,
+    )
+    db.add(copy)
+    await db.commit()
+    await db.refresh(copy)
+    return _sheet_out(copy)
+
+
+@router.delete("/sheets/{sheet_id}", status_code=204, response_model=None)
+async def delete_sheet(
+    sheet_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.LABEL_TEMPLATES_WRITE),
+) -> None:
+    row = await _load_sheet(db, sheet_id)
+    if row.builtin_key is not None:
+        raise HTTPException(409, f"'{row.name}' is a built-in sheet and cannot be deleted.")
+    # ⚠️ Nothing references a sheet — that is the point of it not holding a
+    # design — so there is no in-use check to make here.
+    await db.delete(row)
+    await db.commit()
+
+
+@router.post("/sheets/preview")
+async def preview_sheet(
+    body: LabelSheetPreviewRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.LABEL_TEMPLATES_READ),
+) -> StreamingResponse:
+    """The whole page, with a design laid into every cell.
+
+    ⚠️ **A page, not a label.** The template editor's preview answers "does this
+    label look right"; this one answers the questions only the page can: does
+    the grid fit the paper, and does the design fit a cell. Neither is visible
+    on one enlarged sticker.
+
+    ⚠️ The geometry travels in the body like the template preview's does, so
+    dragging a number in the editor saves nothing. The design comes by id
+    because it is already saved — you are laying an existing label onto paper.
+    """
+    from backend.app.services.label_renderer import render_template_sheet_pdf
+
+    sheet = _as_sheet_spec(body.sheet)
+
+    template = await _load(db, body.template_id)
+    spec = LabelTemplateSpec(
+        name=template.name,
+        width_mm=template.width_mm,
+        height_mm=template.height_mm,
+        shape=template.shape,
+        target=template.target,
+        elements=template.elements,
+    )
+
+    deeplink_base = f"{request.url.scheme}://{request.url.netloc}"
+    context = example_context(deeplink_base=deeplink_base)
+    pdf, warnings = render_template_sheet_pdf(spec, [context] * sheet.per_page, sheet)
+
+    if spec.width_mm > sheet.cell_width_mm or spec.height_mm > sheet.cell_height_mm:
+        # ⚠️ Said rather than scaled. A design is printed at its own size or
+        # refused — fractional scaling destroys bar ratios silently.
+        warnings.append(
+            f"'{spec.name}' is {spec.width_mm:.1f} × {spec.height_mm:.1f}mm and does not fit a "
+            f"{sheet.cell_width_mm:.1f} × {sheet.cell_height_mm:.1f}mm cell."
+        )
+
+    headers = {"Content-Length": str(len(pdf)), "Cache-Control": "no-store"}
+    if warnings:
+        headers["X-Label-Warnings"] = " | ".join(warnings)
+        headers["Access-Control-Expose-Headers"] = "X-Label-Warnings"
+    return StreamingResponse(io.BytesIO(pdf), media_type="application/pdf", headers=headers)
 
 
 @router.get("/{template_id}", response_model=LabelTemplateOut)

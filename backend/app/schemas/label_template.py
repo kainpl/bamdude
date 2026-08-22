@@ -42,6 +42,38 @@ class LabelTemplateOut(BaseModel):
     updated_at: datetime | None = None
 
 
+class LabelSheetIn(BaseModel):
+    """A page of stock: the paper, the grid, and nothing about the design.
+
+    ⚠️ No reference to a template, for the same reason ``LabelSheetSpec`` has
+    none: a sheet that held a design would make that design undeletable and weld
+    one paper geometry to one layout forever.
+    """
+
+    name: str = Field(min_length=1, max_length=120)
+    page_size: str = "A4"
+    cell_width_mm: float = Field(gt=0)
+    cell_height_mm: float = Field(gt=0)
+    cols: int = Field(gt=0)
+    rows: int = Field(gt=0)
+    margin_top_mm: float = Field(default=0.0, ge=0)
+    margin_left_mm: float = Field(default=0.0, ge=0)
+    gap_x_mm: float = Field(default=0.0, ge=0)
+    gap_y_mm: float = Field(default=0.0, ge=0)
+
+
+class LabelSheetPreviewRequest(BaseModel):
+    """Lay a saved design onto an unsaved page geometry.
+
+    ⚠️ The sheet travels in the body and the design by id, and the asymmetry is
+    deliberate: the geometry is what you are editing, the design is what you are
+    checking it against.
+    """
+
+    sheet: LabelSheetIn
+    template_id: int
+
+
 class LabelSheetOut(BaseModel):
     id: int
     name: str
@@ -55,6 +87,12 @@ class LabelSheetOut(BaseModel):
     margin_left_mm: float
     gap_x_mm: float
     gap_y_mm: float
+    #: A seeded geometry. Read-only for the same reason a built-in design is:
+    #: an automation printing onto Avery 5160 for a year must not find the grid
+    #: moved under it. Duplicate to get an editable copy.
+    is_builtin: bool = False
+    #: What about this grid does not fit its paper, in words. Empty is fine.
+    overflow: list[str] = Field(default_factory=list)
 
 
 class LabelPreviewRequest(BaseModel):
