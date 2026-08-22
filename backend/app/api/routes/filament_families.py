@@ -80,6 +80,7 @@ async def list_families(
     for fam in user_rows:
         hay = f"{fam.alias} {fam.vendor or ''} {fam.filament_type or ''} {fam.filament_id}".lower()
         if fam.filament_id not in seen and (not needle or needle in hay):
+            seen.add(fam.filament_id)
             out.append(
                 {
                     "filament_id": fam.filament_id,

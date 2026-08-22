@@ -89,15 +89,10 @@ async def _upsert_family(
     Returns True when a new row was added."""
     if catalog.get_family(filament_id):
         return False
+    # id-global lookup: a filament_id is a content hash of the name, so the
+    # same id in another ecosystem IS this family (spec B groundwork).
     existing = (
-        (
-            await db.execute(
-                select(UserFilamentFamily).where(
-                    UserFilamentFamily.ecosystem == ecosystem,
-                    UserFilamentFamily.filament_id == filament_id,
-                )
-            )
-        )
+        (await db.execute(select(UserFilamentFamily).where(UserFilamentFamily.filament_id == filament_id)))
         .scalars()
         .first()
     )

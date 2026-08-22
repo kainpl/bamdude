@@ -81,3 +81,37 @@ async def test_sync_is_idempotent(db_session):
     assert outcome.deleted == 0
     rows = (await db_session.execute(select(UserFilamentPreset))).scalars().all()
     assert len(rows) == 3
+
+
+@pytest.mark.asyncio
+async def test_upsert_family_is_ecosystem_global(db_session):
+    """Same P-hash from another ecosystem = the SAME family (the id is a
+    content hash of the name) — no duplicate row, orphaned flag lifted."""
+    db_session.add(
+        UserFilamentFamily(
+            filament_id="P1234567",
+            ecosystem="local",
+            alias="Poly PETG X",
+            vendor="Poly",
+            filament_type="PETG",
+            origin="authored",
+            orphaned=True,
+        )
+    )
+    await db_session.commit()
+
+    added = await sync._upsert_family(
+        db_session,
+        filament_id="P1234567",
+        ecosystem="orca",
+        name="Poly PETG X @Bambu Lab P1S",
+        vendor="Poly",
+        filament_type="PETG",
+        origin="local",
+    )
+    await db_session.commit()
+
+    assert added is False
+    rows = (await db_session.execute(select(UserFilamentFamily))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].ecosystem == "local" and rows[0].orphaned is False
