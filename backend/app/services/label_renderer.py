@@ -663,18 +663,36 @@ class PdfCanvas:
         self._c.setFont(font, size)
         self._c.drawString(x, y, drawn)
 
-    def swatch(self, colours: list[str], *, box_mm) -> None:
-        """One band per colour, stacked across the box.
+    def swatch(self, colours: list[str], *, box_mm, shape: str = "rect") -> None:
+        """One band per colour, stacked across the box, inside the given outline.
 
         A two-colour spool is two colours, and painting only the first is a
         small lie somebody reaches for on a shelf — the same reasoning that put
         segments on the printer card.
+
+        ⚠️ The outline is a CLIP, not a replacement for the banding. A circle
+        that shows only the first colour would be the lie above wearing a
+        different shape; clipping keeps both facts — the colours and the form.
         """
         left, bottom, box_w, box_h = self.box_to_points(box_mm)
         band = box_h / len(colours)
+
+        self._c.saveState()
+        if shape != "rect":
+            path = self._c.beginPath()
+            if shape == "circle":
+                # Inscribed, so a non-square box gives a circle rather than an
+                # ellipse — a colour dot people recognise across a shelf.
+                radius = min(box_w, box_h) / 2
+                path.circle(left + box_w / 2, bottom + box_h / 2, radius)
+            else:
+                path.roundRect(left, bottom, box_w, box_h, min(box_w, box_h) * 0.18)
+            self._c.clipPath(path, stroke=0, fill=0)
+
         for index, colour in enumerate(colours):
             self._c.setFillColor(_color_from_hex(colour))
             self._c.rect(left, bottom + index * band, box_w, band, stroke=0, fill=1)
+        self._c.restoreState()
         self._c.setFillColor(black)
 
     def image(self, img, *, box_mm) -> None:

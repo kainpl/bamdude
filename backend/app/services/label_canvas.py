@@ -50,7 +50,7 @@ class LabelCanvas(Protocol):
 
     def image(self, img: Image.Image, *, box_mm: Box) -> None: ...
 
-    def swatch(self, colours: list[str], *, box_mm: Box) -> None:
+    def swatch(self, colours: list[str], *, box_mm: Box, shape: str = "rect") -> None:
         """Draw a block of colour. A 1-bit canvas implements this as nothing."""
 
 
@@ -104,7 +104,7 @@ def draw_template(canvas: LabelCanvas, spec: LabelTemplateSpec, context: dict[st
         if element.type == "swatch":
             colours = [part.strip().lstrip("#") for part in content.split(",") if part.strip()]
             if colours:
-                canvas.swatch(colours, box_mm=box)
+                canvas.swatch(colours, box_mm=box, shape=element.shape)
             continue
 
         if element.type == "barcode":

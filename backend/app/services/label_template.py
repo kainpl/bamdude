@@ -239,6 +239,10 @@ class SwatchElement(_Box):
     type: Literal["swatch"]
     #: Resolves to one or more comma-separated hex colours, no leading hash.
     content: str = "{color_hex_all}"
+    #: The outline the colour is poured into. ⚠️ Multi-colour banding survives
+    #: every shape — a two-colour spool is two colours whatever the outline, and
+    #: painting only the first is the small lie this element exists to avoid.
+    shape: Literal["rect", "circle", "rounded"] = "rect"
 
 
 LabelElement = Annotated[TextElement | QrElement | BarcodeElement | SwatchElement, Field(discriminator="type")]

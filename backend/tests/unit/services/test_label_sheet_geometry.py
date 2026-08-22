@@ -131,3 +131,61 @@ class TestAThermalDesignRefusesColour:
         payload, spec = self._design("driver", with_swatch=False)
         del payload["target"]
         assert spec(**payload).target == "driver"
+
+
+class TestTheSwatchTakesAShape:
+    """⚠️ The outline is a clip, not a replacement for the banding.
+
+    A two-colour spool is two colours whatever the outline. A circle showing
+    only the first would be the same small lie the banding exists to avoid,
+    wearing a different shape.
+    """
+
+    @staticmethod
+    def _spec(shape: str):
+        from backend.app.services.label_template import LabelTemplateSpec
+
+        return LabelTemplateSpec(
+            name="d",
+            width_mm=40,
+            height_mm=20,
+            elements=[{"type": "swatch", "shape": shape, "x_mm": 1, "y_mm": 1, "w_mm": 10, "h_mm": 10}],
+        )
+
+    @pytest.mark.parametrize("shape", ["rect", "circle", "rounded"])
+    def test_every_shape_renders(self, shape):
+        from backend.app.services.label_renderer import render_template_pdf
+
+        pdf, warnings = render_template_pdf(self._spec(shape), [{"color_hex_all": "FF0000,00FF00"}])
+
+        assert pdf.startswith(b"%PDF"), f"{shape} produced no document"
+        assert warnings == []
+
+    def test_the_default_is_a_rectangle(self):
+        """Every design drawn before this had no shape field at all."""
+        assert self._spec("rect").elements[0].shape == "rect"
+
+    def test_an_unknown_shape_is_refused(self):
+        from backend.app.services.label_template import LabelTemplateSpec
+
+        with pytest.raises(ValueError):
+            LabelTemplateSpec(
+                name="d",
+                width_mm=40,
+                height_mm=20,
+                elements=[{"type": "swatch", "shape": "triangle", "x_mm": 1, "y_mm": 1, "w_mm": 5, "h_mm": 5}],
+            )
+
+    def test_the_thermal_gate_still_applies_to_every_shape(self):
+        """⚠️ A round swatch is still colour. The gate keys off the element
+        type, not its outline — a new shape must not be a way past it."""
+        from backend.app.services.label_template import LabelTemplateSpec
+
+        with pytest.raises(ValueError, match="one-bit"):
+            LabelTemplateSpec(
+                name="d",
+                width_mm=40,
+                height_mm=20,
+                target="thermal",
+                elements=[{"type": "swatch", "shape": "circle", "x_mm": 1, "y_mm": 1, "w_mm": 5, "h_mm": 5}],
+            )

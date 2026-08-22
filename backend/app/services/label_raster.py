@@ -304,7 +304,7 @@ class RasterCanvas:
 
         self._draw.text((left, top), drawn, font=font, fill=0)
 
-    def swatch(self, colours: list[str], *, box_mm: Box) -> None:
+    def swatch(self, colours: list[str], *, box_mm: Box, shape: str = "rect") -> None:
         """Nothing, on purpose.
 
         ⚠️ A colour block on a one-bit head is a solid smear that conveys
