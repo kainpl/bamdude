@@ -354,7 +354,7 @@ async def create_family(
         source_id=source_id,
         user=user,
     )
-    await db.flush()
+    await db.commit()
     return CreateFamilyResult(filament_id=fid, name=family_name, attached=attached, roots=roots, warnings=warnings)
 
 
@@ -397,7 +397,7 @@ async def add_printers_to_family(
         source_id=source_id,
         user=user,
     )
-    await db.flush()
+    await db.commit()
     return CreateFamilyResult(filament_id=filament_id, name=fam.alias, attached=True, roots=roots, warnings=warnings)
 
 
@@ -455,7 +455,7 @@ async def delete_family(db: AsyncSession, *, filament_id: str, also_cloud: bool 
                 presets_deleted += 1
         await db.delete(row)
     await db.delete(fam)
-    await db.flush()
+    await db.commit()
     return {"presets_deleted": presets_deleted, "cloud_deleted": cloud_deleted}
 
 

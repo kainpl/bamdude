@@ -70,3 +70,46 @@ async def test_default_scope_is_the_users_own_set(async_client: AsyncClient, db_
     # Searching still reaches the whole catalog.
     resp = await async_client.get("/api/v1/filament-families", params={"q": "petg"})
     assert any(r["filament_id"] == "GFG99" for r in resp.json())
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_authoring_options_lists_bs_types(async_client: AsyncClient):
+    resp = await async_client.get("/api/v1/filament-families/authoring-options")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "PETG" in body["filament_types"]
+    assert body["push"] == {"bambu": True, "orca": False}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_create_family_endpoint_and_delete_guard(async_client: AsyncClient, db_session):
+    from unittest.mock import AsyncMock, patch
+
+    from backend.app.models.spool import Spool
+
+    with patch(
+        "backend.app.services.filament_authoring._resolve_bundled_content",
+        new=AsyncMock(return_value=None),  # identity-only is enough for the route contract
+    ):
+        resp = await async_client.post(
+            "/api/v1/filament-families",
+            json={"vendor": "Poly", "filament_type": "PETG", "serial": "Rt", "printer_ids": []},
+        )
+    assert resp.status_code == 201
+    fid = resp.json()["filament_id"]
+    assert fid.startswith("P") and resp.json()["attached"] is False
+
+    # vendor refusal surfaces as 400
+    resp = await async_client.post(
+        "/api/v1/filament-families",
+        json={"vendor": "Bambu", "filament_type": "PETG", "serial": "Rt", "printer_ids": []},
+    )
+    assert resp.status_code == 400
+
+    # referenced family refuses deletion with 409
+    db_session.add(Spool(brand="B", material="PETG", filament_family_id=fid))
+    await db_session.commit()
+    resp = await async_client.delete(f"/api/v1/filament-families/{fid}")
+    assert resp.status_code == 409
