@@ -692,8 +692,32 @@ class PdfCanvas:
         )
 
 
+#: The papers a sheet may claim, in millimetres. One table, so the editor's
+#: dropdown, the fit check and the renderer cannot disagree about what "A5" is.
+PAGE_SIZES_MM: dict[str, tuple[float, float]] = {
+    "A4": (210.0, 297.0),
+    "A5": (148.0, 210.0),
+    "letter": (215.9, 279.4),
+}
+
+
+def page_size_points(name: str) -> tuple[float, float]:
+    """The page in points, or a refusal.
+
+    ⚠️ **Refuses rather than guesses.** This was ``A4 if name == "A4" else
+    letter``, so every size that was not A4 silently became Letter — an A5 sheet
+    laid its grid out on Letter geometry and every cell landed in the wrong
+    place. That is invisible until it is on adhesive stock.
+    """
+    try:
+        width_mm, height_mm = PAGE_SIZES_MM[name]
+    except KeyError:
+        raise ValueError(f"Unknown page size {name!r}. Known: {', '.join(PAGE_SIZES_MM)}") from None
+    return width_mm * mm, height_mm * mm
+
+
 def _page_size(name: str) -> tuple[float, float]:
-    return A4 if name == "A4" else letter
+    return page_size_points(name)
 
 
 def render_template_pdf(spec: LabelTemplateSpec, contexts: list[dict[str, str]]) -> tuple[bytes, list[str]]:

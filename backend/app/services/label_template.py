@@ -258,6 +258,11 @@ class LabelTemplateSpec(BaseModel):
     elements: list[LabelElement] = Field(default_factory=list)
 
 
+#: Paper is cut to a tolerance and so is the stock on it; a tenth of a
+#: millimetre over is a rounding artefact, not an overflow.
+_FIT_TOLERANCE_MM = 0.5
+
+
 class LabelSheetSpec(BaseModel):
     """A page of labels: the paper, the grid, and nothing about the design.
 
@@ -268,7 +273,7 @@ class LabelSheetSpec(BaseModel):
     """
 
     name: str = Field(min_length=1, max_length=120)
-    page_size: Literal["A4", "letter"]
+    page_size: Literal["A4", "A5", "letter"]
     cell_width_mm: float = Field(gt=0)
     cell_height_mm: float = Field(gt=0)
     cols: int = Field(gt=0)
@@ -281,6 +286,40 @@ class LabelSheetSpec(BaseModel):
     @property
     def per_page(self) -> int:
         return self.cols * self.rows
+
+
+def sheet_overflow(sheet: LabelSheetSpec) -> list[str]:
+    """What about this grid does not fit its page, in words.
+
+    ⚠️ A sheet whose grid is wider than its paper prints its last column half
+    off the edge, and nothing on screen says so — the discovery costs a sheet of
+    adhesive stock. Returned as a list rather than raised so the editor can show
+    both axes at once and keep drawing while you fix them.
+
+    ⚠️ N cells have N-1 gaps. Counting a trailing gap refuses sheets that fit,
+    which is the same class of wrong as accepting ones that do not, only
+    quieter.
+    """
+    from backend.app.services.label_renderer import PAGE_SIZES_MM
+
+    page_w, page_h = PAGE_SIZES_MM[sheet.page_size]
+    problems: list[str] = []
+
+    used_w = sheet.margin_left_mm + sheet.cols * sheet.cell_width_mm + (sheet.cols - 1) * sheet.gap_x_mm
+    if used_w > page_w + _FIT_TOLERANCE_MM:
+        problems.append(
+            f"The grid is {used_w:.1f}mm wide but {sheet.page_size} is {page_w:.1f}mm — "
+            f"reduce the columns, the cell width, the gap or the left margin."
+        )
+
+    used_h = sheet.margin_top_mm + sheet.rows * sheet.cell_height_mm + (sheet.rows - 1) * sheet.gap_y_mm
+    if used_h > page_h + _FIT_TOLERANCE_MM:
+        problems.append(
+            f"The grid is {used_h:.1f}mm in height but {sheet.page_size} is {page_h:.1f}mm — "
+            f"reduce the rows, the cell height, the gap or the top margin."
+        )
+
+    return problems
 
 
 def orientation(width_mm: float, height_mm: float, head_mm: float) -> Literal["as_drawn", "rotated"]:
