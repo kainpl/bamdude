@@ -2177,6 +2177,23 @@ export interface MakerworldImportsListParams {
 }
 
 // Local preset types (OrcaSlicer imports)
+export interface FilamentFamily {
+  filament_id: string;
+  ecosystem: string;
+  alias: string;
+  vendor: string | null;
+  filament_type: string | null;
+  origin: string; // 'system' | 'cloud_bambu' | 'cloud_orca' | 'authored' | 'local'
+}
+
+export interface FamilyPresetInfo {
+  name: string;
+  setting_id: string;
+  nozzle_temp_min: number | null;
+  nozzle_temp_max: number | null;
+  compatible_printers: string[];
+}
+
 export interface LocalPreset {
   id: number;
   name: string;
@@ -7716,6 +7733,15 @@ export const api = {
     }
     return response.blob();
   },
+
+  // Filament family catalog (spec A)
+  getFilamentFamilies: (q = '') =>
+    request<FilamentFamily[]>(`/filament-families?q=${encodeURIComponent(q)}`),
+  getFilamentFamilyPresets: (filamentId: string, printerName = '') =>
+    request<FamilyPresetInfo[]>(
+      `/filament-families/${encodeURIComponent(filamentId)}/presets?printer_name=${encodeURIComponent(printerName)}`,
+    ),
+  triggerFilamentPresetSync: () => request<{ queued: boolean }>(`/filament-families/sync`, { method: 'POST' }),
 
   // Inventory
   getSpools: (includeArchived = false) =>
