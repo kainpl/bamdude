@@ -31,7 +31,7 @@ name = "label_template_description"
 async def upgrade(conn):
     if await column_exists(conn, "label_templates", "description"):
         return
-    await add_column(conn, "label_templates", "description", "VARCHAR(300) NOT NULL DEFAULT ''")
+    await add_column(conn, "label_templates", "description VARCHAR(300) NOT NULL DEFAULT ''")
 
 
 #: What each seeded design is for, in the words the dialog used to show.
@@ -55,18 +55,23 @@ async def seed(session_factory):
     ⚠️ Matched on ``builtin_key``, and only where the description is still
     empty. A row somebody has already described is a row somebody has already
     decided about.
-    """
-    from sqlalchemy import update
 
-    from backend.app.models.label_template import LabelTemplate
+    ⚠️ Written as SQL over named columns rather than ``update(LabelTemplate)``:
+    the mapped class carries whatever the current code declares, so an
+    entity-wide ORM statement in a seed can reference a column a later migration
+    has not added yet — and that dies mid-chain on an install, not in a test.
+    """
+    from sqlalchemy import text
 
     filled = 0
     async with session_factory() as session:
-        for key, text in _BUILTIN_DESCRIPTIONS.items():
+        for key, description in _BUILTIN_DESCRIPTIONS.items():
             result = await session.execute(
-                update(LabelTemplate)
-                .where(LabelTemplate.builtin_key == key, LabelTemplate.description == "")
-                .values(description=text)
+                text(
+                    "UPDATE label_templates SET description = :description "
+                    "WHERE builtin_key = :key AND (description IS NULL OR description = '')"
+                ),
+                {"description": description, "key": key},
             )
             filled += result.rowcount or 0
         await session.commit()

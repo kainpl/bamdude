@@ -45,7 +45,7 @@ async def upgrade(conn):
     # before this column: a design nobody marked is a design that was printing
     # as PDF, and calling it thermal would strip elements from labels that
     # print them today.
-    await add_column(conn, "label_templates", "target", "VARCHAR(16) NOT NULL DEFAULT 'driver'")
+    await add_column(conn, "label_templates", "target VARCHAR(16) NOT NULL DEFAULT 'driver'")
 
 
 async def seed(session_factory):
@@ -55,21 +55,23 @@ async def seed(session_factory):
     alone: a user's own design called "Label printer 50 × 30" would otherwise be
     quietly switched to thermal and lose whatever colour it carries. The
     starters are the only rows this installer created without a builtin key.
-    """
-    from sqlalchemy import update
 
-    from backend.app.models.label_template import LabelTemplate
+    ⚠️ Written as SQL over named columns, not ``update(LabelTemplate)``. The
+    mapped class carries whatever the CURRENT code declares — including columns
+    a LATER migration adds — so an entity-wide ORM statement here can reference
+    a column this database does not have yet, and the upgrade dies halfway
+    through the chain on somebody's install rather than in a test.
+    """
+    from sqlalchemy import text
 
     starter_names = ("Label printer 40 × 20", "Label printer 50 × 30")
 
     async with session_factory() as session:
         result = await session.execute(
-            update(LabelTemplate)
-            .where(
-                LabelTemplate.builtin_key.is_(None),
-                LabelTemplate.name.in_(starter_names),
-            )
-            .values(target="thermal")
+            text(
+                "UPDATE label_templates SET target = 'thermal' WHERE builtin_key IS NULL AND name IN (:first, :second)"
+            ),
+            {"first": starter_names[0], "second": starter_names[1]},
         )
         await session.commit()
         logger.info("m149: marked %s starter template(s) as thermal", result.rowcount)
