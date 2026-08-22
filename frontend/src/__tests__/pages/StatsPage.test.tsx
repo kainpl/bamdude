@@ -225,12 +225,18 @@ describe('StatsPage', () => {
       });
     });
 
-    it('shows energy cost', async () => {
+    it('shows both energy costs — printing, and everything the plugs counted', async () => {
+      // ⚠️ Two pairs since the display-mode setting went. One pair whose
+      // meaning depended on a setting could not be read without opening
+      // Settings to find out which question it had answered.
       render(<StatsPage />);
 
       await waitFor(() => {
-        expect(screen.getByText('Energy Cost')).toBeInTheDocument();
+        expect(screen.getByText('Cost While Printing')).toBeInTheDocument();
       });
+      expect(screen.getByText('Cost At The Plug')).toBeInTheDocument();
+      expect(screen.getByText('Energy While Printing')).toBeInTheDocument();
+      expect(screen.getByText('Energy At The Plug')).toBeInTheDocument();
     });
   });
 

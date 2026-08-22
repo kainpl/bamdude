@@ -1109,10 +1109,9 @@ async def get_archive_stats(
         for printer_key, accs in printer_accuracies.items():
             accuracy_by_printer[printer_key] = round(sum(accs) / len(accs), 1)
 
-    # Energy totals - check which mode to use
+    # Energy, both ways — see ArchiveStats for why there are two of each.
     from backend.app.api.routes.settings import get_setting
 
-    energy_tracking_mode = await get_setting(db, "energy_tracking_mode") or "total"
     energy_cost_per_kwh_str = await get_setting(db, "energy_cost_per_kwh")
     energy_cost_per_kwh = float(energy_cost_per_kwh_str) if energy_cost_per_kwh_str else 0.15
 
@@ -1120,11 +1119,22 @@ async def get_archive_stats(
     total_energy_cost: float = 0.0
     energy_data_warming_up = False
 
-    if energy_tracking_mode == "total" and not date_from and not date_to:
-        # All-time total consumption - read live lifetime counters.
+    # ── What the prints themselves drew ──────────────────────────────────
+    # The per-print column, summed. Recorded from the plug at the start and end
+    # of each print, so it excludes everything between prints.
+    print_energy_kwh = (
+        await db.execute(select(func.sum(PrintArchive.energy_kwh)).where(*base_conditions))
+    ).scalar() or 0
+    print_energy_cost = (
+        await db.execute(select(func.sum(PrintArchive.energy_cost)).where(*base_conditions))
+    ).scalar() or 0
+
+    # ── What the plugs measured, full stop ───────────────────────────────
+    if not date_from and not date_to:
+        # All-time: the live lifetime counters.
         total_energy_kwh = await _sum_live_plug_totals(db)
         total_energy_cost = total_energy_kwh * energy_cost_per_kwh
-    elif energy_tracking_mode == "total":
+    else:
         # Total consumption mode with a date filter (#941): use hourly snapshots
         # to compute per-plug (endpoint - baseline) deltas.
         #
@@ -1141,13 +1151,6 @@ async def get_archive_stats(
 
         total_energy_kwh, energy_data_warming_up = await _sum_snapshot_deltas(db, dt_from=dt_from, dt_to=dt_to)
         total_energy_cost = total_energy_kwh * energy_cost_per_kwh
-    else:
-        # Per-print mode: sum the per-print energy column directly.
-        energy_kwh_result = await db.execute(select(func.sum(PrintArchive.energy_kwh)).where(*base_conditions))
-        total_energy_kwh = energy_kwh_result.scalar() or 0
-
-        energy_cost_result = await db.execute(select(func.sum(PrintArchive.energy_cost)).where(*base_conditions))
-        total_energy_cost = energy_cost_result.scalar() or 0
 
     return ArchiveStats(
         total_prints=total_prints,
@@ -1161,6 +1164,8 @@ async def get_archive_stats(
         prints_by_printer=prints_by_printer,
         average_time_accuracy=average_accuracy,
         time_accuracy_by_printer=accuracy_by_printer if accuracy_by_printer else None,
+        print_energy_kwh=round(print_energy_kwh, 3),
+        print_energy_cost=round(print_energy_cost, 3),
         total_energy_kwh=round(total_energy_kwh, 3),
         total_energy_cost=round(total_energy_cost, 3),
         energy_data_warming_up=energy_data_warming_up,

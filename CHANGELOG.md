@@ -100,6 +100,10 @@
 
 ### Changed
 
+- **Statistics answers the energy question both ways, and the setting is gone.** Cost tracking had an **Energy display mode** that decided whether the energy tiles meant "what the prints drew" or "what the plugs counted" — so the number on the page could not be read without opening Settings to find out which one it was. Both are shown now, in an **Energy** card of their own: **Energy While Printing** and its cost, measured between each print's start and end; **Energy At The Plug** and its cost, everything the smart plugs counted, idle and warm-up included. The gap between the two pairs is what standing still costs, which is the one figure the setting made impossible to see.
+
+    Nothing needs changing after the upgrade, and the per-print energy recorded on each archive is untouched. A dashboard you have already arranged puts the new card at the end — drag it, or use **Reset layout**.
+
 - **MQTT recordings now expire with the rest of the logs.** They are written into the log folder but were not covered by **Log retention**, so a recording left running quietly kept its file for ever. The same setting now applies to both, and the recordings go as soon as it is applied rather than waiting for a rollover. A recording that is still running is never removed.
 
 - **One MQTT entry in a printer's menu instead of two.** Starting a recording and reading it were separate items; they are the same job, and the debug dialog does both. The dialog is the one entry, and the recording badge on the card is now a button that opens it — so a running recording is a click away rather than a trip back through the menu.

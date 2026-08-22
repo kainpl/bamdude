@@ -1228,7 +1228,6 @@ export function SettingsPage() {
       baseline.default_filament_cost !== localSettings.default_filament_cost ||
       baseline.currency !== localSettings.currency ||
       baseline.energy_cost_per_kwh !== localSettings.energy_cost_per_kwh ||
-      baseline.energy_tracking_mode !== localSettings.energy_tracking_mode ||
       baseline.check_updates !== localSettings.check_updates ||
       (baseline.check_printer_firmware ?? true) !== (localSettings.check_printer_firmware ?? true) ||
       (baseline.include_beta_updates ?? false) !== (localSettings.include_beta_updates ?? false) ||
@@ -1327,7 +1326,6 @@ export function SettingsPage() {
         default_filament_cost: localSettings.default_filament_cost,
         currency: localSettings.currency,
         energy_cost_per_kwh: localSettings.energy_cost_per_kwh,
-        energy_tracking_mode: localSettings.energy_tracking_mode,
         check_updates: localSettings.check_updates,
         check_printer_firmware: localSettings.check_printer_firmware,
         include_beta_updates: localSettings.include_beta_updates,
@@ -3274,24 +3272,6 @@ export function SettingsPage() {
                     className="w-full pr-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   />
                 </div>
-              </div>
-              <div>
-                <label className="block text-sm text-bambu-gray mb-1">
-                  {t('settings.energyDisplayMode')}
-                </label>
-                <select
-                  value={localSettings.energy_tracking_mode || 'total'}
-                  onChange={(e) => updateSetting('energy_tracking_mode', e.target.value as 'print' | 'total')}
-                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                >
-                  <option value="print">{t('settings.printsOnly')}</option>
-                  <option value="total">{t('settings.totalConsumption')}</option>
-                </select>
-                <p className="text-xs text-bambu-gray mt-1">
-                  {localSettings.energy_tracking_mode === 'print'
-                    ? t('settings.energyModePrintDescription')
-                    : t('settings.energyModeTotalDescription')}
-                </p>
               </div>
             </CardContent>
           </Card>

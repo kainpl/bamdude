@@ -118,60 +118,25 @@ const RECHARTS_TOOLTIP_STYLE = {
 };
 
 // Widget Components
-function QuickStatsWidget({
-  stats,
-  currency,
-}: {
-  stats: {
-    total_prints: number;
-    successful_prints: number;
-    failed_prints: number;
-    total_print_time_hours: number;
-    total_filament_grams: number;
-    total_cost: number;
-    total_energy_kwh: number;
-    total_energy_cost: number;
-    energy_data_warming_up?: boolean;
-  } | undefined;
-  currency: string;
-}) {
-  const { t } = useTranslation();
+type StatTile = {
+  icon: typeof Package;
+  color: string;
+  label: string;
+  value: string;
+  warning?: boolean;
+  tooltip?: string;
+};
 
-  const warmingUp = stats?.energy_data_warming_up === true;
-  const warmingUpTooltip = warmingUp ? t('stats.energyWarmingUpTooltip') : undefined;
-
-  const items: Array<{
-    icon: typeof Package;
-    color: string;
-    label: string;
-    value: string;
-    warning?: boolean;
-    tooltip?: string;
-  }> = [
-    { icon: Package, color: 'text-bambu-green', label: t('stats.totalPrints'), value: `${stats?.total_prints || 0}` },
-    { icon: Clock, color: 'text-blue-600 dark:text-blue-400', label: t('stats.printTime'), value: `${stats?.total_print_time_hours?.toFixed(1) ?? '0'}h` },
-    { icon: Package, color: 'text-orange-600 dark:text-orange-400', label: t('stats.filamentUsed'), value: formatWeight(stats?.total_filament_grams || 0) },
-    { icon: DollarSign, color: 'text-green-600 dark:text-green-400', label: t('stats.filamentCost'), value: `${currency} ${stats?.total_cost?.toFixed(2) ?? '0.00'}` },
-    {
-      icon: Zap,
-      color: 'text-yellow-600 dark:text-yellow-400',
-      label: t('stats.energyUsed'),
-      value: `${stats?.total_energy_kwh?.toFixed(3) ?? '0.000'} kWh`,
-      warning: warmingUp,
-      tooltip: warmingUpTooltip,
-    },
-    {
-      icon: DollarSign,
-      color: 'text-yellow-500',
-      label: t('stats.energyCost'),
-      value: `${currency} ${stats?.total_energy_cost?.toFixed(2) ?? '0.00'}`,
-      warning: warmingUp,
-      tooltip: warmingUpTooltip,
-    },
-  ];
-
+/**
+ * The tile grid both stat widgets draw — one shape, so the two cards match.
+ *
+ * Two columns at every width, not two-then-three. Each card is a quarter of the
+ * dashboard and carries exactly four tiles, so two columns is a 2×2 block; the
+ * three-column step left one tile alone on a second row.
+ */
+function StatTiles({ items }: { items: StatTile[] }) {
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+    <div className="grid grid-cols-2 gap-4">
       {items.map((item) => (
         <div key={item.label} className="flex items-start gap-3" title={item.tooltip}>
           <div className={`p-2 rounded-lg bg-bambu-dark ${item.color}`}>
@@ -187,6 +152,105 @@ function QuickStatsWidget({
         </div>
       ))}
     </div>
+  );
+}
+
+function QuickStatsWidget({
+  stats,
+  currency,
+}: {
+  stats: {
+    total_prints: number;
+    total_print_time_hours: number;
+    total_filament_grams: number;
+    total_cost: number;
+  } | undefined;
+  currency: string;
+}) {
+  const { t } = useTranslation();
+
+  return (
+    <StatTiles
+      items={[
+        { icon: Package, color: 'text-bambu-green', label: t('stats.totalPrints'), value: `${stats?.total_prints || 0}` },
+        { icon: Clock, color: 'text-blue-600 dark:text-blue-400', label: t('stats.printTime'), value: `${stats?.total_print_time_hours?.toFixed(1) ?? '0'}h` },
+        { icon: Package, color: 'text-orange-600 dark:text-orange-400', label: t('stats.filamentUsed'), value: formatWeight(stats?.total_filament_grams || 0) },
+        { icon: DollarSign, color: 'text-green-600 dark:text-green-400', label: t('stats.filamentCost'), value: `${currency} ${stats?.total_cost?.toFixed(2) ?? '0.00'}` },
+      ]}
+    />
+  );
+}
+
+/**
+ * Energy, answered twice.
+ *
+ * ⚠️ Two pairs, not one figure shown twice. What the prints drew is measured
+ * between each print's start and end; what the plugs counted includes
+ * everything between them — idle, warm-up, and anything else on the socket.
+ * The gap between the pairs is what standing still costs, and it is the reason
+ * both are here.
+ *
+ * This used to be a setting: one pair of tiles whose meaning depended on
+ * `energy_tracking_mode`, so the number on the page could not be read without
+ * opening Settings to find out which question it had answered. Showing both
+ * costs one card and removes the question.
+ */
+function EnergyWidget({
+  stats,
+  currency,
+}: {
+  stats: {
+    print_energy_kwh: number;
+    print_energy_cost: number;
+    total_energy_kwh: number;
+    total_energy_cost: number;
+    energy_data_warming_up?: boolean;
+  } | undefined;
+  currency: string;
+}) {
+  const { t } = useTranslation();
+
+  // ⚠️ Only the plug-side pair can be warming up: it is the one read from
+  // hourly snapshots when a date filter is on. The per-print pair is a column
+  // on rows that already exist.
+  const warmingUp = stats?.energy_data_warming_up === true;
+  const warmingUpTooltip = warmingUp ? t('stats.energyWarmingUpTooltip') : undefined;
+
+  return (
+    <StatTiles
+      items={[
+        {
+          icon: Zap,
+          color: 'text-yellow-600 dark:text-yellow-400',
+          label: t('stats.energyWhilePrinting'),
+          value: `${stats?.print_energy_kwh?.toFixed(3) ?? '0.000'} kWh`,
+          tooltip: t('stats.energyWhilePrintingTooltip'),
+        },
+        {
+          icon: DollarSign,
+          color: 'text-yellow-500',
+          label: t('stats.energyCostWhilePrinting'),
+          value: `${currency} ${stats?.print_energy_cost?.toFixed(2) ?? '0.00'}`,
+          tooltip: t('stats.energyWhilePrintingTooltip'),
+        },
+        {
+          icon: Zap,
+          color: 'text-amber-600 dark:text-amber-400',
+          label: t('stats.energyAtThePlug'),
+          value: `${stats?.total_energy_kwh?.toFixed(3) ?? '0.000'} kWh`,
+          warning: warmingUp,
+          tooltip: warmingUpTooltip ?? t('stats.energyAtThePlugTooltip'),
+        },
+        {
+          icon: DollarSign,
+          color: 'text-amber-500',
+          label: t('stats.energyCostAtThePlug'),
+          value: `${currency} ${stats?.total_energy_cost?.toFixed(2) ?? '0.00'}`,
+          warning: warmingUp,
+          tooltip: warmingUpTooltip ?? t('stats.energyAtThePlugTooltip'),
+        },
+      ]}
+    />
   );
 }
 
@@ -1138,7 +1202,16 @@ export function StatsPage() {
       id: 'quick-stats',
       title: t('stats.quickStats'),
       component: <QuickStatsWidget stats={stats} currency={currency} />,
-      defaultSize: 2,
+      defaultSize: 1,
+    },
+    {
+      // ⚠️ Registered next to Quick Stats, which is where a fresh layout puts
+      // it. A saved one keeps its own order and appends new widgets at the end
+      // — Reset layout, or a drag, moves it up.
+      id: 'energy',
+      title: t('stats.energy'),
+      component: <EnergyWidget stats={stats} currency={currency} />,
+      defaultSize: 1,
     },
     {
       id: 'success-rate',

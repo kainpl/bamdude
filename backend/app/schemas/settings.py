@@ -64,10 +64,6 @@ class AppSettings(BaseModel):
     default_filament_cost: float = Field(default=0.0, description="Default filament cost per kg (0 = unset)")
     currency: str = Field(default="USD", description="Currency for cost tracking")
     energy_cost_per_kwh: float = Field(default=0.15, description="Electricity cost per kWh for energy tracking")
-    energy_tracking_mode: str = Field(
-        default="total",
-        description="Energy display mode on stats: 'print' shows sum of per-print energy, 'total' shows lifetime plug consumption",
-    )
 
     # Spoolman integration
     spoolman_enabled: bool = Field(default=False, description="Enable Spoolman integration for filament tracking")
@@ -589,7 +585,6 @@ class AppSettingsUpdate(BaseModel):
     default_filament_cost: float | None = None
     currency: str | None = None
     energy_cost_per_kwh: float | None = None
-    energy_tracking_mode: str | None = None
     spoolman_enabled: bool | None = None
     zigbee_enabled: bool | None = None
     device_labels_enabled: bool | None = None

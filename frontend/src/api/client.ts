@@ -1083,6 +1083,12 @@ export interface ArchiveStats {
   prints_by_printer: Record<string, number>;
   average_time_accuracy: number | null;
   time_accuracy_by_printer: Record<string, number> | null;
+  // Two pairs, deliberately. `print_*` is measured between the start and end of
+  // each print and honours the date filter; `total_*` is what the plugs
+  // themselves counted, idle included, and all-time comes from their lifetime
+  // counters. The gap between them is what standing still costs.
+  print_energy_kwh: number;
+  print_energy_cost: number;
   total_energy_kwh: number;
   total_energy_cost: number;
   // True when a date-filtered total-consumption query is running on incomplete
@@ -1667,7 +1673,6 @@ export interface AppSettings {
   device_labels_enabled: boolean;
   zigbee_transport: string;
   zigbee_path: string;
-  energy_tracking_mode: 'print' | 'total';
   check_updates: boolean;
   check_printer_firmware: boolean;
   include_beta_updates: boolean;
