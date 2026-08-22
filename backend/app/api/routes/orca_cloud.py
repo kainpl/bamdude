@@ -572,6 +572,9 @@ async def device_poll(
         logger.warning("Orca Cloud introspection failed after successful pairing: %s", e)
 
     await _persist_tokens(db, current_user, svc.access_token, svc.refresh_token, svc.token_expiry, None, user_id)
+    from backend.app.services.filament_preset_sync import request_sync_soon
+
+    request_sync_soon()  # freshly paired Orca account mirrors within seconds (spec A trigger)
     return OrcaDevicePollResponse(status=DevicePoll.COMPLETE, connected=True, email=None, user_id=user_id)
 
 

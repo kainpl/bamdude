@@ -365,6 +365,9 @@ async def login(
         if result.get("success") and cloud.access_token:
             # Direct login succeeded (rare)
             await store_token(db, cloud.access_token, request.email, request.region, current_user)
+            from backend.app.services.filament_preset_sync import request_sync_soon
+
+            request_sync_soon()  # freshly connected cloud mirrors within seconds (spec A trigger)
 
         return CloudLoginResponse(
             success=result.get("success", False),
@@ -413,6 +416,9 @@ async def verify_code(
 
         if result.get("success") and cloud.access_token:
             await store_token(db, cloud.access_token, request.email, request.region, current_user)
+            from backend.app.services.filament_preset_sync import request_sync_soon
+
+            request_sync_soon()  # freshly connected cloud mirrors within seconds (spec A trigger)
 
         return CloudLoginResponse(
             success=result.get("success", False),
@@ -448,6 +454,9 @@ async def set_token(
         # Verify token works by trying to get profile
         await cloud.get_user_profile()
         await store_token(db, request.access_token, "token-auth", request.region, current_user)
+        from backend.app.services.filament_preset_sync import request_sync_soon
+
+        request_sync_soon()  # freshly connected cloud mirrors within seconds (spec A trigger)
         return CloudAuthStatus(is_authenticated=True, email="token-auth", region=request.region)
     except BambuCloudError:
         raise HTTPException(status_code=401, detail="Invalid token")

@@ -29,6 +29,7 @@ from backend.app.api.routes import (
     discovery,
     external_links,
     filament_calibration as filament_calibration_routes,
+    filament_families as filament_families_routes,
     firmware,
     git_backup,
     groups,
@@ -7200,6 +7201,27 @@ async def record_ams_history():
             await asyncio.sleep(60)  # Wait a bit before retrying
 
 
+_filament_preset_sync_task = None
+
+
+def start_filament_preset_sync():
+    """Start the cloud preset-mirror sync loop (spec A §3)."""
+    global _filament_preset_sync_task
+    if _filament_preset_sync_task is None:
+        from backend.app.services.filament_preset_sync import filament_preset_sync_loop
+
+        _filament_preset_sync_task = asyncio.create_task(filament_preset_sync_loop())
+        logging.getLogger(__name__).info("Filament preset sync loop started")
+
+
+def stop_filament_preset_sync():
+    """Stop the cloud preset-mirror sync loop."""
+    global _filament_preset_sync_task
+    if _filament_preset_sync_task:
+        _filament_preset_sync_task.cancel()
+        _filament_preset_sync_task = None
+
+
 def start_ams_history_recording():
     """Start the AMS history recording background task."""
     global _ams_history_task
@@ -8136,6 +8158,9 @@ async def lifespan(app: FastAPI):
     # Start AMS history recording
     start_ams_history_recording()
 
+    # Start the filament preset-mirror sync loop (family catalog, spec A)
+    start_filament_preset_sync()
+
     # Start printer heater (nozzle/bed/chamber) history recording
     start_printer_sensor_history_recording()
 
@@ -8310,6 +8335,7 @@ async def lifespan(app: FastAPI):
     git_backup_service.stop_scheduler()
     local_backup_service.stop_scheduler()
     stop_ams_history_recording()
+    stop_filament_preset_sync()
     stop_printer_sensor_history_recording()
     from backend.app.services.connection_watchdog import stop_connection_watchdog
 
@@ -8867,6 +8893,7 @@ app.include_router(measurement_history.router, prefix=app_settings.api_prefix)
 app.include_router(archive_purge.router, prefix=app_settings.api_prefix)
 app.include_router(archives.router, prefix=app_settings.api_prefix)
 app.include_router(inventory.router, prefix=app_settings.api_prefix)
+app.include_router(filament_families_routes.router, prefix=app_settings.api_prefix)
 app.include_router(orca_cloud.router, prefix=app_settings.api_prefix)
 app.include_router(labels.router, prefix=app_settings.api_prefix)
 app.include_router(label_templates.router, prefix=app_settings.api_prefix)
