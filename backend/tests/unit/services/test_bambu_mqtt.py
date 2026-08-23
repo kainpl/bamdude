@@ -5595,7 +5595,13 @@ class TestRunoutDetector:
 
 
 class TestJournalTrayGate:
-    """255 is "unloaded" everywhere except H2-series second external."""
+    """255 is "unloaded" (and the colour-change transitional) — never a tray.
+
+    Measured live on an X2D 2026-08-23: a vt-aware 255 acceptance journaled a
+    phantom external-2 START (tray_now was 255 = nothing loaded yet) with a
+    frozen spool from (255,1). Colour changes also pass through 255. The gate
+    rejects it unconditionally; genuine ext-2 prints are attributed by the
+    completion-time vt_tray fallback."""
 
     @pytest.fixture
     def client(self):
@@ -5603,13 +5609,13 @@ class TestJournalTrayGate:
 
         return BambuMQTTClient(ip_address="1.2.3.4", serial_number="GATE01", access_code="1")
 
+    def test_255_is_rejected_even_with_a_second_external(self, client):
+        client.state.raw_data = {"vt_tray": [{"id": 254}, {"id": 255}]}
+        assert client._is_journal_tray(255) is False
+
     def test_255_rejected_without_a_second_external(self, client):
         client.state.raw_data = {}
         assert client._is_journal_tray(255) is False
-
-    def test_255_accepted_when_vt_tray_has_it(self, client):
-        client.state.raw_data = {"vt_tray": [{"id": 254}, {"id": 255}]}
-        assert client._is_journal_tray(255) is True
 
     def test_the_usual_set_is_unchanged(self, client):
         client.state.raw_data = {}

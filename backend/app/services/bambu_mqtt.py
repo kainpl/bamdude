@@ -6678,23 +6678,24 @@ class BambuMQTTClient:
             self.state.is_support_pa_calibration = False
 
     def _is_journal_tray(self, tn: int) -> bool:
-        """Trays the tray-change log accepts.
+        """Trays the tray-change log accepts. 255 is ALWAYS out.
 
-        255 usually means "unloaded" and must stay out — EXCEPT on H2-series
-        machines, whose second external spool genuinely lives at 255 (visible
-        as a vt_tray entry with that id). 254 (first external) is always in.
+        ⚠️ Tried and reverted (2026-08-23): accepting 255 on machines whose
+        vt_tray lists a second external (H2-gen). Two failure modes, one
+        measured live: at print start nothing is loaded yet, so tray_now=255
+        means "unloaded" and the seed journaled a phantom external-2 START on
+        an X2D — freezing the spool assigned at (255,1) instead of the AMS
+        tray's; and every colour change passes through a transitional 255
+        (unload-first, documented at the tray_now parser), so multicolour
+        prints would log phantom segments. A genuine ext-2 print is still
+        attributed by the completion-time vt_tray fallback in usage_tracker.
         """
-        if (
+        return (
             (0 <= tn <= 15)
             or (A2L_LITE_GLOBAL_BASE <= tn <= A2L_LITE_GLOBAL_BASE + 3)
             or (128 <= tn <= 135)
             or tn == 254
-        ):
-            return True
-        if tn == 255:
-            vt_tray = (self.state.raw_data or {}).get("vt_tray") or []
-            return any(int(vt.get("id", 0)) == 255 for vt in vt_tray if isinstance(vt, dict))
-        return False
+        )
 
     def _ams_unit_ids(self) -> list[int]:
         """Ids of the AMS units currently present, from merged state."""
