@@ -5539,8 +5539,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  admin2FADisable: (userId: number) =>
-    request<{ message: string }>(`/auth/2fa/admin/${userId}`, { method: 'DELETE' }),
+  // The endpoint re-authenticates: an admin with a local password MUST send it
+  // (OIDC/LDAP-only admins are exempt). A bodyless call is a guaranteed 401.
+  admin2FADisable: (userId: number, adminPassword?: string) =>
+    request<{ message: string }>(`/auth/2fa/admin/${userId}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ admin_password: adminPassword ?? null }),
+    }),
 
   // OIDC (§18.2)
   getOIDCProviders: () => request<OIDCProvider[]>('/auth/oidc/providers'),

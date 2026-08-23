@@ -8737,6 +8737,7 @@ PUBLIC_API_PATTERNS = [
     # Thumbnails
     "/thumbnail",  # /archives/{id}/thumbnail, /library/files/{id}/thumbnail
     "/plate-thumbnail/",  # /archives/{id}/plate-thumbnail/{plate_id}
+    "/plate-preview",  # /archives/{id}/plate-preview — <img> loaded like its siblings; its handler always claimed this
     # Images and media
     "/photos/",  # /archives/{id}/photos/{filename}
     "/project-image/",  # /archives/{id}/project-image/{path}

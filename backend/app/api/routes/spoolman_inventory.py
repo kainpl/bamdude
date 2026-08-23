@@ -685,6 +685,26 @@ async def bulk_create_spools(
     return JSONResponse(status_code=200, content=created)
 
 
+# ⚠️ Declared BEFORE ``/spools/{spool_id}`` so the literal path isn't captured
+# by the int ``spool_id`` matcher (Starlette matches in declaration order; the
+# sibling in inventory.py documents the same rule). It sat below the dynamic
+# route and every call 422'd without ever reaching the handler.
+@router.patch("/spools/bulk-update")
+async def bulk_update_spools(
+    *,
+    data: SpoolmanBulkUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
+) -> dict:
+    """Apply the same partial field set to many Spoolman spools."""
+    result = await _bulk_fanout(
+        data.spool_ids,
+        lambda sid: update_spool(spool_id=sid, data=data.fields, db=db, _=user),
+    )
+    await ws_manager.broadcast({"type": "inventory_changed"})
+    return {"updated": result["succeeded"], "errors": result["errors"]}
+
+
 @router.patch("/spools/{spool_id}")
 async def update_spool(
     *,
@@ -976,22 +996,6 @@ async def _bulk_fanout(spool_ids: list[int], action) -> dict:
             logger.warning("Bulk action failed for Spoolman spool %s: %s", spool_id, exc)
             errors.append({"id": spool_id, "status": 500, "detail": str(exc)})
     return {"succeeded": succeeded, "errors": errors}
-
-
-@router.patch("/spools/bulk-update")
-async def bulk_update_spools(
-    *,
-    data: SpoolmanBulkUpdate,
-    db: AsyncSession = Depends(get_db),
-    user: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
-) -> dict:
-    """Apply the same partial field set to many Spoolman spools."""
-    result = await _bulk_fanout(
-        data.spool_ids,
-        lambda sid: update_spool(spool_id=sid, data=data.fields, db=db, _=user),
-    )
-    await ws_manager.broadcast({"type": "inventory_changed"})
-    return {"updated": result["succeeded"], "errors": result["errors"]}
 
 
 @router.post("/spools/bulk-delete")
