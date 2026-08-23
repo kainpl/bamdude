@@ -1291,6 +1291,9 @@ export default {
       paused: 'Paused',
       error: 'Error'
     },
+    autoDistributeOn: 'Receives auto-queue work — click to exclude this printer from automatic routing',
+    autoDistributeOff: 'Excluded from auto-queue routing — click to include it again',
+    autoDistributeOffPill: 'no auto-queue',
     pauseQueue: 'Pause queue',
     resumeQueue: 'Resume queue',
     pausedPill: 'Paused',
@@ -5074,6 +5077,16 @@ export default {
     },
   },
   bugReport: {
+    myReports: 'My reports',
+    noReports: 'Nothing submitted from this install yet',
+    staleStatuses: 'Status service unavailable — showing last known statuses',
+    status: {
+      submitted: 'submitted',
+      open: 'open',
+      closed: 'fixed',
+      not_planned: 'not planned',
+      failed: 'failed to send',
+    },
     title: 'Report a Bug',
     description: 'Description',
     submittingStepConnection: 'Running printer connectivity checks',

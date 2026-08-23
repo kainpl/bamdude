@@ -3257,6 +3257,7 @@ export interface PrinterQueue {
   printer_location?: PrinterLocation | null;
   status: 'idle' | 'printing' | 'paused' | 'error';
   is_paused: boolean;
+  auto_distribute_eligible: boolean;
   last_activity_at: string | null;
   current_item_id: number | null;
   pending_count: number;
@@ -7376,7 +7377,7 @@ export const api = {
   // Printer Queues (queue-level operations)
   getQueues: () =>
     request<PrinterQueue[]>('/queues/'),
-  updateQueue: (queueId: number, data: { status?: 'idle' | 'paused'; is_paused?: boolean }) =>
+  updateQueue: (queueId: number, data: { status?: 'idle' | 'paused'; is_paused?: boolean; auto_distribute_eligible?: boolean }) =>
     request<PrinterQueue>(`/queues/${queueId}`, {
       method: 'PATCH',
       body: JSON.stringify(data),
@@ -10490,6 +10491,20 @@ export interface BugReportResponse {
   issue_number?: number;
 }
 
+export interface BugReportListItem {
+  id: number;
+  description: string;
+  status: 'submitted' | 'open' | 'closed' | 'not_planned' | 'failed';
+  github_issue_number: number | null;
+  github_issue_url: string | null;
+  created_at: string;
+}
+
+export interface BugReportListResponse {
+  synced: boolean;
+  reports: BugReportListItem[];
+}
+
 export const bugReportApi = {
   submit: (data: BugReportRequest) =>
     request<BugReportResponse>('/bug-report/submit', {
@@ -10504,6 +10519,8 @@ export const bugReportApi = {
     request<{ logs: string }>(`/bug-report/stop-logging?was_debug=${wasDebug}`, {
       method: 'POST',
     }),
+
+  listReports: () => request<BugReportListResponse>('/bug-report/reports'),
 };
 
 // Macros API

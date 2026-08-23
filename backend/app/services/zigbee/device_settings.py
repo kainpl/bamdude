@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 GLOBAL_REPORTING_KEY = "zigbee_sensor_reporting"
 GLOBAL_POLL_KEY = "zigbee_sensor_poll_seconds"
+GLOBAL_STALE_MULTIPLIER_KEY = "zigbee_sensor_stale_multiplier"
 
 DEFAULT_POLL_SECONDS = 30
 # What ``driver.py`` has always used for a polled device. Kept as a number
@@ -173,7 +174,14 @@ async def resolve_stale_after_seconds(db, ieee: str, *, polled: bool, max_interv
         return int(row.stale_after_seconds)
     if polled:
         return DEFAULT_POLLED_STALE_SECONDS
-    return int(max_interval) * DEFAULT_REPORTING_STALE_MULTIPLIER
+    raw = await get_setting(db, GLOBAL_STALE_MULTIPLIER_KEY)
+    try:
+        multiplier = int(raw)
+    except (TypeError, ValueError):
+        multiplier = DEFAULT_REPORTING_STALE_MULTIPLIER
+    if multiplier <= 0:
+        multiplier = DEFAULT_REPORTING_STALE_MULTIPLIER
+    return int(max_interval) * multiplier
 
 
 async def upsert_device_row(db, info: DeviceInfo) -> ZigbeeDevice:

@@ -20,6 +20,7 @@ import { CSS } from '@dnd-kit/utilities';
 import {
   Pause,
   Play,
+  Route,
   Square,
   AlertCircle,
   Clock,
@@ -192,7 +193,8 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
 
   // Pause/Resume queue mutation
   const toggleQueueMutation = useMutation({
-    mutationFn: (data: { status?: 'idle' | 'paused'; is_paused?: boolean }) => api.updateQueue(queue.id, data),
+    mutationFn: (data: { status?: 'idle' | 'paused'; is_paused?: boolean; auto_distribute_eligible?: boolean }) =>
+      api.updateQueue(queue.id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['queues'] });
       queryClient.invalidateQueries({ queryKey: ['queue', queue.printer_id] });
@@ -675,6 +677,12 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
                 {t('queueCard.pausedPill')}
               </span>
             )}
+            {!queue.auto_distribute_eligible && (
+              <span className="px-1.5 py-0.5 rounded text-[10px] leading-tight bg-orange-400/20 text-orange-700 dark:text-orange-400 flex items-center gap-1">
+                <Route className="w-2.5 h-2.5" />
+                {t('queueCard.autoDistributeOffPill')}
+              </span>
+            )}
             {/* Only when there is a queue to copy — a running print or something
                 waiting. An empty queue copies nothing, and a button that opens
                 a dialog to say so is worse than one that is not there. */}
@@ -701,6 +709,26 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
             {/* Queue pause/resume — available in every state, including
                 while a print is running. Pausing leaves the running print
                 alone; only the next dispatch + new-item adds are gated. */}
+            {/* Auto-queue routing opt-out — orthogonal to pause: pause
+                halts THIS queue's dispatch, this flag only tells the
+                AutoQueue distributor to route new work elsewhere. */}
+            <button
+              onClick={() =>
+                hasPermission('queue:update_all') &&
+                toggleQueueMutation.mutate({ auto_distribute_eligible: !queue.auto_distribute_eligible })
+              }
+              disabled={toggleQueueMutation.isPending || !hasPermission('queue:update_all')}
+              className="p-1 rounded hover:bg-bambu-dark-tertiary transition-colors disabled:opacity-50"
+              title={
+                queue.auto_distribute_eligible
+                  ? t('queueCard.autoDistributeOn')
+                  : t('queueCard.autoDistributeOff')
+              }
+            >
+              <Route
+                className={`w-4 h-4 ${queue.auto_distribute_eligible ? 'text-bambu-gray' : 'text-orange-400'}`}
+              />
+            </button>
             <button
               onClick={handlePauseResume}
               disabled={toggleQueueMutation.isPending || !hasPermission('queue:update_all')}

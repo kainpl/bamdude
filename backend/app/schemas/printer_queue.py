@@ -17,6 +17,7 @@ class PrinterQueueResponse(BaseModel):
     printer_location: PrinterLocationOut | None = None
     status: str  # idle, printing, paused, error
     is_paused: bool = False  # operator-controlled queue pause, orthogonal to status
+    auto_distribute_eligible: bool = True  # opt-out from AutoQueue routing
     last_activity_at: datetime | None
     current_item_id: int | None
     pending_count: int
@@ -36,3 +37,4 @@ class PrinterQueueUpdate(BaseModel):
 
     status: str | None = None  # idle, paused
     is_paused: bool | None = None  # operator queue pause — allowed in any status
+    auto_distribute_eligible: bool | None = None  # AutoQueue routing opt-out

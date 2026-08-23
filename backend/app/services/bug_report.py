@@ -11,6 +11,7 @@ import logging
 import time
 
 import httpx
+from sqlalchemy import select
 
 from backend.app.core.config import BUG_REPORT_RELAY_URL
 from backend.app.core.database import async_session
@@ -156,3 +157,79 @@ async def submit_report(
         "issue_url": issue_url,
         "issue_number": issue_number,
     }
+
+
+def _status_from_issue(state: str, state_reason: str | None) -> str | None:
+    """Map a GitHub issue state onto the local ``status`` column.
+
+    ``unknown`` (the relay could not look this one up) maps to None — keep
+    what we have rather than invent a state.
+    """
+    if state == "closed":
+        return "not_planned" if state_reason == "not_planned" else "closed"
+    if state == "open":
+        return "open"
+    return None
+
+
+# States that will never change again — no point asking GitHub about them.
+_TERMINAL_STATUSES = ("closed", "not_planned")
+
+
+async def sync_report_statuses(db) -> bool:
+    """Refresh local rows from the relay's GitHub status proxy. Best-effort.
+
+    Returns False only when the relay could not be consulted at all — callers
+    surface that as "statuses may be stale", never as an error: the local list
+    is still worth showing. Deliberately via the relay and not GitHub directly:
+    the PAT lives there, and 50 installs polling api.github.com anonymously
+    would spend the per-IP rate limit on curiosity.
+    """
+    rows = (
+        (
+            await db.execute(
+                select(BugReport)
+                .where(BugReport.github_issue_number.is_not(None))
+                .where(BugReport.status.not_in(_TERMINAL_STATUSES))
+                .order_by(BugReport.id.desc())
+                .limit(50)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return True
+    if not BUG_REPORT_RELAY_URL:
+        return False
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{BUG_REPORT_RELAY_URL}/status",
+                json={"issue_numbers": [r.github_issue_number for r in rows]},
+            )
+            if resp.status_code != 200:
+                logger.warning("Bug-report status relay answered HTTP %s", resp.status_code)
+                return False
+            data = resp.json()
+    except Exception:
+        logger.warning("Bug-report status relay unreachable at %s", BUG_REPORT_RELAY_URL)
+        return False
+
+    if not data.get("success"):
+        return False
+
+    by_number = {s.get("issue_number"): s for s in data.get("statuses", []) if isinstance(s, dict)}
+    changed = False
+    for row in rows:
+        status = by_number.get(row.github_issue_number)
+        if not status:
+            continue
+        new = _status_from_issue(str(status.get("state", "")), status.get("state_reason"))
+        if new and new != row.status:
+            row.status = new
+            changed = True
+    if changed:
+        await db.commit()
+    return True

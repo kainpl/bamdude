@@ -13,6 +13,15 @@ type DiagnosticEntry = { name: string; result: PrinterDiagnosticResult };
 
 type ViewState = 'form' | 'logging' | 'stopping' | 'submitting' | 'success' | 'error';
 
+const REPORT_STATUS_STYLES: Record<string, string> = {
+  submitted: 'bg-bambu-dark-tertiary text-bambu-gray',
+  open: 'bg-blue-500/20 text-blue-600 dark:text-blue-400',
+  closed: 'bg-green-500/20 text-green-700 dark:text-green-400',
+  not_planned: 'bg-bambu-dark-tertiary text-bambu-gray-dark line-through',
+  failed: 'bg-red-500/20 text-red-600 dark:text-red-400',
+};
+
+
 const MAX_DIMENSION = 1920;
 const JPEG_QUALITY = 0.7;
 const MAX_LOG_SECONDS = 300; // 5 minutes
@@ -86,6 +95,16 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange }: BugR
   const [errorMessage, setErrorMessage] = useState('');
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [wasDebug, setWasDebug] = useState(false);
+  const [reportsOpen, setReportsOpen] = useState(false);
+  // Lazy: the list (and the relay status sync behind it) is fetched only
+  // when the reporter actually expands "My reports".
+  const { data: myReports, isLoading: reportsLoading } = useQuery({
+    queryKey: ['bug-reports'],
+    queryFn: bugReportApi.listReports,
+    enabled: isOpen && viewState === 'form' && reportsOpen,
+    staleTime: 60_000,
+  });
+
   const modalRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const handleStopLoggingRef = useRef<() => void>(() => {});
@@ -455,6 +474,52 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange }: BugR
                       <p>{t('bugReport.dataIncludedList')}</p>
                       <p className="font-medium text-bambu-gray">{t('bugReport.dataNeverIncluded')}</p>
                       <p>{t('bugReport.dataNeverIncludedList')}</p>
+                    </div>
+                  </details>
+
+                  {/* Previously submitted reports, statuses synced through the relay */}
+                  <details
+                    className="text-xs bg-bambu-dark border border-bambu-dark-tertiary rounded-lg p-3"
+                    onToggle={(e) => setReportsOpen((e.target as HTMLDetailsElement).open)}
+                  >
+                    <summary className="cursor-pointer font-medium text-bambu-gray hover:text-white">
+                      {t('bugReport.myReports')}
+                    </summary>
+                    <div className="mt-2 space-y-1.5">
+                      {reportsLoading && <Loader2 className="w-4 h-4 animate-spin text-bambu-gray" />}
+                      {myReports && myReports.reports.length === 0 && (
+                        <p className="text-bambu-gray-dark">{t('bugReport.noReports')}</p>
+                      )}
+                      {myReports && !myReports.synced && (
+                        <p className="text-status-warning">{t('bugReport.staleStatuses')}</p>
+                      )}
+                      {myReports?.reports.map((r) => (
+                        <div key={r.id} className="flex items-center gap-2">
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[10px] leading-tight whitespace-nowrap ${REPORT_STATUS_STYLES[r.status] ?? REPORT_STATUS_STYLES.submitted}`}
+                          >
+                            {t(`bugReport.status.${r.status}`)}
+                          </span>
+                          {r.github_issue_url ? (
+                            <a
+                              href={r.github_issue_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="truncate text-bambu-green hover:text-bambu-green-light hover:underline"
+                              title={r.description}
+                            >
+                              #{r.github_issue_number} {r.description}
+                            </a>
+                          ) : (
+                            <span className="truncate text-bambu-gray" title={r.description}>
+                              {r.description}
+                            </span>
+                          )}
+                          <span className="ml-auto whitespace-nowrap text-bambu-gray-dark">
+                            {new Date(r.created_at).toLocaleDateString()}
+                          </span>
+                        </div>
+                      ))}
                     </div>
                   </details>
 

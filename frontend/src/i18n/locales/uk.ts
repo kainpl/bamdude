@@ -1293,6 +1293,9 @@ export default {
       paused: 'Призупинено',
       error: 'Помилка'
     },
+    autoDistributeOn: 'Приймає роботу з авто-черги — натисніть, щоб виключити принтер з автоматичного розподілу',
+    autoDistributeOff: 'Виключено з авто-черги — натисніть, щоб знову включити',
+    autoDistributeOffPill: 'без авто-черги',
     pauseQueue: 'Призупинити чергу',
     resumeQueue: 'Відновити чергу',
     pausedPill: 'На паузі',
@@ -5105,6 +5108,16 @@ export default {
     },
   },
   bugReport: {
+    myReports: 'Мої репорти',
+    noReports: 'З цього інсталу ще нічого не надсилалось',
+    staleStatuses: 'Сервіс статусів недоступний — показано останні відомі статуси',
+    status: {
+      submitted: 'надіслано',
+      open: 'відкрито',
+      closed: 'виправлено',
+      not_planned: 'не планується',
+      failed: 'не надіслалось',
+    },
     title: 'Повідомити про баг',
     description: 'Опис',
     submittingStepConnection: 'Виконання перевірок підключення принтерів',
