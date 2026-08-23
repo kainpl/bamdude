@@ -137,3 +137,95 @@ async def test_delete_for_archive_cleans_sqlite_without_fk_cascade(db_session, p
 
     await delete_for_archive(db_session, archive.id)
     assert (await db_session.execute(select(PrintUsageEvent))).scalars().all() == []
+
+
+class TestAssignmentChangeAfterRunout:
+    """Tagless replacement path: assigning a spool to a slot that ran out IS
+    the replacement signal — the RFID uuid-watch cannot see external holders."""
+
+    async def _runout(self, db_session, printer, archive, spool_id, tray=254):
+        from backend.app.models.print_usage_event import EVENT_RUNOUT, KIND_EXTERNAL
+
+        db_session.add(
+            PrintUsageEvent(
+                printer_id=printer.id,
+                archive_id=archive.id,
+                layer_num=80,
+                event=EVENT_RUNOUT,
+                kind=KIND_EXTERNAL,
+                global_tray_id=tray,
+                spool_id=spool_id,
+            )
+        )
+        await db_session.commit()
+
+    @pytest.mark.asyncio
+    async def test_new_assignment_journals_spool_loaded(self, db_session, printer):
+        from backend.app.services.print_usage_journal import note_assignment_change
+
+        archive = await _make_archive(db_session, printer)
+        await self._runout(db_session, printer, archive, spool_id=7)
+
+        await note_assignment_change(db_session, printer_id=printer.id, ams_id=255, tray_id=0, spool_id=9, layer_num=85)
+
+        events = await load_events(db_session, printer.id, archive.id)
+        assert [(e.event, e.global_tray_id, e.spool_id, e.layer_num) for e in events[-1:]] == [
+            ("spool_loaded", 254, 9, 85)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_reassigning_the_same_reel_is_not_a_replacement(self, db_session, printer):
+        from backend.app.services.print_usage_journal import note_assignment_change
+
+        archive = await _make_archive(db_session, printer)
+        await self._runout(db_session, printer, archive, spool_id=7)
+
+        await note_assignment_change(db_session, printer_id=printer.id, ams_id=255, tray_id=0, spool_id=7, layer_num=85)
+        events = await load_events(db_session, printer.id, archive.id)
+        assert [e.event for e in events] == ["runout"]
+
+    @pytest.mark.asyncio
+    async def test_second_assignment_does_not_duplicate(self, db_session, printer):
+        from backend.app.services.print_usage_journal import note_assignment_change
+
+        archive = await _make_archive(db_session, printer)
+        await self._runout(db_session, printer, archive, spool_id=7)
+
+        await note_assignment_change(db_session, printer_id=printer.id, ams_id=255, tray_id=0, spool_id=9, layer_num=85)
+        await note_assignment_change(db_session, printer_id=printer.id, ams_id=255, tray_id=0, spool_id=9, layer_num=90)
+        events = await load_events(db_session, printer.id, archive.id)
+        assert [e.event for e in events] == ["runout", "spool_loaded"]
+
+    @pytest.mark.asyncio
+    async def test_assignment_without_a_runout_is_a_noop(self, db_session, printer):
+        from backend.app.services.print_usage_journal import note_assignment_change
+
+        archive = await _make_archive(db_session, printer)
+        await note_assignment_change(db_session, printer_id=printer.id, ams_id=0, tray_id=1, spool_id=9, layer_num=85)
+        assert await load_events(db_session, printer.id, archive.id) == []
+
+    @pytest.mark.asyncio
+    async def test_ams_tray_with_untagged_spool_gets_the_same_path(self, db_session, printer):
+        """Regular AMS slot, no RFID: runout on AMS0-T2 (global 2), the user
+        swaps the reel and re-assigns — the boundary lands on that tray."""
+        from backend.app.models.print_usage_event import EVENT_RUNOUT, KIND_PAUSE
+        from backend.app.services.print_usage_journal import note_assignment_change
+
+        archive = await _make_archive(db_session, printer)
+        db_session.add(
+            PrintUsageEvent(
+                printer_id=printer.id,
+                archive_id=archive.id,
+                layer_num=80,
+                event=EVENT_RUNOUT,
+                kind=KIND_PAUSE,
+                global_tray_id=2,
+                spool_id=7,
+            )
+        )
+        await db_session.commit()
+
+        await note_assignment_change(db_session, printer_id=printer.id, ams_id=0, tray_id=2, spool_id=9, layer_num=85)
+
+        events = await load_events(db_session, printer.id, archive.id)
+        assert [(e.event, e.global_tray_id, e.spool_id) for e in events[-1:]] == [("spool_loaded", 2, 9)]

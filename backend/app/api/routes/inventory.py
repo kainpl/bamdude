@@ -1799,6 +1799,23 @@ async def assign_spool(
     await db.commit()
     await db.refresh(assignment)
 
+    # If this slot ran out during the active print, this assignment IS the
+    # replacement (the runout notification asks for exactly this) — journal
+    # the spool_loaded boundary. Best-effort; the assignment must never fail
+    # on bookkeeping.
+    try:
+        from backend.app.services.print_usage_journal import note_assignment_change
+
+        await note_assignment_change(
+            db,
+            printer_id=data.printer_id,
+            ams_id=data.ams_id,
+            tray_id=data.tray_id,
+            spool_id=data.spool_id,
+        )
+    except Exception:
+        logger.exception("note_assignment_change failed for printer %s", data.printer_id)
+
     # re-Connect MQTT if stalled
     await printer_manager.ensure_fresh_connection(data.printer_id)
 

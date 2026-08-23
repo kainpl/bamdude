@@ -166,6 +166,82 @@ async def record_runout(
     )
 
 
+async def note_assignment_change(
+    db: AsyncSession,
+    *,
+    printer_id: int,
+    ams_id: int,
+    tray_id: int,
+    spool_id: int | None = None,
+    spoolman_spool_id: int | None = None,
+    layer_num: int | None = None,
+) -> None:
+    """A slot got a (re)assigned spool — if it ran out during the active
+    print, this IS the replacement: journal EVENT_SPOOL_LOADED.
+
+    The RFID uuid-watch covers tagged spools; this covers the tagless ones
+    (external holders, untagged reels), where "assign the replacement in
+    BamDude" — exactly what the runout notification asks for — is the only
+    signal there is. No runout on the tray, a replacement already noted, or
+    re-linking the very reel the runout froze → no-op.
+    """
+    from backend.app.models.print_usage_event import EVENT_RUNOUT, EVENT_SPOOL_LOADED
+
+    archive_id = await active_archive_id(db, printer_id)
+    if archive_id is None:
+        return
+
+    if ams_id >= 254:
+        global_tray = 254 + tray_id
+    elif ams_id >= 128:
+        global_tray = ams_id
+    else:
+        global_tray = ams_id * 4 + tray_id
+
+    events = await load_events(db, printer_id, archive_id)
+    runout = next((e for e in events if e.event == EVENT_RUNOUT and e.global_tray_id == global_tray), None)
+    if runout is None:
+        return
+    already = next(
+        (e for e in events if e.id > runout.id and e.event == EVENT_SPOOL_LOADED and e.global_tray_id == global_tray),
+        None,
+    )
+    if already is not None:
+        return
+    if spool_id is not None and runout.spool_id == spool_id:
+        return  # the same reel re-linked — a correction, not a replacement
+    if spool_id is None and spoolman_spool_id is not None and runout.spoolman_spool_id == spoolman_spool_id:
+        return
+
+    if layer_num is None:
+        try:
+            from backend.app.services.printer_manager import printer_manager
+
+            state = printer_manager.get_status(printer_id)
+            layer_num = getattr(state, "layer_num", 0) or 0
+        except Exception:
+            layer_num = 0
+
+    logger.info(
+        "[UsageJournal] Replacement assigned for tray %d on printer %d (spool=%s, spoolman=%s) at layer %d",
+        global_tray,
+        printer_id,
+        spool_id,
+        spoolman_spool_id,
+        layer_num,
+    )
+    await record_event(
+        db,
+        printer_id=printer_id,
+        archive_id=archive_id,
+        layer_num=layer_num,
+        event=EVENT_SPOOL_LOADED,
+        global_tray_id=global_tray,
+        spool_id=spool_id,
+        spoolman_spool_id=spoolman_spool_id,
+    )
+
+
 async def load_events(db: AsyncSession, printer_id: int, archive_id: int) -> list[PrintUsageEvent]:
     """The print's journal, in insertion order."""
     result = await db.execute(

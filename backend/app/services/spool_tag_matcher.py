@@ -495,6 +495,15 @@ async def auto_assign_spool(
     db.add(assignment)
     await db.flush()
 
+    # Replacement-after-runout boundary for the journal (deduped there; the
+    # RFID uuid-watch usually records it first for tagged spools).
+    try:
+        from backend.app.services.print_usage_journal import note_assignment_change
+
+        await note_assignment_change(db, printer_id=printer_id, ams_id=ams_id, tray_id=tray_id, spool_id=spool.id)
+    except Exception:
+        logger.exception("note_assignment_change failed for printer %s", printer_id)
+
     # re-Connect MQTT if stalled
     await printer_manager.ensure_fresh_connection(printer_id)
 

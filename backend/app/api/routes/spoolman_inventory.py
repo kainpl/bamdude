@@ -1440,6 +1440,21 @@ async def assign_spoolman_slot(
         logger.error("Failed to persist slot assignment: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to save slot assignment") from exc
 
+    # Replacement-after-runout boundary for the usage journal (tagless spools
+    # have no other signal). Best-effort — never fails the assignment.
+    try:
+        from backend.app.services.print_usage_journal import note_assignment_change
+
+        await note_assignment_change(
+            db,
+            printer_id=body.printer_id,
+            ams_id=body.ams_id,
+            tray_id=body.tray_id,
+            spoolman_spool_id=body.spoolman_spool_id,
+        )
+    except Exception:
+        logger.exception("note_assignment_change failed for printer %s", body.printer_id)
+
     # #1457: clear stale fallback-tag links on OTHER spools still bound to this
     # slot. Without this, a non-RFID slot's deterministic fallback tag stays
     # attached to the previous spool in Spoolman's extra.tag and re-surfaces in
