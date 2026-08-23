@@ -1983,6 +1983,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
     # Check if a print is actively running on this printer - if so, skip AMS
     # weight sync to avoid double-deducting spool weight (the usage tracker
     # handles weight deduction precisely during prints via 3MF/G-code data).
+    from backend.app.services.ams_sync_debounce import debounce as _ams_decrease_debounce
     from backend.app.services.usage_tracker import _active_sessions, record_ams_sync_usage
 
     _print_active = printer_id in _active_sessions
@@ -2362,6 +2363,38 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                             new_used=new_used,
                                         )
                                         await db.commit()
+                                    elif new_used < current_used - 1 and not printing_now:
+                                        # Downward correction — BS-mirror parity for
+                                        # RFID spools only, and never on one reading:
+                                        # the same value must repeat across two pushes
+                                        # ≥60 s apart (reconnect bursts cannot pass;
+                                        # zeros never got this far — grams_used refuses
+                                        # them). record_ams_sync_usage's decrease branch
+                                        # does the bookkeeping: no history row, baseline
+                                        # pulled, low-stock re-armed.
+                                        _bidir_raw = await get_setting(db, "ams_sync_bidirectional")
+                                        if (
+                                            (_bidir_raw is None or _bidir_raw.lower() != "false")
+                                            and is_bambu_tag(tag_uid, tray_uuid, tray_info_idx)
+                                            and _ams_decrease_debounce.offer(
+                                                (printer_id, ams_id, tray_id), new_used, str(tray_uuid or "")
+                                            )
+                                        ):
+                                            logger.info(
+                                                "Weight sync (down): spool %d weight_used %s -> %s (debounced, tagged)",
+                                                existing_assignment.spool_id,
+                                                current_used,
+                                                new_used,
+                                            )
+                                            await record_ams_sync_usage(
+                                                db,
+                                                existing_assignment.spool,
+                                                printer_id=printer_id,
+                                                ams_id=ams_id,
+                                                tray_id=tray_id,
+                                                new_used=new_used,
+                                            )
+                                            await db.commit()
 
                             # Re-apply stored K-profile when the live tray's
                             # cali_idx drifted from the spool's stored profile.
@@ -2665,6 +2698,22 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                         printer_id,
                                         result["id"],
                                     )
+                        # Bidirectional weight leg for Bambu-tagged spools —
+                        # never while a print runs (the per-print tracker owns
+                        # weight then; #1119's no-weight rule stays for
+                        # everything untagged).
+                        if result and result.get("id") and not printing_now and not _print_active:
+                            try:
+                                await _spoolman_bidirectional_weight_sync(
+                                    client, db, printer_id, ams_id, tray, tray_data, result
+                                )
+                            except Exception as e:
+                                logger.debug(
+                                    "Bidirectional weight sync failed for AMS %s tray %s: %s",
+                                    ams_id,
+                                    tray.tray_id,
+                                    e,
+                                )
                     except Exception as e:
                         logger.error("Error syncing AMS %s tray %s: %s", ams_id, tray.tray_id, e)
 
@@ -2692,6 +2741,72 @@ async def on_ams_change(printer_id: int, ams_data: list):
 
     except Exception as e:
         logging.getLogger(__name__).warning(f"Spoolman AMS sync failed: {e}")
+
+
+async def _spoolman_bidirectional_weight_sync(client, db, printer_id: int, ams_id: int, tray, tray_data, spool):
+    """AMS-driven weight for a Bambu-tagged Spoolman spool, both directions.
+
+    #1119 removed the AMS weight sync wholesale because non-RFID spools have
+    no usable ``remain`` and were silently dropped. A valid Bambu tag's remain
+    IS the firmware's own estimate — the same number BS mirrors into its
+    Filament Manager — so it comes back narrowly, tagged spools only, idle
+    only (the caller gates on printing): remaining dropped → ``use_spool`` the
+    delta immediately (≥1 g); remaining rose → a downward correction of our
+    books, applied only after the two-push debounce, via a
+    ``remaining_weight`` PATCH. Zeros never reach here — ``grams_remaining``
+    refuses them (inv-zero-remain-is-not-an-empty-spool).
+    """
+    from backend.app.api.routes.settings import get_setting
+    from backend.app.services.ams_sync_debounce import debounce as _ams_decrease_debounce
+    from backend.app.utils.filament_remaining import grams_remaining
+
+    logger = logging.getLogger(__name__)
+
+    tray_uuid = str(getattr(tray, "tray_uuid", "") or "")
+    if not tray_uuid or set(tray_uuid) == {"0"}:
+        return  # untagged — #1119 territory, weight stays per-print-owned
+
+    filament = spool.get("filament") or {}
+    ref_weight = filament.get("weight")
+    if not ref_weight or ref_weight <= 0:
+        return
+
+    remain_raw = tray_data.get("remain")
+    try:
+        remain_val = int(remain_raw) if remain_raw is not None else -1
+    except (TypeError, ValueError):
+        remain_val = -1
+    new_remaining = grams_remaining(tray_data.get("remain_g"), remain_val, int(ref_weight))
+    if new_remaining is None:
+        return
+
+    current_remaining = spool.get("remaining_weight")
+    if current_remaining is None:
+        return
+
+    delta_used = float(current_remaining) - float(new_remaining)
+    if delta_used > 1:
+        await client.use_spool(spool["id"], round(delta_used, 1))
+        logger.info(
+            "Spoolman weight sync: spool %s consumed %.1fg per AMS reading (AMS%d-T%d)",
+            spool["id"],
+            delta_used,
+            ams_id,
+            tray.tray_id,
+        )
+    elif delta_used < -1:
+        _bidir_raw = await get_setting(db, "ams_sync_bidirectional")
+        if _bidir_raw is not None and _bidir_raw.lower() == "false":
+            return
+        if _ams_decrease_debounce.offer((printer_id, ams_id, tray.tray_id), float(new_remaining), tray_uuid):
+            await client.update_spool(spool["id"], remaining_weight=round(float(new_remaining), 1))
+            logger.info(
+                "Spoolman weight sync (down): spool %s remaining -> %.1fg (debounced, tagged, AMS%d-T%d)",
+                spool["id"],
+                new_remaining,
+                ams_id,
+                tray.tray_id,
+            )
 
 
 async def _capture_snapshot_for_notification(printer_id: int, printer, logger) -> bytes | None:
