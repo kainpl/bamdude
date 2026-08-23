@@ -5613,3 +5613,41 @@ class TestJournalTrayGate:
             assert client._is_journal_tray(tn) is True, tn
         for tn in (16, 23, 136, 253, -1, 300):
             assert client._is_journal_tray(tn) is False, tn
+
+
+class TestExternalRunoutTrayClamp:
+    """Measured on an A1 mini 2026-08-23: the generic 07FF8011 print_error
+    (nominally 'right external' = 255) fires beside the mini's own
+    12FF2000 hms code for its ONLY holder (254). The FE/FF nibble names the
+    external only where two exist — the answer clamps to the machine's
+    actual vt_tray set, so both codes dedup into one journal event."""
+
+    @pytest.fixture
+    def client(self):
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        c = BambuMQTTClient(ip_address="1.2.3.4", serial_number="0309CLAMP", access_code="1")
+        c._was_running = True
+        c._completion_triggered = False
+        c.state.state = "RUNNING"
+        c.state.layer_num = 548
+        c.state.tray_now = 254
+        c.on_usage_event = MagicMock()
+        return c
+
+    def test_single_external_machine_clamps_07ff_to_254_and_dedups(self, client):
+        client.state.raw_data = {"vt_tray": [{"id": 254}]}
+        client._process_message({"print": {"hms": [{"attr": 0x12FF2000, "code": 0x00020001}]}})
+        client._process_message({"print": {"print_error": 0x07FF8011}})
+        assert client.on_usage_event.call_count == 1
+        assert client.on_usage_event.call_args[0] == ("runout", "external", 254, 548)
+
+    def test_dual_external_machine_keeps_the_code_meaning(self, client):
+        client.state.raw_data = {"vt_tray": [{"id": 254}, {"id": 255}]}
+        client._process_message({"print": {"print_error": 0x07FF8011}})
+        assert client.on_usage_event.call_args[0] == ("runout", "external", 255, 548)
+
+    def test_no_vt_info_keeps_the_code_answer(self, client):
+        client.state.raw_data = {}
+        client._process_message({"print": {"print_error": 0x07FF8011}})
+        assert client.on_usage_event.call_args[0] == ("runout", "external", 255, 548)

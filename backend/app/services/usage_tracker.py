@@ -1281,7 +1281,15 @@ async def on_print_complete(
             journal_events = await load_events(db, printer_id, archive_id)
         except Exception:
             logger.exception("[UsageTracker] Journal load failed for archive %s", archive_id)
-    effective_started_at = None if journal_events else (session.started_at if session else None)
+    # "Live assignment wins" is suspended only when the journal holds
+    # BOUNDARY events (runout / spool_loaded) — those own mid-print changes.
+    # Any print has a start row (and jams leave pause rows), so keying on
+    # "any journal row" would kill the legitimate wrong-link correction for
+    # every print; a jam-time spool swap stays on the old live-wins semantics.
+    from backend.app.models.print_usage_event import EVENT_RUNOUT as _EV_RUNOUT, EVENT_SPOOL_LOADED as _EV_LOADED
+
+    has_boundary_events = any(e.event in (_EV_RUNOUT, _EV_LOADED) for e in journal_events)
+    effective_started_at = None if has_boundary_events else (session.started_at if session else None)
 
     # --- Path 1 (PRIMARY): 3MF per-filament estimates ---
     if archive_id:

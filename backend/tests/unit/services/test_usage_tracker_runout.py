@@ -310,10 +310,10 @@ class TestRunoutZeroPoint:
         assert [(s, w, st) for s, w, st in await _history(db_session) if st == RUNOUT_STATUS] == []
 
     @pytest.mark.asyncio
-    async def test_journaled_print_ignores_live_reassignment(self, db_session, tmp_path, monkeypatch):
-        """The journal owns mid-print changes: with events present, the
-        assignment snapshot wins unconditionally — 'live wins' stays only for
-        journal-less prints (its wrong-assignment-correction case)."""
+    async def test_boundary_events_suspend_live_reassignment(self, db_session, tmp_path, monkeypatch):
+        """The journal owns mid-print changes ONLY via boundary events
+        (runout / spool_loaded) — a start or pause row must not suspend the
+        legitimate wrong-link correction ('live wins')."""
         monkeypatch.setattr(app_settings, "base_dir", tmp_path)
         printer = await _make_printer(db_session)
         archive = await _make_archive(db_session, printer, tmp_path)
@@ -324,8 +324,17 @@ class TestRunoutZeroPoint:
         # Live assignment (created during the print) points at B…
         db_session.add(SpoolAssignment(printer_id=printer.id, ams_id=0, tray_id=0, spool_id=spool_b.id))
         await db_session.commit()
-        # …but the snapshot froze A, and the print HAS journal events.
-        await _journal(db_session, printer, archive, [(EVENT_START, None, 0, 0, spool_a.id)])
+        # …but the snapshot froze A, and the print HAS a boundary event.
+        await _journal(
+            db_session,
+            printer,
+            archive,
+            [
+                (EVENT_START, None, 0, 0, spool_a.id),
+                (EVENT_RUNOUT, KIND_AMBIGUOUS, 3, 10, None),  # boundary elsewhere still suspends live-wins
+                (EVENT_SPOOL_LOADED, None, 3, 10, None),
+            ],
+        )
         _active_sessions[printer.id] = _session(printer.id, spool_assignments={(0, 0): spool_a.id})
 
         p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 50.0, "type": "PLA", "color": ""}])
@@ -419,3 +428,44 @@ class TestPath2UuidGate:
         restored = _active_sessions[printer.id]
         assert restored.tray_remain_start == {(0, 1): 55}
         assert restored.tray_uuid_start == {(0, 1): "CAFE0000CAFE0000CAFE0000CAFE0000"}
+
+    @pytest.mark.asyncio
+    async def test_start_and_pause_rows_keep_live_wins(self, db_session, tmp_path, monkeypatch):
+        """A jam-time (or any mid-print) re-assignment on a print with no
+        boundary events keeps the old semantics: the corrected live link is
+        charged, not the stale snapshot."""
+        from backend.app.models.print_usage_event import EVENT_PAUSE
+
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        spool_a = await _make_spool(db_session)
+        spool_b = await _make_spool(db_session)
+        from backend.app.models.spool_assignment import SpoolAssignment
+
+        db_session.add(SpoolAssignment(printer_id=printer.id, ams_id=0, tray_id=0, spool_id=spool_b.id))
+        await db_session.commit()
+        await _journal(
+            db_session,
+            printer,
+            archive,
+            [(EVENT_START, None, 0, 0, spool_a.id), (EVENT_PAUSE, None, 0, 50, spool_a.id)],
+        )
+        # The print started an hour ago; the live re-assignment (created just
+        # now, above) therefore postdates it — the correction case.
+        from datetime import timedelta
+
+        _active_sessions[printer.id] = _session(
+            printer.id,
+            spool_assignments={(0, 0): spool_a.id},
+            started_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        )
+
+        p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 50.0, "type": "PLA", "color": ""}])
+        with p1, p2:
+            await on_print_complete(printer.id, {"status": "completed"}, _pm(), db_session, archive_id=archive.id)
+
+        await db_session.refresh(spool_a)
+        await db_session.refresh(spool_b)
+        assert spool_b.weight_used == pytest.approx(50.0)  # live correction won
+        assert spool_a.weight_used == pytest.approx(0.0)

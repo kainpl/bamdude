@@ -6732,6 +6732,17 @@ class BambuMQTTClient:
                     return str(tray.get("tray_uuid", "") or "")
         return ""
 
+    def _vt_tray_ids(self) -> list[int]:
+        """Global ids (254/255) of the external feeds this machine exposes."""
+        ids = []
+        for vt in (self.state.raw_data or {}).get("vt_tray") or []:
+            if isinstance(vt, dict):
+                try:
+                    ids.append(int(vt.get("id", 254)))
+                except (TypeError, ValueError):
+                    continue
+        return ids
+
     def _resolve_runout_tray(self, match) -> int | None:
         """Global tray id for a runout signal — or None rather than a guess.
 
@@ -6739,6 +6750,17 @@ class BambuMQTTClient:
         to None (the event is journaled timeline-only).
         """
         if match.scope == "external":
+            # The code's FE/FF nibble names WHICH external only on machines
+            # that have two (H2 left/right). Measured live on an A1 mini
+            # 2026-08-23: it emits the generic 07FF8011 print_error for its
+            # single holder alongside its own 12FF2000 hms code — so the
+            # answer is clamped to the externals the machine actually exposes,
+            # and both codes dedup into one event.
+            vt_ids = self._vt_tray_ids()
+            if match.external_tray in vt_ids or not vt_ids:
+                return match.external_tray
+            if len(vt_ids) == 1:
+                return vt_ids[0]
             return match.external_tray
         tn = self.state.tray_now
         if match.scope == "ams_slot":
