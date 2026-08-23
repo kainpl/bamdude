@@ -1370,6 +1370,24 @@ def set_expected_pause_reason(printer_id: int, reason_code: str) -> None:
     _expected_pause_reasons[printer_id] = reason_code
 
 
+async def _current_tray_frozen(db, printer_id: int, state) -> tuple[int | None, int | None, int | None]:
+    """(global_tray, spool_id, spoolman_spool_id) of the currently-loaded tray.
+
+    For journal timeline rows (pause/resume) — forensic context only, never
+    accounting, so an unresolvable tray simply yields Nones.
+    """
+    from backend.app.services.print_usage_journal import freeze_spool_ids
+
+    tn = getattr(state, "tray_now", 255)
+    if not ((0 <= tn <= 15) or (24 <= tn <= 27) or (128 <= tn <= 135) or tn == 254):
+        return None, None, None
+    try:
+        spool_id, spoolman_spool_id = await freeze_spool_ids(db, printer_id, tn)
+    except Exception:
+        return tn, None, None
+    return tn, spool_id, spoolman_spool_id
+
+
 async def _handle_pause_edge(printer_id: int, state: PrinterState):
     """Fire on_print_pause notification + WS push on RUNNING→PAUSE.
 
@@ -1416,8 +1434,11 @@ async def _handle_pause_edge(printer_id: int, state: PrinterState):
         state.pause_started_at = now
         _pause_started_at[printer_id] = now
 
-        # Timeline entry in the usage journal — attribution-neutral, but it
-        # anchors spool_loaded events and makes runout forensics readable.
+        # Timeline entry in the usage journal — attribution-neutral (the
+        # accountant ignores pause/resume), but it anchors spool_loaded events
+        # and makes runout forensics readable. The current tray + its frozen
+        # spool ride along for the same forensic reason: "what was loaded when
+        # it paused" is the first question a timeline reader asks.
         try:
             from backend.app.models.print_usage_event import EVENT_PAUSE
             from backend.app.services.print_usage_journal import active_archive_id, record_event
@@ -1425,12 +1446,16 @@ async def _handle_pause_edge(printer_id: int, state: PrinterState):
             async with async_session() as db:
                 archive_id = await active_archive_id(db, printer_id)
                 if archive_id is not None:
+                    tray, spool_id, spoolman_spool_id = await _current_tray_frozen(db, printer_id, state)
                     await record_event(
                         db,
                         printer_id=printer_id,
                         archive_id=archive_id,
                         layer_num=state.layer_num or 0,
                         event=EVENT_PAUSE,
+                        global_tray_id=tray,
+                        spool_id=spool_id,
+                        spoolman_spool_id=spoolman_spool_id,
                     )
         except Exception as e:
             logging.getLogger(__name__).debug("Pause journal entry failed for printer %d: %s", printer_id, e)
@@ -1490,12 +1515,16 @@ async def _handle_resume_edge(printer_id: int, state: PrinterState):
             async with async_session() as db:
                 archive_id = await active_archive_id(db, printer_id)
                 if archive_id is not None:
+                    tray, spool_id, spoolman_spool_id = await _current_tray_frozen(db, printer_id, state)
                     await record_event(
                         db,
                         printer_id=printer_id,
                         archive_id=archive_id,
                         layer_num=state.layer_num or 0,
                         event=EVENT_RESUME,
+                        global_tray_id=tray,
+                        spool_id=spool_id,
+                        spoolman_spool_id=spoolman_spool_id,
                     )
         except Exception as e:
             logging.getLogger(__name__).debug("Resume journal entry failed for printer %d: %s", printer_id, e)

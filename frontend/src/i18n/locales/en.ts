@@ -840,6 +840,11 @@ export default {
     // HMS errors
     clickToViewHmsErrors: 'Click to view HMS errors',
     estimatedCompletion: 'Estimated completion time',
+    usageProjection: {
+      soFar: 'Filament so far: {{consumed}} of ~{{estimate}} g',
+      split: 'split across spools',
+      splitHint: 'A runout split this print across more than one spool — each is charged its own segment',
+    },
     plateNumber: 'Plate {{number}}',
     slotOptions: 'Slot options',
     // Runout guidance: the slot the paused print now expects filament in

@@ -5409,6 +5409,32 @@ export interface CsvImportResult {
 }
 
 // API functions
+
+export interface UsageProjectionSegment {
+  start_layer: number;
+  spool_id: number | null;
+  spoolman_spool_id: number | null;
+  consumed_g: number;
+}
+
+export interface UsageProjectionSlot {
+  slot_id: number;
+  type: string;
+  color: string;
+  estimate_g: number;
+  consumed_g: number;
+  segments?: UsageProjectionSegment[];
+}
+
+export interface UsageProjection {
+  active: boolean;
+  archive_id?: number;
+  print_name?: string | null;
+  layer_num?: number;
+  total_layers?: number;
+  slots?: UsageProjectionSlot[];
+}
+
 export const api = {
   // Authentication
   getAuthStatus: () => request<AuthStatus>('/auth/status'),
@@ -5610,6 +5636,7 @@ export const api = {
 
   // Printers
   getPrinters: () => request<Printer[]>('/printers/'),
+  getUsageProjection: (id: number) => request<UsageProjection>(`/printers/${id}/usage-projection`),
   // Includes archived (soft-retired) printers — used by the Settings restore
   // section and the Archives history filter. A separate method (not a param on
   // getPrinters) so the many bare `queryFn: api.getPrinters` call sites keep

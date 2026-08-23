@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ZigbeeStatusBadge } from '../components/zigbee/ZigbeeStatusBadge';
 import { useTranslation } from 'react-i18next';
 import { PrinterLocationSelect } from '../components/PrinterLocationSelect';
+import { UsageProjection } from '../components/UsageProjection';
 import { LoadingBlock } from '../components/LoadingBlock';
 import { formatFileSize } from '../utils/file';
 import { compareLocationNames } from '../utils/locationOrder';
@@ -3879,6 +3880,10 @@ function PrinterCard({
                               </span>
                             )}
                           </div>
+                          <UsageProjection
+                            printerId={printer.id}
+                            printing={status.state === 'RUNNING' || status.state === 'PAUSE'}
+                          />
                         </>
                       ) : (
                         <>

@@ -845,6 +845,11 @@ export default {
     // HMS errors
     clickToViewHmsErrors: 'Натисніть для перегляду помилок HMS',
     estimatedCompletion: 'Орієнтовний час завершення',
+    usageProjection: {
+      soFar: 'Філаменту вже: {{consumed}} з ~{{estimate}} г',
+      split: 'розділено між котушками',
+      splitHint: 'Runout розділив цей друк між кількома котушками — кожній спишеться свій сегмент',
+    },
     plateNumber: 'Плита {{number}}',
     slotOptions: 'Параметри слота',
     // Runout guidance: the slot the paused print now expects filament in

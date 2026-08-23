@@ -256,6 +256,23 @@ async def create_printer(
     return printer
 
 
+@router.get("/{printer_id}/usage-projection")
+async def get_usage_projection(
+    printer_id: int,
+    db: AsyncSession = Depends(get_db),
+    _=RequirePermission(Permission.PRINTERS_READ),
+):
+    """Live filament-usage projection for the print running on this printer.
+
+    Display-only: consumed-so-far per slot from the per-layer G-code cumulative
+    (linear fallback), split by the usage journal's frozen spool boundaries.
+    Writes nothing — the books are written once, at completion.
+    """
+    from backend.app.services.usage_projection import compute_usage_projection
+
+    return await compute_usage_projection(db, printer_id)
+
+
 @router.get("/usb-cameras")
 async def list_usb_cameras(
     _=RequirePermission(Permission.PRINTERS_READ),
