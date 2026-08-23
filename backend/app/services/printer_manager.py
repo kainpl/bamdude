@@ -1938,8 +1938,20 @@ def printer_state_to_dict(
         "layer_num": state.layer_num,
         "total_layers": state.total_layers,
         "temperatures": temperatures,
+        # Same shape as the REST HMSErrorResponse — the HMS modal renders its
+        # action buttons (and submits them with full_code/job_id) from whichever
+        # payload arrived last. The WS dict used to drop these three fields, so
+        # an open dialog lost its Done/Retry buttons on the first live push.
         "hms_errors": [
-            {"code": e.code, "attr": e.attr, "module": e.module, "severity": e.severity}
+            {
+                "code": e.code,
+                "attr": e.attr,
+                "module": e.module,
+                "severity": e.severity,
+                "actions": e.actions,
+                "full_code": e.full_code,
+                "job_id": e.job_id,
+            }
             for e in (state.hms_errors or [])
         ],
         # Pause classification — populated by main._handle_pause_edge, cleared

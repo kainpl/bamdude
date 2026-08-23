@@ -172,6 +172,8 @@
 
 ### Fixed
 
+- **HMS dialog buttons no longer vanish on the first live update.** The printer's own prompts with choices (e.g. the "check the nozzle — Done / Retry" prompt after loading filament) rendered their buttons and then lost them the moment a live status push arrived: the WebSocket payload described HMS errors without their actions. Both payloads now carry the same fields, so the buttons stay — and pressing them drives the printer remotely, exactly like answering on the touchscreen.
+
 - **Filament names on AMS slots and tooltips come from the local catalog — instantly, offline, custom families included.** Every hover used to fire a cloud request per tray (and showed nothing without a Bambu login); the hardcoded 88-name fallback table is gone too. The calibration wizard still fetches full preset content from the cloud for its auto-fill — that is now an explicit opt-in on its one request, not a side effect of every tooltip.
 
 

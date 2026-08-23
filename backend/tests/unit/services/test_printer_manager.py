@@ -1881,3 +1881,35 @@ class TestResolvePlateId:
             dispatched_subtask=None,
         )
         assert resolve_plate_id(state) is None
+
+
+class TestHMSSerializationParity:
+    """The WS status and the REST status must describe an HMS error identically.
+
+    The WS shape used to drop actions/full_code/job_id — so an open HMS modal
+    rendered its buttons from the REST payload and lost them on the first live
+    WS push ('blinked'), and could no longer submit the action it needed
+    full_code/job_id for. Measured live on an A1 mini (07FF-8007 Done/Retry),
+    2026-08-23."""
+
+    def test_ws_dict_carries_the_action_fields(self):
+        from backend.app.services.bambu_mqtt import HMSError, PrinterState
+        from backend.app.services.printer_manager import printer_state_to_dict
+
+        state = PrinterState()
+        state.hms_errors = [
+            HMSError(
+                code="0x8007",
+                attr=0x07FF8000,
+                module=0x07,
+                severity=2,
+                actions=["FILAMENT_EXTRUDED", "RETRY_FILAMENT_EXTRUDED"],
+                job_id="12345",
+                full_code="07FF8007",
+            )
+        ]
+        payload = printer_state_to_dict(state, printer_id=1, model="A1 mini")
+        entry = payload["hms_errors"][0]
+        assert entry["actions"] == ["FILAMENT_EXTRUDED", "RETRY_FILAMENT_EXTRUDED"]
+        assert entry["full_code"] == "07FF8007"
+        assert entry["job_id"] == "12345"
