@@ -518,11 +518,18 @@ async def restore_session(db: AsyncSession, printer_id: int, register_active: bo
         archive_id = await active_archive_id(db, printer_id)
         if archive_id is not None:
             events = await load_events(db, printer_id, archive_id)
-            log = [
-                [e.global_tray_id, e.layer_num]
-                for e in events
-                if e.event in (EVENT_START, EVENT_TRAY_CHANGE) and e.global_tray_id is not None
-            ]
+            for e in events:
+                if e.event not in (EVENT_START, EVENT_TRAY_CHANGE) or e.global_tray_id is None:
+                    continue
+                # A row naming the tray already current is not a change —
+                # collapse it. Two same-tray entries would make the completion
+                # split charge the first segment and silently drop the second
+                # (handled_trays skips a repeated (ams,tray)), vanishing the
+                # tail of the print from the books (X2D, 2026-08-24). A real
+                # sandwich (A→B→A) has no consecutive duplicates.
+                if log and log[-1][0] == e.global_tray_id:
+                    continue
+                log.append([e.global_tray_id, e.layer_num])
     except Exception:
         logger.exception("[UsageTracker] Journal read failed during restore for printer %d", printer_id)
     if not log:

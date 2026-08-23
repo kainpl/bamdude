@@ -414,6 +414,53 @@ class TestTheJournalSupersedesTheColumn:
         assert log == [[0, 0], [1, 120]]
 
     @pytest.mark.asyncio
+    async def test_restore_collapses_consecutive_same_tray_rows(self, db_session, printer_factory):
+        """A tray_change row naming the tray already current is not a change.
+
+        Seen live (X2D, 2026-08-24): a journal cleaned mid-restart still held
+        the return-to-the-refilled-slot row, and the restored log came back
+        [[2,0],[2,25]]. Downstream the split loop charges one segment per
+        (ams,tray) and SKIPS the second same-tray segment via handled_trays —
+        so the tail of the print would silently vanish from the books. A
+        genuine sandwich (A→B→A) has no consecutive duplicates and survives.
+        """
+        from backend.app.models.print_usage_event import PrintUsageEvent
+        from backend.app.services.usage_tracker import record_tray_change_event
+
+        printer = await printer_factory()
+        await self._archive(db_session, printer)
+        await persist_session(db_session, _session(printer.id))
+        await record_tray_change_event(db_session, printer.id, 2, 0)
+        await record_tray_change_event(db_session, printer.id, 254, 23)
+        await record_tray_change_event(db_session, printer.id, 2, 25)
+
+        log = await restore_session(db_session, printer.id)
+        assert log == [[2, 0], [254, 23], [2, 25]]
+
+        # now delete the middle row the way the manual cleanup did — the
+        # remaining pair collapses to the single real boundary
+        events = (await db_session.execute(select(PrintUsageEvent))).scalars().all()
+        await db_session.delete(next(e for e in events if e.global_tray_id == 254))
+        await db_session.commit()
+
+        log = await restore_session(db_session, printer.id)
+        assert log == [[2, 0]]
+
+    @pytest.mark.asyncio
+    async def test_a_sandwich_is_not_collapsed(self, db_session, printer_factory):
+        from backend.app.services.usage_tracker import record_tray_change_event
+
+        printer = await printer_factory()
+        await self._archive(db_session, printer)
+        await persist_session(db_session, _session(printer.id))
+        await record_tray_change_event(db_session, printer.id, 0, 0)
+        await record_tray_change_event(db_session, printer.id, 1, 100)
+        await record_tray_change_event(db_session, printer.id, 0, 180)
+
+        log = await restore_session(db_session, printer.id)
+        assert log == [[0, 0], [1, 100], [0, 180]]
+
+    @pytest.mark.asyncio
     async def test_restore_falls_back_to_the_legacy_column(self, db_session, printer_factory):
         printer = await printer_factory()
         await self._archive(db_session, printer)
