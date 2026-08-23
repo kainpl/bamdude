@@ -46,7 +46,8 @@ describe('UsageProjection', () => {
       expect(screen.getByTestId('usage-projection')).toBeInTheDocument();
     });
     expect(screen.getByTestId('usage-projection').textContent).toContain('soFar');
-    expect(screen.getByTestId('usage-projection').textContent).toContain('split');
+    // the split marker is an icon now — its text lives in the tooltip/label
+    expect(screen.getByLabelText('printers.usageProjection.split')).toBeInTheDocument();
   });
 
   it('renders nothing for an idle printer', () => {
