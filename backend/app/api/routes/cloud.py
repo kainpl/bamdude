@@ -50,6 +50,7 @@ router = APIRouter(prefix="/cloud", tags=["cloud"])
 
 # Keys for storing cloud credentials in settings
 CLOUD_TOKEN_KEY = "bambu_cloud_token"
+CLOUD_REFRESH_TOKEN_KEY = "bambu_cloud_refresh_token"
 CLOUD_EMAIL_KEY = "bambu_cloud_email"
 CLOUD_REGION_KEY = "bambu_cloud_region"
 # Ownerless (API-key fallback) counterpart of ``User.cloud_token_invalid_at``.
@@ -109,6 +110,63 @@ async def mark_cloud_token_invalid(user_id: int | None) -> None:
         logger.exception("Could not record the Bambu Cloud token as invalid")
 
 
+async def _persist_refreshed_tokens(user_id: int | None, access_token: str, refresh_token: str | None) -> None:
+    """Store the renewed pair and clear the rejected-token flag.
+
+    Same own-session shape as :func:`mark_cloud_token_invalid`, and for the
+    same reason — this fires from the middle of a failing request, and the
+    renewed credential is real regardless of how that request ends.
+    """
+    from sqlalchemy import update
+
+    from backend.app.core.database import async_session
+
+    try:
+        async with async_session() as db:
+            if user_id is not None:
+                await db.execute(
+                    update(User)
+                    .where(User.id == user_id)
+                    .values(
+                        cloud_token=access_token,
+                        cloud_refresh_token=refresh_token,
+                        cloud_token_invalid_at=None,
+                    )
+                )
+            else:
+                for key, value in [(CLOUD_TOKEN_KEY, access_token), (CLOUD_REFRESH_TOKEN_KEY, refresh_token or "")]:
+                    result = await db.execute(select(Settings).where(Settings.key == key))
+                    row = result.scalar_one_or_none()
+                    if row:
+                        row.value = value
+                    else:
+                        db.add(Settings(key=key, value=value))
+                result = await db.execute(select(Settings).where(Settings.key == CLOUD_TOKEN_INVALID_KEY))
+                stale = result.scalar_one_or_none()
+                if stale:
+                    await db.delete(stale)
+            await db.commit()
+        logger.info("Bambu Cloud token refreshed and stored (user_id=%s)", user_id)
+    except Exception:
+        logger.exception("Could not persist the refreshed Bambu Cloud token")
+
+
+async def _refresh_or_invalidate(cloud, user_id: int | None) -> None:
+    """On the genuine expiry 401: try the refresh first, sign out only if it fails.
+
+    Spec A §3 hardening. The in-flight request still sees its 401 (one blip);
+    every later build — including the 5-minute preset-sync tick — picks up the
+    renewed pair, so the connection self-heals without a re-login.
+    """
+    try:
+        if await cloud.refresh_access_token():
+            await _persist_refreshed_tokens(user_id, cloud.access_token, cloud.refresh_token)
+            return
+    except Exception:
+        logger.exception("Bambu Cloud token refresh attempt crashed — falling back to sign-out")
+    await mark_cloud_token_invalid(user_id)
+
+
 def _normalise_region(region: str | None) -> str:
     """Treat NULL/empty/unknown as 'global' for legacy rows that predate the region column."""
     return region if region in ("global", "china") else "global"
@@ -137,15 +195,35 @@ async def get_stored_token(db: AsyncSession, user: User | None = None) -> tuple[
     )
 
 
-async def store_token(db: AsyncSession, token: str, email: str, region: str, user: User | None = None) -> None:
-    """Store cloud token, email, and region.
+async def get_stored_refresh_token(db: AsyncSession, user: User | None = None) -> str | None:
+    """The stored refresh token, or None. Separate from :func:`get_stored_token`
+    so its seven existing 3-tuple call sites stay untouched — only the
+    authenticated-service builder needs this."""
+    if user is not None:
+        return user.cloud_refresh_token
+    result = await db.execute(select(Settings).where(Settings.key == CLOUD_REFRESH_TOKEN_KEY))
+    row = result.scalar_one_or_none()
+    return row.value or None if row else None
+
+
+async def store_token(
+    db: AsyncSession,
+    token: str,
+    email: str,
+    region: str,
+    user: User | None = None,
+    refresh_token: str | None = None,
+) -> None:
+    """Store cloud token, email, region — and the refresh token (spec A §3).
 
     When a user is provided, stores on the user record; otherwise (ownerless
     API-key fallback) in the global Settings table.
 
     Always clears the rejected-token flag and the cached validation verdict:
     this is a *fresh* credential, and leaving either behind would report the new
-    sign-in as expired (upstream #2562).
+    sign-in as expired (upstream #2562). The refresh token is written even when
+    None — a stale refresh token from a previous pair cannot renew a new access
+    token, so a token-auth sign-in deliberately clears it.
     """
     from backend.app.services.bambu_cloud import invalidate_validation_cache
 
@@ -159,13 +237,24 @@ async def store_token(db: AsyncSession, token: str, email: str, region: str, use
         await db.execute(
             update(User)
             .where(User.id == user.id)
-            .values(cloud_token=token, cloud_email=email, cloud_region=region, cloud_token_invalid_at=None)
+            .values(
+                cloud_token=token,
+                cloud_refresh_token=refresh_token,
+                cloud_email=email,
+                cloud_region=region,
+                cloud_token_invalid_at=None,
+            )
         )
         await db.commit()
         return
 
     # Fallback: global storage (auth disabled)
-    for key, value in [(CLOUD_TOKEN_KEY, token), (CLOUD_EMAIL_KEY, email), (CLOUD_REGION_KEY, region)]:
+    for key, value in [
+        (CLOUD_TOKEN_KEY, token),
+        (CLOUD_REFRESH_TOKEN_KEY, refresh_token or ""),
+        (CLOUD_EMAIL_KEY, email),
+        (CLOUD_REGION_KEY, region),
+    ]:
         result = await db.execute(select(Settings).where(Settings.key == key))
         setting = result.scalar_one_or_none()
         if setting:
@@ -197,7 +286,13 @@ async def clear_token(db: AsyncSession, user: User | None = None) -> None:
         await db.execute(
             update(User)
             .where(User.id == user.id)
-            .values(cloud_token=None, cloud_email=None, cloud_region=None, cloud_token_invalid_at=None)
+            .values(
+                cloud_token=None,
+                cloud_refresh_token=None,
+                cloud_email=None,
+                cloud_region=None,
+                cloud_token_invalid_at=None,
+            )
         )
         await db.commit()
         return
@@ -205,7 +300,9 @@ async def clear_token(db: AsyncSession, user: User | None = None) -> None:
     # Fallback: ownerless API-key path (global storage)
     result = await db.execute(
         select(Settings).where(
-            Settings.key.in_([CLOUD_TOKEN_KEY, CLOUD_EMAIL_KEY, CLOUD_REGION_KEY, CLOUD_TOKEN_INVALID_KEY])
+            Settings.key.in_(
+                [CLOUD_TOKEN_KEY, CLOUD_REFRESH_TOKEN_KEY, CLOUD_EMAIL_KEY, CLOUD_REGION_KEY, CLOUD_TOKEN_INVALID_KEY]
+            )
         )
     )
     for setting in result.scalars().all():
@@ -223,13 +320,18 @@ async def build_authenticated_cloud(db: AsyncSession, user: User | None) -> Bamb
     token, _email, region = await get_stored_token(db, user)
     if not token:
         return None
-    # Wire the rejected-token flag here so every route that builds a client this
-    # way makes the whole app agree the sign-in is dead - rather than each
-    # feature discovering it separately and reporting Bambu's own opaque
-    # "Please login." at the user (upstream #2562).
+    # Wire the rejected-token handling here so every route that builds a client
+    # this way agrees on what an expiry 401 means — rather than each feature
+    # discovering it separately and reporting Bambu's own opaque "Please
+    # login." at the user (upstream #2562). Since m152 the first move is a
+    # refresh attempt; only its failure marks the sign-in dead.
     user_id = user.id if user is not None else None
-    cloud = BambuCloudService(region=region, on_auth_failure=lambda: mark_cloud_token_invalid(user_id))
+    refresh = await get_stored_refresh_token(db, user)
+    # The lambda late-binds ``cloud`` from this scope — by the time a 401 fires
+    # it refers to the constructed service, tokens and all.
+    cloud = BambuCloudService(region=region, on_auth_failure=lambda: _refresh_or_invalidate(cloud, user_id))
     cloud.set_token(token)
+    cloud.set_refresh_token(refresh)
     return cloud
 
 
@@ -364,7 +466,7 @@ async def login(
 
         if result.get("success") and cloud.access_token:
             # Direct login succeeded (rare)
-            await store_token(db, cloud.access_token, request.email, request.region, current_user)
+            await store_token(db, cloud.access_token, request.email, request.region, current_user, cloud.refresh_token)
             from backend.app.services.filament_preset_sync import request_sync_soon
 
             request_sync_soon()  # freshly connected cloud mirrors within seconds (spec A trigger)
@@ -415,7 +517,7 @@ async def verify_code(
             result = await cloud.verify_code(request.email, request.code)
 
         if result.get("success") and cloud.access_token:
-            await store_token(db, cloud.access_token, request.email, request.region, current_user)
+            await store_token(db, cloud.access_token, request.email, request.region, current_user, cloud.refresh_token)
             from backend.app.services.filament_preset_sync import request_sync_soon
 
             request_sync_soon()  # freshly connected cloud mirrors within seconds (spec A trigger)

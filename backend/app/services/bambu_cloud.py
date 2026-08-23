@@ -768,6 +768,58 @@ class BambuCloudService:
         self.access_token = access_token
         self.token_expiry = None
 
+    def set_refresh_token(self, refresh_token: str | None):
+        """Load a stored refresh token (spec A §3 hardening)."""
+        self.refresh_token = refresh_token
+
+    async def refresh_access_token(self) -> bool:
+        """Exchange the refresh token for a fresh access/refresh pair.
+
+        ``POST /v1/user-service/user/refreshtoken`` is community-documented
+        (BS's own refresh lives inside the closed NetworkAgent DLL; the token
+        payload contract — accessToken/refreshToken/expiresIn — matches BS's
+        ``TokenResp`` in HttpServer.cpp). Because the endpoint is unofficial,
+        every failure — transport, rejection, or an unexpected body shape —
+        returns False and leaves the current tokens untouched, so the caller
+        falls back to the existing re-login path and nothing gets worse.
+        """
+        if not self.refresh_token:
+            return False
+        old_access = self.access_token
+        try:
+            response = await self._client.post(
+                f"{self.base_url}/v1/user-service/user/refreshtoken",
+                headers={"User-Agent": _USER_AGENT, "Content-Type": "application/json"},
+                json={"refreshToken": self.refresh_token},
+                timeout=15.0,
+            )
+        except httpx.HTTPError as exc:
+            logger.info("Bambu Cloud token refresh failed (transport): %s", exc)
+            return False
+        if response.status_code != 200:
+            logger.info("Bambu Cloud token refresh rejected: HTTP %s", response.status_code)
+            return False
+        try:
+            data = response.json()
+        except ValueError:
+            logger.info("Bambu Cloud token refresh returned a non-JSON body")
+            return False
+        new_access = data.get("accessToken") if isinstance(data, dict) else None
+        if not new_access:
+            logger.info("Bambu Cloud token refresh answered 200 without accessToken — ignoring")
+            return False
+        self.access_token = new_access
+        self.refresh_token = data.get("refreshToken") or self.refresh_token
+        self.token_expiry = None
+        # The new credential may expire again someday — re-arm the
+        # once-per-instance failure latch, and drop the old token's cached
+        # "invalid" verdict so status checks see the fresh state.
+        self._auth_failure_reported = False
+        if old_access:
+            invalidate_validation_cache(old_access)
+        logger.info("Bambu Cloud access token refreshed")
+        return True
+
     def logout(self):
         """Clear authentication state."""
         self.access_token = None
