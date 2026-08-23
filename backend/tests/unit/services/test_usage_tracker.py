@@ -784,6 +784,8 @@ class TestSpoolAssignmentSnapshot:
         db = AsyncMock()
         db.execute = AsyncMock(
             side_effect=[
+                # Journal load (m153) answers first — this print has no events.
+                MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=archive)),
                 _no_queue_item(),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=None)),

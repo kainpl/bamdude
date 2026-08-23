@@ -655,6 +655,194 @@ async def _warn_if_low_stock(db: AsyncSession, spool: Spool, printer_id: int, gl
 # a print — it is filament this instance never saw leave the spool.
 AMS_SYNC_STATUS = "ams_sync"
 
+# The status a runout zero-correction carries: the tail of a spool our books
+# never saw leave it, written when a detected runout proves the spool holds
+# exactly 0 g. Not a print either — the print's own segment rows are separate.
+RUNOUT_STATUS = "runout"
+
+
+def journal_touched_trays(events: list) -> set[int]:
+    """Every tray the journal names — excluded from the remain%-delta path.
+
+    Belt-and-braces against the multicolour double-count: a substitute tray
+    that fed part of the print appears here (tray_change / runout /
+    spool_loaded), so Path 2 must not charge its remain-delta on top of
+    whatever Path 1 attributed."""
+    return {e.global_tray_id for e in (events or []) if e.global_tray_id is not None}
+
+
+def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple[int, int | None, int | None]]:
+    """Spool-change boundaries for ONE tray: ``[(start_layer, spool_id, spoolman_id)]``.
+
+    Empty (or single-segment) unless the tray had a runout. Two segments when
+    it did: the origin spool up to the runout layer, then — depending on kind —
+    the same-slot replacement (``spool_loaded``), the backup tray's frozen
+    spool (autoswitch: the first tray_change to ANOTHER tray at the runout
+    layer), or ``None`` when the follow-on feeder can't be named (charged to
+    nothing rather than guessed). A runout with no follow-on event keeps the
+    origin: the zero correction lands it at label_weight regardless.
+    """
+    from backend.app.models.print_usage_event import (
+        EVENT_RUNOUT,
+        EVENT_SPOOL_LOADED,
+        EVENT_TRAY_CHANGE,
+        KIND_AUTOSWITCH,
+    )
+
+    runout = next(
+        (e for e in (events or []) if e.event == EVENT_RUNOUT and e.global_tray_id == global_tray_id),
+        None,
+    )
+    if runout is None:
+        return []
+
+    segments: list[tuple[int, int | None, int | None]] = [(0, runout.spool_id, runout.spoolman_spool_id)]
+
+    if runout.kind == KIND_AUTOSWITCH:
+        backup = next(
+            (
+                e
+                for e in events
+                if e.id > runout.id
+                and e.event == EVENT_TRAY_CHANGE
+                and e.global_tray_id is not None
+                and e.global_tray_id != global_tray_id
+                and e.layer_num <= runout.layer_num + 1
+            ),
+            None,
+        )
+        if backup is not None:
+            segments.append((runout.layer_num, backup.spool_id, backup.spoolman_spool_id))
+        else:
+            # The backup feeder can't be named — better an under-count on the
+            # backup spool than grams on a guess. The origin still zeroes out.
+            segments.append((runout.layer_num, None, None))
+    else:
+        loaded = next(
+            (
+                e
+                for e in events
+                if e.id > runout.id and e.event == EVENT_SPOOL_LOADED and e.global_tray_id == global_tray_id
+            ),
+            None,
+        )
+        if loaded is not None:
+            segments.append((runout.layer_num, loaded.spool_id, loaded.spoolman_spool_id))
+        else:
+            # Resumed without a detectable replacement — the same spool (or a
+            # splice) kept feeding; the zero correction self-consistently
+            # closes it at label_weight after the print rows.
+            segments.append((runout.layer_num, runout.spool_id, runout.spoolman_spool_id))
+
+    return segments
+
+
+async def _zero_point_enabled(db: AsyncSession) -> bool:
+    from backend.app.api.routes.settings import get_setting
+
+    raw = await get_setting(db, "runout_zero_point_enabled")
+    return raw is None or raw.lower() != "false"
+
+
+async def apply_runout_zero_corrections(
+    db: AsyncSession,
+    printer_id: int,
+    events: list,
+    default_filament_cost: float,
+) -> list[dict]:
+    """Close every unambiguously-run-out spool at exactly label_weight.
+
+    Runs AFTER all print rows so the arithmetic is one subtraction: ``tail =
+    label_weight − weight_used``. A positive tail is drift the books never saw
+    — it gets a ``runout`` history row (readers SUM the table, so the spool's
+    history now adds up to the label). A negative tail means the books
+    over-counted; per the AMS-sync rule a downward move is a correction, not a
+    negative print: silent clamp, baseline pulled, low-stock re-armed, no row.
+
+    Never fires for ``ambiguous`` kinds (a tangled spool people swap out is
+    not empty) or for events whose slot/spool was not positively known.
+    """
+    from backend.app.models.print_usage_event import EVENT_RUNOUT, KIND_AMBIGUOUS
+
+    runouts = [
+        e
+        for e in (events or [])
+        if e.event == EVENT_RUNOUT and e.kind != KIND_AMBIGUOUS and e.global_tray_id is not None and e.spool_id
+    ]
+    if not runouts:
+        return []
+    if not await _zero_point_enabled(db):
+        return []
+
+    results: list[dict] = []
+    touched = False
+    for event in runouts:
+        spool = (await db.execute(select(Spool).where(Spool.id == event.spool_id))).scalar_one_or_none()
+        if spool is None:
+            continue
+        label = spool.label_weight or 0
+        if label <= 0:
+            continue
+        tail = round(label - (spool.weight_used or 0), 1)
+        if tail > 0:
+            spool.weight_used = float(label)
+            spool.last_used = datetime.now(timezone.utc)
+            cost = None
+            cost_per_kg = spool.cost_per_kg if spool.cost_per_kg is not None else default_filament_cost
+            if cost_per_kg > 0:
+                cost = round((tail / 1000.0) * cost_per_kg, 2)
+            db.add(
+                SpoolUsageHistory(
+                    spool_id=spool.id,
+                    printer_id=printer_id,
+                    print_name=None,
+                    weight_used=tail,
+                    percent_used=int(round(tail / label * 100)),
+                    status=RUNOUT_STATUS,
+                    cost=cost,
+                    archive_id=event.archive_id,
+                )
+            )
+            await _warn_if_low_stock(db, spool, printer_id, event.global_tray_id)
+            results.append(
+                {
+                    "spool_id": spool.id,
+                    "weight_used": tail,
+                    "percent_used": int(round(tail / label * 100)),
+                    "ams_id": event.global_tray_id // 4 if event.global_tray_id < 128 else 255,
+                    "tray_id": event.global_tray_id % 4 if event.global_tray_id < 128 else 0,
+                    "material": spool.material,
+                    "cost": cost,
+                    "slot_id": None,
+                    "color": _spool_color_to_hex(spool.rgba),
+                    "status": RUNOUT_STATUS,
+                }
+            )
+            touched = True
+            logger.info(
+                "[UsageTracker] Runout zero-point: spool %d closed at label %dg (+%.1fg tail) on printer %d tray %d",
+                spool.id,
+                label,
+                tail,
+                printer_id,
+                event.global_tray_id,
+            )
+        elif tail < 0:
+            spool.weight_used = float(label)
+            if (spool.weight_used_baseline or 0) > label:
+                spool.weight_used_baseline = float(label)
+            spool.low_stock_notified = False
+            touched = True
+            logger.info(
+                "[UsageTracker] Runout zero-point: spool %d clamped down to label %dg (books had %.1fg over)",
+                spool.id,
+                label,
+                -tail,
+            )
+    if touched:
+        await db.commit()
+    return results
+
 
 async def record_ams_sync_usage(
     db: AsyncSession,
@@ -974,6 +1162,22 @@ async def on_print_complete(
             getattr(state, "last_loaded_tray", "N/A"),
         )
 
+    # The print's journal (m153): runout/spool-change boundaries with spool
+    # ids frozen at event time. With events present, the assignment snapshot
+    # wins unconditionally over a live reassignment — the journal owns
+    # mid-print changes, so "live wins" keeps only its wrong-assignment-
+    # correction case on journal-less prints (print_started_at=None routes
+    # _resolve_spool_id_for_tray onto its snapshot fast path).
+    journal_events: list = []
+    if archive_id:
+        try:
+            from backend.app.services.print_usage_journal import load_events
+
+            journal_events = await load_events(db, printer_id, archive_id)
+        except Exception:
+            logger.exception("[UsageTracker] Journal load failed for archive %s", archive_id)
+    effective_started_at = None if journal_events else (session.started_at if session else None)
+
     # --- Path 1 (PRIMARY): 3MF per-filament estimates ---
     if archive_id:
         print_name = (
@@ -993,9 +1197,21 @@ async def on_print_complete(
             last_layer_num=data.get("last_layer_num", 0),
             default_filament_cost=default_filament_cost,
             spool_assignments=session.spool_assignments if session else None,
-            print_started_at=session.started_at if session else None,
+            print_started_at=effective_started_at,
+            journal_events=journal_events,
         )
         results.extend(threemf_results)
+
+    # Belt-and-braces against the multicolour runout double-count: every tray
+    # the journal names is off-limits to the remain%-delta fallback, whether
+    # or not Path 1 managed to attribute it.
+    for tray in journal_touched_trays(journal_events):
+        if tray >= 254:
+            handled_trays.add((255, tray - 254))
+        elif tray >= 128:
+            handled_trays.add((tray, 0))
+        else:
+            handled_trays.add((tray // 4, tray % 4))
 
     # --- Path 2 (FALLBACK): AMS remain% delta (only for trays not handled by 3MF) ---
     if session and session.tray_remain_start:
@@ -1038,7 +1254,7 @@ async def on_print_complete(
                         tray_id=tray_id,
                         db=db,
                         spool_assignments_snapshot=session.spool_assignments,
-                        print_started_at=session.started_at,
+                        print_started_at=effective_started_at,
                     )
                     if spool_id is None:
                         continue
@@ -1144,6 +1360,16 @@ async def on_print_complete(
                 archive.filament_used_grams = effective_grams
             await db.commit()
 
+    # --- Runout zero corrections, AFTER every print row and the archive cost ---
+    # The tail is lifetime drift, not this print's consumption: it must not
+    # inflate the archive's cost/weight above, but it is broadcast so the UI
+    # sees the spool close out.
+    try:
+        correction_results = await apply_runout_zero_corrections(db, printer_id, journal_events, default_filament_cost)
+        results.extend(correction_results)
+    except Exception:
+        logger.exception("[UsageTracker] Runout zero corrections failed for printer %d", printer_id)
+
     return results
 
 
@@ -1162,6 +1388,7 @@ async def _track_from_3mf(
     default_filament_cost: float = 0.0,
     spool_assignments: dict[tuple[int, int], int] | None = None,
     print_started_at: datetime | None = None,
+    journal_events: list | None = None,
 ) -> list[dict]:
     """Track usage from 3MF per-filament slicer data (primary path).
 
@@ -1596,6 +1823,117 @@ async def _track_from_3mf(
 
         key = (ams_id, tray_id)
         if key in handled_trays:
+            continue
+
+        # --- Journal-driven split: a runout on this slot's tray ---
+        # Spool-change boundaries with ids frozen at event time. Takes over
+        # only when the tray-change split above didn't (that one owns
+        # single-slot multi-tray prints); the boundary math is the same
+        # helper, so the two cannot drift.
+        journal_segs = (
+            journal_boundaries_for_tray(journal_events, global_tray_id)
+            if journal_events and len(tray_changes) <= 1
+            else []
+        )
+        if len(journal_segs) > 1:
+            if layer_grams and slot_id in layer_grams:
+                total_weight = layer_grams[slot_id]
+            else:
+                total_weight = used_g * scale
+            if total_weight <= 0:
+                continue
+
+            seg_layer_usage = None
+            seg_props: dict = {}
+            try:
+                from backend.app.utils.threemf_tools import (
+                    extract_filament_properties_from_3mf,
+                    extract_layer_filament_usage_from_3mf,
+                )
+
+                seg_layer_usage = extract_layer_filament_usage_from_3mf(file_path, archive.plate_index)
+                seg_props = extract_filament_properties_from_3mf(file_path).get(slot_id, {})
+            except Exception:
+                pass  # linear fallback inside the helper
+
+            from backend.app.utils.tray_split import compute_layer_segment_grams
+
+            state = printer_manager.get_status(printer_id)
+            seg_grams = compute_layer_segment_grams(
+                boundary_layers=[start for start, _, _ in journal_segs],
+                total_weight=total_weight,
+                slot_id=slot_id,
+                layer_usage=seg_layer_usage,
+                density=seg_props.get("density", 1.24),
+                diameter=seg_props.get("diameter", 1.75),
+                total_layers=(state.total_layers if state else 0) or 0,
+                last_layer_num=last_layer_num,
+            )
+
+            for (seg_start, seg_spool_id, _), segment_grams in zip(journal_segs, seg_grams, strict=True):
+                if segment_grams <= 0:
+                    continue
+                if seg_spool_id is None:
+                    logger.info(
+                        "[UsageTracker] 3MF journal split: segment from layer %d has no attributable spool "
+                        "(printer %d tray %d) — %.1fg uncharged rather than guessed",
+                        seg_start,
+                        printer_id,
+                        global_tray_id,
+                        segment_grams,
+                    )
+                    continue
+                spool_result = await db.execute(select(Spool).where(Spool.id == seg_spool_id))
+                spool = spool_result.scalar_one_or_none()
+                if not spool:
+                    continue
+
+                spool.weight_used = (spool.weight_used or 0) + segment_grams
+                spool.last_used = datetime.now(timezone.utc)
+                await _warn_if_low_stock(db, spool, printer_id, global_tray_id)
+
+                percent = round(segment_grams / (spool.label_weight or 1000) * 100)
+                cost = None
+                cost_per_kg = spool.cost_per_kg if spool.cost_per_kg is not None else default_filament_cost
+                if cost_per_kg > 0:
+                    cost = round((segment_grams / 1000.0) * cost_per_kg, 2)
+
+                db.add(
+                    SpoolUsageHistory(
+                        spool_id=spool.id,
+                        printer_id=printer_id,
+                        print_name=print_name,
+                        weight_used=round(segment_grams, 1),
+                        percent_used=percent,
+                        status=status,
+                        cost=cost,
+                        archive_id=archive_id,
+                    )
+                )
+                results.append(
+                    {
+                        "spool_id": spool.id,
+                        "weight_used": round(segment_grams, 1),
+                        "percent_used": percent,
+                        "ams_id": ams_id,
+                        "tray_id": tray_id,
+                        "material": spool.material,
+                        "cost": cost,
+                        "slot_id": slot_id,
+                        "color": _spool_color_to_hex(spool.rgba),
+                    }
+                )
+                logger.info(
+                    "[UsageTracker] Spool %d consumed %.1fg (journal split from layer %d) on printer %d tray %d (%s)",
+                    spool.id,
+                    segment_grams,
+                    seg_start,
+                    printer_id,
+                    global_tray_id,
+                    status,
+                )
+
+            handled_trays.add(key)
             continue
 
         spool_id = await _resolve_spool_id_for_tray(

@@ -64,32 +64,68 @@ def compute_tray_split_grams(
     if not tray_changes:
         return []
 
+    grams = compute_layer_segment_grams(
+        boundary_layers=[layer for _, layer in tray_changes],
+        total_weight=total_weight,
+        slot_id=slot_id,
+        layer_usage=layer_usage,
+        density=density,
+        diameter=diameter,
+        total_layers=total_layers,
+        last_layer_num=last_layer_num,
+    )
+    return [
+        (seg_idx, tray_global, g) for seg_idx, ((tray_global, _), g) in enumerate(zip(tray_changes, grams, strict=True))
+    ]
+
+
+def compute_layer_segment_grams(
+    boundary_layers: list[int],
+    total_weight: float,
+    slot_id: int,
+    layer_usage: dict[int, dict[int, float]] | None,
+    density: float,
+    diameter: float,
+    total_layers: int,
+    last_layer_num: int,
+) -> list[float]:
+    """Split ``total_weight`` across segments starting at ``boundary_layers``.
+
+    The layer-boundary half of :func:`compute_tray_split_grams`, factored out
+    so the runout journal (whose boundaries are spool changes on ONE tray, not
+    tray changes) shares the identical preference order: G-code cumulative →
+    linear layer-ratio → equal split, with the last segment absorbing rounding
+    drift. Returns one grams figure per boundary, in order.
+    """
+    if not boundary_layers:
+        return []
+
     filament_id = slot_id - 1  # 0-based for gcode
-    n_segments = len(tray_changes)
+    n_segments = len(boundary_layers)
     denom = total_layers or last_layer_num
-    results: list[tuple[int, int, float]] = []
+    grams: list[float] = []
     sum_previous = 0.0
 
-    for seg_idx, (tray_global, seg_start_layer) in enumerate(tray_changes):
+    for seg_idx, seg_start_layer in enumerate(boundary_layers):
         is_last = seg_idx + 1 >= n_segments
 
         if is_last:
             # Last segment: remainder to avoid rounding drift.
             segment_grams = total_weight - sum_previous
         elif layer_usage:
-            seg_end_layer = tray_changes[seg_idx + 1][1]
+            seg_end_layer = boundary_layers[seg_idx + 1]
             mm_at_start = threemf_tools.get_cumulative_usage_at_layer(layer_usage, seg_start_layer).get(filament_id, 0)
             mm_at_end = threemf_tools.get_cumulative_usage_at_layer(layer_usage, seg_end_layer).get(filament_id, 0)
             segment_grams = threemf_tools.mm_to_grams(mm_at_end - mm_at_start, diameter, density)
         else:
             # No per-layer data: linear fallback by layer ratio (#1771).
-            seg_end_layer = tray_changes[seg_idx + 1][1]
+            seg_end_layer = boundary_layers[seg_idx + 1]
             if denom > 0:
                 segment_grams = total_weight * (seg_end_layer - seg_start_layer) / denom
             else:
                 segment_grams = total_weight / n_segments
 
         sum_previous += segment_grams
-        results.append((seg_idx, tray_global, segment_grams))
+        grams.append(segment_grams)
 
-    return results
+    return grams
