@@ -209,7 +209,9 @@ class TestRunoutZeroPoint:
             archive,
             [(EVENT_RUNOUT, KIND_AMBIGUOUS, 0, 140, spool_a.id)],
         )
-        _active_sessions[printer.id] = _session(printer.id)
+        # An ambiguous event is not a boundary — the slot resolves through the
+        # ordinary assignment snapshot, as any journal-less print would.
+        _active_sessions[printer.id] = _session(printer.id, spool_assignments={(0, 0): spool_a.id})
 
         p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 300.0, "type": "PLA", "color": ""}])
         with p1, p2:

@@ -686,6 +686,7 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
         EVENT_RUNOUT,
         EVENT_SPOOL_LOADED,
         EVENT_TRAY_CHANGE,
+        KIND_AMBIGUOUS,
         KIND_AUTOSWITCH,
     )
 
@@ -695,6 +696,26 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
     )
     if runout is None:
         return []
+
+    if runout.kind == KIND_AMBIGUOUS:
+        # An ambiguous pause (could equally be a jam) changes attribution only
+        # when the human demonstrably loaded a replacement; otherwise it is a
+        # timeline entry, not a boundary — a pointless same-spool split would
+        # only fragment the history.
+        loaded = next(
+            (
+                e
+                for e in events
+                if e.id > runout.id and e.event == EVENT_SPOOL_LOADED and e.global_tray_id == global_tray_id
+            ),
+            None,
+        )
+        if loaded is None:
+            return []
+        return [
+            (0, runout.spool_id, runout.spoolman_spool_id),
+            (runout.layer_num, loaded.spool_id, loaded.spoolman_spool_id),
+        ]
 
     segments: list[tuple[int, int | None, int | None]] = [(0, runout.spool_id, runout.spoolman_spool_id)]
 
