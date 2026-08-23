@@ -758,6 +758,51 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
     return segments
 
 
+def _add_autoswitch_purge(
+    segments: list[tuple[int, int, float]],
+    tray_changes: list[tuple[int, int]],
+    events: list,
+    purge_grams: float,
+) -> list[tuple[int, int, float]]:
+    """Add the emergency-swap purge to each autoswitch backup segment.
+
+    The slicer's estimate contains the *planned* colour-change flushes but not
+    the purge of an AMS backup switch — that filament is physically fed by the
+    backup spool, so it lands inside the backup segment's grams (never a
+    separate row). Coarse by nature; ``runout_purge_grams`` defaults to 0.
+    """
+    from backend.app.models.print_usage_event import EVENT_RUNOUT, KIND_AUTOSWITCH
+
+    if purge_grams <= 0 or not events or not segments:
+        return segments
+    runouts = [
+        e for e in events if e.event == EVENT_RUNOUT and e.kind == KIND_AUTOSWITCH and e.global_tray_id is not None
+    ]
+    if not runouts:
+        return segments
+
+    out = [list(s) for s in segments]
+    for runout in runouts:
+        for seg_idx, tray_global, _grams in segments:
+            seg_layer = tray_changes[seg_idx][1]
+            if tray_global != runout.global_tray_id and abs(seg_layer - runout.layer_num) <= 1:
+                out[seg_idx][2] += purge_grams
+                break
+    return [tuple(s) for s in out]
+
+
+def _autoswitch_purge_for_tray(events: list, global_tray_id: int, purge_grams: float) -> float:
+    """The purge grams owed to a journal-split backup segment on this tray."""
+    from backend.app.models.print_usage_event import EVENT_RUNOUT, KIND_AUTOSWITCH
+
+    if purge_grams <= 0 or not events:
+        return 0.0
+    for e in events:
+        if e.event == EVENT_RUNOUT and e.kind == KIND_AUTOSWITCH and e.global_tray_id == global_tray_id:
+            return purge_grams
+    return 0.0
+
+
 async def _zero_point_enabled(db: AsyncSession) -> bool:
     from backend.app.api.routes.settings import get_setting
 
@@ -1164,6 +1209,13 @@ async def on_print_complete(
     default_cost_str = await get_setting(db, "default_filament_cost")
     default_filament_cost = float(default_cost_str) if default_cost_str else 0.0
 
+    # Optional emergency-swap purge (grams per autoswitch runout, default 0).
+    _purge_str = await get_setting(db, "runout_purge_grams")
+    try:
+        runout_purge_grams = float(_purge_str) if _purge_str else 0.0
+    except ValueError:
+        runout_purge_grams = 0.0
+
     logger.info(
         "[UsageTracker] on_print_complete: printer=%d, archive=%s, session=%s, ams_mapping=%s",
         printer_id,
@@ -1220,6 +1272,7 @@ async def on_print_complete(
             spool_assignments=session.spool_assignments if session else None,
             print_started_at=effective_started_at,
             journal_events=journal_events,
+            runout_purge_grams=runout_purge_grams,
         )
         results.extend(threemf_results)
 
@@ -1410,6 +1463,7 @@ async def _track_from_3mf(
     spool_assignments: dict[tuple[int, int], int] | None = None,
     print_started_at: datetime | None = None,
     journal_events: list | None = None,
+    runout_purge_grams: float = 0.0,
 ) -> list[dict]:
     """Track usage from 3MF per-filament slicer data (primary path).
 
@@ -1679,6 +1733,7 @@ async def _track_from_3mf(
                 total_layers=(state.total_layers if state else 0) or 0,
                 last_layer_num=last_layer_num,
             )
+            segments = _add_autoswitch_purge(segments, tray_changes, journal_events or [], runout_purge_grams)
 
             for seg_idx, tray_global, segment_grams in segments:
                 if segment_grams <= 0:
@@ -1890,6 +1945,9 @@ async def _track_from_3mf(
                 total_layers=(state.total_layers if state else 0) or 0,
                 last_layer_num=last_layer_num,
             )
+            _purge = _autoswitch_purge_for_tray(journal_events or [], global_tray_id, runout_purge_grams)
+            if _purge > 0 and len(seg_grams) > 1:
+                seg_grams[1] += _purge
 
             for (seg_start, seg_spool_id, _), segment_grams in zip(journal_segs, seg_grams, strict=True):
                 if segment_grams <= 0:

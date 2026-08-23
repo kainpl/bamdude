@@ -336,3 +336,41 @@ class TestRunoutZeroPoint:
         await db_session.refresh(spool_b)
         assert spool_a.weight_used == pytest.approx(50.0)
         assert spool_b.weight_used == pytest.approx(0.0)
+
+
+class TestAutoswitchPurgeGrams:
+    @pytest.mark.asyncio
+    async def test_purge_lands_on_the_backup_segment(self, db_session, tmp_path, monkeypatch):
+        """runout_purge_grams=25 + autoswitch → the backup spool's journal
+        segment carries +25 g; the origin's segment is untouched."""
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        db_session.add(Settings(key="runout_purge_grams", value="25"))
+        await db_session.commit()
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        spool_a = await _make_spool(db_session, weight_used=900)
+        spool_c = await _make_spool(db_session)
+        await _journal(
+            db_session,
+            printer,
+            archive,
+            [
+                (EVENT_RUNOUT, KIND_AUTOSWITCH, 0, 100, spool_a.id),
+                (EVENT_TRAY_CHANGE, None, 2, 100, spool_c.id),
+            ],
+        )
+        _active_sessions[printer.id] = _session(printer.id)
+
+        p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 200.0, "type": "PLA", "color": ""}])
+        with p1, p2:
+            await on_print_complete(
+                printer.id, {"status": "completed"}, _pm(total_layers=200), db_session, archive_id=archive.id
+            )
+
+        await db_session.refresh(spool_a)
+        await db_session.refresh(spool_c)
+        # Origin: 900 + 100 (its segment) → zero-corrected to 1000.
+        assert spool_a.weight_used == pytest.approx(1000.0)
+        # Backup: 100 (segment) + 25 (purge) = 125, inside the segment row.
+        assert spool_c.weight_used == pytest.approx(125.0)
+        assert (spool_c.id, 125.0, "completed") in await _history(db_session)

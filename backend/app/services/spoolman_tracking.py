@@ -472,6 +472,7 @@ async def _report_journal_splits(
     total_layers: int,
     last_layer_num: int,
     method_label: str,
+    runout_purge_grams: float = 0.0,
 ) -> tuple[int, set[int], list[tuple[int, float]]]:
     """Charge slots whose tray has journal (runout) boundaries per-segment.
 
@@ -518,6 +519,11 @@ async def _report_journal_splits(
             last_layer_num=last_layer_num,
         )
         handled.add(global_tray_id)
+        from backend.app.services.usage_tracker import _autoswitch_purge_for_tray
+
+        _purge = _autoswitch_purge_for_tray(journal_events or [], global_tray_id, runout_purge_grams)
+        if _purge > 0 and len(seg_grams) > 1:
+            seg_grams[1] += _purge
         for (seg_start, _spool_id, spoolman_id), grams in zip(boundaries, seg_grams, strict=True):
             if grams <= 0:
                 continue
@@ -788,6 +794,8 @@ async def _report_spool_usage_split_by_tray_changes(
     printer_id: int,
     slot_colors_out: dict[int, str] | None = None,
     slot_materials_out: dict[int, str] | None = None,
+    journal_events: list | None = None,
+    runout_purge_grams: float = 0.0,
 ) -> tuple[int, set[int]]:
     """Split each slot's grams across ``tray_changes`` and charge per-segment.
 
@@ -824,6 +832,10 @@ async def _report_spool_usage_split_by_tray_changes(
             total_layers=total_layers,
             last_layer_num=last_layer_num,
         )
+        if runout_purge_grams > 0 and journal_events:
+            from backend.app.services.usage_tracker import _add_autoswitch_purge
+
+            segments = _add_autoswitch_purge(segments, tray_changes, journal_events, runout_purge_grams)
 
         for seg_idx, tray_global, segment_grams in segments:
             if segment_grams <= 0:
@@ -1206,6 +1218,13 @@ async def report_usage(printer_id: int, archive_id: int):
         except Exception as exc:
             logger.warning("[SPOOLMAN] Journal load failed for archive %s: %s", archive_id, exc)
 
+        # Optional emergency-swap purge (grams per autoswitch runout, default 0).
+        _purge_str = await get_setting(db, "runout_purge_grams")
+        try:
+            runout_purge_grams = float(_purge_str) if _purge_str else 0.0
+        except ValueError:
+            runout_purge_grams = 0.0
+
         # --- Path 1: 3MF per-slot estimates -----------------------------
         if filament_usage:
             if len(tray_changes) > 1:
@@ -1248,6 +1267,8 @@ async def report_usage(printer_id: int, archive_id: int):
                     printer_id=printer_id,
                     slot_colors_out=slot_colors,
                     slot_materials_out=slot_materials,
+                    journal_events=journal_events,
+                    runout_purge_grams=runout_purge_grams,
                 )
                 spools_updated += split_updated
                 handled_global_tray_ids |= split_handled
@@ -1267,6 +1288,7 @@ async def report_usage(printer_id: int, archive_id: int):
                     _total_layers,
                     _layer_denom_hint,
                     f"Archive {archive_id}",
+                    runout_purge_grams=runout_purge_grams,
                 )
                 spools_updated += split_updated
                 handled_global_tray_ids |= split_handled

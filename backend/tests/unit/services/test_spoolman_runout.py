@@ -183,3 +183,25 @@ class TestSpoolmanRunoutZeroPoint:
         # The print's own rows are unaffected — split still applies (runout
         # boundary with no spool_loaded keeps the origin on both segments).
         assert sum(c.args[1] for c in client.use_spool.await_args_list) == 300.0
+
+
+class TestAutoswitchPurgeGramsSpoolman:
+    @pytest.mark.asyncio
+    async def test_purge_lands_on_the_backup_segment(self):
+        events = [
+            _event(1, EVENT_RUNOUT, "autoswitch", 0, 100, 8),
+            _event(2, EVENT_TRAY_CHANGE, None, 2, 100, 9),
+        ]
+        client = _client(remaining=0)
+
+        async def _setting(db, key):
+            return {"spoolman_enabled": "true", "runout_purge_grams": "25"}.get(key)
+
+        await _run(_tracking(), client, events, get_setting=AsyncMock(side_effect=_setting))
+
+        by_spool = {}
+        for c in client.use_spool.await_args_list:
+            by_spool[c.args[0]] = by_spool.get(c.args[0], 0) + c.args[1]
+        # 300 g over 200 layers, runout at 100: origin 150, backup 150 + 25 purge.
+        assert by_spool[8] == pytest.approx(150.0)
+        assert by_spool[9] == pytest.approx(175.0)
