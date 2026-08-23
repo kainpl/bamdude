@@ -229,3 +229,57 @@ class TestAssignmentChangeAfterRunout:
 
         events = await load_events(db_session, printer.id, archive.id)
         assert [(e.event, e.global_tray_id, e.spool_id) for e in events[-1:]] == [("spool_loaded", 2, 9)]
+
+
+class TestRunoutEpisodeRows:
+    @pytest.mark.asyncio
+    async def test_closed_episode_gets_a_new_row(self, db_session, printer):
+        from backend.app.services.print_usage_journal import record_runout
+
+        archive = await _make_archive(db_session, printer)
+        await record_runout(
+            db_session,
+            printer_id=printer.id,
+            archive_id=archive.id,
+            layer_num=80,
+            kind="pause",
+            global_tray_id=254,
+            spool_id=7,
+        )
+        # Same open episode replayed (restart / HMS flicker) — kind upsert only.
+        await record_runout(
+            db_session,
+            printer_id=printer.id,
+            archive_id=archive.id,
+            layer_num=95,
+            kind="pause",
+            global_tray_id=254,
+            spool_id=7,
+        )
+        db_session.add(
+            PrintUsageEvent(
+                printer_id=printer.id,
+                archive_id=archive.id,
+                layer_num=80,
+                event="spool_loaded",
+                global_tray_id=254,
+                spool_id=9,
+            )
+        )
+        await db_session.commit()
+        # The replacement reel runs out too — a NEW episode, its own row.
+        await record_runout(
+            db_session,
+            printer_id=printer.id,
+            archive_id=archive.id,
+            layer_num=250,
+            kind="pause",
+            global_tray_id=254,
+            spool_id=9,
+        )
+        events = await load_events(db_session, printer.id, archive.id)
+        assert [(e.event, e.layer_num, e.spool_id) for e in events] == [
+            ("runout", 80, 7),
+            ("spool_loaded", 80, 9),
+            ("runout", 250, 9),
+        ]

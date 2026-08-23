@@ -5586,6 +5586,10 @@ class TestRunoutDetector:
         client._process_message({"print": {"gcode_state": "RUNNING", "gcode_file": "next.3mf"}})
         client._was_running = True
         client._completion_triggered = False
+        # The new print's state has filled in by the time filament can run out
+        # (the stale-state gate refuses layer 0 with no total_layers on purpose).
+        client.state.layer_num = 3
+        client.state.total_layers = 200
         client._process_message(self._hms_push(0x07002000, 0x00020001))
         assert client.on_usage_event.call_count == 2
 
@@ -5651,3 +5655,48 @@ class TestExternalRunoutTrayClamp:
         client.state.raw_data = {}
         client._process_message({"print": {"print_error": 0x07FF8011}})
         assert client.on_usage_event.call_args[0] == ("runout", "external", 255, 548)
+
+
+class TestRunoutEpisodes:
+    """Two runouts of the same tray in one print are two episodes: the dedup
+    re-arms once the code clears (reload + resume), and a fresh reconnect's
+    empty state never fires at layer 0 (both measured live, 2026-08-23)."""
+
+    @pytest.fixture
+    def client(self):
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        c = BambuMQTTClient(ip_address="1.2.3.4", serial_number="EPISODE1", access_code="1")
+        c._was_running = True
+        c._completion_triggered = False
+        c.state.state = "RUNNING"
+        c.state.layer_num = 100
+        c.state.total_layers = 400
+        c.state.tray_now = 254
+        c.state.raw_data = {"vt_tray": [{"id": 254}]}
+        c.on_usage_event = MagicMock()
+        return c
+
+    def test_rearm_after_the_code_clears(self, client):
+        push = {"print": {"hms": [{"attr": 0x12FF2000, "code": 0x00020001}]}}
+        client._process_message(push)
+        client._process_message(push)  # still the same episode — deduped
+        assert client.on_usage_event.call_count == 1
+        client._process_message({"print": {"hms": []}})  # reloaded + resumed: code gone
+        client.state.layer_num = 250
+        client._process_message(push)  # second reel ran out — a new episode
+        assert client.on_usage_event.call_count == 2
+        assert client.on_usage_event.call_args[0] == ("runout", "external", 254, 250)
+
+    def test_unpopulated_state_after_reconnect_never_fires_at_layer_zero(self, client):
+        client.state.layer_num = 0
+        client.state.total_layers = 0
+        push = {"print": {"hms": [{"attr": 0x12FF2000, "code": 0x00020001}]}}
+        client._process_message(push)
+        assert client.on_usage_event.call_count == 0
+        # State fills in on a later push — the repeating HMS then fires with a
+        # real layer.
+        client.state.layer_num = 548
+        client.state.total_layers = 600
+        client._process_message(push)
+        assert client.on_usage_event.call_args[0] == ("runout", "external", 254, 548)

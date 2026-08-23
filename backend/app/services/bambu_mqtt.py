@@ -6792,15 +6792,25 @@ class BambuMQTTClient:
         """
         if not (self._was_running and not self._completion_triggered):
             return
-        if not self.state.hms_errors or not self.on_usage_event:
+        if not self.on_usage_event:
+            return
+        # Right after a reconnect the state is not populated yet — layer 0
+        # with no total_layers means "we know nothing", and a boundary at
+        # layer 0 would hand the whole print to the post-runout segment
+        # (observed live 2026-08-23: a leftover HMS fired at layer 0 while the
+        # print was actually at 548). The HMS repeats every push, so waiting
+        # for a populated state only delays the fire, never loses it.
+        if (self.state.layer_num or 0) == 0 and (self.state.total_layers or 0) == 0:
             return
         from backend.app.services.hms_errors import classify_runout_ecode
 
-        for err in self.state.hms_errors:
+        active_runout_trays: set[int | None] = set()
+        for err in self.state.hms_errors or []:
             match = classify_runout_ecode(getattr(err, "full_code", "") or "")
             if match is None:
                 continue
             tray = self._resolve_runout_tray(match)
+            active_runout_trays.add(tray)
             fired = self._runout_fired.get(tray)
             if fired is None:
                 self._runout_fired[tray] = match.kind
@@ -6818,6 +6828,17 @@ class BambuMQTTClient:
             elif match.kind == "autoswitch" and fired != "autoswitch" and not match.transitional:
                 self._runout_fired[tray] = "autoswitch"
                 self.on_usage_event("runout", "autoswitch", tray, self.state.layer_num)
+
+        # Re-arm once an episode ends: when no runout-family code for a tray
+        # is active any more (the user reloaded and resumed, or the backup
+        # swap completed), the NEXT runout of the same tray is a new episode
+        # and must fire again — two short reels in one long print are real
+        # (measured live 2026-08-23: the second emulation was swallowed).
+        # None-tray (ambiguous) entries stay until print end — generic codes
+        # cannot be matched back to a tray.
+        for tray in list(self._runout_fired):
+            if tray is not None and tray not in active_runout_trays:
+                del self._runout_fired[tray]
 
     def _check_spool_loaded(self) -> None:
         """One-shot replacement detection for trays that ran out.

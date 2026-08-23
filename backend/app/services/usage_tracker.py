@@ -701,13 +701,15 @@ def journal_touched_trays(events: list) -> set[int]:
 def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple[int, int | None, int | None]]:
     """Spool-change boundaries for ONE tray: ``[(start_layer, spool_id, spoolman_id)]``.
 
-    Empty (or single-segment) unless the tray had a runout. Two segments when
-    it did: the origin spool up to the runout layer, then — depending on kind —
-    the same-slot replacement (``spool_loaded``), the backup tray's frozen
-    spool (autoswitch: the first tray_change to ANOTHER tray at the runout
-    layer), or ``None`` when the follow-on feeder can't be named (charged to
-    nothing rather than guessed). A runout with no follow-on event keeps the
-    origin: the zero correction lands it at label_weight regardless.
+    Handles MULTIPLE runout episodes of the same tray in one print (two short
+    reels back-to-back is real). Per episode, in event order: the origin runs
+    to the runout layer; the follow-on feeder is the same-tray ``spool_loaded``
+    (refill), the backup tray's frozen spool (autoswitch: the first tray_change
+    to ANOTHER tray at the runout layer), or ``None`` when it can't be named
+    (charged to nothing rather than guessed). An ``ambiguous`` runout is a
+    boundary only when a replacement was demonstrably loaded; a runout with no
+    follow-on keeps its own spool — the zero correction closes it at
+    label_weight regardless. Empty/single-segment results mean "no split".
     """
     from backend.app.models.print_usage_event import (
         EVENT_RUNOUT,
@@ -717,72 +719,53 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
         KIND_AUTOSWITCH,
     )
 
-    runout = next(
-        (e for e in (events or []) if e.event == EVENT_RUNOUT and e.global_tray_id == global_tray_id),
-        None,
-    )
-    if runout is None:
+    runouts = [e for e in (events or []) if e.event == EVENT_RUNOUT and e.global_tray_id == global_tray_id]
+    if not runouts:
         return []
 
-    if runout.kind == KIND_AMBIGUOUS:
-        # An ambiguous pause (could equally be a jam) changes attribution only
-        # when the human demonstrably loaded a replacement; otherwise it is a
-        # timeline entry, not a boundary — a pointless same-spool split would
-        # only fragment the history.
-        loaded = next(
-            (
-                e
-                for e in events
-                if e.id > runout.id and e.event == EVENT_SPOOL_LOADED and e.global_tray_id == global_tray_id
-            ),
-            None,
-        )
-        if loaded is None:
-            return []
-        return [
-            (0, runout.spool_id, runout.spoolman_spool_id),
-            (runout.layer_num, loaded.spool_id, loaded.spoolman_spool_id),
-        ]
+    loads = [e for e in events if e.event == EVENT_SPOOL_LOADED and e.global_tray_id == global_tray_id]
 
-    segments: list[tuple[int, int | None, int | None]] = [(0, runout.spool_id, runout.spoolman_spool_id)]
-
-    if runout.kind == KIND_AUTOSWITCH:
-        backup = next(
-            (
-                e
-                for e in events
-                if e.id > runout.id
-                and e.event == EVENT_TRAY_CHANGE
-                and e.global_tray_id is not None
-                and e.global_tray_id != global_tray_id
-                and e.layer_num <= runout.layer_num + 1
-            ),
-            None,
-        )
-        if backup is not None:
-            segments.append((runout.layer_num, backup.spool_id, backup.spoolman_spool_id))
-        else:
-            # The backup feeder can't be named — better an under-count on the
-            # backup spool than grams on a guess. The origin still zeroes out.
-            segments.append((runout.layer_num, None, None))
-    else:
+    segments: list[tuple[int, int | None, int | None]] = [(0, runouts[0].spool_id, runouts[0].spoolman_spool_id)]
+    for idx, runout in enumerate(runouts):
+        next_runout_id = runouts[idx + 1].id if idx + 1 < len(runouts) else None
         loaded = next(
-            (
-                e
-                for e in events
-                if e.id > runout.id and e.event == EVENT_SPOOL_LOADED and e.global_tray_id == global_tray_id
-            ),
+            (e for e in loads if e.id > runout.id and (next_runout_id is None or e.id < next_runout_id)),
             None,
         )
+        if runout.kind == KIND_AMBIGUOUS:
+            # Could equally be a jam — a boundary only when the human
+            # demonstrably loaded a replacement.
+            if loaded is not None:
+                segments.append((runout.layer_num, loaded.spool_id, loaded.spoolman_spool_id))
+            continue
         if loaded is not None:
             segments.append((runout.layer_num, loaded.spool_id, loaded.spoolman_spool_id))
+        elif runout.kind == KIND_AUTOSWITCH:
+            backup = next(
+                (
+                    e
+                    for e in events
+                    if e.id > runout.id
+                    and e.event == EVENT_TRAY_CHANGE
+                    and e.global_tray_id is not None
+                    and e.global_tray_id != global_tray_id
+                    and e.layer_num <= runout.layer_num + 1
+                ),
+                None,
+            )
+            if backup is not None:
+                segments.append((runout.layer_num, backup.spool_id, backup.spoolman_spool_id))
+            else:
+                # The backup feeder can't be named — better an under-count on
+                # the backup spool than grams on a guess; the origin zeroes out.
+                segments.append((runout.layer_num, None, None))
         else:
             # Resumed without a detectable replacement — the same spool (or a
             # splice) kept feeding; the zero correction self-consistently
             # closes it at label_weight after the print rows.
             segments.append((runout.layer_num, runout.spool_id, runout.spoolman_spool_id))
 
-    return segments
+    return segments if len(segments) > 1 else []
 
 
 def _add_autoswitch_purge(

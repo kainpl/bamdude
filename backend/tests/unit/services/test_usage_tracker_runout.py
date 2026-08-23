@@ -469,3 +469,29 @@ class TestPath2UuidGate:
         await db_session.refresh(spool_b)
         assert spool_b.weight_used == pytest.approx(50.0)  # live correction won
         assert spool_a.weight_used == pytest.approx(0.0)
+
+
+class TestMultiEpisodeBoundaries:
+    def test_two_reels_back_to_back_give_three_segments(self):
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [
+            ev(1, "runout", "external", 254, 80, 7),
+            ev(2, "spool_loaded", None, 254, 80, 9),
+            ev(3, "runout", "external", 254, 250, 9),
+            ev(4, "spool_loaded", None, 254, 250, 11),
+        ]
+        assert journal_boundaries_for_tray(events, 254) == [(0, 7, None), (80, 9, None), (250, 11, None)]

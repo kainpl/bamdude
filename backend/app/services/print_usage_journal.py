@@ -126,32 +126,39 @@ async def record_runout(
     spool_id: int | None = None,
     spoolman_spool_id: int | None = None,
 ) -> None:
-    """One runout row per (archive, tray) — a repeat only upgrades the kind.
+    """One runout row per EPISODE of (archive, tray).
 
-    The detector already dedups per print, so a second call for the same tray
-    is the pause→autoswitch upgrade (the AMS backup took over mid-purge); the
-    boundary layer and the frozen spool ids of the first sighting stay.
+    A repeat while the episode is open (the detector re-fired on HMS flicker,
+    or a restart replayed the still-active code) only upgrades the kind — the
+    boundary layer and the frozen spool ids of the first sighting stay. But a
+    runout whose previous episode is CLOSED (a spool_loaded followed it) is a
+    new episode — two short reels in one long print — and gets its own row.
     """
-    from backend.app.models.print_usage_event import EVENT_RUNOUT
+    from backend.app.models.print_usage_event import EVENT_RUNOUT, EVENT_SPOOL_LOADED
 
-    existing = (
+    rows = (
         (
             await db.execute(
-                select(PrintUsageEvent).where(
+                select(PrintUsageEvent)
+                .where(
                     PrintUsageEvent.archive_id == archive_id,
-                    PrintUsageEvent.event == EVENT_RUNOUT,
+                    PrintUsageEvent.event.in_([EVENT_RUNOUT, EVENT_SPOOL_LOADED]),
                     PrintUsageEvent.global_tray_id == global_tray_id,
                 )
+                .order_by(PrintUsageEvent.id)
             )
         )
         .scalars()
-        .first()
+        .all()
     )
-    if existing is not None:
-        if kind and existing.kind != kind:
-            existing.kind = kind
-            await db.commit()
-        return
+    last_runout = next((e for e in reversed(rows) if e.event == EVENT_RUNOUT), None)
+    if last_runout is not None:
+        closed = any(e.event == EVENT_SPOOL_LOADED and e.id > last_runout.id for e in rows)
+        if not closed:
+            if kind and last_runout.kind != kind:
+                last_runout.kind = kind
+                await db.commit()
+            return
 
     await record_event(
         db,
@@ -199,7 +206,9 @@ async def note_assignment_change(
         global_tray = ams_id * 4 + tray_id
 
     events = await load_events(db, printer_id, archive_id)
-    runout = next((e for e in events if e.event == EVENT_RUNOUT and e.global_tray_id == global_tray), None)
+    # The LAST runout on the tray — episodes are closed in order, and a second
+    # runout of the same tray (two short reels) needs its own replacement.
+    runout = next((e for e in reversed(events) if e.event == EVENT_RUNOUT and e.global_tray_id == global_tray), None)
     if runout is None:
         return
     already = next(
