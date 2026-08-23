@@ -4019,12 +4019,7 @@ class BambuMQTTClient:
                 # Valid physical trays: 0-15 (regular AMS), 24-27 (A2L AMS-Lite,
                 # normalised unit 6), 128-135 (AMS-HT), 254 (external spool)
                 tn = self.state.tray_now
-                if (
-                    (0 <= tn <= 15)
-                    or (A2L_LITE_GLOBAL_BASE <= tn <= A2L_LITE_GLOBAL_BASE + 3)
-                    or (128 <= tn <= 135)
-                    or tn == 254
-                ):
+                if self._is_journal_tray(tn):
                     # Log tray change for mid-print usage splitting. Gate on
                     # the print-lifecycle flags (`_was_running` set on first
                     # RUNNING / new print, `_completion_triggered` set when
@@ -6234,12 +6229,7 @@ class BambuMQTTClient:
             # Clear and seed tray change log for mid-print usage splitting
             self.state.tray_change_log.clear()
             tn = self.state.tray_now
-            if (
-                (0 <= tn <= 15)
-                or (A2L_LITE_GLOBAL_BASE <= tn <= A2L_LITE_GLOBAL_BASE + 3)
-                or (128 <= tn <= 135)
-                or tn == 254
-            ):
+            if self._is_journal_tray(tn):
                 self.state.tray_change_log.append((tn, 0))
             # Initialize timelapse tracking based on current state
             # NOTE: xcam data is parsed BEFORE this code runs in _process_message,
@@ -6686,6 +6676,25 @@ class BambuMQTTClient:
             self.state.is_support_auto_flow_calibration = False
         elif series == "series_p1p":
             self.state.is_support_pa_calibration = False
+
+    def _is_journal_tray(self, tn: int) -> bool:
+        """Trays the tray-change log accepts.
+
+        255 usually means "unloaded" and must stay out — EXCEPT on H2-series
+        machines, whose second external spool genuinely lives at 255 (visible
+        as a vt_tray entry with that id). 254 (first external) is always in.
+        """
+        if (
+            (0 <= tn <= 15)
+            or (A2L_LITE_GLOBAL_BASE <= tn <= A2L_LITE_GLOBAL_BASE + 3)
+            or (128 <= tn <= 135)
+            or tn == 254
+        ):
+            return True
+        if tn == 255:
+            vt_tray = (self.state.raw_data or {}).get("vt_tray") or []
+            return any(int(vt.get("id", 0)) == 255 for vt in vt_tray if isinstance(vt, dict))
+        return False
 
     def _ams_unit_ids(self) -> list[int]:
         """Ids of the AMS units currently present, from merged state."""

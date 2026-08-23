@@ -1690,6 +1690,10 @@ export interface AppSettings {
   ams_temp_good: number;      // <= this is green/blue
   ams_temp_fair: number;      // <= this is orange, > is red
   ams_history_retention_days: number;  // days to keep AMS sensor history
+  runout_zero_point_enabled: boolean;  // close a spool at exactly empty on an unambiguous runout
+  ams_sync_bidirectional: boolean;     // debounced downward AMS corrections for Bambu-tagged spools
+  runout_purge_grams: number;          // grams charged to the backup spool per AMS auto-switch (0 = off)
+  usage_events_retention_hours: number; // hours to keep a finished print's usage-journal events
   printer_sensor_history_retention_days?: number;  // days to keep printer heater history
   plug_power_history_retention_days?: number;  // days to keep smart-plug power history
   sensor_history_retention_days?: number;  // days to keep sensor measurement history

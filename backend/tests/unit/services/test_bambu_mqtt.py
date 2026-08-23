@@ -5588,3 +5588,28 @@ class TestRunoutDetector:
         client._completion_triggered = False
         client._process_message(self._hms_push(0x07002000, 0x00020001))
         assert client.on_usage_event.call_count == 2
+
+
+class TestJournalTrayGate:
+    """255 is "unloaded" everywhere except H2-series second external."""
+
+    @pytest.fixture
+    def client(self):
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        return BambuMQTTClient(ip_address="1.2.3.4", serial_number="GATE01", access_code="1")
+
+    def test_255_rejected_without_a_second_external(self, client):
+        client.state.raw_data = {}
+        assert client._is_journal_tray(255) is False
+
+    def test_255_accepted_when_vt_tray_has_it(self, client):
+        client.state.raw_data = {"vt_tray": [{"id": 254}, {"id": 255}]}
+        assert client._is_journal_tray(255) is True
+
+    def test_the_usual_set_is_unchanged(self, client):
+        client.state.raw_data = {}
+        for tn in (0, 15, 24, 27, 128, 135, 254):
+            assert client._is_journal_tray(tn) is True, tn
+        for tn in (16, 23, 136, 253, -1, 300):
+            assert client._is_journal_tray(tn) is False, tn

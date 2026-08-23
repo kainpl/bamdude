@@ -113,6 +113,12 @@ def parse_gcode_layer_filament_usage(gcode_content: str) -> dict[int, dict[int, 
                     except ValueError:
                         pass  # Skip G-code lines with unparseable layer numbers
 
+        # Absolute extrusion (M82): cumulative E-sums would be garbage — every
+        # move's E is a position, not a delta. Bambu-sliced G-code is always
+        # relative (M83); anything else falls back to the linear estimate.
+        elif cmd == "M82":
+            return {}
+
         # Filament change: M620 S<filament>
         # Bambu uses M620 for AMS filament switching
         # S255 means full unload (no active filament)

@@ -258,6 +258,10 @@ class PrintSession:
     print_name: str
     started_at: datetime
     tray_remain_start: dict[tuple[int, int], int] = field(default_factory=dict)
+    # RFID uuid per slot at print start — the remain-delta's spool-swap gate
+    # (parity with the Spoolman delta): a changed uuid means a different
+    # physical reel, and the delta must not be billed to the snapshot's spool.
+    tray_uuid_start: dict[tuple[int, int], str] = field(default_factory=dict)
     # tray_now at print start (correct value, unlike at completion where it's 255)
     tray_now_at_start: int = -1
     # Snapshot of spool assignments at print start: {(ams_id, tray_id): spool_id}
@@ -327,7 +331,13 @@ async def persist_session(
     row.tray_now_at_start = session.tray_now_at_start
     row.ams_mapping = list(session.ams_mapping) if session.ams_mapping else None
     row.spool_assignments = _tray_map_to_json(session.spool_assignments) or None
-    row.tray_remain_start = _tray_map_to_json(session.tray_remain_start) or None
+    # Combined per-slot value {"remain", "uuid"} when the uuid is known —
+    # SAME column, richer value; readers accept the legacy bare int too.
+    remain_json: dict[str, object] = {}
+    for key, remain in session.tray_remain_start.items():
+        uuid = session.tray_uuid_start.get(key)
+        remain_json[_tray_key_to_str(key)] = {"remain": remain, "uuid": uuid} if uuid else remain
+    row.tray_remain_start = remain_json or None
     row.tray_change_log = [list(entry) for entry in (tray_change_log or [])] or None
 
     await db.commit()
@@ -468,11 +478,28 @@ async def restore_session(db: AsyncSession, printer_id: int, register_active: bo
     if started_at.tzinfo is None:
         started_at = started_at.replace(tzinfo=timezone.utc)
 
+    tray_remain_start: dict[tuple[int, int], int] = {}
+    tray_uuid_start: dict[tuple[int, int], str] = {}
+    for raw_key, value in (row.tray_remain_start or {}).items():
+        key = _tray_key_from_str(str(raw_key))
+        if key is None:
+            continue
+        if isinstance(value, dict):
+            remain = value.get("remain")
+            if isinstance(remain, int):
+                tray_remain_start[key] = remain
+            uuid = value.get("uuid")
+            if isinstance(uuid, str) and uuid:
+                tray_uuid_start[key] = uuid
+        elif isinstance(value, int):  # legacy bare-int rows
+            tray_remain_start[key] = value
+
     session = PrintSession(
         printer_id=printer_id,
         print_name=row.print_name or "",
         started_at=started_at,
-        tray_remain_start=_tray_map_from_json(row.tray_remain_start),
+        tray_remain_start=tray_remain_start,
+        tray_uuid_start=tray_uuid_start,
         tray_now_at_start=row.tray_now_at_start,
         spool_assignments=_tray_map_from_json(row.spool_assignments),
         ams_mapping=list(row.ams_mapping) if row.ams_mapping else None,
@@ -1069,6 +1096,7 @@ async def on_print_start(
         return
 
     tray_remain_start: dict[tuple[int, int], int] = {}
+    tray_uuid_start: dict[tuple[int, int], str] = {}
     for ams_unit in ams_data:
         ams_id = int(ams_unit.get("id", 0))
         for tray in ams_unit.get("tray", []):
@@ -1076,6 +1104,9 @@ async def on_print_start(
             remain = usable_remain_percent(tray.get("remain"))
             if remain is not None:
                 tray_remain_start[(ams_id, tray_id)] = remain
+                uuid = str(tray.get("tray_uuid", "") or "")
+                if uuid and set(uuid) != {"0"}:
+                    tray_uuid_start[(ams_id, tray_id)] = uuid
 
     print_name = data.get("subtask_name", "") or data.get("filename", "unknown")
 
@@ -1130,6 +1161,7 @@ async def on_print_start(
         print_name=print_name,
         started_at=datetime.now(timezone.utc),
         tray_remain_start=tray_remain_start,
+        tray_uuid_start=tray_uuid_start,
         tray_now_at_start=tray_now_at_start,
         spool_assignments=spool_assignments,
         ams_mapping=data.get("ams_mapping"),
@@ -1314,6 +1346,19 @@ async def on_print_complete(
                     # firmware emits whenever it has nothing to report.
                     current_remain = usable_remain_percent(tray.get("remain"))
                     if current_remain is None:
+                        continue
+
+                    # Spool swap mid-print — the RFID uuid changed, so this is
+                    # a different physical reel and the delta belongs to nobody
+                    # we can name (parity with the Spoolman remain-delta gate).
+                    start_uuid = session.tray_uuid_start.get(key, "")
+                    cur_uuid = str(tray.get("tray_uuid", "") or "")
+                    if start_uuid and cur_uuid and set(cur_uuid) != {"0"} and start_uuid != cur_uuid:
+                        logger.info(
+                            "[UsageTracker] AMS%d-T%d: spool swapped mid-print (uuid changed), skipping remain-delta",
+                            ams_id,
+                            tray_id,
+                        )
                         continue
 
                     start_remain = session.tray_remain_start[key]

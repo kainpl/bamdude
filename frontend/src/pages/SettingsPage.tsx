@@ -1248,6 +1248,10 @@ export function SettingsPage() {
       // ``archive_3mf_retention_days`` pattern above.
       (baseline.log_retention_days ?? 7) !== (localSettings.log_retention_days ?? 7) ||
       baseline.disable_filament_warnings !== localSettings.disable_filament_warnings ||
+      (baseline.runout_zero_point_enabled ?? true) !== (localSettings.runout_zero_point_enabled ?? true) ||
+      (baseline.ams_sync_bidirectional ?? true) !== (localSettings.ams_sync_bidirectional ?? true) ||
+      (baseline.runout_purge_grams ?? 0) !== (localSettings.runout_purge_grams ?? 0) ||
+      (baseline.usage_events_retention_hours ?? 72) !== (localSettings.usage_events_retention_hours ?? 72) ||
       (baseline.queue_drying_enabled ?? false) !== (localSettings.queue_drying_enabled ?? false) ||
       (baseline.queue_shortest_first ?? false) !== (localSettings.queue_shortest_first ?? false) ||
       (baseline.queue_drying_block ?? false) !== (localSettings.queue_drying_block ?? false) ||
@@ -1342,6 +1346,10 @@ export function SettingsPage() {
         ams_history_retention_days: localSettings.ams_history_retention_days,
         log_retention_days: localSettings.log_retention_days,
         disable_filament_warnings: localSettings.disable_filament_warnings,
+        runout_zero_point_enabled: localSettings.runout_zero_point_enabled,
+        ams_sync_bidirectional: localSettings.ams_sync_bidirectional,
+        runout_purge_grams: localSettings.runout_purge_grams,
+        usage_events_retention_hours: localSettings.usage_events_retention_hours,
         queue_drying_enabled: localSettings.queue_drying_enabled,
         queue_shortest_first: localSettings.queue_shortest_first,
         queue_drying_block: localSettings.queue_drying_block,
@@ -5357,6 +5365,72 @@ export function SettingsPage() {
                     />
                     <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
                   </label>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <h2 className="text-lg font-semibold text-white">{t('settings.usageAccuracy.title')}</h2>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-white">{t('settings.usageAccuracy.zeroPoint')}</p>
+                    <p className="text-sm text-bambu-gray">{t('settings.usageAccuracy.zeroPointDesc')}</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={localSettings.runout_zero_point_enabled ?? true}
+                      onChange={(e) => updateSetting('runout_zero_point_enabled', e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                  </label>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-white">{t('settings.usageAccuracy.bidirectional')}</p>
+                    <p className="text-sm text-bambu-gray">{t('settings.usageAccuracy.bidirectionalDesc')}</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={localSettings.ams_sync_bidirectional ?? true}
+                      onChange={(e) => updateSetting('ams_sync_bidirectional', e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                  </label>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-white">{t('settings.usageAccuracy.purgeGrams')}</p>
+                    <p className="text-sm text-bambu-gray">{t('settings.usageAccuracy.purgeGramsDesc')}</p>
+                  </div>
+                  <input
+                    type="number"
+                    min={0}
+                    max={500}
+                    value={localSettings.runout_purge_grams ?? 0}
+                    onChange={(e) => updateSetting('runout_purge_grams', Math.max(0, parseInt(e.target.value) || 0))}
+                    className="w-20 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-right"
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-white">{t('settings.usageAccuracy.journalRetention')}</p>
+                    <p className="text-sm text-bambu-gray">{t('settings.usageAccuracy.journalRetentionDesc')}</p>
+                  </div>
+                  <input
+                    type="number"
+                    min={1}
+                    max={8760}
+                    value={localSettings.usage_events_retention_hours ?? 72}
+                    onChange={(e) => updateSetting('usage_events_retention_hours', Math.max(1, parseInt(e.target.value) || 72))}
+                    className="w-20 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-right"
+                  />
                 </div>
               </CardContent>
             </Card>

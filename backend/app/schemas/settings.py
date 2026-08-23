@@ -59,6 +59,30 @@ class AppSettings(BaseModel):
         ge=1,
         description="Days since the design's most recent print before its 3MF copies are eligible for cleanup. Minimum 1.",
     )
+    # Runout zero-point accounting (usage journal, m153).
+    runout_zero_point_enabled: bool = Field(
+        default=True,
+        description="Close a spool at exactly empty when the printer reports an unambiguous filament runout",
+    )
+    ams_sync_bidirectional: bool = Field(
+        default=True,
+        description=(
+            "Allow idle AMS readings to correct a Bambu-tagged spool's weight downward "
+            "(a value must repeat across two reports a minute apart)"
+        ),
+    )
+    runout_purge_grams: int = Field(
+        default=0,
+        ge=0,
+        le=500,
+        description="Grams charged to the backup spool for the purge of an AMS auto-switch (0 = off)",
+    )
+    usage_events_retention_hours: int = Field(
+        default=72,
+        ge=1,
+        le=8760,
+        description="Hours to keep a finished print's usage-journal events (runout/tray timeline) for forensics",
+    )
     # 0 = unset. There is no sensible default price of plastic, and a
     # plausible figure reads as an answer while a blank reads as a blank.
     default_filament_cost: float = Field(default=0.0, description="Default filament cost per kg (0 = unset)")
@@ -582,6 +606,10 @@ class AppSettingsUpdate(BaseModel):
     archive_3mf_retention_enabled: bool | None = None
     archive_3mf_retention_days: int | None = Field(default=None, ge=1)
     log_retention_days: int | None = Field(default=None, ge=1, le=365)
+    runout_zero_point_enabled: bool | None = None
+    ams_sync_bidirectional: bool | None = None
+    runout_purge_grams: int | None = Field(default=None, ge=0, le=500)
+    usage_events_retention_hours: int | None = Field(default=None, ge=1, le=8760)
     default_filament_cost: float | None = None
     currency: str | None = None
     energy_cost_per_kwh: float | None = None

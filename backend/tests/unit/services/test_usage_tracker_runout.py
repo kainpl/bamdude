@@ -374,3 +374,48 @@ class TestAutoswitchPurgeGrams:
         # Backup: 100 (segment) + 25 (purge) = 125, inside the segment row.
         assert spool_c.weight_used == pytest.approx(125.0)
         assert (spool_c.id, 125.0, "completed") in await _history(db_session)
+
+
+class TestPath2UuidGate:
+    @pytest.mark.asyncio
+    async def test_remain_delta_skips_a_swapped_spool(self, db_session, tmp_path, monkeypatch):
+        """Parity with the Spoolman remain-delta: a tray whose RFID uuid
+        changed mid-print is a physical spool swap — attributing the delta to
+        the snapshot's spool would bill the wrong reel."""
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        spool = await _make_spool(db_session)
+        from backend.app.models.spool_assignment import SpoolAssignment
+
+        db_session.add(SpoolAssignment(printer_id=printer.id, ams_id=0, tray_id=0, spool_id=spool.id))
+        await db_session.commit()
+
+        session = _session(printer.id, tray_remain_start={(0, 0): 80})
+        session.tray_uuid_start = {(0, 0): "AAAA0000AAAA0000AAAA0000AAAA0000"}
+        _active_sessions[printer.id] = session
+
+        ams = [{"id": 0, "tray": [{"id": 0, "remain": 70, "tray_uuid": "BBBB0000BBBB0000BBBB0000BBBB0000"}]}]
+        p1, p2 = _patched_3mf([])
+        with p1, p2:
+            await on_print_complete(
+                printer.id, {"status": "completed"}, _pm(ams=ams), db_session, archive_id=archive.id
+            )
+
+        await db_session.refresh(spool)
+        assert spool.weight_used == pytest.approx(0.0)
+
+    @pytest.mark.asyncio
+    async def test_uuid_survives_the_session_round_trip(self, db_session):
+        from backend.app.services.usage_tracker import persist_session, restore_session
+
+        printer = await _make_printer(db_session, name="RT1")
+        session = _session(printer.id, tray_remain_start={(0, 1): 55})
+        session.tray_uuid_start = {(0, 1): "CAFE0000CAFE0000CAFE0000CAFE0000"}
+        await persist_session(db_session, session)
+
+        _active_sessions.clear()
+        await restore_session(db_session, printer.id)
+        restored = _active_sessions[printer.id]
+        assert restored.tray_remain_start == {(0, 1): 55}
+        assert restored.tray_uuid_start == {(0, 1): "CAFE0000CAFE0000CAFE0000CAFE0000"}
