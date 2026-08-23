@@ -216,6 +216,27 @@ async def note_assignment_change(
         None,
     )
     if already is not None:
+        # RFID-refill race: the uuid-watch fires on the first push carrying the
+        # new tag and freezes whatever assignment existed at that instant —
+        # which can still be the OLD spool (auto-assign commits moments later)
+        # or nothing. The late assignment is the authoritative answer, so it
+        # CORRECTS the row rather than being skipped; identical ids are a no-op.
+        changed = False
+        if spool_id is not None and already.spool_id != spool_id:
+            already.spool_id = spool_id
+            changed = True
+        if spoolman_spool_id is not None and already.spoolman_spool_id != spoolman_spool_id:
+            already.spoolman_spool_id = spoolman_spool_id
+            changed = True
+        if changed:
+            logger.info(
+                "[UsageJournal] Corrected spool_loaded for tray %d on printer %d (spool=%s, spoolman=%s)",
+                global_tray,
+                printer_id,
+                spool_id,
+                spoolman_spool_id,
+            )
+            await db.commit()
         return
     if spool_id is not None and runout.spool_id == spool_id:
         return  # the same reel re-linked — a correction, not a replacement

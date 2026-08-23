@@ -283,3 +283,80 @@ class TestRunoutEpisodeRows:
             ("spool_loaded", 80, 9),
             ("runout", 250, 9),
         ]
+
+    @pytest.mark.asyncio
+    async def test_late_assignment_corrects_a_stale_spool_loaded(self, db_session, printer):
+        """RFID refill race: the uuid-watch fires on the first push with the
+        new tag and freezes whatever assignment exists at that instant — which
+        can still be the OLD spool (auto-assign hasn't committed yet). The
+        later assignment must CORRECT the spool_loaded row, not be skipped."""
+        from backend.app.services.print_usage_journal import note_assignment_change
+
+        archive = await _make_archive(db_session, printer)
+        db_session.add(
+            PrintUsageEvent(
+                printer_id=printer.id,
+                archive_id=archive.id,
+                layer_num=80,
+                event="runout",
+                kind="external",
+                global_tray_id=254,
+                spool_id=26,
+            )
+        )
+        # uuid-watch fired first, froze the stale assignment (old spool 26).
+        db_session.add(
+            PrintUsageEvent(
+                printer_id=printer.id,
+                archive_id=archive.id,
+                layer_num=80,
+                event="spool_loaded",
+                global_tray_id=254,
+                spool_id=26,
+            )
+        )
+        await db_session.commit()
+
+        await note_assignment_change(
+            db_session, printer_id=printer.id, ams_id=255, tray_id=0, spool_id=71, layer_num=85
+        )
+
+        events = await load_events(db_session, printer.id, archive.id)
+        loaded = [e for e in events if e.event == "spool_loaded"]
+        assert len(loaded) == 1
+        assert loaded[0].spool_id == 71  # corrected, not duplicated, not skipped
+
+    @pytest.mark.asyncio
+    async def test_late_assignment_fills_an_empty_spool_loaded(self, db_session, printer):
+        from backend.app.services.print_usage_journal import note_assignment_change
+
+        archive = await _make_archive(db_session, printer)
+        db_session.add(
+            PrintUsageEvent(
+                printer_id=printer.id,
+                archive_id=archive.id,
+                layer_num=80,
+                event="runout",
+                kind="external",
+                global_tray_id=254,
+                spool_id=26,
+            )
+        )
+        db_session.add(
+            PrintUsageEvent(
+                printer_id=printer.id,
+                archive_id=archive.id,
+                layer_num=80,
+                event="spool_loaded",
+                global_tray_id=254,
+                spool_id=None,
+            )
+        )
+        await db_session.commit()
+
+        await note_assignment_change(
+            db_session, printer_id=printer.id, ams_id=255, tray_id=0, spool_id=71, layer_num=85
+        )
+        events = await load_events(db_session, printer.id, archive.id)
+        loaded = [e for e in events if e.event == "spool_loaded"]
+        assert [(e.spool_id,) for e in loaded] == [(71,)]
