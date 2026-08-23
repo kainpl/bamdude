@@ -1,0 +1,139 @@
+"""The append-only usage journal: record/load, spool-id freezing, retention."""
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from sqlalchemy import select, text
+
+from backend.app.models.print_usage_event import (
+    EVENT_RUNOUT,
+    EVENT_TRAY_CHANGE,
+    KIND_PAUSE,
+    PrintUsageEvent,
+)
+from backend.app.models.printer import Printer
+from backend.app.models.spool import Spool
+from backend.app.models.spool_assignment import SpoolAssignment
+from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+from backend.app.services.print_usage_journal import (
+    delete_for_archive,
+    freeze_spool_ids,
+    load_events,
+    prune_finished,
+    record_event,
+)
+
+
+@pytest.fixture
+async def printer(db_session):
+    p = Printer(name="P1", ip_address="10.0.0.2", serial_number="SN-journal", access_code="123")
+    db_session.add(p)
+    await db_session.commit()
+    await db_session.refresh(p)
+    return p
+
+
+async def _make_archive(db_session, printer, status="printing"):
+    from backend.app.models.archive import PrintArchive
+
+    a = PrintArchive(
+        printer_id=printer.id,
+        filename="j.gcode.3mf",
+        file_path="",
+        file_size=0,
+        print_name="j",
+        status=status,
+    )
+    db_session.add(a)
+    await db_session.commit()
+    await db_session.refresh(a)
+    return a
+
+
+@pytest.mark.asyncio
+async def test_record_and_load_round_trip_in_order(db_session, printer):
+    archive = await _make_archive(db_session, printer)
+    await record_event(
+        db_session,
+        printer_id=printer.id,
+        archive_id=archive.id,
+        layer_num=0,
+        event=EVENT_TRAY_CHANGE,
+        global_tray_id=1,
+    )
+    await record_event(
+        db_session,
+        printer_id=printer.id,
+        archive_id=archive.id,
+        layer_num=42,
+        event=EVENT_RUNOUT,
+        kind=KIND_PAUSE,
+        global_tray_id=1,
+        spool_id=7,
+    )
+    events = await load_events(db_session, printer.id, archive.id)
+    assert [(e.event, e.layer_num, e.spool_id) for e in events] == [
+        ("tray_change", 0, None),
+        ("runout", 42, 7),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_freeze_resolves_both_backends(db_session, printer):
+    spool = Spool(material="PLA", label_weight=1000)
+    db_session.add(spool)
+    await db_session.commit()
+    await db_session.refresh(spool)
+    db_session.add(SpoolAssignment(printer_id=printer.id, ams_id=0, tray_id=1, spool_id=spool.id))
+    db_session.add(SpoolmanSlotAssignment(printer_id=printer.id, ams_id=0, tray_id=1, spoolman_spool_id=99))
+    await db_session.commit()
+
+    assert await freeze_spool_ids(db_session, printer.id, 1) == (spool.id, 99)
+    # Unassigned slot freezes to nothing rather than guessing.
+    assert await freeze_spool_ids(db_session, printer.id, 3) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_freeze_decodes_external_and_ht_trays(db_session, printer):
+    db_session.add(SpoolmanSlotAssignment(printer_id=printer.id, ams_id=255, tray_id=0, spoolman_spool_id=5))
+    db_session.add(SpoolmanSlotAssignment(printer_id=printer.id, ams_id=128, tray_id=0, spoolman_spool_id=6))
+    await db_session.commit()
+    assert (await freeze_spool_ids(db_session, printer.id, 254))[1] == 5
+    assert (await freeze_spool_ids(db_session, printer.id, 128))[1] == 6
+
+
+@pytest.mark.asyncio
+async def test_prune_spares_active_prints_and_fresh_rows(db_session, printer):
+    printing = await _make_archive(db_session, printer, status="printing")
+    finished = await _make_archive(db_session, printer, status="completed")
+
+    old = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=100)
+    for archive in (printing, finished):
+        db_session.add(
+            PrintUsageEvent(
+                printer_id=printer.id,
+                archive_id=archive.id,
+                layer_num=1,
+                event=EVENT_TRAY_CHANGE,
+            )
+        )
+    await db_session.commit()
+    # Backdate both rows past any retention window.
+    await db_session.execute(text("UPDATE print_usage_events SET created_at = :old"), {"old": old})
+    await db_session.commit()
+
+    deleted = await prune_finished(db_session, retention_hours=72)
+    assert deleted == 1  # only the finished archive's row
+
+    remaining = (await db_session.execute(select(PrintUsageEvent))).scalars().all()
+    assert [e.archive_id for e in remaining] == [printing.id]
+
+
+@pytest.mark.asyncio
+async def test_delete_for_archive_cleans_sqlite_without_fk_cascade(db_session, printer):
+    archive = await _make_archive(db_session, printer, status="completed")
+    db_session.add(PrintUsageEvent(printer_id=printer.id, archive_id=archive.id, layer_num=1, event=EVENT_TRAY_CHANGE))
+    await db_session.commit()
+
+    await delete_for_archive(db_session, archive.id)
+    assert (await db_session.execute(select(PrintUsageEvent))).scalars().all() == []

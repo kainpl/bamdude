@@ -3082,6 +3082,13 @@ class ArchiveService:
             update(SpoolUsageHistory).where(SpoolUsageHistory.archive_id == archive_id).values(archive_id=None)
         )
 
+        # Usage-journal rows die with their archive. Explicit because the FK
+        # CASCADE fires on PostgreSQL only; placed beside the history detach so
+        # every ``db.delete(archive)`` path below flushes both together.
+        from backend.app.services.print_usage_journal import delete_for_archive
+
+        await delete_for_archive(self.db, archive_id)
+
         # Resolve the directory to delete BEFORE committing the DB change
         dir_to_delete: Path | None = None
 

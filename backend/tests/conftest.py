@@ -171,6 +171,7 @@ async def test_engine():
         orca_base_cache,
         print_options_preference,
         print_queue,
+        print_usage_event,
         printer,
         printer_location,
         printer_queue,

@@ -7170,6 +7170,20 @@ async def record_ams_history():
                             f"Cleaned up {result.rowcount} old AMS sensor history entries (older than {retention_days} days)"
                         )
 
+                    # Usage-journal retention rides the same daily tick. The
+                    # sweep itself refuses rows of a still-printing archive.
+                    try:
+                        from backend.app.services.print_usage_journal import prune_finished
+
+                        result = await db.execute(
+                            select(Settings).where(Settings.key == "usage_events_retention_hours")
+                        )
+                        setting = result.scalar_one_or_none()
+                        retention_hours = int(setting.value) if setting else 72
+                        await prune_finished(db, retention_hours)
+                    except Exception as e:
+                        logger.warning("Usage-journal retention sweep failed: %s", e)
+
             # Wait until next recording interval
             await asyncio.sleep(AMS_HISTORY_INTERVAL)
 
