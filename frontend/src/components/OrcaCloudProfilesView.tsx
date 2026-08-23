@@ -5,6 +5,7 @@ import { Search, Filter, RefreshCw, Droplet, Settings2, Printer as PrinterIcon, 
 
 import { api } from '../api/client';
 import type { OrcaProfileListResponse, OrcaProfileMeta } from '../api/client';
+import { canonicalPrinterModel } from '../utils/slicerPrinterMatch';
 import { Button } from './Button';
 import { FilterDropdown } from './FilterDropdown';
 import { formatRelativeTime } from '../utils/date';
@@ -71,14 +72,25 @@ export function OrcaCloudProfilesView({
   const [filterLayerHeight, setFilterLayerHeight] = useState('all');
   const [selectedSetting, setSelectedSetting] = useState<OrcaProfileMeta | null>(null);
 
+  const { data: printerModelsMap = {} } = useQuery({
+    queryKey: ['printer-models'],
+    queryFn: () => api.getPrinterModels(),
+    staleTime: 10 * 60_000,
+  });
+
   const allPresetsWithMeta = useMemo(() => {
     const combined = [
       ...settings.filament.map(s => ({ ...s, type: 'filament' as const })),
       ...settings.printer.map(s => ({ ...s, type: 'printer' as const })),
       ...settings.process.map(s => ({ ...s, type: 'process' as const })),
     ];
-    return combined.map(s => ({ ...s, meta: extractMetadata(s.name) }));
-  }, [settings]);
+    return combined.map(s => {
+      const meta = extractMetadata(s.name);
+      // One row per machine in the printer filter (#1649: "A1M" vs "A1 mini").
+      const printer = meta.printer ? canonicalPrinterModel(meta.printer, printerModelsMap) : null;
+      return { ...s, meta: { ...meta, printer } };
+    });
+  }, [settings, printerModelsMap]);
 
   const filterOptions = useMemo(() => {
     const nozzles = new Set<string>();
@@ -112,9 +124,7 @@ export function OrcaCloudProfilesView({
       .filter(s => filterType === 'all' || s.type === filterType)
       .filter(s => {
         if (filterPrinter === 'all' || !selectedPrinterModel) return true;
-        const presetPrinter = s.meta.printer?.toLowerCase() || '';
-        const configuredModel = selectedPrinterModel.toLowerCase();
-        return presetPrinter.includes(configuredModel) || configuredModel.includes(presetPrinter);
+        return s.meta.printer === selectedPrinterModel; // both canonicalised
       })
       .filter(s => filterNozzle === 'all' || s.meta.nozzle === filterNozzle)
       .filter(s => filterFilament === 'all' || s.meta.filamentType === filterFilament)

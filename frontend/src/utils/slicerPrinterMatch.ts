@@ -286,3 +286,23 @@ export function presetCompatibility(
   // standard presets that don't carry compatible_printers.
   return classifyByBambuName(preset.name, selectedPrinterName, index.bambuModelByShortCode);
 }
+
+/**
+ * Collapse a raw model token extracted from a preset name ("A1M",
+ * "A1 mini", "X1C", "X1 Carbon"...) onto ONE canonical display fragment
+ * from the backend registry ("A1 Mini", "X1 Carbon"). The cloud tabs' printer
+ * filters dedupe through this — Bambu cloud ships terse @BBL codes while
+ * user-authored names carry the long form, and without canonicalisation the
+ * same machine shows up three times in the dropdown (#1649). Unknown tokens
+ * come back unchanged so a future model still gets a filter row.
+ */
+export function canonicalPrinterModel(raw: string, printerModels: Record<string, string>): string {
+  const shortToFragment = buildShortCodeMap(printerModels);
+  for (const [short, fragment] of Object.entries(shortToFragment)) {
+    if (raw.toUpperCase() === short.toUpperCase()) return fragment;
+  }
+  for (const fragment of new Set(Object.values(shortToFragment))) {
+    if (matchesPrinterModelSuffix(raw, fragment)) return fragment;
+  }
+  return raw;
+}

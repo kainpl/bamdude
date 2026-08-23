@@ -53,6 +53,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { KProfilesView } from '../components/KProfilesView';
 import { CreateFilamentFamilyModal } from '../components/CreateFilamentFamilyModal';
+import { canonicalPrinterModel } from '../utils/slicerPrinterMatch';
 import { LocalProfilesView } from '../components/LocalProfilesView';
 import { OrcaCloudView } from '../components/OrcaCloudView';
 
@@ -2233,7 +2234,6 @@ function CloudProfilesView({
 }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<PresetType>('all');
-  const [filterOwner, setFilterOwner] = useState<'all' | 'custom' | 'builtin'>('all');
   const [filterPrinter, setFilterPrinter] = useState('all');
   const [filterNozzle, setFilterNozzle] = useState('all');
   const [filterFilament, setFilterFilament] = useState('all');
@@ -2253,15 +2253,39 @@ function CloudProfilesView({
 
   const queryClient = useQueryClient();
 
+  // ONLY the user's own presets, by design (matches the Orca Cloud tab):
+  // a profile someone wants to see here must first be enabled/saved in the
+  // slicer — the cloud's public catalog half is deliberately not browsable.
+  const userSettings = useMemo(
+    () => ({
+      filament: settings.filament.filter(s => s.is_custom),
+      printer: settings.printer.filter(s => s.is_custom),
+      process: settings.process.filter(s => s.is_custom),
+    }),
+    [settings],
+  );
+
+  const { data: printerModelsMap = {} } = useQuery({
+    queryKey: ['printer-models'],
+    queryFn: () => api.getPrinterModels(),
+    staleTime: 10 * 60_000,
+  });
+
   // Combine all presets with metadata
   const allPresetsWithMeta = useMemo(() => {
     const combined = [
-      ...settings.filament.map(s => ({ ...s, type: 'filament' as const })),
-      ...settings.printer.map(s => ({ ...s, type: 'printer' as const })),
-      ...settings.process.map(s => ({ ...s, type: 'process' as const })),
+      ...userSettings.filament.map(s => ({ ...s, type: 'filament' as const })),
+      ...userSettings.printer.map(s => ({ ...s, type: 'printer' as const })),
+      ...userSettings.process.map(s => ({ ...s, type: 'process' as const })),
     ];
-    return combined.map(s => ({ ...s, meta: extractMetadata(s.name) }));
-  }, [settings]);
+    return combined.map(s => {
+      const meta = extractMetadata(s.name);
+      // Collapse "A1M" / "A1 mini" / "A1 Mini" onto one canonical model so
+      // the printer filter has one row per machine (#1649).
+      const printer = meta.printer ? canonicalPrinterModel(meta.printer, printerModelsMap) : null;
+      return { ...s, meta: { ...meta, printer } };
+    });
+  }, [userSettings, printerModelsMap]);
 
   // Extract unique filter values. The printer filter lists printer PROFILES
   // (models the presets themselves mention, as in BS/Orca) — not the
@@ -2297,24 +2321,17 @@ function CloudProfilesView({
   const filteredPresets = useMemo(() => {
     return allPresetsWithMeta
       .filter(s => filterType === 'all' || s.type === filterType)
-      .filter(s => {
-        if (filterOwner === 'all') return true;
-        const isCustom = isUserPreset(s.setting_id);
-        return filterOwner === 'custom' ? isCustom : !isCustom;
-      })
+
       .filter(s => {
         if (filterPrinter === 'all' || !selectedPrinterModel) return true;
-        // Match preset's printer model to configured printer's model
-        const presetPrinter = s.meta.printer?.toLowerCase() || '';
-        const configuredModel = selectedPrinterModel.toLowerCase();
-        return presetPrinter.includes(configuredModel) || configuredModel.includes(presetPrinter);
+        return s.meta.printer === selectedPrinterModel; // both canonicalised
       })
       .filter(s => filterNozzle === 'all' || s.meta.nozzle === filterNozzle)
       .filter(s => filterFilament === 'all' || s.meta.filamentType === filterFilament)
       .filter(s => filterLayerHeight === 'all' || s.meta.layerHeight === filterLayerHeight)
       .filter(s => searchQuery === '' || s.name.toLowerCase().includes(searchQuery.toLowerCase()))
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [allPresetsWithMeta, filterType, filterOwner, filterPrinter, selectedPrinterModel, filterNozzle, filterFilament, filterLayerHeight, searchQuery]);
+  }, [allPresetsWithMeta, filterType, filterPrinter, selectedPrinterModel, filterNozzle, filterFilament, filterLayerHeight, searchQuery]);
 
   // Handle click on preset in compare mode
   const handlePresetClick = (preset: SlicerSetting) => {
@@ -2401,7 +2418,6 @@ function CloudProfilesView({
 
   const clearFilters = () => {
     setFilterType('all');
-    setFilterOwner('all');
     setFilterPrinter('all');
     setFilterNozzle('all');
     setFilterFilament('all');
@@ -2409,10 +2425,10 @@ function CloudProfilesView({
     setSearchQuery('');
   };
 
-  const hasActiveFilters = filterType !== 'all' || filterOwner !== 'all' || filterPrinter !== 'all' || filterNozzle !== 'all' ||
+  const hasActiveFilters = filterType !== 'all' || filterPrinter !== 'all' || filterNozzle !== 'all' ||
     filterFilament !== 'all' || filterLayerHeight !== 'all' || searchQuery !== '';
 
-  const totalCount = settings.filament.length + settings.printer.length + settings.process.length;
+  const totalCount = userSettings.filament.length + userSettings.printer.length + userSettings.process.length;
 
   return (
     <>
@@ -2498,22 +2514,11 @@ function CloudProfilesView({
             value={filterType}
             options={[
               { value: 'all', label: t('profiles.cloudView.filters.all'), count: totalCount },
-              { value: 'filament', label: t('profiles.cloudView.filters.filament'), count: settings.filament.length },
-              { value: 'printer', label: t('profiles.cloudView.filters.printer'), count: settings.printer.length },
-              { value: 'process', label: t('profiles.cloudView.filters.process'), count: settings.process.length },
+              { value: 'filament', label: t('profiles.cloudView.filters.filament'), count: userSettings.filament.length },
+              { value: 'printer', label: t('profiles.cloudView.filters.printer'), count: userSettings.printer.length },
+              { value: 'process', label: t('profiles.cloudView.filters.process'), count: userSettings.process.length },
             ]}
             onChange={(v) => setFilterType(v as PresetType)}
-          />
-
-          <FilterDropdown
-            label={t('profiles.cloudView.filters.owner')}
-            value={filterOwner}
-            options={[
-              { value: 'all', label: t('profiles.cloudView.filters.all') },
-              { value: 'custom', label: t('profiles.cloudView.filters.myPresets') },
-              { value: 'builtin', label: t('profiles.cloudView.filters.builtIn') },
-            ]}
-            onChange={(v) => setFilterOwner(v as 'all' | 'custom' | 'builtin')}
           />
 
           {filterOptions.printers.length > 0 && (
