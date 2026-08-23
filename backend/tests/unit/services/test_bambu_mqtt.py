@@ -5706,3 +5706,75 @@ class TestRunoutEpisodes:
         client.state.total_layers = 600
         client._process_message(push)
         assert client.on_usage_event.call_args[0] == ("runout", "external", 254, 548)
+
+
+class TestRunoutTailThroughExternal:
+    """When an AMS slot runs dry the firmware flips the nozzle's source to its
+    external id and keeps printing the filament still in the feed tube — the
+    runout code arrives only when the tube is dry (X2D, measured 2026-08-23).
+    That filament is the emptied reel's, and one nozzle cannot genuinely
+    combine AMS and external in a single job, so the flip is a runout tail,
+    not a tray change: it must not enter the tray log. The discriminator is
+    the source slot itself — emptied (blank tray_type after the stale-tray
+    clearing) means tail; still loaded means a real dual-nozzle switch to the
+    other nozzle's external, which must keep logging."""
+
+    @pytest.fixture
+    def client(self):
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        c = BambuMQTTClient(ip_address="1.2.3.4", serial_number="20PTAIL01", access_code="1")
+        c._was_running = True
+        c._completion_triggered = False
+        c.state.state = "RUNNING"
+        c.state.layer_num = 23
+        c.state.total_layers = 200
+        c.state.tray_now = 2
+        c.state.last_loaded_tray = 2
+        c.state.tray_change_log = [(2, 0)]
+        c.state.raw_data = {
+            "ams": {"ams": [{"id": 0, "tray": [{"id": 2, "tray_type": "", "tray_color": ""}]}]},
+            "vt_tray": [{"id": 254}, {"id": 255}],
+        }
+        c.on_tray_change = MagicMock()
+        c.on_usage_event = MagicMock()
+        return c
+
+    def _feed(self, client, tray):
+        client._process_message({"print": {"ams": {"tray_now": str(tray)}}})
+
+    def test_flip_to_external_with_an_emptied_source_slot_is_not_logged(self, client):
+        self._feed(client, 254)
+        assert client.state.tray_change_log == [(2, 0)]
+        client.on_tray_change.assert_not_called()
+        # the origin stays current so the post-refill return is a no-op too
+        assert client.state.last_loaded_tray == 2
+
+    def test_return_to_the_refilled_slot_after_the_tail_logs_nothing(self, client):
+        self._feed(client, 254)
+        self._feed(client, 2)
+        assert client.state.tray_change_log == [(2, 0)]
+        client.on_tray_change.assert_not_called()
+
+    def test_flip_to_external_with_a_loaded_source_slot_is_a_real_change(self, client):
+        # dual-colour job on a dual-nozzle machine: the AMS slot keeps its
+        # filament while the other nozzle takes over from its external holder
+        client.state.raw_data["ams"]["ams"][0]["tray"][0]["tray_type"] = "PETG"
+        self._feed(client, 254)
+        assert client.state.tray_change_log == [(2, 0), (254, 23)]
+        client.on_tray_change.assert_called_once_with(254, 23)
+        assert client.state.last_loaded_tray == 254
+
+    def test_runout_after_the_tail_still_lands_on_the_ams_tray(self, client):
+        # the X2D reported the runout on the emptied AMS slot itself
+        self._feed(client, 254)
+        client.state.layer_num = 25
+        client._process_message({"print": {"hms": [{"attr": 0x07002200, "code": 0x00020001}]}})
+        assert client.on_usage_event.call_args[0] == ("runout", "pause", 2, 25)
+
+    def test_idle_transitions_keep_tracking_the_tray(self, client):
+        client._was_running = False
+        client.state.state = "IDLE"
+        self._feed(client, 254)
+        assert client.state.tray_change_log == [(2, 0)]
+        assert client.state.last_loaded_tray == 254

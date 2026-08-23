@@ -2230,6 +2230,34 @@ async def on_ams_change(printer_id: int, ams_data: list):
                         )
                         continue
 
+                    if not cur_type.strip():
+                        # The firmware DID say the slot is empty — one of
+                        # ``_FIRMWARE_EMPTY_STATES`` with cleared content is the
+                        # only blank that gets past the guard above. Empty means
+                        # two different things depending on when it is said:
+                        # mid-print it is a runout (the reel is consumed, not
+                        # removed — same rule as the tray-not-found branch),
+                        # while idle it is the user taking the spool out.
+                        # Letting the blank fall through to the fingerprint
+                        # compare below turned a runout into "spool changed"
+                        # (X2D, 2026-08-23) and the runout row froze spool=None.
+                        if printing_now:
+                            logger.info(
+                                "Auto-unlink skipped: spool %d AMS%d-T%d - slot empty during a running print (runout?)",
+                                assignment.spool_id,
+                                assignment.ams_id,
+                                assignment.tray_id,
+                            )
+                            continue
+                        logger.info(
+                            "Auto-unlink: spool %d AMS%d-T%d - slot reports empty (spool removed)",
+                            assignment.spool_id,
+                            assignment.ams_id,
+                            assignment.tray_id,
+                        )
+                        stale.append(assignment)
+                        continue
+
                     if not _colors_similar(cur_color, fp_color) or cur_type.upper() != fp_type.upper():
                         # Fingerprint mismatch - but check if tray now matches the
                         # assigned spool (e.g. auto-configure changed the tray).

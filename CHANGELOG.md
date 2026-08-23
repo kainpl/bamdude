@@ -172,6 +172,8 @@
 
 ### Fixed
 
+- **A filament runout on an AMS-fed nozzle no longer scrambles spool attribution.** When an AMS slot runs dry, the printer flips its reported source to the external holder and keeps printing the residue in the feed tube before announcing the runout — measured live on an X2D. Three consequences of that sequence are now handled: the phantom switch to the external holder is recognised as the runout tail and kept out of the print's attribution timeline (a genuine dual-nozzle switch to a still-loaded external is untouched); the emptying slot no longer loses its spool link mid-print, so the runout knows exactly which reel ran dry (while idle, an emptied slot still unlinks as before); and if the link is gone anyway, the runout inherits the spool from the print's own event journal instead of giving up. Duplicate runout codes the printer fires for one physical event are folded into a single journal entry.
+
 - **Configuring an AMS/external slot and assigning a spool to a slot no longer crash.** Four call sites asked the printer's info object for a field it never had, so the configure-slot endpoint and every spool-to-slot assignment path answered 500 the moment the family catalog needed the printer model. All four now read the model from its actual home, and a source-level guard test keeps the whole class of mistake out.
 
 - **Spoolman bulk-update endpoint was unreachable.** `PATCH /spoolman/inventory/spools/bulk-update` was declared below the dynamic `/spools/{spool_id}` route, so every call was answered with a validation error before the handler could run. The route order is fixed (with a regression test), and the archive plate-preview image endpoint is now actually public for `<img>` tags, as its docstring always claimed.

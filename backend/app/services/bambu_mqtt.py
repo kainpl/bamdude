@@ -4030,17 +4030,44 @@ class BambuMQTTClient:
                     # tracker double-credits at completion (original tray gets
                     # the full 3MF estimate via slot_to_tray + the AMS
                     # remain%-delta path adds the fallback weight on top).
-                    if tn != self.state.last_loaded_tray and self._was_running and not self._completion_triggered:
-                        self.state.tray_change_log.append((tn, self.state.layer_num))
+                    changed = tn != self.state.last_loaded_tray and self._was_running and not self._completion_triggered
+                    if (
+                        changed
+                        and tn >= 254
+                        and self.state.last_loaded_tray is not None
+                        and 0 <= self.state.last_loaded_tray < 254
+                        and self._ams_tray_reports_empty(self.state.last_loaded_tray)
+                    ):
+                        # Runout tail, not a tray change (X2D, 2026-08-23):
+                        # when an AMS slot runs dry the firmware flips the
+                        # nozzle's source to its external id and keeps printing
+                        # the filament still in the feed tube — that filament
+                        # is the emptied reel's, and one nozzle cannot combine
+                        # AMS and external in a single job. The discriminator
+                        # is the source slot itself: emptied means tail; still
+                        # loaded means a genuine dual-nozzle switch to the
+                        # other nozzle's external, which logs normally below.
+                        # last_loaded_tray deliberately stays on the origin so
+                        # the post-refill return (or an AMS-backup hop) reads
+                        # as one clean change from the origin tray.
                         logger.info(
-                            "[%s] Tray change during print: tray=%d at layer=%d",
+                            "[%s] tray_now=%d with emptied source slot %d - runout tail, not a tray change",
                             self.serial_number,
                             tn,
-                            self.state.layer_num,
+                            self.state.last_loaded_tray,
                         )
-                        if self.on_tray_change:
-                            self.on_tray_change(tn, self.state.layer_num)
-                    self.state.last_loaded_tray = self.state.tray_now
+                    else:
+                        if changed:
+                            self.state.tray_change_log.append((tn, self.state.layer_num))
+                            logger.info(
+                                "[%s] Tray change during print: tray=%d at layer=%d",
+                                self.serial_number,
+                                tn,
+                                self.state.layer_num,
+                            )
+                            if self.on_tray_change:
+                                self.on_tray_change(tn, self.state.layer_num)
+                        self.state.last_loaded_tray = self.state.tray_now
 
                 logger.debug("[%s] tray_now updated: %s", self.serial_number, self.state.tray_now)
 
@@ -6696,6 +6723,35 @@ class BambuMQTTClient:
             or (128 <= tn <= 135)
             or tn == 254
         )
+
+    def _ams_tray_reports_empty(self, global_tray_id: int) -> bool:
+        """True when the merged AMS state shows this slot with no filament.
+
+        The stale-tray clearing in the AMS parser injects blank content fields
+        the moment a slot's state says "not loaded", so an emptied slot is a
+        tray dict with a blank ``tray_type``. A tray we cannot find is NOT
+        empty — absence of data must not read as absence of filament.
+        """
+        ams_raw = (self.state.raw_data or {}).get("ams") or {}
+        ams_list = ams_raw.get("ams", []) if isinstance(ams_raw, dict) else ams_raw
+        for unit in ams_list if isinstance(ams_list, list) else []:
+            if not isinstance(unit, dict):
+                continue
+            try:
+                unit_id = int(unit.get("id", 0))
+            except (TypeError, ValueError):
+                continue
+            for tray in unit.get("tray", []):
+                if not isinstance(tray, dict):
+                    continue
+                try:
+                    tray_id = int(tray.get("id", 0))
+                except (TypeError, ValueError):
+                    continue
+                gid = unit_id if unit_id >= 128 else unit_id * 4 + tray_id
+                if gid == global_tray_id:
+                    return not str(tray.get("tray_type", "") or "").strip()
+        return False
 
     def _ams_unit_ids(self) -> list[int]:
         """Ids of the AMS units currently present, from merged state."""

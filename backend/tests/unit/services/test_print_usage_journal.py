@@ -360,3 +360,172 @@ class TestRunoutEpisodeRows:
         events = await load_events(db_session, printer.id, archive.id)
         loaded = [e for e in events if e.event == "spool_loaded"]
         assert [(e.spool_id,) for e in loaded] == [(71,)]
+
+
+class TestRunoutSpoolLineage:
+    """The unlink race (X2D 2026-08-23): by the time the runout code fires,
+    the slot's assignment can already be gone — the AMS-empty report unlinked
+    it moments earlier, or a user unassigned by hand. The journal itself
+    remembers which reel fed the tray; inheriting from its own prior rows is
+    recorded lineage, not guessing."""
+
+    @pytest.mark.asyncio
+    async def test_runout_inherits_the_spool_from_the_start_row(self, db_session, printer):
+        from backend.app.services.print_usage_journal import record_runout
+
+        archive = await _make_archive(db_session, printer)
+        db_session.add(
+            PrintUsageEvent(
+                printer_id=printer.id,
+                archive_id=archive.id,
+                layer_num=0,
+                event="start",
+                global_tray_id=2,
+                spool_id=71,
+                spoolman_spool_id=5,
+            )
+        )
+        await db_session.commit()
+        await record_runout(
+            db_session,
+            printer_id=printer.id,
+            archive_id=archive.id,
+            layer_num=25,
+            kind="pause",
+            global_tray_id=2,
+            spool_id=None,
+        )
+        events = await load_events(db_session, printer.id, archive.id)
+        assert (events[-1].event, events[-1].spool_id, events[-1].spoolman_spool_id) == ("runout", 71, 5)
+
+    @pytest.mark.asyncio
+    async def test_no_lineage_stays_none(self, db_session, printer):
+        from backend.app.services.print_usage_journal import record_runout
+
+        archive = await _make_archive(db_session, printer)
+        await record_runout(
+            db_session,
+            printer_id=printer.id,
+            archive_id=archive.id,
+            layer_num=25,
+            kind="pause",
+            global_tray_id=2,
+            spool_id=None,
+        )
+        events = await load_events(db_session, printer.id, archive.id)
+        assert (events[-1].event, events[-1].spool_id) == ("runout", None)
+
+    @pytest.mark.asyncio
+    async def test_lineage_never_overrides_a_frozen_spool(self, db_session, printer):
+        from backend.app.services.print_usage_journal import record_runout
+
+        archive = await _make_archive(db_session, printer)
+        db_session.add(
+            PrintUsageEvent(
+                printer_id=printer.id,
+                archive_id=archive.id,
+                layer_num=0,
+                event="start",
+                global_tray_id=2,
+                spool_id=71,
+            )
+        )
+        await db_session.commit()
+        await record_runout(
+            db_session,
+            printer_id=printer.id,
+            archive_id=archive.id,
+            layer_num=25,
+            kind="pause",
+            global_tray_id=2,
+            spool_id=88,
+        )
+        events = await load_events(db_session, printer.id, archive.id)
+        assert (events[-1].event, events[-1].spool_id) == ("runout", 88)
+
+
+class TestTraylessRunoutFolding:
+    """A second runout code the resolver could not map to a tray (the X2D
+    fired 07008011 24s after the per-slot code) adds nothing when a tray-ful
+    episode is already open — journal the timeline once, not per code."""
+
+    @pytest.mark.asyncio
+    async def test_trayless_runout_is_folded_into_an_open_episode(self, db_session, printer):
+        from backend.app.services.print_usage_journal import record_runout
+
+        archive = await _make_archive(db_session, printer)
+        await record_runout(
+            db_session,
+            printer_id=printer.id,
+            archive_id=archive.id,
+            layer_num=25,
+            kind="pause",
+            global_tray_id=2,
+            spool_id=71,
+        )
+        await record_runout(
+            db_session,
+            printer_id=printer.id,
+            archive_id=archive.id,
+            layer_num=25,
+            kind="pause",
+            global_tray_id=None,
+        )
+        events = await load_events(db_session, printer.id, archive.id)
+        assert [(e.event, e.global_tray_id) for e in events] == [("runout", 2)]
+
+    @pytest.mark.asyncio
+    async def test_trayless_runout_alone_is_still_timeline_worthy(self, db_session, printer):
+        from backend.app.services.print_usage_journal import record_runout
+
+        archive = await _make_archive(db_session, printer)
+        await record_runout(
+            db_session,
+            printer_id=printer.id,
+            archive_id=archive.id,
+            layer_num=25,
+            kind="pause",
+            global_tray_id=None,
+        )
+        events = await load_events(db_session, printer.id, archive.id)
+        assert [(e.event, e.global_tray_id) for e in events] == [("runout", None)]
+
+    @pytest.mark.asyncio
+    async def test_trayless_runout_after_a_closed_episode_is_recorded(self, db_session, printer):
+        from backend.app.services.print_usage_journal import record_runout
+
+        archive = await _make_archive(db_session, printer)
+        await record_runout(
+            db_session,
+            printer_id=printer.id,
+            archive_id=archive.id,
+            layer_num=25,
+            kind="pause",
+            global_tray_id=2,
+            spool_id=71,
+        )
+        db_session.add(
+            PrintUsageEvent(
+                printer_id=printer.id,
+                archive_id=archive.id,
+                layer_num=25,
+                event="spool_loaded",
+                global_tray_id=2,
+                spool_id=88,
+            )
+        )
+        await db_session.commit()
+        await record_runout(
+            db_session,
+            printer_id=printer.id,
+            archive_id=archive.id,
+            layer_num=180,
+            kind="external",
+            global_tray_id=None,
+        )
+        events = await load_events(db_session, printer.id, archive.id)
+        assert [(e.event, e.global_tray_id) for e in events] == [
+            ("runout", 2),
+            ("spool_loaded", 2),
+            ("runout", None),
+        ]

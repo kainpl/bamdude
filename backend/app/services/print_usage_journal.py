@@ -133,8 +133,55 @@ async def record_runout(
     boundary layer and the frozen spool ids of the first sighting stay. But a
     runout whose previous episode is CLOSED (a spool_loaded followed it) is a
     new episode — two short reels in one long print — and gets its own row.
+
+    Two hardenings from the X2D incident (2026-08-23):
+
+    * A runout the resolver could NOT map to a tray is folded away when a
+      tray-ful episode is already open — the printer fires several codes for
+      one physical event (a per-slot HMS plus a generic print_error 24s
+      apart), and the tray-less one adds nothing the timeline doesn't have.
+    * A runout arriving with no frozen spool inherits it from the journal's
+      own prior rows on the same tray. By runout time the slot's assignment
+      can already be gone (the AMS-empty report unlinked it, or the user
+      unassigned by hand) — but the journal recorded who fed the tray, and
+      inheriting recorded lineage is not guessing.
     """
-    from backend.app.models.print_usage_event import EVENT_RUNOUT, EVENT_SPOOL_LOADED
+    from backend.app.models.print_usage_event import (
+        EVENT_RUNOUT,
+        EVENT_SPOOL_LOADED,
+        EVENT_START,
+        EVENT_TRAY_CHANGE,
+    )
+
+    if global_tray_id is None:
+        tray_rows = (
+            (
+                await db.execute(
+                    select(PrintUsageEvent)
+                    .where(
+                        PrintUsageEvent.archive_id == archive_id,
+                        PrintUsageEvent.event.in_([EVENT_RUNOUT, EVENT_SPOOL_LOADED]),
+                        PrintUsageEvent.global_tray_id.is_not(None),
+                    )
+                    .order_by(PrintUsageEvent.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        open_trays = set()
+        for e in tray_rows:
+            if e.event == EVENT_RUNOUT:
+                open_trays.add(e.global_tray_id)
+            else:
+                open_trays.discard(e.global_tray_id)
+        if open_trays:
+            logger.debug(
+                "Tray-less runout folded into open episode on tray(s) %s (archive %d)",
+                sorted(open_trays),
+                archive_id,
+            )
+            return
 
     rows = (
         (
@@ -159,6 +206,30 @@ async def record_runout(
                 last_runout.kind = kind
                 await db.commit()
             return
+
+    if spool_id is None and spoolman_spool_id is None and global_tray_id is not None:
+        lineage = (
+            await db.execute(
+                select(PrintUsageEvent)
+                .where(
+                    PrintUsageEvent.archive_id == archive_id,
+                    PrintUsageEvent.global_tray_id == global_tray_id,
+                    PrintUsageEvent.event.in_([EVENT_START, EVENT_TRAY_CHANGE, EVENT_SPOOL_LOADED]),
+                    (PrintUsageEvent.spool_id.is_not(None)) | (PrintUsageEvent.spoolman_spool_id.is_not(None)),
+                )
+                .order_by(PrintUsageEvent.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if lineage is not None:
+            spool_id = lineage.spool_id
+            spoolman_spool_id = lineage.spoolman_spool_id
+            logger.info(
+                "Runout on tray %s had no live assignment — inherited spool %s/%s from the journal's own lineage",
+                global_tray_id,
+                spool_id,
+                spoolman_spool_id,
+            )
 
     await record_event(
         db,
