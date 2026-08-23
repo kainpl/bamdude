@@ -129,6 +129,15 @@ def archive_factory_temp():
             pass
 
 
+@pytest.fixture(autouse=True)
+def _empty_usage_journal():
+    """on_print_complete (m153) loads the print's usage journal before Path 1;
+    these legacy sequential-mock harnesses predate it, so neutralise that query
+    instead of shifting every response list by one."""
+    with patch("backend.app.services.print_usage_journal.load_events", AsyncMock(return_value=[])):
+        yield
+
+
 def _mock_db_sequential(responses):
     """Create mock db that returns responses in order."""
     db = AsyncMock()

@@ -22,6 +22,15 @@ from backend.app.services.usage_tracker import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _empty_usage_journal():
+    """on_print_complete (m153) loads the print's usage journal before Path 1;
+    these legacy sequential-mock harnesses predate it, so neutralise that query
+    instead of shifting every response list by one."""
+    with patch("backend.app.services.print_usage_journal.load_events", AsyncMock(return_value=[])):
+        yield
+
+
 def _make_spool(spool_id=1, label_weight=1000, weight_used=0, tag_uid=None, tray_uuid=None):
     """Create a mock Spool object."""
     spool = MagicMock()

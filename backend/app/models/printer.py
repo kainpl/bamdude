@@ -1,13 +1,17 @@
 from datetime import datetime
-from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
 
-if TYPE_CHECKING:
-    from backend.app.models.printer_location import PrinterLocation
+# Runtime import on purpose, not TYPE_CHECKING: ``Printer.location`` names
+# "PrinterLocation" as a string, and configure_mappers() can only resolve it
+# if the class reached the registry. Behind TYPE_CHECKING that depended on
+# whoever happened to import printer_location first — fine in the app (init_db
+# imports every model) but a landmine in any isolated test that touched the
+# mapper registry. printer_location imports no models back, so no cycle.
+from backend.app.models.printer_location import PrinterLocation  # noqa: F401
 
 
 class Printer(Base):
