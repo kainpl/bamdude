@@ -1,13 +1,16 @@
 /**
  * CreateFilamentFamilyModal — BamDude's analog of BambuStudio's Create
  * Filament dialog (spec B): vendor + type + serial -> a new family with a
- * BS-compatible P-hash id and one root preset per chosen printer, with an
- * optional push of the presets to Bambu Cloud.
+ * BS-compatible P-hash id and one root preset per chosen printer PROFILE
+ * (BS preset names, not BamDude devices), with cloud push per variant.
  *
- * Two entry points render it: the Profiles page's Local tab and the spool
- * form's family picker ("Create new family…").
+ * Variants (each tab forces one destination and offers the other):
+ * - 'local' (Profiles → Local, spool form): saved locally; optional
+ *   "also push to Bambu Cloud".
+ * - 'bambu' (Profiles → Bambu Cloud): pushed to the cloud; optional
+ *   "also keep locally". Unchecked = cloud-only, the sync mirrors it back.
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
@@ -20,11 +23,12 @@ interface CreateFilamentFamilyModalProps {
   open: boolean;
   onClose: () => void;
   onCreated?: (filamentId: string, alias: string) => void;
+  variant?: 'local' | 'bambu';
 }
 
 const RESERVED_VENDORS = new Set(['bambu', 'generic']);
 
-export function CreateFilamentFamilyModal({ open, onClose, onCreated }: CreateFilamentFamilyModalProps) {
+export function CreateFilamentFamilyModal({ open, onClose, onCreated, variant = 'local' }: CreateFilamentFamilyModalProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
@@ -32,10 +36,11 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated }: CreateFi
   const [vendor, setVendor] = useState('');
   const [filamentType, setFilamentType] = useState('PLA');
   const [serial, setSerial] = useState('');
-  const [printerIds, setPrinterIds] = useState<number[] | null>(null); // null = all (default)
+  const [checkedNames, setCheckedNames] = useState<string[] | null>(null); // null = defaults not applied yet
+  const [printerQuery, setPrinterQuery] = useState('');
   const [sourceMode, setSourceMode] = useState<'type' | 'preset'>('type');
   const [sourceKey, setSourceKey] = useState(''); // "<source>:<id>"
-  const [pushToBambu, setPushToBambu] = useState(false);
+  const [secondaryChecked, setSecondaryChecked] = useState(false); // local: push too / bambu: keep locally too
   const [resultNotes, setResultNotes] = useState<string[]>([]);
 
   const { data: options } = useQuery({
@@ -49,6 +54,12 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated }: CreateFi
     queryFn: () => api.getPrinters(),
     enabled: open,
   });
+  const { data: printerModels } = useQuery({
+    queryKey: ['printer-models'],
+    queryFn: () => api.getPrinterModels(),
+    enabled: open,
+    staleTime: 10 * 60_000,
+  });
   const { data: cloudStatus } = useQuery({
     queryKey: ['cloud-status'],
     queryFn: () => api.getCloudStatus(),
@@ -61,6 +72,29 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated }: CreateFi
     enabled: open && sourceMode === 'preset',
     staleTime: 60_000,
   });
+
+  const allPrinterNames = useMemo(() => options?.printer_names || [], [options]);
+
+  // Default selection: every nozzle variant of the models the farm actually
+  // has (device model "P1S" -> long registry name -> profile names containing
+  // it). BS preselects the user's installed printers the same way.
+  useEffect(() => {
+    if (!open || checkedNames !== null || allPrinterNames.length === 0) return;
+    const models = new Set((printers || []).map((p) => (p.model || '').toUpperCase()).filter(Boolean));
+    if (models.size === 0 || !printerModels) {
+      setCheckedNames([]);
+      return;
+    }
+    const longNames = Object.entries(printerModels)
+      .filter(([, short]) => models.has(short.toUpperCase()))
+      .map(([long]) => long);
+    setCheckedNames(allPrinterNames.filter((n) => longNames.some((long) => n.startsWith(long))));
+  }, [open, checkedNames, allPrinterNames, printers, printerModels]);
+
+  const visiblePrinterNames = useMemo(() => {
+    const q = printerQuery.trim().toLowerCase();
+    return q ? allPrinterNames.filter((n) => n.toLowerCase().includes(q)) : allPrinterNames;
+  }, [allPrinterNames, printerQuery]);
 
   // "From an existing preset" candidates: local + both clouds. The standard
   // tier is deliberately absent — "from type" IS the bundled-generic path.
@@ -76,18 +110,17 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated }: CreateFi
     );
   }, [presets, t]);
 
-  const allPrinterIds = useMemo(() => (printers || []).map((p) => p.id), [printers]);
-  const checkedIds = printerIds ?? allPrinterIds;
-
   const vendorError = useMemo(() => {
     const v = vendor.trim();
-    if (!v) return null; // "required" shows on submit attempt via disabled state
+    if (!v) return null; // "required" shows via the disabled submit
     if (RESERVED_VENDORS.has(v.toLowerCase())) return t('authoring.vendorReserved');
     if (/^\d+$/.test(v)) return t('authoring.vendorDigits');
     return null;
   }, [vendor, t]);
 
-  const canSubmit = vendor.trim() !== '' && serial.trim() !== '' && !vendorError;
+  const cloudConnected = !!cloudStatus?.is_authenticated && !!options?.push?.bambu;
+  const canSubmit =
+    vendor.trim() !== '' && serial.trim() !== '' && !vendorError && (variant !== 'bambu' || cloudConnected);
 
   const createMutation = useMutation({
     mutationFn: () => {
@@ -98,16 +131,19 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated }: CreateFi
         vendor: vendor.trim(),
         filament_type: filamentType,
         serial: serial.trim(),
-        printer_ids: checkedIds,
+        printer_ids: [],
+        printer_names: checkedNames ?? [],
         source_mode: sourceMode,
         source: sourceMode === 'preset' ? source : null,
         source_id: sourceMode === 'preset' ? sourceId : null,
-        push_to_bambu: pushToBambu,
+        push_to_bambu: variant === 'bambu' ? true : secondaryChecked,
+        save_local: variant === 'bambu' ? secondaryChecked : true,
       });
     },
     onSuccess: (result: CreateFamilyResponse) => {
       queryClient.invalidateQueries({ queryKey: ['filamentFamilies'] });
       queryClient.invalidateQueries({ queryKey: ['localPresets'] });
+      queryClient.invalidateQueries({ queryKey: ['cloud-settings'] });
       const notes: string[] = [...result.warnings];
       for (const root of result.roots) {
         if (root.error) notes.push(`${root.printer_name || root.printer_id}: ${root.error}`);
@@ -120,12 +156,11 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated }: CreateFi
       } else {
         showToast(t('authoring.created'));
       }
+      onCreated?.(result.filament_id, result.name);
       if (notes.length > 0) {
         setResultNotes(notes); // keep the dialog open so the notes are read
-        onCreated?.(result.filament_id, result.name);
         return;
       }
-      onCreated?.(result.filament_id, result.name);
       onClose();
     },
     onError: (e: Error) => {
@@ -135,42 +170,42 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated }: CreateFi
 
   if (!open) return null;
 
-  const togglePrinter = (id: number) => {
-    const next = new Set(checkedIds);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    setPrinterIds(Array.from(next));
+  const toggleName = (name: string) => {
+    const next = new Set(checkedNames ?? []);
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
+    setCheckedNames(Array.from(next));
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="bg-bambu-dark border border-gray-700 rounded-xl w-full max-w-md max-h-[90vh] overflow-y-auto shadow-2xl">
-        <div className="flex items-center justify-between p-4 border-b border-gray-700">
+      <div className="bg-bambu-dark border border-bambu-dark-tertiary rounded-xl w-full max-w-md max-h-[90vh] overflow-y-auto shadow-2xl">
+        <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
           <h2 className="text-lg font-semibold text-white">{t('authoring.title')}</h2>
-          <button type="button" onClick={onClose} className="text-gray-400 hover:text-white">
+          <button type="button" onClick={onClose} className="text-bambu-gray hover:text-white">
             <X className="w-5 h-5" />
           </button>
         </div>
 
         <div className="p-4 space-y-4">
           <div>
-            <label className="block text-sm text-gray-300 mb-1">{t('authoring.vendor')}</label>
+            <label className="block text-sm text-bambu-gray-light mb-1">{t('authoring.vendor')}</label>
             <input
               value={vendor}
               onChange={(e) => setVendor(e.target.value)}
-              className="w-full p-2.5 rounded-lg bg-bambu-darker border border-gray-600 text-sm text-white outline-none"
+              className="w-full p-2.5 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary text-sm text-white outline-none focus:border-bambu-green"
               placeholder="Polymaker"
             />
-            {vendorError && <p className="mt-1 text-xs text-red-400">{vendorError}</p>}
+            {vendorError && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{vendorError}</p>}
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm text-gray-300 mb-1">{t('authoring.type')}</label>
+              <label className="block text-sm text-bambu-gray-light mb-1">{t('authoring.type')}</label>
               <select
                 value={filamentType}
                 onChange={(e) => setFilamentType(e.target.value)}
-                className="w-full p-2.5 rounded-lg bg-bambu-darker border border-gray-600 text-sm text-white outline-none"
+                className="w-full p-2.5 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary text-sm text-white outline-none focus:border-bambu-green"
               >
                 {(options?.filament_types || ['PLA']).map((ft) => (
                   <option key={ft} value={ft}>
@@ -180,25 +215,25 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated }: CreateFi
               </select>
             </div>
             <div>
-              <label className="block text-sm text-gray-300 mb-1">{t('authoring.serial')}</label>
+              <label className="block text-sm text-bambu-gray-light mb-1">{t('authoring.serial')}</label>
               <input
                 value={serial}
                 onChange={(e) => setSerial(e.target.value)}
-                className="w-full p-2.5 rounded-lg bg-bambu-darker border border-gray-600 text-sm text-white outline-none"
+                className="w-full p-2.5 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary text-sm text-white outline-none focus:border-bambu-green"
                 placeholder="Basic"
               />
             </div>
           </div>
 
           {vendor.trim() && serial.trim() && (
-            <p className="text-xs text-gray-400">
+            <p className="text-xs text-bambu-gray">
               {t('authoring.namePreview')}: <span className="text-white">{`${vendor.trim()} ${filamentType} ${serial.trim()}`}</span>
             </p>
           )}
 
           <div>
-            <label className="block text-sm text-gray-300 mb-1">{t('authoring.sourceMode')}</label>
-            <div className="flex gap-4 text-sm text-gray-200">
+            <label className="block text-sm text-bambu-gray-light mb-1">{t('authoring.sourceMode')}</label>
+            <div className="flex gap-4 text-sm text-white">
               <label className="flex items-center gap-1.5">
                 <input type="radio" checked={sourceMode === 'type'} onChange={() => setSourceMode('type')} />
                 {t('authoring.sourceModeType')}
@@ -212,7 +247,7 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated }: CreateFi
               <select
                 value={sourceKey}
                 onChange={(e) => setSourceKey(e.target.value)}
-                className="mt-2 w-full p-2.5 rounded-lg bg-bambu-darker border border-gray-600 text-sm text-white outline-none"
+                className="mt-2 w-full p-2.5 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary text-sm text-white outline-none focus:border-bambu-green"
               >
                 <option value="">{t('authoring.pickPreset')}</option>
                 {presetChoices.map((c) => (
@@ -225,31 +260,63 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated }: CreateFi
           </div>
 
           <div>
-            <label className="block text-sm text-gray-300 mb-1">{t('authoring.printers')}</label>
-            <div className="space-y-1 max-h-36 overflow-y-auto rounded-lg border border-gray-700 p-2">
-              {(printers || []).map((p) => (
-                <label key={p.id} className="flex items-center gap-2 text-sm text-gray-200">
-                  <input type="checkbox" checked={checkedIds.includes(p.id)} onChange={() => togglePrinter(p.id)} />
-                  {p.name}
+            <label className="block text-sm text-bambu-gray-light mb-1">{t('authoring.printers')}</label>
+            <input
+              value={printerQuery}
+              onChange={(e) => setPrinterQuery(e.target.value)}
+              placeholder={t('authoring.printerSearch')}
+              className="w-full mb-1.5 px-2.5 py-1.5 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary text-sm text-white outline-none focus:border-bambu-green"
+            />
+            <div className="space-y-1 max-h-40 overflow-y-auto rounded-lg border border-bambu-dark-tertiary p-2">
+              {visiblePrinterNames.map((name) => (
+                <label key={name} className="flex items-center gap-2 text-sm text-white">
+                  <input
+                    type="checkbox"
+                    checked={(checkedNames ?? []).includes(name)}
+                    onChange={() => toggleName(name)}
+                  />
+                  {name}
                 </label>
               ))}
-              {(printers || []).length === 0 && (
-                <p className="text-xs text-gray-500">{t('authoring.noPrinters')}</p>
+              {visiblePrinterNames.length === 0 && (
+                <p className="text-xs text-bambu-gray">{t('authoring.noPrinters')}</p>
               )}
             </div>
+            {(checkedNames ?? []).length > 0 && (
+              <p className="mt-1 text-xs text-bambu-gray">
+                {t('authoring.printersSelected', { count: (checkedNames ?? []).length })}
+              </p>
+            )}
           </div>
 
-          {options?.push?.bambu && cloudStatus?.is_authenticated && (
-            <label className="flex items-center gap-2 text-sm text-gray-200">
-              <input type="checkbox" checked={pushToBambu} onChange={(e) => setPushToBambu(e.target.checked)} />
+          {variant === 'local' && cloudConnected && (
+            <label className="flex items-center gap-2 text-sm text-white">
+              <input
+                type="checkbox"
+                checked={secondaryChecked}
+                onChange={(e) => setSecondaryChecked(e.target.checked)}
+              />
               {t('authoring.pushBambu')}
             </label>
           )}
+          {variant === 'bambu' && (
+            <label className="flex items-center gap-2 text-sm text-white">
+              <input
+                type="checkbox"
+                checked={secondaryChecked}
+                onChange={(e) => setSecondaryChecked(e.target.checked)}
+              />
+              {t('authoring.saveLocal')}
+            </label>
+          )}
+          {variant === 'bambu' && !cloudConnected && (
+            <p className="text-xs text-red-600 dark:text-red-400">{t('authoring.cloudRequired')}</p>
+          )}
 
           {resultNotes.length > 0 && (
-            <div className="rounded-lg border border-yellow-700/60 bg-yellow-900/20 p-3">
-              <p className="text-sm text-yellow-300 font-medium mb-1">{t('authoring.warningsTitle')}</p>
-              <ul className="text-xs text-yellow-200/80 list-disc pl-4 space-y-0.5">
+            <div className="rounded-lg border border-yellow-700/60 bg-yellow-500/10 p-3">
+              <p className="text-sm text-yellow-700 dark:text-yellow-300 font-medium mb-1">{t('authoring.warningsTitle')}</p>
+              <ul className="text-xs text-yellow-700/80 dark:text-yellow-200/80 list-disc pl-4 space-y-0.5">
                 {resultNotes.map((w, i) => (
                   <li key={i}>{w}</li>
                 ))}
@@ -258,7 +325,7 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated }: CreateFi
           )}
         </div>
 
-        <div className="flex justify-end gap-2 p-4 border-t border-gray-700">
+        <div className="flex justify-end gap-2 p-4 border-t border-bambu-dark-tertiary">
           <Button variant="secondary" onClick={onClose}>
             {resultNotes.length > 0 ? t('common.close') : t('common.cancel')}
           </Button>

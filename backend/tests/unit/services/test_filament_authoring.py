@@ -227,3 +227,65 @@ async def test_delete_family_removes_roots_and_mirrors(db_session):
     assert not (await db_session.execute(select(LocalPreset))).scalars().all()
     assert not (await db_session.execute(select(UserFilamentPreset))).scalars().all()
     assert not (await db_session.execute(select(UserFilamentFamily))).scalars().all()
+
+
+@pytest.mark.asyncio
+async def test_create_family_by_printer_names(db_session):
+    """BS-style targeting: the caller picks printer PROFILES (preset names),
+    no BamDude device involved."""
+    with patch(
+        "backend.app.services.filament_authoring._resolve_bundled_content",
+        new=AsyncMock(return_value=dict(_BASE_CONTENT)),
+    ):
+        result = await create_family(
+            db_session,
+            vendor="Poly",
+            filament_type="PETG",
+            serial="ByName",
+            printer_ids=[],
+            printer_names=["Bambu Lab P1S 0.4 nozzle"],
+        )
+    await db_session.commit()
+    (root,) = result.roots
+    assert root.printer_id is None and root.printer_name == "Bambu Lab P1S 0.4 nozzle"
+    preset = (await db_session.execute(select(LocalPreset))).scalars().one()
+    blob = json.loads(preset.setting)
+    assert blob["compatible_printers"] == ["Bambu Lab P1S 0.4 nozzle"]
+    assert blob["name"] == "Poly PETG ByName @Bambu Lab P1S 0.4 nozzle"
+
+
+@pytest.mark.asyncio
+async def test_create_family_cloud_only_returns_blobs_without_local_rows(db_session):
+    """save_local=False (Bambu-tab flow): identity + blobs for the push,
+    but no LocalPreset and no mirror row — the sync will mirror the cloud."""
+    with patch(
+        "backend.app.services.filament_authoring._resolve_bundled_content",
+        new=AsyncMock(return_value=dict(_BASE_CONTENT)),
+    ):
+        result = await create_family(
+            db_session,
+            vendor="Poly",
+            filament_type="PETG",
+            serial="CloudOnly",
+            printer_ids=[],
+            printer_names=["Bambu Lab P1S 0.4 nozzle"],
+            save_local=False,
+        )
+    await db_session.commit()
+    (root,) = result.roots
+    assert root.error is None and root.local_preset_id is None
+    assert len(result.blobs) == 1
+    assert result.blobs[0]["filament_id"] == result.filament_id
+    assert not (await db_session.execute(select(LocalPreset))).scalars().all()
+    assert not (await db_session.execute(select(UserFilamentPreset))).scalars().all()
+    # identity still exists — slots and K work immediately
+    assert (await db_session.execute(select(UserFilamentFamily))).scalars().one()
+
+
+def test_catalog_lists_bs_printer_profile_names():
+    from backend.app.utils import filament_catalog as catalog
+
+    names = catalog.all_printer_names("bambu")
+    assert "Bambu Lab P1S 0.4 nozzle" in names
+    assert "Bambu Lab X1 Carbon 0.4 nozzle" in names
+    assert names == sorted(set(names))

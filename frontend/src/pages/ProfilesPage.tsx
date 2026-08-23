@@ -44,7 +44,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client';
 import { formatRelativeTime } from '../utils/date';
-import type { SlicerSetting, SlicerSettingsResponse, SlicerSettingDetail, SlicerSettingCreate, Printer, FieldDefinition, Permission } from '../api/client';
+import type { SlicerSetting, SlicerSettingsResponse, SlicerSettingDetail, SlicerSettingCreate, FieldDefinition, Permission } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { LoadingBlock } from '../components/LoadingBlock';
 import { Button } from '../components/Button';
@@ -52,6 +52,7 @@ import { FilterDropdown } from '../components/FilterDropdown';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { KProfilesView } from '../components/KProfilesView';
+import { CreateFilamentFamilyModal } from '../components/CreateFilamentFamilyModal';
 import { LocalProfilesView } from '../components/LocalProfilesView';
 import { OrcaCloudView } from '../components/OrcaCloudView';
 
@@ -2220,7 +2221,6 @@ function CloudProfilesView({
   lastSyncTime,
   onRefresh,
   isRefreshing,
-  printers,
   hasPermission,
   t,
 }: {
@@ -2228,7 +2228,6 @@ function CloudProfilesView({
   lastSyncTime?: Date;
   onRefresh: () => void;
   isRefreshing: boolean;
-  printers: Printer[];
   hasPermission: (permission: Permission) => boolean;
   t: TFunction;
 }) {
@@ -2241,6 +2240,7 @@ function CloudProfilesView({
   const [filterLayerHeight, setFilterLayerHeight] = useState('all');
   const [selectedSetting, setSelectedSetting] = useState<SlicerSetting | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showCreateFamilyModal, setShowCreateFamilyModal] = useState(false);
   const [showTemplatesModal, setShowTemplatesModal] = useState(false);
   const [duplicateData, setDuplicateData] = useState<{ type: string; name: string; base_id: string; setting: Record<string, unknown> } | null>(null);
   const [editData, setEditData] = useState<{ type: string; name: string; base_id: string; setting: Record<string, unknown>; setting_id: string } | null>(null);
@@ -2263,32 +2263,35 @@ function CloudProfilesView({
     return combined.map(s => ({ ...s, meta: extractMetadata(s.name) }));
   }, [settings]);
 
-  // Extract unique filter values (use configured printers from API)
+  // Extract unique filter values. The printer filter lists printer PROFILES
+  // (models the presets themselves mention, as in BS/Orca) — not the
+  // devices registered in BamDude.
   const filterOptions = useMemo(() => {
+    const models = new Set<string>();
     const nozzles = new Set<string>();
     const filaments = new Set<string>();
     const layerHeights = new Set<string>();
 
     allPresetsWithMeta.forEach(p => {
+      if (p.meta.printer) models.add(p.meta.printer);
       if (p.meta.nozzle) nozzles.add(p.meta.nozzle);
       if (p.meta.filamentType) filaments.add(p.meta.filamentType);
       if (p.meta.layerHeight) layerHeights.add(p.meta.layerHeight);
     });
 
     return {
-      printers: printers.map(p => ({ id: p.id.toString(), name: p.name })),
+      printers: Array.from(models).sort().map(m => ({ id: m, name: m })),
       nozzles: Array.from(nozzles).sort((a, b) => parseFloat(a) - parseFloat(b)),
       filaments: Array.from(filaments).sort(),
       layerHeights: Array.from(layerHeights).sort((a, b) => parseFloat(a) - parseFloat(b)),
     };
-  }, [allPresetsWithMeta, printers]);
+  }, [allPresetsWithMeta]);
 
-  // Get selected printer's model for filtering
-  const selectedPrinterModel = useMemo(() => {
-    if (filterPrinter === 'all') return null;
-    const printer = printers.find(p => p.id.toString() === filterPrinter);
-    return printer?.model || null;
-  }, [filterPrinter, printers]);
+  // The picked value IS the model string
+  const selectedPrinterModel = useMemo(
+    () => (filterPrinter === 'all' ? null : filterPrinter),
+    [filterPrinter],
+  );
 
   // Apply filters
   const filteredPresets = useMemo(() => {
@@ -2469,6 +2472,20 @@ function CloudProfilesView({
               <Plus className="w-4 h-4" />
               {t('profiles.cloudView.newPreset')}
             </Button>
+            <Button
+              onClick={() => setShowCreateFamilyModal(true)}
+              disabled={!hasPermission('cloud:auth')}
+              title={!hasPermission('cloud:auth') ? t('profiles.cloudView.noCreatePermission') : undefined}
+            >
+              <Plus className="w-4 h-4" />
+              {t('authoring.createButton')}
+            </Button>
+            <CreateFilamentFamilyModal
+              variant="bambu"
+              open={showCreateFamilyModal}
+              onClose={() => setShowCreateFamilyModal(false)}
+              onCreated={() => onRefresh()}
+            />
           </div>
         </div>
 
@@ -2799,11 +2816,6 @@ export function ProfilesPage() {
     queryFn: api.getCloudStatus,
   });
 
-  const { data: printers = [] } = useQuery({
-    queryKey: ['printers'],
-    queryFn: api.getPrinters,
-  });
-
   const { data: settings, isLoading: settingsLoading, refetch: refetchSettings, dataUpdatedAt } = useQuery({
     queryKey: ['cloudSettings'],
     queryFn: () => api.getCloudSettings(),
@@ -2951,7 +2963,6 @@ export function ProfilesPage() {
               lastSyncTime={lastSyncTime}
               onRefresh={() => refetchSettings()}
               isRefreshing={settingsLoading}
-              printers={printers}
               hasPermission={hasPermission}
               t={t}
             />

@@ -120,3 +120,36 @@ async def test_orca_leg_is_capability_gated(db_session):
     assert PUSH_CAPABLE == {"bambu": True, "orca": False}
     with pytest.raises(AuthoringError):
         await push_family(db_session, filament_id="Pabc1234", ecosystem="orca")
+
+
+@pytest.mark.asyncio
+async def test_push_blobs_creates_cloud_presets_without_local_state(db_session):
+    """Cloud-only creation (Bambu-tab flow): blobs go straight to
+    create_setting; nothing local records a pushed_cloud_id — the sync will
+    mirror the cloud copies as ordinary cloud presets."""
+    from backend.app.services.filament_push import push_blobs
+
+    cloud = _cloud_mock()
+    blobs = [
+        {"name": "Poly PETG C @Bambu Lab P1S 0.4 nozzle", "filament_id": "Pcccc333", "filament_type": ["PETG"]},
+        {"name": "Poly PETG C @Bambu Lab X1 Carbon 0.4 nozzle", "filament_id": "Pcccc333", "filament_type": ["PETG"]},
+    ]
+    with patch("backend.app.services.filament_push._build_bambu_cloud", new=AsyncMock(return_value=cloud)):
+        results = await push_blobs(db_session, blobs=blobs, user=None)
+    assert [r["status"] for r in results] == ["pushed", "pushed"]
+    assert cloud.create_setting.call_count == 2
+    args = cloud.create_setting.call_args_list[0]
+    assert args.args[0] == "filament" and args.args[2] == ""
+    assert args.args[3]["filament_id"] == "Pcccc333"
+
+
+@pytest.mark.asyncio
+async def test_push_blobs_partial_failure_is_reported(db_session):
+    from backend.app.services.filament_push import push_blobs
+
+    cloud = _cloud_mock()
+    cloud.create_setting.side_effect = [RuntimeError("nope"), {"setting_id": "PFUS_OK2"}]
+    blobs = [{"name": "A @P", "filament_id": "Pdddd444"}, {"name": "B @P", "filament_id": "Pdddd444"}]
+    with patch("backend.app.services.filament_push._build_bambu_cloud", new=AsyncMock(return_value=cloud)):
+        results = await push_blobs(db_session, blobs=blobs, user=None)
+    assert [r["status"] for r in results] == ["error", "pushed"]

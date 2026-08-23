@@ -113,3 +113,27 @@ async def test_create_family_endpoint_and_delete_guard(async_client: AsyncClient
     await db_session.commit()
     resp = await async_client.delete(f"/api/v1/filament-families/{fid}")
     assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_authoring_options_carry_printer_profiles(async_client: AsyncClient):
+    body = (await async_client.get("/api/v1/filament-families/authoring-options")).json()
+    assert "Bambu Lab P1S 0.4 nozzle" in body["printer_names"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_cloud_only_create_requires_the_push(async_client: AsyncClient):
+    r = await async_client.post(
+        "/api/v1/filament-families",
+        json={
+            "vendor": "Poly",
+            "filament_type": "PETG",
+            "serial": "NoOp",
+            "printer_names": ["Bambu Lab P1S 0.4 nozzle"],
+            "save_local": False,
+            "push_to_bambu": False,
+        },
+    )
+    assert r.status_code == 400

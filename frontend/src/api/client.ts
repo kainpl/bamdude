@@ -2190,6 +2190,9 @@ export interface FilamentFamily {
 export interface AuthoringOptions {
   filament_types: string[];
   push: Record<string, boolean>;
+  /** BS printer PROFILE names ("Bambu Lab P1S 0.4 nozzle") — the authoring
+   *  dialog targets profiles, not BamDude devices. */
+  printer_names: string[];
 }
 
 export interface CreateFamilyRequest {
@@ -2197,14 +2200,17 @@ export interface CreateFamilyRequest {
   filament_type: string;
   serial: string;
   printer_ids: number[];
+  printer_names: string[];
   source_mode: 'type' | 'preset';
   source?: string | null;
   source_id?: string | null;
   push_to_bambu?: boolean;
+  /** false = cloud-only creation (Bambu-tab flow). */
+  save_local?: boolean;
 }
 
 export interface ClonedRootOut {
-  printer_id: number;
+  printer_id: number | null;
   printer_name: string | null;
   local_preset_id: number | null;
   preset_name: string | null;

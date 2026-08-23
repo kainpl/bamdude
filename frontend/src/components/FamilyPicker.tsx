@@ -110,7 +110,7 @@ export function FamilyPicker({ value, onChange, disabled, legacyHint, onCreateNe
     <div
       ref={panel}
       role="listbox"
-      className="fixed z-[100] rounded-lg border border-gray-600 bg-bambu-dark shadow-xl overflow-hidden flex flex-col"
+      className="fixed z-[100] rounded-lg border border-bambu-dark-tertiary bg-bambu-dark shadow-xl overflow-hidden flex flex-col"
       style={{ left: box.left, top: box.top, width: box.width }}
     >
       <input
@@ -118,10 +118,10 @@ export function FamilyPicker({ value, onChange, disabled, legacyHint, onCreateNe
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         placeholder={t('familyPicker.search')}
-        className="m-2 px-2 py-1.5 rounded bg-bambu-darker border border-gray-600 text-sm text-white outline-none"
+        className="m-2 px-2 py-1.5 rounded bg-bambu-dark-secondary border border-bambu-dark-tertiary text-sm text-white outline-none"
       />
       <div className="overflow-y-auto" style={{ maxHeight: box.maxHeight }}>
-        {rows.length === 0 && <div className="p-3 text-sm text-gray-400">{t('familyPicker.empty')}</div>}
+        {rows.length === 0 && <div className="p-3 text-sm text-bambu-gray">{t('familyPicker.empty')}</div>}
         {rows.map((fam) => (
           <button
             key={fam.filament_id}
@@ -132,8 +132,8 @@ export function FamilyPicker({ value, onChange, disabled, legacyHint, onCreateNe
               onChange(fam.filament_id, fam);
               setOpen(false);
             }}
-            className={`w-full text-left px-3 py-2 hover:bg-bambu-darker flex flex-col gap-0.5 ${
-              fam.filament_id === value ? 'bg-bambu-darker' : ''
+            className={`w-full text-left px-3 py-2 hover:bg-bambu-dark-tertiary flex flex-col gap-0.5 ${
+              fam.filament_id === value ? 'bg-bambu-dark-tertiary' : ''
             }`}
           >
             <span className="text-sm text-white font-medium flex items-center gap-2">
@@ -148,7 +148,7 @@ export function FamilyPicker({ value, onChange, disabled, legacyHint, onCreateNe
                 </span>
               )}
             </span>
-            <span className="text-xs text-gray-400">
+            <span className="text-xs text-bambu-gray">
               {[fam.vendor, fam.filament_type].filter(Boolean).join(' · ')}
             </span>
           </button>
@@ -157,7 +157,7 @@ export function FamilyPicker({ value, onChange, disabled, legacyHint, onCreateNe
       {onCreateNew && (
         <button
           type="button"
-          className="w-full px-3 py-2 text-left text-sm text-bambu-green hover:bg-bambu-darker border-t border-gray-700"
+          className="w-full px-3 py-2 text-left text-sm text-bambu-green hover:bg-bambu-dark-tertiary border-t border-bambu-dark-tertiary"
           onMouseDown={(e) => {
             // mousedown + preventDefault so the search input's blur cannot
             // swallow the click before it lands.
@@ -181,38 +181,38 @@ export function FamilyPicker({ value, onChange, disabled, legacyHint, onCreateNe
         aria-expanded={open}
         disabled={disabled}
         onClick={() => setOpen((o) => !o)}
-        className="w-full text-left p-2.5 rounded-lg border border-gray-600 bg-bambu-dark flex items-center gap-2 disabled:opacity-50"
+        className="w-full text-left p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark flex items-center gap-2 disabled:opacity-50"
       >
         <span className="flex-1 min-w-0">
           {selected ? (
             <>
               <span className="block text-sm text-white truncate">{selected.alias}</span>
-              <span className="block text-xs text-gray-400 truncate">
+              <span className="block text-xs text-bambu-gray truncate">
                 {[selected.vendor, selected.filament_type].filter(Boolean).join(' · ')}
               </span>
             </>
           ) : value ? (
             <>
               <span className="block text-sm text-white truncate">{resolvedName || value}</span>
-              {resolvedName && <span className="block text-xs text-gray-500 truncate">{value}</span>}
+              {resolvedName && <span className="block text-xs text-bambu-gray truncate">{value}</span>}
             </>
           ) : (
             <>
-              <span className="block text-sm text-gray-400">{t('familyPicker.placeholder')}</span>
-              {legacyHint && <span className="block text-xs text-gray-500 truncate">{legacyHint}</span>}
+              <span className="block text-sm text-bambu-gray">{t('familyPicker.placeholder')}</span>
+              {legacyHint && <span className="block text-xs text-bambu-gray truncate">{legacyHint}</span>}
             </>
           )}
         </span>
         {value && !disabled && (
           <X
-            className="w-4 h-4 text-gray-400 hover:text-white shrink-0"
+            className="w-4 h-4 text-bambu-gray hover:text-white shrink-0"
             onClick={(e) => {
               e.stopPropagation();
               onChange(null, null);
             }}
           />
         )}
-        <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />
+        <ChevronDown className="w-4 h-4 text-bambu-gray shrink-0" />
       </button>
       {open && createPortal(list, document.body)}
     </div>

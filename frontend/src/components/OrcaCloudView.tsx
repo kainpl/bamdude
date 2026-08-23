@@ -56,15 +56,6 @@ export function OrcaCloudView() {
     staleTime: 1000 * 60 * 5,
   });
 
-  // Configured BamDude printers â€” fed into the profile-view's printer
-  // filter dropdown so the user can narrow profiles to a specific printer
-  // model. Same usage as the Bambu Cloud tab.
-  const { data: printers = [] } = useQuery({
-    queryKey: ['printers'],
-    queryFn: api.getPrinters,
-    enabled: connected,
-  });
-
   const [lastSyncTime, setLastSyncTime] = useState<Date | undefined>();
   useEffect(() => {
     if (profilesUpdatedAt) setLastSyncTime(new Date(profilesUpdatedAt));
@@ -219,7 +210,6 @@ export function OrcaCloudView() {
           lastSyncTime={lastSyncTime}
           onRefresh={() => refetchProfiles()}
           isRefreshing={profilesRefetching}
-          printers={printers}
           t={t}
         />
       ) : null}

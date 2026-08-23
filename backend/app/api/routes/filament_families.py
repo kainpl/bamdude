@@ -36,7 +36,12 @@ async def authoring_options(_=RequirePermission(Permission.INVENTORY_READ)):
     from backend.app.services.filament_authoring import FILAMENT_TYPES
     from backend.app.services.filament_push import PUSH_CAPABLE
 
-    return {"filament_types": FILAMENT_TYPES, "push": PUSH_CAPABLE}
+    return {
+        "filament_types": FILAMENT_TYPES,
+        "push": PUSH_CAPABLE,
+        # BS-native printer targeting: profiles, not BamDude devices.
+        "printer_names": catalog.all_printer_names("bambu"),
+    }
 
 
 @router.post("", status_code=201, response_model=CreateFamilyResponse)
@@ -46,9 +51,13 @@ async def create_family_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a custom family (spec B §1–§2): identity + one root clone per
-    printer; optional immediate push of the clones to Bambu Cloud."""
+    printer; optional immediate push of the clones to Bambu Cloud.
+    ``save_local=False`` (Bambu-tab flow) creates cloud-only: the blobs go
+    straight to the cloud and the sync mirrors them back."""
     from backend.app.services import filament_authoring as authoring
 
+    if not req.save_local and not req.push_to_bambu:
+        raise HTTPException(400, "nothing to create: neither local presets nor a cloud push requested")
     try:
         result = await authoring.create_family(
             db,
@@ -56,19 +65,27 @@ async def create_family_endpoint(
             filament_type=req.filament_type,
             serial=req.serial,
             printer_ids=req.printer_ids,
+            printer_names=req.printer_names,
             source_mode=req.source_mode,
             source=req.source,
             source_id=req.source_id,
+            save_local=req.save_local,
             user=current_user,
         )
     except authoring.AuthoringError as e:
         raise HTTPException(400, str(e))
     push_results: list[dict] | None = None
     if req.push_to_bambu:
-        from backend.app.services.filament_push import push_family
+        from backend.app.services.filament_push import push_blobs, push_family
 
         try:
-            push_results = await push_family(db, filament_id=result.filament_id, user=current_user)
+            if req.save_local:
+                push_results = await push_family(db, filament_id=result.filament_id, user=current_user)
+            elif result.blobs:
+                push_results = await push_blobs(db, blobs=result.blobs, user=current_user)
+                request_sync_soon()  # mirror the fresh cloud copies without the 5-min wait
+            else:
+                push_results = []
         except authoring.AuthoringError as e:
             push_results = [{"status": "error", "detail": str(e)}]
     return CreateFamilyResponse(
@@ -96,6 +113,7 @@ async def add_family_printers(
             db,
             filament_id=filament_id,
             printer_ids=req.printer_ids,
+            printer_names=req.printer_names,
             source_mode=req.source_mode,
             source=req.source,
             source_id=req.source_id,

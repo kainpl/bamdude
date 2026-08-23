@@ -96,3 +96,34 @@ async def push_family(db: AsyncSession, *, filament_id: str, ecosystem: str = "b
         await cloud.close()
     await db.commit()
     return results
+
+
+async def push_blobs(db: AsyncSession, *, blobs: list[dict], user=None, ecosystem: str = "bambu") -> list[dict]:
+    """Push freshly-authored content straight to the cloud (cloud-only
+    creation — no LocalPreset exists). No pushed_cloud_id bookkeeping either:
+    the sync mirrors these back as ordinary cloud presets, which is exactly
+    what a cloud-born preset is."""
+    if not PUSH_CAPABLE.get(ecosystem):
+        raise AuthoringError(f"push to {ecosystem} is not available yet")
+    if not blobs:
+        raise AuthoringError("nothing to push")
+    cloud = await _build_bambu_cloud(db, user)
+    if cloud is None or not cloud.is_authenticated:
+        if cloud is not None:
+            await cloud.close()
+        raise AuthoringError("Bambu Cloud is not connected")
+    results: list[dict] = []
+    try:
+        for blob in blobs:
+            name = blob.get("name") or ""
+            try:
+                data = await cloud.create_setting("filament", name, "", blob)  # roots have no base
+                results.append(
+                    {"name": name, "status": "pushed", "setting_id": _extract_setting_id(data), "detail": None}
+                )
+            except Exception as e:  # noqa: BLE001 — best-effort per preset (spec §5)
+                logger.info("push of %s failed: %s", name, e)
+                results.append({"name": name, "status": "error", "setting_id": None, "detail": str(e)})
+    finally:
+        await cloud.close()
+    return results

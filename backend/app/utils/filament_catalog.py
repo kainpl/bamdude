@@ -159,3 +159,14 @@ def generic_family_for_material(material: str) -> CatalogFamily | None:
                 if fam.alias.upper() == f"GENERIC {candidate}":
                     return fam
     return None
+
+
+@cache
+def all_printer_names(ecosystem: str = "bambu") -> list[str]:
+    """Every printer PROFILE name the catalog knows ("Bambu Lab P1S 0.4
+    nozzle", ...) — the BS-native way to target a preset at a printer.
+    Sorted + deduplicated; drives the authoring dialog's printer list."""
+    names: set[str] = set()
+    for preset in _load(ecosystem).presets_by_setting.values():
+        names.update(preset.compatible_printers)
+    return sorted(names)

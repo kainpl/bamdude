@@ -122,7 +122,7 @@ _STUB_KEYS = {"name", "inherits", "from", "type"}
 
 @dataclass
 class ClonedRoot:
-    printer_id: int
+    printer_id: int | None  # None when targeted by printer PROFILE name (BS-style)
     printer_name: str | None
     local_preset_id: int | None
     preset_name: str | None
@@ -136,6 +136,10 @@ class CreateFamilyResult:
     attached: bool
     roots: list[ClonedRoot] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # Populated only for save_local=False (cloud-only creation): the full
+    # per-printer content the route pushes directly. Never serialized to the
+    # API response.
+    blobs: list[dict] = field(default_factory=list)
 
 
 def _scalar(value):
@@ -238,6 +242,42 @@ def _apply_root_overrides(
     return out
 
 
+async def _clone_targets(
+    db: AsyncSession, *, filament_type: str, printer_ids: list[int], printer_names: list[str]
+) -> tuple[list[tuple[int | None, str | None, object]], list[str]]:
+    """Normalize both targeting modes to (printer_id, printer_name, base_preset).
+
+    ``printer_names`` is the BS-native mode — the caller picked printer
+    PROFILES ("Bambu Lab P1S 0.4 nozzle"), no BamDude device involved; the
+    base preset is whichever generic-of-type lists that name. ``printer_ids``
+    keeps the device mode (spool-form legacy): derive the name from the
+    device's model + live nozzle.
+    """
+    from backend.app.models.printer import Printer
+
+    targets: list[tuple[int | None, str | None, object]] = []
+    warnings: list[str] = []
+    fam = catalog.generic_family_for_material(filament_type)
+    for name in printer_names:
+        from backend.app.services.slot_assignment import _pick_preset
+
+        base_preset = _pick_preset(fam.filament_id, [name]) if fam else None
+        if base_preset is not None and name not in base_preset.compatible_printers:
+            base_preset = None  # _pick_preset falls back to presets[0]; a wrong base is worse than none
+        targets.append((None, name, base_preset))
+    for pid in printer_ids:
+        printer = await db.get(Printer, pid)
+        if printer is None:
+            targets.append((pid, None, None))
+            continue
+        model, nozzle = _printer_context(printer)
+        base_preset, printer_name = _base_for_printer(filament_type, model, nozzle)
+        if printer_name is None:
+            warnings.append(f"{printer.name}: unknown printer model — preset skipped")
+        targets.append((pid, printer_name, base_preset))
+    return targets, warnings
+
+
 async def _clone_roots(
     db: AsyncSession,
     *,
@@ -246,28 +286,28 @@ async def _clone_roots(
     vendor: str,
     filament_type: str,
     printer_ids: list[int],
+    printer_names: list[str],
     source_mode: str,
     source: str | None,
     source_id: str | None,
     user,
-) -> tuple[list[ClonedRoot], list[str]]:
+    persist: bool = True,
+) -> tuple[list[ClonedRoot], list[str], list[dict]]:
+    """Clone one root per target. ``persist=False`` (cloud-only creation)
+    builds the blobs without writing LocalPresets/mirrors — the caller pushes
+    them and the sync mirrors the cloud copies back."""
     from backend.app.models.local_preset import LocalPreset
-    from backend.app.models.printer import Printer
     from backend.app.services.filament_preset_sync import absorb_local_preset
     from backend.app.services.orca_profiles import extract_core_fields
 
     roots: list[ClonedRoot] = []
-    warnings: list[str] = []
-    for pid in printer_ids:
-        printer = await db.get(Printer, pid)
-        if printer is None:
-            roots.append(ClonedRoot(pid, None, None, None, "printer not found"))
-            continue
-        model, nozzle = _printer_context(printer)
-        base_preset, printer_name = _base_for_printer(filament_type, model, nozzle)
+    blobs: list[dict] = []
+    targets, warnings = await _clone_targets(
+        db, filament_type=filament_type, printer_ids=printer_ids, printer_names=printer_names
+    )
+    for pid, printer_name, base_preset in targets:
         if printer_name is None:
-            roots.append(ClonedRoot(pid, None, None, None, f"no BS printer name for model {model!r}"))
-            warnings.append(f"{printer.name}: unknown printer model — preset skipped")
+            roots.append(ClonedRoot(pid, None, None, None, "printer not found"))
             continue
         if source_mode == "preset" and source and source_id:
             content = await _resolve_source_preset(db, user, source, source_id)
@@ -277,7 +317,7 @@ async def _clone_roots(
             failure = "slicer sidecar unavailable — created without content"
         if content is None:
             roots.append(ClonedRoot(pid, printer_name, None, None, failure))
-            warnings.append(f"{printer.name}: {failure}")
+            warnings.append(f"{printer_name}: {failure}")
             continue
         blob = _apply_root_overrides(
             content,
@@ -287,6 +327,10 @@ async def _clone_roots(
             vendor=vendor,
             filament_type=filament_type,
         )
+        if not persist:
+            blobs.append(blob)
+            roots.append(ClonedRoot(pid, printer_name, None, blob["name"]))
+            continue
         dupe = (await db.execute(select(LocalPreset).where(LocalPreset.name == blob["name"]))).scalars().first()
         if dupe is not None:
             roots.append(ClonedRoot(pid, printer_name, dupe.id, blob["name"], "preset already exists"))
@@ -302,7 +346,7 @@ async def _clone_roots(
         await db.flush()
         await absorb_local_preset(db, preset)
         roots.append(ClonedRoot(pid, printer_name, preset.id, blob["name"]))
-    return roots, warnings
+    return roots, warnings, blobs
 
 
 async def _ensure_family_row(db: AsyncSession, *, fid: str, family_name: str, vendor: str, filament_type: str) -> None:
@@ -333,29 +377,35 @@ async def create_family(
     filament_type: str,
     serial: str,
     printer_ids: list[int],
+    printer_names: list[str] | None = None,
     source_mode: str = "type",
     source: str | None = None,
     source_id: str | None = None,
+    save_local: bool = True,
     user=None,
 ) -> CreateFamilyResult:
     v = validate_vendor(vendor)
     family_name = build_family_name(vendor, filament_type, serial)
     fid, attached = await mint_filament_id(db, family_name)
     await _ensure_family_row(db, fid=fid, family_name=family_name, vendor=v, filament_type=filament_type)
-    roots, warnings = await _clone_roots(
+    roots, warnings, blobs = await _clone_roots(
         db,
         fid=fid,
         family_name=family_name,
         vendor=v,
         filament_type=filament_type,
         printer_ids=printer_ids,
+        printer_names=printer_names or [],
         source_mode=source_mode,
         source=source,
         source_id=source_id,
         user=user,
+        persist=save_local,
     )
     await db.commit()
-    return CreateFamilyResult(filament_id=fid, name=family_name, attached=attached, roots=roots, warnings=warnings)
+    return CreateFamilyResult(
+        filament_id=fid, name=family_name, attached=attached, roots=roots, warnings=warnings, blobs=blobs
+    )
 
 
 async def add_printers_to_family(
@@ -363,6 +413,7 @@ async def add_printers_to_family(
     *,
     filament_id: str,
     printer_ids: list[int],
+    printer_names: list[str] | None = None,
     source_mode: str = "type",
     source: str | None = None,
     source_id: str | None = None,
@@ -385,13 +436,14 @@ async def add_printers_to_family(
         raise AuthoringError("not an authored family")
     if not fam.filament_type or fam.filament_type not in FILAMENT_TYPES:
         raise AuthoringError("family has no usable filament type")
-    roots, warnings = await _clone_roots(
+    roots, warnings, _blobs = await _clone_roots(
         db,
         fid=filament_id,
         family_name=fam.alias,
         vendor=fam.vendor or "",
         filament_type=fam.filament_type,
         printer_ids=printer_ids,
+        printer_names=printer_names or [],
         source_mode=source_mode,
         source=source,
         source_id=source_id,
