@@ -3642,6 +3642,10 @@ export default {
       basePreset: 'Base Preset',
       selectBasePreset: 'Select base preset...',
       presetName: 'Preset Name',
+      baseGroups: {
+        mine: 'My presets & families',
+        builtin: 'Standard',
+      },
       myCustomPreset: 'My custom preset',
       inheritsFrom: 'Inherits from',
       dropJsonToImport: 'Drop JSON to import',

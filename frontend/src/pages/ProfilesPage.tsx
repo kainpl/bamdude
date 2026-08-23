@@ -1351,18 +1351,45 @@ function CreatePresetModal({
     }
   }, [settingsObj, activeTab]);
 
-  // Get presets filtered by selected type - only built-in presets allowed as base
-  // (Bambu Cloud only allows custom presets to inherit from built-in presets)
+  // Base-preset candidates, two groups: the user's OWN presets (which is
+  // where authored custom families live once pushed — a child of a custom
+  // family carries its parent's setting_id as base_id, the live account
+  // confirms the cloud accepts it) and built-in presets narrowed to the
+  // farm's printer models — a base for a machine you don't own is noise.
+  const { data: farmPrinters = [] } = useQuery({
+    queryKey: ['printers'],
+    queryFn: api.getPrinters,
+  });
+  const { data: baseModelsMap = {} } = useQuery({
+    queryKey: ['printer-models'],
+    queryFn: () => api.getPrinterModels(),
+    staleTime: 10 * 60_000,
+  });
+
   const availableBasePresets = useMemo(() => {
     const typeMap: Record<string, SlicerSetting[]> = {
       filament: allPresets.filament,
       print: allPresets.process,
       printer: allPresets.printer,
     };
-    return (typeMap[presetType] || [])
-      .filter(p => !isUserPreset(p.setting_id)) // Only built-in presets
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [allPresets, presetType]);
+    const all = typeMap[presetType] || [];
+    const farmModels = new Set(
+      farmPrinters
+        .map(pr => (pr.model ? canonicalPrinterModel(pr.model, baseModelsMap) : null))
+        .filter((m): m is string => !!m),
+    );
+    const mine = all.filter(p => p.is_custom);
+    const builtin = all
+      .filter(p => !p.is_custom)
+      .filter(p => {
+        if (farmModels.size === 0) return true; // no farm — nothing to narrow by
+        const raw = extractMetadata(p.name).printer;
+        if (!raw) return true; // a model-less base can serve any machine
+        return farmModels.has(canonicalPrinterModel(raw, baseModelsMap));
+      });
+    const byName = (a: SlicerSetting, b: SlicerSetting) => a.name.localeCompare(b.name);
+    return [...mine.sort(byName), ...builtin.sort(byName)];
+  }, [allPresets, presetType, farmPrinters, baseModelsMap]);
 
   // Set inherits field when base preset changes (don't pre-fill all values - they show as placeholders)
   // In edit mode, don't reset settingsObj - keep the saved values
@@ -1755,9 +1782,18 @@ function CreatePresetModal({
                   className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none"
                 >
                   <option value="">{t('profiles.presets.selectBasePreset')}</option>
-                  {availableBasePresets.map((preset) => (
-                    <option key={preset.setting_id} value={preset.setting_id}>{preset.name}</option>
-                  ))}
+                  {availableBasePresets.some(p => p.is_custom) && (
+                    <optgroup label={t('profiles.presets.baseGroups.mine')}>
+                      {availableBasePresets.filter(p => p.is_custom).map((preset) => (
+                        <option key={preset.setting_id} value={preset.setting_id}>{preset.name}</option>
+                      ))}
+                    </optgroup>
+                  )}
+                  <optgroup label={t('profiles.presets.baseGroups.builtin')}>
+                    {availableBasePresets.filter(p => !p.is_custom).map((preset) => (
+                      <option key={preset.setting_id} value={preset.setting_id}>{preset.name}</option>
+                    ))}
+                  </optgroup>
                 </select>
               </div>
               <div>

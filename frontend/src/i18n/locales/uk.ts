@@ -3660,6 +3660,10 @@ export default {
       basePreset: 'Базовий пресет',
       selectBasePreset: 'Виберіть базовий пресет...',
       presetName: 'Назва пресету',
+      baseGroups: {
+        mine: 'Мої пресети і сімʼї',
+        builtin: 'Стандартні',
+      },
       myCustomPreset: 'Мій власний пресет',
       inheritsFrom: 'Успадковує від',
       dropJsonToImport: 'Перетягніть JSON для імпорту',
