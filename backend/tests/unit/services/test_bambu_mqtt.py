@@ -5,6 +5,7 @@ These tests focus on timelapse tracking during prints.
 """
 
 import json
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -5489,3 +5490,101 @@ class TestTimelapseStorageOnTheWire:
         cmd = json.loads(mqtt_client._client.publish.call_args[0][1])["print"]
         assert cmd["cfg"] == "4"
         assert cmd["url"] == "ftp://test.3mf"
+
+
+class TestRunoutDetector:
+    """Runout signals → on_usage_event, full-ecode matched, deduped per print.
+
+    The detector must never guess a slot (a spool whose slot was guessed is
+    never zeroed) and must fire nothing for jams — the A1-mini pair
+    12FF2000/12FF8000 shares a short code and differs only in the full ecode.
+    """
+
+    @pytest.fixture
+    def client(self):
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        c = BambuMQTTClient(ip_address="192.168.1.50", serial_number="RUNOUT01", access_code="12345678")
+        c._was_running = True
+        c._completion_triggered = False
+        c.state.state = "RUNNING"
+        c.state.layer_num = 42
+        c.state.tray_now = 0
+        c.state.raw_data = {
+            "ams": {"ams": [{"id": 0, "tray": [{"id": 0, "tray_uuid": "AAAA0000AAAA0000AAAA0000AAAA0000"}]}]}
+        }
+        c.on_usage_event = MagicMock()
+        return c
+
+    @staticmethod
+    def _hms_push(attr: int, code: int) -> dict:
+        return {"print": {"hms": [{"attr": attr, "code": code}]}}
+
+    def test_ams_runout_pause_fires_once_despite_repeated_hms(self, client):
+        push = self._hms_push(0x07002000, 0x00020001)
+        client._process_message(push)
+        client._process_message(push)
+        assert client.on_usage_event.call_count == 1
+        assert client.on_usage_event.call_args[0] == ("runout", "pause", 0, 42)
+
+    def test_autoswitch_upgrades_a_fired_pause_once(self, client):
+        client._process_message(self._hms_push(0x07002000, 0x00020001))
+        client._process_message(self._hms_push(0x07002000, 0x00030002))
+        client._process_message(self._hms_push(0x07002000, 0x00030002))
+        kinds = [call[0][1] for call in client.on_usage_event.call_args_list]
+        assert kinds == ["pause", "autoswitch"]
+
+    def test_external_runout_via_print_error(self, client):
+        client._process_message({"print": {"print_error": 0x03008015}})
+        assert client.on_usage_event.call_count == 1
+        assert client.on_usage_event.call_args[0] == ("runout", "external", 254, 42)
+
+    def test_jam_and_unrelated_codes_fire_nothing(self, client):
+        client._process_message(self._hms_push(0x12FF8000, 0x00020001))  # tangled/stuck
+        client._process_message(self._hms_push(0x0C000300, 0x0003000B))  # unrelated module
+        assert client.on_usage_event.call_count == 0
+
+    def test_slot_is_not_guessed_with_two_units_and_mismatched_tray_now(self, client):
+        client.state.raw_data["ams"]["ams"].append({"id": 1, "tray": [{"id": 1, "tray_uuid": ""}]})
+        client.state.tray_now = 5  # unit 1 slot 1 — does not match slot_in_unit 0
+        client._process_message(self._hms_push(0x07002000, 0x00020001))
+        assert client.on_usage_event.call_count == 1
+        assert client.on_usage_event.call_args[0] == ("runout", "pause", None, 42)
+
+    def test_single_unit_resolves_slot_from_code(self, client):
+        client.state.tray_now = 255  # unloaded — slot must come from the code + the only unit
+        client._process_message(self._hms_push(0x07002100, 0x00020001))  # slot_in_unit 1
+        assert client.on_usage_event.call_args[0] == ("runout", "pause", 1, 42)
+
+    def test_generic_code_with_invalid_tray_now_is_timeline_only(self, client):
+        client.state.tray_now = 255
+        client._process_message({"print": {"print_error": 0x03008004}})
+        assert client.on_usage_event.call_args[0] == ("runout", "ambiguous", None, 42)
+
+    def test_spool_loaded_after_uuid_change(self, client):
+        client._process_message(self._hms_push(0x07002000, 0x00020001))
+        client.state.raw_data["ams"]["ams"][0]["tray"][0]["tray_uuid"] = "BBBB0000BBBB0000BBBB0000BBBB0000"
+        client.state.layer_num = 43
+        client._process_message({"print": {}})
+        assert client.on_usage_event.call_args_list[-1][0] == ("spool_loaded", None, 0, 43)
+        # The watch is one-shot — a further push does not repeat it.
+        client._process_message({"print": {}})
+        assert client.on_usage_event.call_count == 2
+
+    def test_nothing_fires_outside_a_print(self, client):
+        client._was_running = False
+        client._process_message(self._hms_push(0x07002000, 0x00020001))
+        assert client.on_usage_event.call_count == 0
+
+    def test_memory_resets_on_new_print(self, client):
+        client._process_message(self._hms_push(0x07002000, 0x00020001))
+        assert client.on_usage_event.call_count == 1
+        # New print: the previous one completed (flags dropped), then an
+        # IDLE → RUNNING transition with a fresh file re-arms everything.
+        client._was_running = False
+        client._previous_gcode_state = "IDLE"
+        client._process_message({"print": {"gcode_state": "RUNNING", "gcode_file": "next.3mf"}})
+        client._was_running = True
+        client._completion_triggered = False
+        client._process_message(self._hms_push(0x07002000, 0x00020001))
+        assert client.on_usage_event.call_count == 2

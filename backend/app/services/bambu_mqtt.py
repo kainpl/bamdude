@@ -1763,6 +1763,7 @@ class BambuMQTTClient:
         on_assignment_verified: Callable[[int, int, bool, dict], None] | None = None,
         on_skipped_objects_changed: Callable[[list], None] | None = None,
         on_tray_change: Callable[[int, int], None] | None = None,
+        on_usage_event: Callable[[str, str | None, int | None, int], None] | None = None,
     ):
         self.ip_address = ip_address
         self.serial_number = serial_number
@@ -1817,6 +1818,21 @@ class BambuMQTTClient:
         # lose the segment boundaries the usage tracker splits on.
         # Receives ``(global_tray_id, layer_num)``.
         self.on_tray_change = on_tray_change
+        # Usage-journal events beyond tray changes: ``("runout", kind, tray,
+        # layer)`` from the full-ecode detector and ``("spool_loaded", None,
+        # tray, layer)`` when a watched slot's RFID uuid changes after a
+        # runout. Receives ``(event, kind, global_tray_id, layer_num)``.
+        # main.py mirrors these into ``print_usage_events``.
+        self.on_usage_event = on_usage_event
+        # Runout dedup: tray → fired kind, cleared on new print. The firmware
+        # repeats HMS codes in every push until the fault clears; the journal
+        # wants ONE boundary per tray per print (kind may upgrade
+        # pause → autoswitch once, when the backup takes over mid-purge).
+        self._runout_fired: dict[int | None, str] = {}
+        # Trays whose runout was fired, mapped to the tray_uuid seen at that
+        # moment — a later valid, different uuid means a replacement spool was
+        # loaded (one-shot ``spool_loaded`` event).
+        self._runout_watch: dict[int, str] = {}
         # Pending read-back verifications, keyed by ``(ams_id, tray_id)``. Each
         # value is the desired end-state we just pushed plus a monotonic deadline.
         # Populated by ``register_assignment_verification``, drained by
@@ -5591,6 +5607,16 @@ class BambuMQTTClient:
                                 )
                             )
 
+        # Runout detection runs after BOTH error channels are parsed — the
+        # ``hms[]`` rebuild and the ``print_error`` append above — so one scan
+        # of ``state.hms_errors`` covers them. The spool-loaded watch checks
+        # every print push: the replacement's RFID uuid arrives via print.ams.
+        try:
+            self._detect_runout_signals()
+            self._check_spool_loaded()
+        except Exception as e:
+            logger.warning("[%s] runout detector failed: %s", self.serial_number, e)
+
         # AMS Settings — newer firmware embeds the four toggles into the print
         # ``cfg`` field as a hex-string bitfield (BS DeviceManager.cpp:4204).
         # bit 0 = DetectOnInsert, bit 1 = DetectOnPowerup,
@@ -6196,6 +6222,10 @@ class BambuMQTTClient:
             # Reset completion tracking for new print
             self._was_running = True
             self._completion_triggered = False
+            # Runout detector memory is per-print: a spool that ran out last
+            # print may legitimately run out again this one.
+            self._runout_fired.clear()
+            self._runout_watch.clear()
             # #1721: rearm the end-of-print finish-photo trigger for the new print
             self._finish_photo_captured = False
             # Reset last valid progress/layer for usage tracking
@@ -6656,6 +6686,125 @@ class BambuMQTTClient:
             self.state.is_support_auto_flow_calibration = False
         elif series == "series_p1p":
             self.state.is_support_pa_calibration = False
+
+    def _ams_unit_ids(self) -> list[int]:
+        """Ids of the AMS units currently present, from merged state."""
+        ams_raw = (self.state.raw_data or {}).get("ams") or {}
+        ams_list = ams_raw.get("ams", []) if isinstance(ams_raw, dict) else ams_raw
+        ids = []
+        for unit in ams_list if isinstance(ams_list, list) else []:
+            if isinstance(unit, dict):
+                try:
+                    ids.append(int(unit.get("id", 0)))
+                except (TypeError, ValueError):
+                    continue
+        return ids
+
+    def _current_tray_uuid(self, global_tray_id: int) -> str:
+        """The tray's RFID uuid as currently merged, or empty string."""
+        raw = self.state.raw_data or {}
+        if global_tray_id >= 254:
+            for vt in raw.get("vt_tray") or []:
+                if isinstance(vt, dict) and int(vt.get("id", 254)) == global_tray_id:
+                    return str(vt.get("tray_uuid", "") or "")
+            return ""
+        ams_raw = raw.get("ams") or {}
+        ams_list = ams_raw.get("ams", []) if isinstance(ams_raw, dict) else ams_raw
+        for unit in ams_list if isinstance(ams_list, list) else []:
+            if not isinstance(unit, dict):
+                continue
+            unit_id = int(unit.get("id", 0))
+            for tray in unit.get("tray", []):
+                if not isinstance(tray, dict):
+                    continue
+                tray_id = int(tray.get("id", 0))
+                gid = unit_id if unit_id >= 128 else unit_id * 4 + tray_id
+                if gid == global_tray_id:
+                    return str(tray.get("tray_uuid", "") or "")
+        return ""
+
+    def _resolve_runout_tray(self, match) -> int | None:
+        """Global tray id for a runout signal — or None rather than a guess.
+
+        A spool whose slot was guessed is never zeroed, so ambiguity resolves
+        to None (the event is journaled timeline-only).
+        """
+        if match.scope == "external":
+            return match.external_tray
+        tn = self.state.tray_now
+        if match.scope == "ams_slot":
+            if 0 <= tn <= 15 and tn % 4 == match.slot_in_unit:
+                return tn
+            units = [u for u in self._ams_unit_ids() if u < 16]
+            if len(units) == 1:
+                return units[0] * 4 + match.slot_in_unit
+            return None
+        # ams_unit / generic scope: only a currently-loaded physical tray is
+        # trustworthy. Same accepted set as the tray-change log gate.
+        if (
+            (0 <= tn <= 15)
+            or (A2L_LITE_GLOBAL_BASE <= tn <= A2L_LITE_GLOBAL_BASE + 3)
+            or (128 <= tn <= 135)
+            or tn == 254
+        ):
+            return tn
+        return None
+
+    def _detect_runout_signals(self) -> None:
+        """Scan active error codes for the runout family and fire events once.
+
+        Full-ecode classification only (``classify_runout_ecode``): the short
+        MMMM_EEEE form collapses runout vs jam on the A1 mini holder. Fires
+        ``on_usage_event("runout", kind, tray, layer)`` once per tray per
+        print; a pause-kind may upgrade to autoswitch exactly once (the AMS
+        backup took over mid-purge).
+        """
+        if not (self._was_running and not self._completion_triggered):
+            return
+        if not self.state.hms_errors or not self.on_usage_event:
+            return
+        from backend.app.services.hms_errors import classify_runout_ecode
+
+        for err in self.state.hms_errors:
+            match = classify_runout_ecode(getattr(err, "full_code", "") or "")
+            if match is None:
+                continue
+            tray = self._resolve_runout_tray(match)
+            fired = self._runout_fired.get(tray)
+            if fired is None:
+                self._runout_fired[tray] = match.kind
+                if tray is not None:
+                    self._runout_watch[tray] = self._current_tray_uuid(tray)
+                logger.info(
+                    "[%s] Filament runout (%s) tray=%s at layer %d [%s]",
+                    self.serial_number,
+                    match.kind,
+                    tray,
+                    self.state.layer_num,
+                    err.full_code,
+                )
+                self.on_usage_event("runout", match.kind, tray, self.state.layer_num)
+            elif match.kind == "autoswitch" and fired != "autoswitch" and not match.transitional:
+                self._runout_fired[tray] = "autoswitch"
+                self.on_usage_event("runout", "autoswitch", tray, self.state.layer_num)
+
+    def _check_spool_loaded(self) -> None:
+        """One-shot replacement detection for trays that ran out.
+
+        A valid tray_uuid different from the one seen at runout means a new
+        spool is in the slot — the journal's segment from this layer belongs
+        to it. Resume without a change fires nothing (the same spool, or a
+        splice, keeps feeding and the zero correction self-consistently lands
+        it at label_weight).
+        """
+        if not self._runout_watch or not self.on_usage_event:
+            return
+        for tray, old_uuid in list(self._runout_watch.items()):
+            current = self._current_tray_uuid(tray)
+            if current and set(current) != {"0"} and current != old_uuid:
+                del self._runout_watch[tray]
+                logger.info("[%s] Replacement spool detected in tray %d (uuid changed)", self.serial_number, tray)
+                self.on_usage_event("spool_loaded", None, tray, self.state.layer_num)
 
     def _apply_mqtt_verify_state(self, verify_failed: bool) -> None:
         """Reconcile ``developer_mode`` with the printer's own verdict on our commands.

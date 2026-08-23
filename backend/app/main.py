@@ -1416,6 +1416,25 @@ async def _handle_pause_edge(printer_id: int, state: PrinterState):
         state.pause_started_at = now
         _pause_started_at[printer_id] = now
 
+        # Timeline entry in the usage journal — attribution-neutral, but it
+        # anchors spool_loaded events and makes runout forensics readable.
+        try:
+            from backend.app.models.print_usage_event import EVENT_PAUSE
+            from backend.app.services.print_usage_journal import active_archive_id, record_event
+
+            async with async_session() as db:
+                archive_id = await active_archive_id(db, printer_id)
+                if archive_id is not None:
+                    await record_event(
+                        db,
+                        printer_id=printer_id,
+                        archive_id=archive_id,
+                        layer_num=state.layer_num or 0,
+                        event=EVENT_PAUSE,
+                    )
+        except Exception as e:
+            logging.getLogger(__name__).debug("Pause journal entry failed for printer %d: %s", printer_id, e)
+
         filename = state.subtask_name or state.gcode_file
         ws_data = {
             "filename": filename,
@@ -1463,6 +1482,23 @@ async def _handle_resume_edge(printer_id: int, state: PrinterState):
         # never consumed (e.g. plate-detect issued the pause + the printer
         # resumed before the MQTT pause edge made it through).
         _expected_pause_reasons.pop(printer_id, None)
+
+        try:
+            from backend.app.models.print_usage_event import EVENT_RESUME
+            from backend.app.services.print_usage_journal import active_archive_id, record_event
+
+            async with async_session() as db:
+                archive_id = await active_archive_id(db, printer_id)
+                if archive_id is not None:
+                    await record_event(
+                        db,
+                        printer_id=printer_id,
+                        archive_id=archive_id,
+                        layer_num=state.layer_num or 0,
+                        event=EVENT_RESUME,
+                    )
+        except Exception as e:
+            logging.getLogger(__name__).debug("Resume journal entry failed for printer %d: %s", printer_id, e)
 
         filename = state.subtask_name or state.gcode_file
         ws_data = {
@@ -7975,6 +8011,62 @@ async def lifespan(app: FastAPI):
             )
 
     printer_manager.set_tray_change_callback(on_tray_change)
+
+    async def on_usage_event(printer_id: int, event: str, kind: str | None, tray_global: int | None, layer_num: int):
+        """Mirror detector events (runout / spool_loaded) into the usage journal.
+
+        Spool ids are frozen HERE, at event time — the whole point of the
+        journal: completion attributes segments without re-asking the DB after
+        assignments have moved on. Events with no active archive have nothing
+        to attach to and are dropped.
+        """
+        try:
+            from backend.app.models.print_usage_event import EVENT_SPOOL_LOADED
+            from backend.app.services.print_usage_journal import (
+                active_archive_id,
+                freeze_spool_ids,
+                record_event,
+                record_runout,
+            )
+
+            async with async_session() as db:
+                archive_id = await active_archive_id(db, printer_id)
+                if archive_id is None:
+                    logging.getLogger(__name__).debug(
+                        "Usage event %s on printer %d has no active archive, dropped", event, printer_id
+                    )
+                    return
+                spool_id = spoolman_spool_id = None
+                if tray_global is not None:
+                    spool_id, spoolman_spool_id = await freeze_spool_ids(db, printer_id, tray_global)
+                if event == "runout":
+                    await record_runout(
+                        db,
+                        printer_id=printer_id,
+                        archive_id=archive_id,
+                        layer_num=layer_num,
+                        kind=kind,
+                        global_tray_id=tray_global,
+                        spool_id=spool_id,
+                        spoolman_spool_id=spoolman_spool_id,
+                    )
+                elif event == EVENT_SPOOL_LOADED:
+                    await record_event(
+                        db,
+                        printer_id=printer_id,
+                        archive_id=archive_id,
+                        layer_num=layer_num,
+                        event=EVENT_SPOOL_LOADED,
+                        global_tray_id=tray_global,
+                        spool_id=spool_id,
+                        spoolman_spool_id=spoolman_spool_id,
+                    )
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "Failed to journal usage event %s for printer %d: %s", event, printer_id, e
+            )
+
+    printer_manager.set_usage_event_callback(on_usage_event)
 
     # Initialize MQTT relay from settings
     async with async_session() as db:

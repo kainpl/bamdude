@@ -97,6 +97,75 @@ async def freeze_spool_ids(db: AsyncSession, printer_id: int, global_tray_id: in
     return spool_id, spoolman_spool_id
 
 
+async def active_archive_id(db: AsyncSession, printer_id: int) -> int | None:
+    """The printer's newest still-printing archive — the journal's anchor.
+
+    The archive row exists from print start (external prints included), so a
+    tracked print always has one; ``None`` means no tracked print is running
+    and the event has nothing to attach to.
+    """
+    from backend.app.models.archive import PrintArchive
+
+    result = await db.execute(
+        select(PrintArchive.id)
+        .where(PrintArchive.printer_id == printer_id, PrintArchive.status == "printing")
+        .order_by(PrintArchive.created_at.desc())
+        .limit(1)
+    )
+    return result.scalars().first()
+
+
+async def record_runout(
+    db: AsyncSession,
+    *,
+    printer_id: int,
+    archive_id: int,
+    layer_num: int,
+    kind: str | None,
+    global_tray_id: int | None,
+    spool_id: int | None = None,
+    spoolman_spool_id: int | None = None,
+) -> None:
+    """One runout row per (archive, tray) — a repeat only upgrades the kind.
+
+    The detector already dedups per print, so a second call for the same tray
+    is the pause→autoswitch upgrade (the AMS backup took over mid-purge); the
+    boundary layer and the frozen spool ids of the first sighting stay.
+    """
+    from backend.app.models.print_usage_event import EVENT_RUNOUT
+
+    existing = (
+        (
+            await db.execute(
+                select(PrintUsageEvent).where(
+                    PrintUsageEvent.archive_id == archive_id,
+                    PrintUsageEvent.event == EVENT_RUNOUT,
+                    PrintUsageEvent.global_tray_id == global_tray_id,
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if existing is not None:
+        if kind and existing.kind != kind:
+            existing.kind = kind
+            await db.commit()
+        return
+
+    await record_event(
+        db,
+        printer_id=printer_id,
+        archive_id=archive_id,
+        layer_num=layer_num,
+        event=EVENT_RUNOUT,
+        kind=kind,
+        global_tray_id=global_tray_id,
+        spool_id=spool_id,
+        spoolman_spool_id=spoolman_spool_id,
+    )
+
+
 async def load_events(db: AsyncSession, printer_id: int, archive_id: int) -> list[PrintUsageEvent]:
     """The print's journal, in insertion order."""
     result = await db.execute(
