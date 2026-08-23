@@ -318,6 +318,8 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 - Built-in inventory with AMS slot assignment
 - **Spools link to a filament family** — the same identity Bambu Studio uses (`filament_id`), picked from a built-in catalog of official filaments plus your own cloud/custom ones; slot assignment, K-profile auto-matching and slicing all key on it
 - **Create your own filament family** from the spool form or the Profiles page — Bambu-Studio-compatible identity, per-printer presets, optional push to Bambu Cloud
+- **Runout-accurate consumption tracking** — a filament runout closes the spent spool at exactly its label weight and splits the print at the runout layer between the old and the replacement spool (per-layer G-code accuracy, same-slot refills and AMS backup switches included); jams are never mistaken for runouts. Live "filament so far" on the printer card while a print runs; a filament-runout notification prompts you to assign the replacement
+- **Two-way AMS weight sync for Bambu-tagged spools** — the firmware's own remaining estimate can correct the books downward too, debounced against garbled post-reconnect reports
 - Automatic filament consumption tracking
 - Per-spool cost tracking
 - Bulk spool addition
