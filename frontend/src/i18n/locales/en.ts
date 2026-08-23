@@ -5440,6 +5440,8 @@ export default {
     usageRecordDeleted: 'Record removed, weight returned to spool',
     usageStatusAmsSync: 'AMS sync',
     usageStatusAmsSyncHint: 'Filament the AMS reported as gone that no print of ours accounts for',
+    usageStatusRunout: 'Runout close-out',
+    usageStatusRunoutHint: 'The rest of the spool, booked when the printer reported it ran out — its history now adds up to the label weight',
     fillSourceLabel: '(Inv)',
     lowStockThresholdError: 'Threshold must be between 0.1 and 99.9',
     assignMismatchTitle: 'Material mismatch',

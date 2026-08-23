@@ -16,6 +16,7 @@ const STATUS_COLORS: Record<string, string> = {
   failed: 'text-red-700 dark:text-red-400',
   aborted: 'text-yellow-700 dark:text-yellow-400',
   ams_sync: 'text-blue-700 dark:text-blue-400',
+  runout: 'text-orange-700 dark:text-orange-400',
 };
 
 // Only `ams_sync` is translated. The print outcomes are the printer's own
@@ -25,6 +26,7 @@ const STATUS_COLORS: Record<string, string> = {
 // string, so a status added later shows up rather than disappearing.
 const STATUS_LABEL_KEYS: Record<string, string> = {
   ams_sync: 'inventory.usageStatusAmsSync',
+  runout: 'inventory.usageStatusRunout',
 };
 
 export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
@@ -119,7 +121,7 @@ export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
               <span className="text-bambu-gray">({record.percent_used}%)</span>
               <span
                 className={STATUS_COLORS[record.status] || 'text-bambu-gray'}
-                title={record.status === 'ams_sync' ? t('inventory.usageStatusAmsSyncHint') : undefined}
+                title={record.status === 'ams_sync' ? t('inventory.usageStatusAmsSyncHint') : record.status === 'runout' ? t('inventory.usageStatusRunoutHint') : undefined}
               >
                 {STATUS_LABEL_KEYS[record.status] ? t(STATUS_LABEL_KEYS[record.status]) : record.status}
               </span>

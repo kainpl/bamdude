@@ -5475,6 +5475,8 @@ export default {
     usageRecordDeleted: 'Запис видалено, вагу повернено до котушки',
     usageStatusAmsSync: 'Синхронізація AMS',
     usageStatusAmsSyncHint: 'Філамент, який AMS порахував витраченим, але жоден наш друк його не пояснює',
+    usageStatusRunout: 'Закриття по runout',
+    usageStatusRunoutHint: 'Хвіст котушки, дописаний коли принтер повідомив про закінчення філаменту — історія тепер сходиться з вагою етикетки',
     fillSourceLabel: '(Інв)',
     lowStockThresholdError: 'Поріг повинен бути від 0.1 до 99.9',
     assignMismatchTitle: 'Невідповідність матеріалу',
