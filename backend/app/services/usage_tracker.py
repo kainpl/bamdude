@@ -360,6 +360,85 @@ async def record_tray_change(db: AsyncSession, printer_id: int, tray_global: int
         await db.commit()
 
 
+async def record_tray_change_event(db: AsyncSession, printer_id: int, tray_global: int, layer_num: int) -> None:
+    """Journal a mid-print tray change (m153 successor of ``record_tray_change``).
+
+    Appends to ``print_usage_events`` with the assigned spool ids FROZEN at
+    this moment — completion attributes segments from the row, not from a
+    later lookup. Dropped when the printer has no active archive (nothing to
+    anchor to) and deduped against an identical immediately-preceding entry
+    (print start seeds the log from PrinterState, which may already hold the
+    change this callback is reporting).
+    """
+    from backend.app.models.print_usage_event import EVENT_START, EVENT_TRAY_CHANGE, PrintUsageEvent
+    from backend.app.services.print_usage_journal import active_archive_id, freeze_spool_ids, record_event
+
+    archive_id = await active_archive_id(db, printer_id)
+    if archive_id is None:
+        return
+
+    last = (
+        (
+            await db.execute(
+                select(PrintUsageEvent)
+                .where(
+                    PrintUsageEvent.archive_id == archive_id,
+                    PrintUsageEvent.event.in_([EVENT_START, EVENT_TRAY_CHANGE]),
+                )
+                .order_by(PrintUsageEvent.id.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if last is not None and last.global_tray_id == tray_global and last.layer_num == layer_num:
+        return
+
+    spool_id, spoolman_spool_id = await freeze_spool_ids(db, printer_id, tray_global)
+    await record_event(
+        db,
+        printer_id=printer_id,
+        archive_id=archive_id,
+        layer_num=layer_num,
+        event=EVENT_TRAY_CHANGE,
+        global_tray_id=tray_global,
+        spool_id=spool_id,
+        spoolman_spool_id=spoolman_spool_id,
+    )
+
+
+async def _journal_print_start(db: AsyncSession, printer_id: int, state) -> None:
+    """Seed the journal with the print's opening tray as an EVENT_START row."""
+    from backend.app.models.print_usage_event import EVENT_START
+    from backend.app.services.print_usage_journal import active_archive_id, freeze_spool_ids, record_event
+
+    archive_id = await active_archive_id(db, printer_id)
+    if archive_id is None:
+        return
+
+    seed_log = getattr(state, "tray_change_log", None) or []
+    tray: int | None = None
+    if seed_log:
+        tray = seed_log[0][0]
+    elif 0 <= getattr(state, "tray_now", 255) <= 254:
+        tray = state.tray_now
+
+    spool_id = spoolman_spool_id = None
+    if tray is not None:
+        spool_id, spoolman_spool_id = await freeze_spool_ids(db, printer_id, tray)
+    await record_event(
+        db,
+        printer_id=printer_id,
+        archive_id=archive_id,
+        layer_num=0,
+        event=EVENT_START,
+        global_tray_id=tray,
+        spool_id=spool_id,
+        spoolman_spool_id=spoolman_spool_id,
+    )
+
+
 async def get_persisted_print_name(db: AsyncSession, printer_id: int) -> str | None:
     """Print name on the persisted row, for identity-checking a restored session."""
     from backend.app.models.active_print_session import ActivePrintSession
@@ -401,7 +480,26 @@ async def restore_session(db: AsyncSession, printer_id: int, register_active: bo
     if register_active:
         _active_sessions[printer_id] = session
 
-    log = [list(entry) for entry in (row.tray_change_log or [])]
+    # Journal-first: the events table is the tray log's home since m153. The
+    # JSON column is a one-release read fallback for a print that was already
+    # running when the upgrade landed (written by the old binary).
+    log: list[list[int]] = []
+    try:
+        from backend.app.models.print_usage_event import EVENT_START, EVENT_TRAY_CHANGE
+        from backend.app.services.print_usage_journal import active_archive_id, load_events
+
+        archive_id = await active_archive_id(db, printer_id)
+        if archive_id is not None:
+            events = await load_events(db, printer_id, archive_id)
+            log = [
+                [e.global_tray_id, e.layer_num]
+                for e in events
+                if e.event in (EVENT_START, EVENT_TRAY_CHANGE) and e.global_tray_id is not None
+            ]
+    except Exception:
+        logger.exception("[UsageTracker] Journal read failed during restore for printer %d", printer_id)
+    if not log:
+        log = [list(entry) for entry in (row.tray_change_log or [])]
     logger.info(
         "[UsageTracker] Restored print session for printer %d: ams_mapping=%s, %d assignments, tray_change_log=%s",
         printer_id,
@@ -788,11 +886,15 @@ async def on_print_start(
         _active_sessions[printer_id] = session
 
     # Mirror to the DB so a restart mid-print doesn't lose the context. The
-    # tray-change log has already been cleared and seeded with the starting tray
-    # by bambu_mqtt before this callback fires.
+    # tray log itself lives in ``print_usage_events`` since m153 — the session
+    # row keeps only context, and its legacy ``tray_change_log`` column is
+    # cleared here so a stale value can never shadow the journal. The seed
+    # tray (bambu_mqtt cleared + reseeded the state log before this callback)
+    # becomes the journal's EVENT_START row.
     if db:
         try:
-            await persist_session(db, session, getattr(state, "tray_change_log", None))
+            await persist_session(db, session)
+            await _journal_print_start(db, printer_id, state)
         except Exception:
             logger.exception("[UsageTracker] Failed to persist print session for printer %d", printer_id)
 

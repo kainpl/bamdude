@@ -224,7 +224,9 @@ class TestCaptureAtPrintStart:
 
         assert _active_sessions[printer.id].ams_mapping == [2]
         row = await db_session.get(ActivePrintSession, printer.id)
-        assert (row.ams_mapping, row.tray_change_log) == ([2], [[0, 0]])
+        # The tray log lives in the journal table since m153 — the row keeps
+        # only session context, and its legacy column stays empty for new prints.
+        assert (row.ams_mapping, row.tray_change_log) == ([2], None)
 
     @pytest.mark.asyncio
     async def test_spoolman_is_captured_too_but_not_registered(self, db_session, printer_factory):
@@ -324,3 +326,111 @@ class TestTheRestoredSessionIsTheRunningPrint:
         await persist_session(db_session, _session(printer.id, print_name="yesterday.3mf", started_at=yesterday))
 
         assert await get_persisted_print_name(db_session, printer.id) != "today.3mf"
+
+
+class TestTheJournalSupersedesTheColumn:
+    """m153: the events table is the tray log's home; the JSON column is a
+    one-release read fallback for a print running across the upgrade."""
+
+    async def _archive(self, db_session, printer, status="printing"):
+        from backend.app.models.archive import PrintArchive
+
+        a = PrintArchive(
+            printer_id=printer.id,
+            filename="bin.gcode.3mf",
+            file_path="",
+            file_size=0,
+            print_name="bin",
+            status=status,
+        )
+        db_session.add(a)
+        await db_session.commit()
+        await db_session.refresh(a)
+        return a
+
+    @pytest.mark.asyncio
+    async def test_print_start_seeds_a_start_event(self, db_session, printer_factory):
+        from backend.app.models.print_usage_event import PrintUsageEvent
+
+        printer = await printer_factory()
+        archive = await self._archive(db_session, printer)
+
+        await on_print_start(
+            printer.id,
+            {"subtask_name": "bin.3mf"},
+            _printer_manager_with_ams(),
+            db=db_session,
+        )
+
+        events = (await db_session.execute(select(PrintUsageEvent))).scalars().all()
+        assert [(e.event, e.global_tray_id, e.layer_num, e.archive_id) for e in events] == [("start", 0, 0, archive.id)]
+
+    @pytest.mark.asyncio
+    async def test_tray_change_event_freezes_the_assigned_spool(self, db_session, printer_factory):
+        from backend.app.models.print_usage_event import PrintUsageEvent
+        from backend.app.models.spool import Spool
+        from backend.app.models.spool_assignment import SpoolAssignment
+        from backend.app.services.usage_tracker import record_tray_change_event
+
+        printer = await printer_factory()
+        archive = await self._archive(db_session, printer)
+        spool = Spool(material="PLA", label_weight=1000)
+        db_session.add(spool)
+        await db_session.commit()
+        await db_session.refresh(spool)
+        db_session.add(SpoolAssignment(printer_id=printer.id, ams_id=0, tray_id=1, spool_id=spool.id))
+        await db_session.commit()
+
+        await record_tray_change_event(db_session, printer.id, 1, 250)
+
+        events = (await db_session.execute(select(PrintUsageEvent))).scalars().all()
+        assert [(e.event, e.global_tray_id, e.layer_num, e.spool_id) for e in events] == [
+            ("tray_change", 1, 250, spool.id)
+        ]
+        assert events[0].archive_id == archive.id
+
+    @pytest.mark.asyncio
+    async def test_tray_change_without_an_active_archive_is_dropped(self, db_session, printer_factory):
+        from backend.app.models.print_usage_event import PrintUsageEvent
+        from backend.app.services.usage_tracker import record_tray_change_event
+
+        printer = await printer_factory()
+        await record_tray_change_event(db_session, printer.id, 1, 10)
+        assert (await db_session.execute(select(PrintUsageEvent))).scalars().all() == []
+
+    @pytest.mark.asyncio
+    async def test_restore_prefers_journal_rows_over_the_legacy_column(self, db_session, printer_factory):
+        from backend.app.services.usage_tracker import record_tray_change_event
+
+        printer = await printer_factory()
+        await self._archive(db_session, printer)
+        # A row written by the OLD binary carries the legacy column…
+        await persist_session(db_session, _session(printer.id), [(9, 9)])
+        # …but this process has journal rows for the same print.
+        await record_tray_change_event(db_session, printer.id, 0, 0)
+        await record_tray_change_event(db_session, printer.id, 1, 120)
+
+        log = await restore_session(db_session, printer.id)
+        assert log == [[0, 0], [1, 120]]
+
+    @pytest.mark.asyncio
+    async def test_restore_falls_back_to_the_legacy_column(self, db_session, printer_factory):
+        printer = await printer_factory()
+        await self._archive(db_session, printer)
+        await persist_session(db_session, _session(printer.id), [(0, 0), (1, 120)])
+
+        log = await restore_session(db_session, printer.id)
+        assert log == [[0, 0], [1, 120]]
+
+    @pytest.mark.asyncio
+    async def test_consecutive_duplicate_events_are_not_journaled_twice(self, db_session, printer_factory):
+        from backend.app.models.print_usage_event import PrintUsageEvent
+        from backend.app.services.usage_tracker import record_tray_change_event
+
+        printer = await printer_factory()
+        await self._archive(db_session, printer)
+        await record_tray_change_event(db_session, printer.id, 0, 0)
+        await record_tray_change_event(db_session, printer.id, 0, 0)
+
+        events = (await db_session.execute(select(PrintUsageEvent))).scalars().all()
+        assert len(events) == 1

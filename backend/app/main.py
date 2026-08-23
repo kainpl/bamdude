@@ -7997,10 +7997,10 @@ async def lifespan(app: FastAPI):
         the tray that finished the job.
         """
         try:
-            from backend.app.services.usage_tracker import record_tray_change
+            from backend.app.services.usage_tracker import record_tray_change_event
 
             async with async_session() as db:
-                await record_tray_change(db, printer_id, tray_global, layer_num)
+                await record_tray_change_event(db, printer_id, tray_global, layer_num)
         except Exception as e:
             logging.getLogger(__name__).warning(
                 "Failed to persist tray change for printer %d (tray=%d, layer=%d): %s",
