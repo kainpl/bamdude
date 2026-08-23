@@ -165,7 +165,9 @@ def _prepare_sync(
     from backend.app.services.library_helpers import detect_file_type
     from backend.app.services.library_ingest import external_hash_is_stale
 
-    filepath = Path(dirpath) / filename
+    filepath = (
+        Path(dirpath) / filename
+    )  # SEC-PATH-OK: dirpath+filename come from os.walk of the folder root, not from a request
     ext = filepath.suffix.lower()
     if ext not in _SCANNABLE_EXTENSIONS:
         compound = "".join(filepath.suffixes[-2:]).lower() if len(filepath.suffixes) >= 2 else ""
@@ -638,7 +640,9 @@ async def run_scan(job_id: int) -> None:
                 rel = ""
             for filename in filenames:
                 counters["files_seen"] += 1
-                candidate_path = str(Path(dirpath) / filename)
+                candidate_path = str(
+                    Path(dirpath) / filename
+                )  # SEC-PATH-OK: both parts come from the walk of the folder root
                 prepared = await prepare(dirpath, filename, root, known.get(candidate_path), rel)
                 if prepared is None:
                     continue
