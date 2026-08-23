@@ -172,6 +172,8 @@
 
 ### Fixed
 
+- **Configuring an AMS/external slot and assigning a spool to a slot no longer crash.** Four call sites asked the printer's info object for a field it never had, so the configure-slot endpoint and every spool-to-slot assignment path answered 500 the moment the family catalog needed the printer model. All four now read the model from its actual home, and a source-level guard test keeps the whole class of mistake out.
+
 - **Spoolman bulk-update endpoint was unreachable.** `PATCH /spoolman/inventory/spools/bulk-update` was declared below the dynamic `/spools/{spool_id}` route, so every call was answered with a validation error before the handler could run. The route order is fixed (with a regression test), and the archive plate-preview image endpoint is now actually public for `<img>` tags, as its docstring always claimed.
 
 - **HMS dialog buttons no longer vanish on the first live update.** The printer's own prompts with choices (e.g. the "check the nozzle — Done / Retry" prompt after loading filament) rendered their buttons and then lost them the moment a live status push arrived: the WebSocket payload described HMS errors without their actions. Both payloads now carry the same fields, so the buttons stay — and pressing them drives the printer remotely, exactly like answering on the touchscreen.

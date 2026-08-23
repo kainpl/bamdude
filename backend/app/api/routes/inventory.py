@@ -159,11 +159,13 @@ async def apply_spool_to_slot_via_mqtt(
     # model does not reuse a foreign tray id.
     from backend.app.services.slot_assignment import build_slot_assignment
 
-    info = printer_manager.get_printer(printer_id)
+    # ⚠️ The model lives in the manager's model cache, NOT on PrinterInfo
+    # (name + serial only) — ``info.model`` was an AttributeError on every
+    # call; only mocks (auto-attributes) kept it green.
     plan = await build_slot_assignment(
         db,
         spool=spool,
-        printer_model=info.model if info else None,
+        printer_model=printer_manager.get_model(printer_id),
         nozzle_diameter=nozzle_diameter,
         supports_user_preset=bool(getattr(state, "support_user_preset", False)),
     )

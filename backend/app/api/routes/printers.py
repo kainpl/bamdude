@@ -2734,13 +2734,16 @@ async def configure_ams_slot(
     from backend.app.services.slot_assignment import build_slot_assignment
 
     state = printer_manager.get_status(printer_id)
-    info = printer_manager.get_printer(printer_id)
     try:
         plan = await build_slot_assignment(
             db,
             family_id=tray_info_idx or None,
             preset_setting_id=setting_id or None,
-            printer_model=info.model if info else None,
+            # ⚠️ The model lives in the manager's model cache, NOT on
+            # PrinterInfo (name + serial only) — ``info.model`` 500'd every
+            # configure-slot call and no test caught it (untested endpoint,
+            # mocks auto-supply any attribute).
+            printer_model=printer_manager.get_model(printer_id),
             nozzle_diameter=nozzle_diameter,
             supports_user_preset=bool(getattr(state, "support_user_preset", False)),
             material_override=tray_type,

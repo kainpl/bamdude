@@ -984,14 +984,14 @@ async def link_spool(
                 # hand-rolled realignment.
                 from backend.app.services.slot_assignment import build_slot_assignment  # noqa: PLC0415
 
-                info = printer_manager.get_printer(p_id)
                 plan = await build_slot_assignment(
                     db,
                     family_id=matching_fc.filament_id if matching_fc else None,
                     material_override=tray_type,
                     color_rgba=tray_color,
                     temp_overrides=(mapped.get("nozzle_temp_min"), None),
-                    printer_model=info.model if info else None,
+                    # Model cache, not PrinterInfo — see configure_ams_slot.
+                    printer_model=printer_manager.get_model(p_id),
                     nozzle_diameter=nozzle_diameter,
                     supports_user_preset=bool(getattr(state, "support_user_preset", False)),
                 )
