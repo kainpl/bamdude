@@ -3521,6 +3521,7 @@ export interface NotificationProvider {
   on_printer_error: boolean;
   on_ai_failure_detection: boolean;
   on_filament_low: boolean;
+  on_filament_runout: boolean;
   on_filament_deficit: boolean;
   on_maintenance_due: boolean;
   // AMS environmental alarms (regular AMS)
@@ -3589,6 +3590,7 @@ export interface NotificationProviderCreate {
   on_printer_error?: boolean;
   on_ai_failure_detection?: boolean;
   on_filament_low?: boolean;
+  on_filament_runout?: boolean;
   on_filament_deficit?: boolean;
   on_maintenance_due?: boolean;
   // AMS environmental alarms (regular AMS)
@@ -3651,6 +3653,7 @@ export interface NotificationProviderUpdate {
   on_printer_error?: boolean;
   on_ai_failure_detection?: boolean;
   on_filament_low?: boolean;
+  on_filament_runout?: boolean;
   on_filament_deficit?: boolean;
   on_maintenance_due?: boolean;
   // AMS environmental alarms (regular AMS)

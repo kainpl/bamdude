@@ -7021,6 +7021,7 @@ export default {
     offline: 'Offline',
     filamentDeficit: 'Filament Will Run Out',
     lowFilament: 'Low Filament',
+    filamentRunout: 'Filament Runout',
     maintenance: 'Maintenance',
     amsHumidity: 'AMS Humidity',
     amsTemp: 'AMS Temp',

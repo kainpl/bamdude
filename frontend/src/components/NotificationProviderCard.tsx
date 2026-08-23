@@ -256,6 +256,10 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                             <span
                                 className="px-2 py-0.5 bg-cyan-100 dark:bg-cyan-500/20 text-cyan-700 dark:text-cyan-400 text-xs rounded">{t('notifications.lowFilament')}</span>
                         )}
+                        {!isTelegram && provider.on_filament_runout && (
+                            <span
+                                className="px-2 py-0.5 bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400 text-xs rounded">{t('notifications.filamentRunout')}</span>
+                        )}
                         {!isTelegram && provider.on_filament_deficit && (
                             <span
                                 className="px-2 py-0.5 bg-cyan-100 dark:bg-cyan-500/20 text-cyan-700 dark:text-cyan-400 text-xs rounded">{t('notifications.filamentDeficit')}</span>
@@ -557,6 +561,14 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                                     <Toggle
                                         checked={provider.on_filament_low}
                                         onChange={(checked) => updateMutation.mutate({on_filament_low: checked})}
+                                    />
+                                </div>
+
+                                <div className="flex items-center justify-between">
+                                    <p className="text-sm text-white">{t('notifications.filamentRunout')}</p>
+                                    <Toggle
+                                        checked={provider.on_filament_runout ?? false}
+                                        onChange={(checked) => updateMutation.mutate({on_filament_runout: checked})}
                                     />
                                 </div>
 

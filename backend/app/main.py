@@ -8165,6 +8165,27 @@ async def lifespan(app: FastAPI):
                         spool_id=spool_id,
                         spoolman_spool_id=spoolman_spool_id,
                     )
+                    # Notify — pause/external doubles as the human-in-the-loop
+                    # prompt to assign the replacement spool. Ambiguous stays
+                    # silent (could equally be a jam).
+                    if kind != "ambiguous":
+                        try:
+                            from backend.app.services.spool_assignment_notifications import (
+                                _slot_label_from_global_tray,
+                            )
+
+                            printer_info = printer_manager.get_printer(printer_id)
+                            await notification_service.on_filament_runout(
+                                printer_id=printer_id,
+                                printer_name=printer_info.name if printer_info else f"Printer {printer_id}",
+                                slot=_slot_label_from_global_tray(tray_global) if tray_global is not None else "?",
+                                kind=kind or "pause",
+                                db=db,
+                            )
+                        except Exception as e:
+                            logging.getLogger(__name__).warning(
+                                "filament_runout notification failed for printer %d: %s", printer_id, e
+                            )
                 elif event == EVENT_SPOOL_LOADED:
                     await record_event(
                         db,

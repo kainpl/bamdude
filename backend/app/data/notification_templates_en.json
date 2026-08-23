@@ -64,6 +64,16 @@
     "title_template": "Filament Low",
     "body_template": "{printer}: Slot {slot} at {remaining_percent}%"
   },
+  "filament_runout": {
+    "name": "Filament Runout",
+    "title_template": "Filament Runout",
+    "body_template": "{printer}: Slot {slot} ran out of filament and is waiting. Load a new spool and assign it in BamDude so the rest of the print is booked to the right spool."
+  },
+  "filament_runout_backup": {
+    "name": "Filament Runout (Backup)",
+    "title_template": "Filament Runout",
+    "body_template": "{printer}: Slot {slot} ran out; the AMS switched to the backup slot and the print continues."
+  },
   "maintenance_due": {
     "name": "Maintenance Due",
     "title_template": "Maintenance Due",

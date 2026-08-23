@@ -1988,6 +1988,39 @@ class NotificationService:
             providers, title, message, db, "filament_low", printer_id, printer_name, variables=variables
         )
 
+    async def on_filament_runout(
+        self,
+        printer_id: int,
+        printer_name: str,
+        slot: int | str,
+        kind: str,
+        db: AsyncSession,
+        spool_name: str | None = None,
+    ):
+        """A spool ran out mid-print.
+
+        Two shapes: ``kind="autoswitch"`` renders the informational
+        switched-to-backup template; anything else (``pause`` / ``external``)
+        renders the waiting-for-filament one, which doubles as the
+        human-in-the-loop prompt — assigning the replacement spool is what
+        routes the rest of the print's grams to the right reel. The caller
+        never fires this for ``ambiguous`` events.
+        """
+        providers = await self._get_providers_for_event(db, "on_filament_runout", printer_id)
+        if not providers:
+            return
+
+        variables = {
+            "printer": printer_name,
+            "slot": str(slot),
+            "spool": spool_name or "",
+        }
+        template_key = "filament_runout_backup" if kind == "autoswitch" else "filament_runout"
+        title, message = await self._build_message_from_template(db, template_key, variables)
+        await self._send_to_providers(
+            providers, title, message, db, template_key, printer_id, printer_name, variables=variables
+        )
+
     async def on_maintenance_due(
         self,
         printer_id: int,

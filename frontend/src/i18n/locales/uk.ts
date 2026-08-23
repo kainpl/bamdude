@@ -7053,6 +7053,7 @@ export default {
     offline: 'Офлайн',
     filamentDeficit: 'Філаменту не вистачить',
     lowFilament: 'Мало філаменту',
+    filamentRunout: 'Закінчився філамент',
     maintenance: 'Обслуговування',
     amsHumidity: 'Вологість AMS',
     amsTemp: 'Температура AMS',

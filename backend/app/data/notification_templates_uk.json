@@ -64,6 +64,16 @@
     "title_template": "Мало філаменту",
     "body_template": "{printer}: Слот {slot} - {remaining_percent}%"
   },
+  "filament_runout": {
+    "name": "Закінчився філамент",
+    "title_template": "Закінчився філамент",
+    "body_template": "{printer}: у слоті {slot} закінчився філамент, принтер чекає. Заправте нову котушку і призначте її в BamDude — решта друку спишеться на правильну котушку."
+  },
+  "filament_runout_backup": {
+    "name": "Закінчився філамент (резерв)",
+    "title_template": "Закінчився філамент",
+    "body_template": "{printer}: у слоті {slot} закінчився філамент; AMS перемкнувся на резервний слот, друк триває."
+  },
   "maintenance_due": {
     "name": "Потрібне обслуговування",
     "title_template": "Потрібне обслуговування",
