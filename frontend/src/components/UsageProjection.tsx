@@ -43,7 +43,9 @@ export function UsageProjection({ printerId, printing }: Props) {
           {data.slots.map((s) => `#${s.slot_id} ${s.consumed_g.toFixed(0)}g`).join(' · ')}
         </span>
       )}
-      {data.slots.some((s) => (s.segments?.length ?? 0) > 1) && (
+      {data.slots.some(
+        (s) => new Set((s.segments ?? []).map((seg) => `${seg.spool_id}:${seg.spoolman_spool_id}`)).size > 1,
+      ) && (
         <span className="ml-2 text-orange-400/80" title={t('printers.usageProjection.splitHint')}>
           {t('printers.usageProjection.split')}
         </span>

@@ -166,7 +166,13 @@ async def compute_usage_projection(db: AsyncSession, printer_id: int, printer_ma
                             "consumed_g": max(seg_consumed, 0.0),
                         }
                     )
-                slot_payload["segments"] = segments
+                # Segments are a DISPLAY of attribution — a runout the user
+                # resumed without replacing keeps both segments on the same
+                # reel, and showing that as "split across spools" is noise
+                # (measured complaint, 2026-08-23). Emit only a real split.
+                distinct = {(seg["spool_id"], seg["spoolman_spool_id"]) for seg in segments}
+                if len(distinct) > 1:
+                    slot_payload["segments"] = segments
         slots.append(slot_payload)
 
     return {

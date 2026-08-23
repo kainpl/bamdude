@@ -137,3 +137,33 @@ async def test_running_print_with_no_3mf_projects_nothing_but_stays_active(db_se
     result = await compute_usage_projection(db_session, printer.id, printer_manager=_pm())
     assert result["active"] is True
     assert result["slots"] == []
+
+
+@pytest.mark.asyncio
+async def test_runout_without_replacement_shows_no_segments(db_session, tmp_path, monkeypatch):
+    """Resumed without replacing: both boundary segments are the same reel —
+    that is not a split and the projection must not claim one (live report,
+    2026-08-23: the widget said 'split across spools' on an unchanged spool)."""
+    monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+    printer = await _printer(db_session)
+    archive = await _archive(db_session, printer, tmp_path)
+    db_session.add(
+        PrintUsageEvent(
+            printer_id=printer.id,
+            archive_id=archive.id,
+            layer_num=80,
+            event=EVENT_RUNOUT,
+            kind=KIND_PAUSE,
+            global_tray_id=0,
+            spool_id=7,
+        )
+    )
+    await db_session.commit()
+
+    p1, p2, p3 = _patched([{"slot_id": 1, "used_g": 300.0, "type": "PLA", "color": ""}])
+    with p1, p2, p3:
+        result = await compute_usage_projection(
+            db_session, printer.id, printer_manager=_pm(layer=100, total=200, mapping=[0])
+        )
+    assert "segments" not in result["slots"][0]
+    assert result["slots"][0]["consumed_g"] == pytest.approx(150.0)
