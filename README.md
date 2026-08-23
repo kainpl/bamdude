@@ -146,6 +146,15 @@ BamDude speaks the printer's own file channel alongside FTP, and the difference 
 
 The channel exists only on that newer generation, and BamDude decides by asking the printer rather than by model name — an open port proves nothing, since on A1 and P1 the same port belongs to the camera.
 
+### Filament identity the way the slicers model it
+
+Bambu Studio thinks in **filament families**: one identity (`filament_id`) behind every "Generic PETG" or your own custom filament, with per-printer presets hanging under it. BamDude adopts that model outright:
+
+- **A built-in catalog of every official filament**, distilled from Bambu Studio and OrcaSlicer themselves — names, vendors, types, temperatures, which printers each preset fits. No hardcoded tables, no cloud round-trips: slot names, tooltips and assignments resolve locally and offline.
+- **Your own cloud presets are mirrored in the background** from both Bambu Cloud and Orca Cloud, so a custom filament created in either slicer is known here minutes later — family included.
+- **One family picker everywhere** — the spool form, the AMS slot dialog, the K-profile editor. Spools link to a family, calibration auto-matching keys on it, and custom filaments finally match their own K-profiles instead of collapsing onto Generic.
+- **Create a filament in BamDude itself** — vendor + type + serial, exactly like Bambu Studio's Create Filament dialog, with a Bambu-Studio-compatible identity and a root preset cloned per printer profile you tick. Optionally **push it to Bambu Cloud**, and desktop Bambu Studio sees it on its next sync; create it from the Bambu Cloud tab and it is born in the cloud outright.
+
 ### Smaller, but still ours
 
 - **Ukrainian.** Upstream ships twelve locales and Ukrainian is not among them. BamDude ships English and Ukrainian only, and both are strict: a key missing from either fails CI, and so does a placeholder that drifted between them.
@@ -307,6 +316,8 @@ The channel exists only on that newer generation, and BamDude decides by asking 
 
 ### Spool Inventory
 - Built-in inventory with AMS slot assignment
+- **Spools link to a filament family** — the same identity Bambu Studio uses (`filament_id`), picked from a built-in catalog of official filaments plus your own cloud/custom ones; slot assignment, K-profile auto-matching and slicing all key on it
+- **Create your own filament family** from the spool form or the Profiles page — Bambu-Studio-compatible identity, per-printer presets, optional push to Bambu Cloud
 - Automatic filament consumption tracking
 - Per-spool cost tracking
 - Bulk spool addition
@@ -327,7 +338,7 @@ The channel exists only on that newer generation, and BamDude decides by asking 
 - MQTT publishing for Home Assistant
 - Prometheus metrics for Grafana
 - Local OrcaSlicer preset import
-- **Orca Cloud profile sync** — sign in and use your Orca Cloud printer/process/filament presets as a preset tier in the slice dialog and AMS-slot picker
+- **Orca Cloud profile sync** — pair once and use your Orca Cloud printer/process/filament presets as a preset tier in the slice dialog and AMS-slot picker; mirrored server-side into the filament family catalog alongside Bambu Cloud's
 - K-profiles (pressure advance)
 - Git backup (GitHub + GitLab)
 - API keys & webhooks
