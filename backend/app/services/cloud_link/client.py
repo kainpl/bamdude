@@ -241,6 +241,23 @@ class CloudLinkClient:
         #: Whether the handshake currently holds. Read by the service for its
         #: status endpoint; never a decision input here.
         self.connected = False
+        # Set by :meth:`request_snapshot`, honoured by the pump. An event
+        # rather than a direct send, because the socket belongs to the three
+        # tasks of one connection: a caller from outside has no ``ws`` and, if
+        # it had one, would be a fourth writer racing them.
+        self._snapshot_requested = asyncio.Event()
+
+    def request_snapshot(self) -> None:
+        """Ask the live connection to send a fresh snapshot. Synchronous.
+
+        The service calls this when the publish set changes, so the portal
+        learns about a printer that was just ticked without waiting for the
+        next reconnect. Setting the flag costs nothing when the link is down —
+        the pump exists only while a connection does, and a reconnect sends a
+        snapshot of its own, which is why :meth:`_after_hello` clears the flag
+        instead of letting it fire a redundant second one.
+        """
+        self._snapshot_requested.set()
 
     # ---------------------------------------------------------------- the run
 
@@ -401,6 +418,10 @@ class CloudLinkClient:
         self._live_since = time.monotonic()
         self.connected = True
         self._uplink.reset_transient()
+        # A snapshot asked for while the link was down is about to be answered
+        # by the connect snapshot below. Left standing it would send a second,
+        # identical one a pump cycle later.
+        self._snapshot_requested.clear()
         await self._record_connected()
         await self._audit("connect", f"connected to {url}")
         await self._send_snapshot(ws)
@@ -583,12 +604,22 @@ class CloudLinkClient:
         work: a connection edge produces an event *and* the status behind it,
         and the uplink hands those over in two calls. Draining once per cycle
         would deliver the second one a full idle-sleep late, every time.
+
+        ⚠️ **A requested snapshot goes out AFTER the drain, never before.** The
+        queued frames were built from broadcasts the snapshot has already
+        absorbed — it reads the live state, so it is newer than all of them.
+        Sending it first would let the backlog land on top and replay readings
+        the snapshot had just superseded: the same trap ``reset_transient``
+        exists to close on reconnect.
         """
         while True:
             frame = await self._uplink.drain()
             while frame is not None:
                 await self._send(ws, frame)
                 frame = await self._uplink.drain()
+            if self._snapshot_requested.is_set():
+                self._snapshot_requested.clear()
+                await self._send_snapshot(ws)
             await asyncio.sleep(self._idle_sleep_s)
 
     async def _send_snapshot(self, ws: aiohttp.ClientWebSocketResponse) -> None:

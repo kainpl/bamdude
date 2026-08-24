@@ -236,6 +236,17 @@ class Uplink:
         """How many messages are waiting for a drain."""
         return len(self._queue)
 
+    @property
+    def published(self) -> frozenset[int]:
+        """The printer ids ``drain`` currently lets through.
+
+        A copy, and frozen: the service narrows this set when the allowlist
+        changes, and it must do that through :meth:`set_publish_set` — a caller
+        mutating the live set would be editing the filter between two pops of
+        one drain.
+        """
+        return frozenset(self._publish)
+
     # ------------------------------------------------------------- the intake
 
     def feed(self, message: dict) -> None:

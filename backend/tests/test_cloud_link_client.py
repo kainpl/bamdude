@@ -460,6 +460,54 @@ async def test_a_resync_produces_a_second_snapshot_after_its_result(session_fact
     assert types[:3] == ["snapshot", "cmd_result", "snapshot"]
 
 
+async def test_a_requested_snapshot_is_sent_by_the_pump(session_factory, portal):
+    """The service's way of saying "the publish set changed".
+
+    It goes out on the pump rather than from the caller, because the socket
+    belongs to the three tasks of a connection — a caller sending directly
+    would be a fourth writer racing them.
+    """
+
+    async def script(ws, instance, index):
+        await instance.accept(ws, index)
+        await instance.expect(is_type("snapshot"), connection=index)
+
+    instance, url = await portal(script)
+    await pair_with(session_factory, url)
+    client = make_client(session_factory)
+
+    async with running(client):
+        first = await instance.expect(is_type("snapshot"))
+        client.request_snapshot()
+        await instance.expect(lambda f: f["type"] == "snapshot" and f is not first)
+
+    assert [f["type"] for f in instance.frames].count("snapshot") == 2
+
+
+async def test_a_snapshot_asked_for_while_the_link_was_down_is_not_sent_twice(session_factory, portal):
+    """A reconnect sends a snapshot of its own, so the pending ask is answered.
+
+    Left standing, the flag would fire a second, identical snapshot one pump
+    cycle after every connect — for a farm that had asked once, weeks ago.
+    """
+
+    async def script(ws, instance, index):
+        await instance.accept(ws, index)
+        await instance.expect(is_type("snapshot"), connection=index)
+
+    instance, url = await portal(script)
+    await pair_with(session_factory, url)
+    client = make_client(session_factory)
+    client.request_snapshot()  # while there is no connection at all
+
+    async with running(client):
+        await instance.expect(is_type("snapshot"))
+        # Several pump cycles at the injected 0.01 s idle sleep.
+        await asyncio.sleep(0.1)
+
+    assert [f["type"] for f in instance.frames].count("snapshot") == 1
+
+
 async def test_an_inbound_heartbeat_from_the_portal_is_tolerated(session_factory, portal):
     """The portal may beat back. It is not a command and it is not an error —
     a reader that treated an unhandled frame as fatal would drop the link on a
