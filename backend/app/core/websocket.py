@@ -63,8 +63,13 @@ class ConnectionManager:
 
         Failures are per-listener, so one bad subscriber cannot rob the next
         one of the message.
+
+        Iterated over a copy: a listener is allowed to unregister itself from
+        inside its own call — a link shutting down on the very message that
+        told it to — and mutating the list mid-iteration would silently skip
+        whoever happened to be standing next to it.
         """
-        for cb in self._internal_listeners:
+        for cb in list(self._internal_listeners):
             try:
                 cb(message)
             except Exception as e:

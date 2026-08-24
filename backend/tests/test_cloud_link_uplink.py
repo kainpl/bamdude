@@ -43,6 +43,7 @@ from backend.app.services.cloud_link.uplink import (
     Uplink,
     _status_of,
 )
+from backend.app.services.printer_manager import printer_state_to_dict
 
 # --------------------------------------------------------------- the fixtures
 
@@ -458,22 +459,70 @@ async def test_an_unpublished_printers_print_start_is_dropped():
 async def test_the_connection_edge_becomes_an_online_or_offline_event():
     """There is no dedicated connect/disconnect broadcast in the product — the
     connection state travels inside ``printer_status.data.connected``, so the
-    edge is what the uplink watches."""
+    edge is what the uplink watches.
+
+    Each edge yields TWO frames, in this order: the event that announces the
+    transition, then the status that is the new steady state.
+    """
     uplink = make_uplink({1})
 
     uplink.feed(status_message(1, connected=True))
     assert (await uplink.drain()).type == "status", "the first sighting is a status, not an event"
 
     uplink.feed(status_message(1, connected=False, state="IDLE"))
-    frame = await uplink.drain()
-    assert frame is not None
-    assert frame.type == "event"
-    assert frame.data.kind == "printer_offline"
+    assert (await uplink.drain()).data.kind == "printer_offline"
+    assert (await uplink.drain()).data.printer.state == "offline"
 
     uplink.feed(status_message(1, connected=True, state="IDLE"))
-    frame = await uplink.drain()
-    assert frame is not None
-    assert frame.data.kind == "printer_online"
+    assert (await uplink.drain()).data.kind == "printer_online"
+    assert (await uplink.drain()).data.printer.state == "idle"
+
+
+async def test_the_offline_edge_carries_its_status_even_inside_the_throttle_window():
+    """The portal must not be left holding "printing" for a printer that is gone.
+
+    A disconnected printer produces no further ``printer_status`` broadcast at
+    all, so the status accompanying the edge is the LAST word on that machine
+    until it comes back. Throttling it away — which is what would happen almost
+    every time, since the edge lands inside a window opened milliseconds
+    earlier by the previous push — would leave the last delivered status saying
+    the machine was mid-print, for as long as it stayed off.
+    """
+    clock = Clock()
+    uplink = make_uplink({1}, min_interval_s=60.0, now=clock)
+
+    uplink.feed(status_message(1, connected=True, state="RUNNING", progress=42.0))
+    assert (await uplink.drain()).data.printer.state == "printing"
+
+    clock.advance(1.0)
+    uplink.feed(status_message(1, connected=False, state="RUNNING", progress=42.0))
+
+    assert (await uplink.drain()).data.kind == "printer_offline"
+    stale_check = await uplink.drain()
+    assert stale_check is not None
+    assert stale_check.type == "status"
+    assert stale_check.data.printer.state == "offline"
+    assert stale_check.data.printer.progress is None
+
+
+async def test_the_edge_status_still_spends_the_throttle_window():
+    """The status that rides an edge IS that printer's report for now. Leaving
+    the window unspent would let the very next ordinary push through
+    immediately behind it."""
+    clock = Clock()
+    uplink = make_uplink({1}, min_interval_s=5.0, now=clock)
+
+    uplink.feed(status_message(1, connected=True))
+    await uplink.drain()
+
+    clock.advance(5.0)
+    uplink.feed(status_message(1, connected=False, state="IDLE"))
+    assert (await uplink.drain()).data.kind == "printer_offline"
+    assert (await uplink.drain()).type == "status"
+
+    clock.advance(1.0)
+    uplink.feed(status_message(1, connected=False, state="IDLE"))
+    assert await uplink.drain() is None
 
 
 async def test_the_first_sighting_of_a_printer_raises_no_connection_event():
@@ -751,6 +800,163 @@ async def test_the_snapshot_refreshes_the_in_memory_publish_set(db_session: Asyn
 
     uplink.feed(status_message(1))
     assert await uplink.drain() is not None
+
+
+async def test_an_archived_printer_stops_producing_status_frames_too(db_session: AsyncSession):
+    """The availability filter has to reach ``drain``, not only the snapshot.
+
+    An archived printer is retired from the app, not unplugged: it may still be
+    MQTT-connected at the moment it is archived, and every push it makes is
+    still broadcast. Seeding the in-memory set with the raw allowlist made the
+    filter cosmetic — the machine was absent from the snapshot and present in
+    every status frame that followed it, which is the louder of the two.
+    """
+    await _add_printer(db_session, 1, "Retired X1C", "X1C", archived=True)
+    await _add_printer(db_session, 2, "P1S Shelf", "P1S")
+    await _publish(db_session, 1, 2)
+
+    uplink = Uplink(manager=FakeManager(names={1: ("Retired X1C", "X1C"), 2: ("P1S Shelf", "P1S")}))
+    await uplink.build_snapshot(db_session)
+
+    uplink.feed(status_message(1))
+    assert await uplink.drain() is None, "archived means gone from the portal, status frames included"
+
+    uplink.feed(status_message(2))
+    assert await uplink.drain() is not None
+
+
+async def test_a_printer_in_maintenance_mode_stops_producing_status_frames_too(db_session: AsyncSession):
+    """Same for ``is_active`` — "available" is one definition, applied once."""
+    await _add_printer(db_session, 1, "Parked X2D", "X2D", is_active=False)
+    await _publish(db_session, 1)
+
+    uplink = Uplink(manager=FakeManager(names={1: ("Parked X2D", "X2D")}))
+    await uplink.build_snapshot(db_session)
+
+    uplink.feed(status_message(1))
+    assert await uplink.drain() is None
+
+
+async def test_the_snapshot_seeds_the_connection_watcher(db_session: AsyncSession):
+    """``_connection_event`` stays silent on a printer it has never seen, so
+    that the snapshot is not immediately echoed back as an event. That same
+    silence swallowed the FIRST real connection change after every agent
+    reconnect — the snapshot has to hand the watcher its starting point.
+    """
+    await _add_printer(db_session, 1, "X2D Front-Left", "X2D")
+    await _publish(db_session, 1)
+
+    uplink = Uplink(manager=FakeManager(states={1: _running_state()}, names={1: ("X2D Front-Left", "X2D")}))
+    snapshot = await uplink.build_snapshot(db_session)
+    assert snapshot.data.printers[0].state == "printing", "the snapshot says it is up"
+
+    uplink.feed(status_message(1, connected=False, state="RUNNING"))
+
+    frame = await uplink.drain()
+    assert frame is not None
+    assert frame.data.kind == "printer_offline"
+
+
+async def test_a_snapshot_of_a_disconnected_printer_seeds_the_watcher_the_other_way(db_session: AsyncSession):
+    """The seed has to be the reported value, not a hopeful True — otherwise a
+    farm that reconnects while a printer is down invents a ``printer_offline``
+    the moment it comes back."""
+    await _add_printer(db_session, 1, "X2D Front-Left", "X2D")
+    await _publish(db_session, 1)
+
+    uplink = Uplink(manager=FakeManager(names={1: ("X2D Front-Left", "X2D")}))
+    assert (await uplink.build_snapshot(db_session)).data.printers[0].state == "offline"
+
+    uplink.feed(status_message(1, connected=True))
+
+    frame = await uplink.drain()
+    assert frame is not None
+    assert frame.data.kind == "printer_online"
+
+
+# --------------------------------------------------------------- end to end
+
+
+async def test_a_real_broadcast_reaches_the_portal_as_a_status_frame():
+    """The one test with nothing hand-copied in it.
+
+    Every other fixture here is a transcription of what a helper builds, and a
+    transcription cannot fail when the helper drifts. This one registers
+    ``feed`` on a real ``ConnectionManager``, calls the real
+    ``send_printer_status`` with a real ``printer_state_to_dict`` over a real
+    ``PrinterState``, and asserts the frame that comes out — so a renamed key
+    in any of the three lands here instead of in production.
+    """
+    manager = ConnectionManager()
+    uplink = make_uplink({7})
+    uplink._identity[7] = ("X2D Front-Left", "X2D")
+    manager.add_internal_listener(uplink.feed)
+
+    state = PrinterState(
+        connected=True,
+        state="RUNNING",
+        subtask_name="bracket_v3",
+        progress=42.0,
+        temperatures={"bed": 60.0, "bed_target": 60.0, "nozzle": 219.5, "nozzle_target": 220.0, "chamber": 38.0},
+    )
+    await manager.send_printer_status(7, printer_state_to_dict(state, 7, "X2D"))
+
+    frame = await uplink.drain()
+    assert frame is not None
+    assert frame.type == "status"
+    printer = frame.data.printer
+    assert printer.id == "7"
+    assert printer.state == "printing"
+    assert printer.progress == 42.0
+    assert printer.job_name == "bracket_v3"
+    assert printer.temps.model_dump() == {
+        "bed": 60.0,
+        "bed_target": 60.0,
+        "nozzle": 219.5,
+        "nozzle_target": 220.0,
+        "chamber": 38.0,
+    }
+    assert parse_frame(make_frame(frame)).type == "status"
+
+    manager.remove_internal_listener(uplink.feed)
+
+
+async def test_a_real_print_complete_broadcast_reaches_the_portal_as_an_event():
+    """The same wiring for the other direction the product pushes in —
+    ``send_print_complete``'s outer keys, against the real helper."""
+    manager = ConnectionManager()
+    uplink = make_uplink({7})
+    manager.add_internal_listener(uplink.feed)
+
+    await manager.send_print_complete(
+        7,
+        {"status": "completed", "filename": "Metadata/plate_1.gcode", "subtask_name": "bracket_v3"},
+    )
+
+    frame = await uplink.drain()
+    assert frame is not None
+    assert frame.data.kind == "print_finished"
+    assert frame.data.printer_id == "7"
+
+    manager.remove_internal_listener(uplink.feed)
+
+
+async def test_a_listener_can_unregister_itself_without_skipping_its_neighbour():
+    """A link shutting down does it on the message that told it to. Mutating
+    the list mid-iteration would silently drop whoever came next."""
+    manager = ConnectionManager()
+    seen: list[str] = []
+
+    def leaves(message: dict) -> None:
+        seen.append("first")
+        manager.remove_internal_listener(leaves)
+
+    manager.add_internal_listener(leaves)
+    manager.add_internal_listener(lambda message: seen.append("second"))
+
+    await manager.broadcast({"type": "printer_status", "printer_id": 1, "data": {}})
+
+    assert seen == ["first", "second"]
 
 
 async def test_an_hms_error_on_a_snapshot_printer_crosses(db_session: AsyncSession):

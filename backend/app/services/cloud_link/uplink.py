@@ -21,22 +21,33 @@ Four rules hold the module together.
   write in the product. It takes the message, puts it in a bounded deque, and
   returns. All the thinking happens in :meth:`Uplink.drain`, which the link's
   own loop calls.
-* **No database on the hot path.** ``drain`` filters against an in-memory copy
-  of the publish set. :meth:`Uplink.build_snapshot` is the one method that
-  holds a session, and it refreshes that copy while it is there — one query
-  answering both questions.
-* **Availability is the database's answer, not the manager's.** A
+* **No database on the hot path.** ``drain`` works entirely from in-memory
+  state: the publish set, each printer's name and model, and its last-known
+  ``connected``. :meth:`Uplink.build_snapshot` is the one method that holds a
+  session, and it refreshes all three while it is there — one query answering
+  every question ``drain`` is not allowed to ask.
+* **Availability is the database's answer, and it reaches BOTH paths.** A
   ``CloudLinkPrinter`` row survives archiving on purpose (the allowlist has no
   opinion about a machine's lifecycle, and rebuilding it on archive would lose
   a user's choice if they restored the printer). So the read side filters:
   "available" here is ``is_active AND NOT archived``, the same definition the
-  rest of the codebase uses.
+  rest of the codebase uses. ⚠️ The set ``build_snapshot`` hands ``drain`` is
+  the FILTERED one — an archived printer stays MQTT-connected and goes on
+  broadcasting, so seeding the raw allowlist would keep it out of the snapshot
+  and put it in every status frame after it, which is the louder of the two.
 
 ⚠️ **A printer's contract id is its local integer as a decimal string** —
 printer 7 is ``"7"``. The contract types the field as an opaque string and the
 portal's own fixtures use ``"p-001"``, but a prefix here would need parsing
 back off every inbound ``cmd``; ``int()`` is the whole mapping and there is
 nothing to keep in sync.
+
+⚠️ **A connection change emits two frames**, in this order: the
+``printer_online`` / ``printer_offline`` event, then the status carrying the
+new state — and that status is exempt from the throttle. A printer that has
+gone offline sends no further ``printer_status`` broadcast, so its edge status
+is the last word about it; dropping it would leave the portal on whatever the
+machine was doing when it vanished.
 
 Two things this module deliberately does NOT do:
 
@@ -199,8 +210,13 @@ class Uplink:
         self._dropped = 0
         self._publish: set[int] = set()
         self._last_status_at: dict[int, float] = {}
+        # Frames built but not yet handed over. Holds at most one today — a
+        # connection edge emits an event and the status behind it, and
+        # ``drain`` answers the outbox before it pops the queue again.
+        self._outbox: deque[AnyFrame] = deque()
         # Last ``connected`` we reported per printer, for the online/offline
-        # edge. Absent means "never seen" — see ``_connection_event``.
+        # edge. Absent means "never seen" — see ``_connection_event``. Seeded
+        # by ``build_snapshot`` so a reconnect does not swallow the next edge.
         self._connected: dict[int, bool] = {}
         # id -> (name, model), filled by ``build_snapshot`` from the database.
         # The status path has no session, and this is more authoritative than
@@ -261,10 +277,16 @@ class Uplink:
         throttled status would hide the ``print_finished`` sitting behind it
         until the caller polled again.
 
+        The outbox is answered first, so a connection edge's two frames leave
+        in order and neither can be overtaken by a message queued after them.
+
         Async because the caller is an async loop and because the seam should
         not have to change if a future frame ever needs to await something. It
         deliberately touches no database — see the module docstring.
         """
+        if self._outbox:
+            return self._outbox.popleft()
+
         while self._queue:
             frame = self._normalize(self._queue.popleft())
             if frame is not None:
@@ -304,20 +326,36 @@ class Uplink:
         return None
 
     def _status_or_connection_event(self, printer_id: int, data: Mapping[str, Any]) -> AnyFrame | None:
-        """A ``status`` frame — unless the printer just came up or went away.
+        """A ``status`` frame, preceded by an event when the connection changed.
 
-        A connection edge is discrete and therefore an event, which the
-        throttle never touches. The status half of that same message is not
-        also emitted: ``drain`` returns one frame, and the next push (a second
-        or two later) carries the state anyway.
+        ⚠️ **A connection edge emits BOTH frames, and the status is not
+        throttled.** The event announces the transition; the status is the new
+        steady state that follows it, so the event goes first and the status
+        waits one ``drain`` in the outbox.
+
+        Sending only the event was a bug with no second chance to correct it: a
+        printer that has gone offline produces no further ``printer_status``
+        broadcast at all, so the last status the portal ever received was the
+        one saying ``printing`` — and it would have gone on saying so until the
+        machine came back. Throttling the status would reintroduce exactly that
+        hole whenever the edge landed inside a window, which for a printer
+        pushing several times a second is almost always.
         """
         edge = self._connection_event(printer_id, data)
-        if edge is not None:
-            return edge
+        if edge is None:
+            if not self._may_send_status(printer_id):
+                return None
+            return self._status_frame(printer_id, data)
 
-        if not self._may_send_status(printer_id):
-            return None
+        # Stamp the window as used: the status below IS this printer's report
+        # for now, and an unstamped clock would let the next ordinary push
+        # through immediately after.
+        self._last_status_at[printer_id] = self._now()
+        self._outbox.append(self._status_frame(printer_id, data))
+        return edge
 
+    def _status_frame(self, printer_id: int, data: Mapping[str, Any]) -> AnyFrame:
+        """One ``status`` frame. The throttle is the caller's question."""
         return Status(
             v=1,
             id=new_frame_id(),
@@ -511,19 +549,25 @@ class Uplink:
     async def build_snapshot(self, session: AsyncSession) -> Snapshot:
         """Every published, available printer as it stands right now.
 
-        Sent at connect, so it is also where the in-memory publish set and the
-        identity cache are refreshed — one pass over the database answering
-        every question ``drain`` is not allowed to ask.
+        Sent at connect, so it is also where everything ``drain`` is forbidden
+        to ask about is refreshed: the in-memory publish set, the identity
+        cache, and each printer's last-known ``connected``. One pass over the
+        database answering all of it.
 
-        ⚠️ **Availability is filtered here, not in the allowlist.** A
-        ``CloudLinkPrinter`` row survives archiving; ``is_active AND NOT
-        archived`` is what decides whether the portal hears about a machine,
-        the same definition used everywhere else in the codebase.
+        ⚠️ **Availability is filtered here, and the filtered set is what
+        ``drain`` gets.** A ``CloudLinkPrinter`` row survives archiving — the
+        allowlist has no opinion about a machine's lifecycle — so
+        ``is_active AND NOT archived`` is what decides whether the portal hears
+        about a printer, the same definition used everywhere else in the
+        codebase. Seeding ``drain`` with the RAW allowlist would have made that
+        filter cosmetic: an archived printer stays MQTT-connected and goes on
+        broadcasting, so it would have been absent from the snapshot and
+        present in every status frame after it.
         """
         published = await get_publish_set(session)
-        self.set_publish_set(published)
 
         printers: list[UplinkPrinter] = []
+        available: set[int] = set()
         if published:
             rows = (
                 await session.execute(
@@ -537,13 +581,22 @@ class Uplink:
 
             manager = self._printer_manager()
             for printer_id, name, model in rows:
+                available.add(printer_id)
                 self._identity[printer_id] = (name or f"Printer {printer_id}", model or "")
                 state = None
                 try:
                     state = manager.get_status(printer_id) if manager else None
                 except Exception as e:  # pragma: no cover — defensive around a foreign object
                     logger.debug("Cloud Link: no live state for printer %s: %s", printer_id, e)
-                printers.append(self._printer_from_status(printer_id, _status_of(state)))
+                status = _status_of(state)
+                # ⚠️ Seed the connection watcher from what the snapshot reports.
+                # ``_connection_event`` stays silent on a printer it has never
+                # seen, so without this every agent reconnect would swallow the
+                # first real connection change that followed it.
+                self._connected[printer_id] = bool(status.get("connected"))
+                printers.append(self._printer_from_status(printer_id, status))
+
+        self.set_publish_set(available)
 
         return Snapshot(
             v=1,
