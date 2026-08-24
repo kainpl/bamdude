@@ -567,9 +567,17 @@ async def _apply_runout_zero_corrections_spoolman(client, journal_events: list, 
     runouts with a positively-known slot and a frozen spoolman id; positive
     remaining is drained via ``use_spool`` (Spoolman's own ledger keeps the
     step), negative remaining is clamped to 0 via ``update_spool`` (a downward
-    move is a correction, not consumption).
+    move is a correction, not consumption). A pause-runout drains only when
+    its episode was CLOSED by a spool_loaded — a reinserted same reel keeps
+    printing and is not empty; an autoswitch is closed by definition. The
+    negative clamp stays unconditional (impossible arithmetic either way).
     """
-    from backend.app.models.print_usage_event import EVENT_RUNOUT, KIND_AMBIGUOUS
+    from backend.app.models.print_usage_event import (
+        EVENT_RUNOUT,
+        EVENT_SPOOL_LOADED,
+        KIND_AMBIGUOUS,
+        KIND_AUTOSWITCH,
+    )
 
     runouts = [
         e
@@ -600,7 +608,20 @@ async def _apply_runout_zero_corrections_spoolman(client, journal_events: list, 
         remaining = spool.get("remaining_weight")
         if remaining is None:
             continue
+        episode_closed = getattr(event, "kind", None) == KIND_AUTOSWITCH or any(
+            getattr(e, "event", "") == EVENT_SPOOL_LOADED
+            and getattr(e, "global_tray_id", None) == event.global_tray_id
+            and getattr(e, "id", 0) > getattr(event, "id", 0)
+            for e in (journal_events or [])
+        )
         try:
+            if remaining > 0 and not episode_closed:
+                logger.info(
+                    "[SPOOLMAN] Archive %s: runout on spool %s stays OPEN (no replacement seen) — not draining",
+                    archive_id,
+                    spool_id,
+                )
+                continue
             if remaining > 0:
                 await client.use_spool(spool_id, round(float(remaining), 2))
                 updated += 1

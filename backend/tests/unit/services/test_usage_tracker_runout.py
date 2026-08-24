@@ -170,6 +170,40 @@ class TestRunoutZeroPoint:
         assert any(r.get("status") == RUNOUT_STATUS for r in results)
 
     @pytest.mark.asyncio
+    async def test_an_open_episode_never_closes_the_books(self, db_session, tmp_path, monkeypatch):
+        """Runout WITHOUT a spool_loaded: the same reel was reinserted (AMS
+        without backup, or a cut-filament simulation) and kept printing — it
+        is demonstrably not empty. Closing it at label invented 606 g on a
+        half-full spool (X2D archive 734, measured live 2026-08-24)."""
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        spool_a = await _make_spool(db_session, weight_used=200)
+        await _journal(
+            db_session,
+            printer,
+            archive,
+            [
+                (EVENT_START, None, 0, 0, spool_a.id),
+                (EVENT_RUNOUT, KIND_PAUSE, 0, 140, spool_a.id),
+            ],
+        )
+        _active_sessions[printer.id] = _session(printer.id)
+
+        p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 300.0, "type": "PLA", "color": "#FF0000"}])
+        with p1, p2:
+            results = await on_print_complete(
+                printer.id, {"status": "completed"}, _pm(total_layers=200), db_session, archive_id=archive.id
+            )
+
+        await db_session.refresh(spool_a)
+        # the full print is charged, and nothing is topped up to the label
+        assert spool_a.weight_used == pytest.approx(500.0)
+        history = await _history(db_session)
+        assert not any(status == RUNOUT_STATUS for (_sid, _g, status) in history)
+        assert not any(r.get("status") == RUNOUT_STATUS for r in results)
+
+    @pytest.mark.asyncio
     async def test_overdrafted_books_clamp_silently(self, db_session, tmp_path, monkeypatch):
         monkeypatch.setattr(app_settings, "base_dir", tmp_path)
         printer = await _make_printer(db_session)

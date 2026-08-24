@@ -132,6 +132,34 @@ class TestSpoolmanRunoutZeroPoint:
         assert len(use_calls) == 3
 
     @pytest.mark.asyncio
+    async def test_an_open_pause_episode_is_not_drained(self):
+        """Same reel reinserted — no spool_loaded closed the episode, and the
+        reel demonstrably kept printing. Draining it would zero a half-full
+        spool (X2D archive 734, 2026-08-24)."""
+        events = [_event(1, EVENT_RUNOUT, KIND_PAUSE, 0, 140, 8)]
+        client = _client(remaining=400.0)
+        await _run(_tracking(), client, events)
+
+        drained = {tuple(c.args) for c in client.use_spool.await_args_list}
+        assert (8, 400.0) not in drained
+
+    @pytest.mark.asyncio
+    async def test_an_autoswitch_runout_drains_without_spool_loaded(self):
+        """The firmware moved to the backup — the origin could not have
+        continued; autoswitch closes the episode by definition."""
+        from backend.app.models.print_usage_event import EVENT_TRAY_CHANGE, KIND_AUTOSWITCH
+
+        events = [
+            _event(1, EVENT_RUNOUT, KIND_AUTOSWITCH, 0, 100, 8),
+            _event(2, EVENT_TRAY_CHANGE, None, 2, 100, 9),
+        ]
+        client = _client(remaining=30.0)
+        await _run(_tracking(), client, events)
+
+        drained = {tuple(c.args) for c in client.use_spool.await_args_list}
+        assert (8, 30.0) in drained
+
+    @pytest.mark.asyncio
     async def test_negative_remaining_clamps_via_update(self):
         events = [_event(1, EVENT_RUNOUT, KIND_PAUSE, 0, 140, 8)]
         client = _client(remaining=-25.0)

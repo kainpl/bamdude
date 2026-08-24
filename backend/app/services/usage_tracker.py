@@ -844,8 +844,22 @@ async def apply_runout_zero_corrections(
 
     Never fires for ``ambiguous`` kinds (a tangled spool people swap out is
     not empty) or for events whose slot/spool was not positively known.
+
+    A pause-runout closes the books only when its episode was CLOSED by a
+    spool_loaded — the same reel reinserted (AMS without backup, or a
+    cut-filament test) keeps printing and is demonstrably not empty; topping
+    it to the label invented 606 g on a half-full spool (X2D, 2026-08-24).
+    An autoswitch is closed by definition: the firmware moved to the backup,
+    the origin could not have continued. The negative clamp stays
+    unconditional either way — books over the label are impossible
+    arithmetic, not a claim about emptiness.
     """
-    from backend.app.models.print_usage_event import EVENT_RUNOUT, KIND_AMBIGUOUS
+    from backend.app.models.print_usage_event import (
+        EVENT_RUNOUT,
+        EVENT_SPOOL_LOADED,
+        KIND_AMBIGUOUS,
+        KIND_AUTOSWITCH,
+    )
 
     runouts = [
         e
@@ -867,6 +881,16 @@ async def apply_runout_zero_corrections(
         if label <= 0:
             continue
         tail = round(label - (spool.weight_used or 0), 1)
+        episode_closed = event.kind == KIND_AUTOSWITCH or any(
+            e.event == EVENT_SPOOL_LOADED and e.global_tray_id == event.global_tray_id and e.id > event.id
+            for e in (events or [])
+        )
+        if tail > 0 and not episode_closed:
+            logger.info(
+                "[UsageTracker] Runout on spool %d stays OPEN (no replacement seen) — not closing the books",
+                spool.id,
+            )
+            continue
         if tail > 0:
             spool.weight_used = float(label)
             spool.last_used = datetime.now(timezone.utc)
