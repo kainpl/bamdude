@@ -15,6 +15,7 @@ from backend.app.schemas.filament_family import (
     ClonedRootOut,
     CreateFamilyRequest,
     CreateFamilyResponse,
+    FamilyPushResolveRequest,
 )
 from backend.app.services.filament_preset_sync import request_sync_soon
 from backend.app.utils import filament_catalog as catalog
@@ -143,6 +144,29 @@ async def push_family_endpoint(
 
     try:
         return {"results": await push_family(db, filament_id=filament_id, ecosystem=ecosystem, user=current_user)}
+    except AuthoringError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/{filament_id}/push-resolve")
+async def push_resolve_endpoint(
+    filament_id: str,
+    body: FamilyPushResolveRequest,
+    current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
+    db: AsyncSession = Depends(get_db),
+):
+    """Resolve one Orca push conflict the way the user chose: ``force``
+    overwrites the cloud copy, ``adopt`` takes the cloud content locally."""
+    from backend.app.services import filament_push
+    from backend.app.services.filament_authoring import AuthoringError
+
+    row = await db.get(UserFilamentPreset, body.preset_row_id)
+    if row is None or row.family_filament_id != filament_id:
+        raise HTTPException(404, "preset row not found in this family")
+    try:
+        return await filament_push.resolve_push_conflict(
+            db, row_id=body.preset_row_id, action=body.action, user=current_user
+        )
     except AuthoringError as e:
         raise HTTPException(400, str(e))
 

@@ -46,3 +46,10 @@ class CreateFamilyResponse(BaseModel):
     roots: list[ClonedRootOut]
     warnings: list[str]
     push: list[dict] | None = None
+
+
+class FamilyPushResolveRequest(BaseModel):
+    """One conflicted preset row + the user's explicit answer."""
+
+    preset_row_id: int
+    action: Literal["force", "adopt"]

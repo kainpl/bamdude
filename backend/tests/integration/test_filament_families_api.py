@@ -79,7 +79,7 @@ async def test_authoring_options_lists_bs_types(async_client: AsyncClient):
     assert resp.status_code == 200
     body = resp.json()
     assert "PETG" in body["filament_types"]
-    assert body["push"] == {"bambu": True, "orca": False}
+    assert body["push"] == {"bambu": True, "orca": True}
 
 
 @pytest.mark.asyncio
@@ -137,3 +137,49 @@ async def test_cloud_only_create_requires_the_push(async_client: AsyncClient):
         },
     )
     assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_push_resolve_validates_and_routes_the_action(async_client: AsyncClient, db_session):
+    from unittest.mock import AsyncMock, patch
+
+    from backend.app.models.user_filament import UserFilamentPreset
+
+    row = UserFilamentPreset(
+        owner_user_id=None,
+        ecosystem="orca",
+        source="local",
+        name="Mine @P1S",
+        family_filament_id="Presolve1",
+        orca_pushed_profile_id="uuid-x",
+    )
+    db_session.add(row)
+    await db_session.commit()
+    await db_session.refresh(row)
+
+    with patch(
+        "backend.app.services.filament_push.resolve_push_conflict",
+        new=AsyncMock(return_value={"status": "overwritten", "profile_id": "uuid-x"}),
+    ) as resolver:
+        resp = await async_client.post(
+            "/api/v1/filament-families/Presolve1/push-resolve",
+            json={"preset_row_id": row.id, "action": "force"},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "overwritten"
+    assert resolver.call_args.kwargs["action"] == "force"
+
+    # a row from another family is not reachable through this url
+    resp = await async_client.post(
+        "/api/v1/filament-families/Pother123/push-resolve",
+        json={"preset_row_id": row.id, "action": "force"},
+    )
+    assert resp.status_code == 404
+
+    # unknown actions die in validation
+    resp = await async_client.post(
+        "/api/v1/filament-families/Presolve1/push-resolve",
+        json={"preset_row_id": row.id, "action": "merge"},
+    )
+    assert resp.status_code == 422
