@@ -4030,7 +4030,19 @@ class BambuMQTTClient:
                     # tracker double-credits at completion (original tray gets
                     # the full 3MF estimate via slot_to_tray + the AMS
                     # remain%-delta path adds the fallback weight on top).
-                    changed = tn != self.state.last_loaded_tray and self._was_running and not self._completion_triggered
+                    # Dedup keys on the LOG TAIL as well: after a mid-print
+                    # client recreation the restored log already carries the
+                    # current tray while the fresh client's last_loaded_tray
+                    # is -1 — appending again would hand the completion split
+                    # a same-tray duplicate whose second segment it silently
+                    # drops.
+                    _log_tail = self.state.tray_change_log[-1][0] if self.state.tray_change_log else None
+                    changed = (
+                        tn != self.state.last_loaded_tray
+                        and tn != _log_tail
+                        and self._was_running
+                        and not self._completion_triggered
+                    )
                     if (
                         changed
                         and tn >= 254
@@ -6258,6 +6270,13 @@ class BambuMQTTClient:
             tn = self.state.tray_now
             if self._is_journal_tray(tn):
                 self.state.tray_change_log.append((tn, 0))
+            # last_loaded_tray must NOT survive the print boundary: a
+            # consecutive print from the SAME tray otherwise never writes its
+            # opening boundary — the report matches the stale value and the
+            # journal stays tray-less for the whole print (X2D archive 734,
+            # 2026-08-24; the earlier print only had a boundary because a
+            # backend restart happened to reset the client).
+            self.state.last_loaded_tray = tn if self._is_journal_tray(tn) else -1
             # Initialize timelapse tracking based on current state
             # NOTE: xcam data is parsed BEFORE this code runs in _process_message,
             # so self.state.timelapse may already be set from this message.

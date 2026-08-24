@@ -5708,6 +5708,75 @@ class TestRunoutEpisodes:
         assert client.on_usage_event.call_args[0] == ("runout", "external", 254, 548)
 
 
+class TestTrayLogPerPrintBoundary:
+    """last_loaded_tray must not survive the print boundary, and the append
+    dedup keys on the LOG TAIL, not only on last_loaded_tray.
+
+    Measured live (X2D, 2026-08-24, archive 734): two consecutive prints from
+    the same AMS tray — the second print journaled NOTHING (the start row
+    seeds NULL because tray_now=255 at start, and the tray report matched the
+    stale last_loaded_tray from the previous print). The earlier print only
+    got its boundary because a backend restart happened to reset the client.
+    The log-tail guard also stops the restore-then-report duplicate: a
+    restored log of [[2,0]] plus a fresh client (last=-1) must not append
+    (2, X) again — the completion split silently drops the second same-tray
+    segment."""
+
+    @pytest.fixture
+    def client(self):
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        c = BambuMQTTClient(ip_address="1.2.3.4", serial_number="20PBOUND1", access_code="1")
+        c.state.raw_data = {"ams": {"ams": [{"id": 0, "tray": [{"id": 2, "tray_type": "PETG"}]}]}}
+        c.on_tray_change = MagicMock()
+        return c
+
+    def _feed_tray(self, client, tray):
+        client._process_message({"print": {"ams": {"tray_now": str(tray)}}})
+
+    def test_a_consecutive_same_tray_print_still_gets_its_boundary(self, client):
+        # print A fed tray 2 and finished
+        client.state.tray_now = 255  # retracted at start of the next print
+        client.state.last_loaded_tray = 2
+        client._previous_gcode_state = "FINISH"
+        client._process_message({"print": {"gcode_state": "RUNNING", "gcode_file": "next.3mf"}})
+        assert client.state.tray_change_log == []  # 255 seeds nothing
+
+        client.state.layer_num = 0
+        self._feed_tray(client, 2)
+
+        assert client.state.tray_change_log == [(2, 0)]
+        client.on_tray_change.assert_called_once_with(2, 0)
+
+    def test_the_seed_is_not_duplicated_by_the_first_report(self, client):
+        client.state.tray_now = 254
+        client.state.last_loaded_tray = 2  # stale from the previous print
+        client._previous_gcode_state = "IDLE"
+        client._process_message({"print": {"gcode_state": "RUNNING", "gcode_file": "ext.3mf"}})
+        assert client.state.tray_change_log == [(254, 0)]
+
+        self._feed_tray(client, 254)
+
+        assert client.state.tray_change_log == [(254, 0)]
+        client.on_tray_change.assert_not_called()
+
+    def test_a_restored_log_is_not_duplicated_by_the_next_report(self, client):
+        # mid-print client recreation: restore put the log back, the fresh
+        # client knows no last_loaded_tray
+        client._was_running = True
+        client._completion_triggered = False
+        client.state.state = "RUNNING"
+        client.state.layer_num = 120
+        client.state.tray_change_log = [(2, 0)]
+        client.state.last_loaded_tray = -1
+
+        self._feed_tray(client, 2)
+
+        assert client.state.tray_change_log == [(2, 0)]
+        client.on_tray_change.assert_not_called()
+        assert client.state.last_loaded_tray == 2  # tracking still catches up
+
+
 class TestRunoutTailThroughExternal:
     """When an AMS slot runs dry the firmware flips the nozzle's source to its
     external id and keeps printing the filament still in the feed tube — the
