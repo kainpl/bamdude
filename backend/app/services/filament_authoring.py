@@ -498,6 +498,8 @@ async def delete_family(db: AsyncSession, *, filament_id: str, also_cloud: bool 
         .all()
     )
     cloud_deleted = await _delete_pushed_copies(db, mirrors, user) if also_cloud else 0
+    if also_cloud:
+        cloud_deleted += await _delete_orca_pushed_copies(db, mirrors, user)
     presets_deleted = 0
     for row in mirrors:
         if row.local_preset_id is not None:
@@ -534,3 +536,25 @@ async def _delete_pushed_copies(db: AsyncSession, mirrors, user) -> int:
     finally:
         await cloud.close()
     return deleted
+
+
+async def _delete_orca_pushed_copies(db: AsyncSession, mirrors, user) -> int:
+    """Best-effort Orca profile delete (one batched call — the API takes a
+    list). 207/404 partials are tolerated: the family delete proceeds either
+    way, and a leftover cloud copy is the user's to clean in Orca Cloud."""
+    from backend.app.services.filament_push import _build_orca_cloud
+
+    ids = [m.orca_pushed_profile_id for m in mirrors if m.orca_pushed_profile_id]
+    if not ids:
+        return 0
+    svc = await _build_orca_cloud(db, user)
+    if svc is None:
+        return 0
+    try:
+        report = await svc.delete_profiles(ids)
+        return len(report.get("deleted") or [])
+    except Exception as e:  # noqa: BLE001 — best-effort per spec §5
+        logger.info("orca cloud delete failed: %s", e)
+        return 0
+    finally:
+        await svc.close()

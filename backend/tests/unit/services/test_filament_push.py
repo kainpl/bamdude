@@ -116,10 +116,12 @@ async def test_partial_failure_is_reported_not_raised(db_session):
 
 
 @pytest.mark.asyncio
-async def test_orca_leg_is_capability_gated(db_session):
-    assert PUSH_CAPABLE == {"bambu": True, "orca": False}
+async def test_unknown_ecosystems_stay_capability_gated(db_session):
+    # Orca went live 2026-08-24 (own client id + sync:write) — the gate now
+    # only refuses ecosystems nobody wired.
+    assert PUSH_CAPABLE == {"bambu": True, "orca": True}
     with pytest.raises(AuthoringError):
-        await push_family(db_session, filament_id="Pabc1234", ecosystem="orca")
+        await push_family(db_session, filament_id="Pabc1234", ecosystem="prusa")
 
 
 @pytest.mark.asyncio

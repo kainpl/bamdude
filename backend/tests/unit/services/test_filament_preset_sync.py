@@ -174,3 +174,75 @@ async def test_sync_folds_pushed_presets_instead_of_duplicating(db_session, monk
     assert by_name["Mine @P1S"].pushed_cloud_id == "PFUS_MINE"
     gone = by_name["Gone @P1S"]
     assert gone.pushed_cloud_id is None and gone.push_dirty is False
+
+
+@pytest.mark.asyncio
+async def test_orca_sync_folds_pushed_profiles_instead_of_duplicating(db_session, monkeypatch):
+    """Orca mirror of the §5 dedup: a pulled profile whose id equals a row's
+    orca_pushed_profile_id is OUR push; one gone from the FULL pull is cleared.
+    The vanish check runs on the unfiltered id set — a pushed profile that the
+    filament filter skipped must NOT read as deleted."""
+    db_session.add_all(
+        [
+            UserFilamentPreset(
+                owner_user_id=None,
+                ecosystem="orca",
+                source="local",
+                local_preset_id=None,
+                name="Mine @P1S",
+                family_filament_id="Paaaaaaa",
+                orca_pushed_profile_id="uuid-mine",
+                orca_pushed_updated_time=100,
+            ),
+            UserFilamentPreset(
+                owner_user_id=None,
+                ecosystem="orca",
+                source="local",
+                local_preset_id=None,
+                name="Gone @P1S",
+                family_filament_id="Pbbbbbbb",
+                orca_pushed_profile_id="uuid-gone",
+                orca_push_dirty=True,
+            ),
+            UserFilamentPreset(
+                owner_user_id=None,
+                ecosystem="orca",
+                source="local",
+                local_preset_id=None,
+                name="Filtered @P1S",
+                family_filament_id="Pccccccc",
+                orca_pushed_profile_id="uuid-filtered",
+                orca_pushed_updated_time=200,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    profiles = [
+        {
+            "id": "uuid-mine",
+            "name": "Mine @P1S",
+            "content": {"type": "filament", "filament_id": "Paaaaaaa", "filament_type": "PETG"},
+            "updated_time": 100,
+        },
+        # present in the pull but NOT a filament profile — filtered from
+        # incoming, must not be treated as vanished
+        {"id": "uuid-filtered", "name": "Filtered @P1S", "content": {"type": "machine"}, "updated_time": 200},
+    ]
+    svc = AsyncMock()
+    svc.list_profiles = AsyncMock(return_value=profiles)
+    svc.close = AsyncMock()
+    monkeypatch.setattr(sync, "build_authenticated_service", AsyncMock(return_value=svc))
+
+    outcome = await sync.sync_orca_presets_for_user(db_session, None)
+    assert outcome.ok
+
+    rows = (await db_session.execute(select(UserFilamentPreset))).scalars().all()
+    assert len(rows) == 3  # no cloud_orca duplicate was minted
+    by_name = {r.name: r for r in rows}
+    assert by_name["Mine @P1S"].orca_pushed_profile_id == "uuid-mine"
+    gone = by_name["Gone @P1S"]
+    assert gone.orca_pushed_profile_id is None
+    assert gone.orca_push_dirty is False
+    assert gone.orca_pushed_updated_time is None
+    assert by_name["Filtered @P1S"].orca_pushed_profile_id == "uuid-filtered"

@@ -291,6 +291,34 @@ async def sync_orca_presets_for_user(db: AsyncSession, user: User | None) -> Syn
             "nozzle_temp_max": _int_or_none(_scalar(content.get("nozzle_temperature_range_high"))),
             "updated_time": profile.get("updated_time"),
         }
+    # Own-push dedup (Orca mirror of the §5 rule): a pulled profile whose id
+    # equals a local row's orca_pushed_profile_id is OUR pushed copy — the
+    # local row IS the identity, so it never mints a cloud_orca duplicate.
+    # ⚠️ The vanish check runs against the FULL pull id set, not the
+    # filament-filtered ``incoming`` — a pushed profile the type filter
+    # skipped must not read as deleted-in-the-cloud.
+    all_pulled_ids = {str(p.get("id")) for p in profiles if p.get("id")}
+    pushed_rows = (
+        (
+            await db.execute(
+                select(UserFilamentPreset).where(
+                    UserFilamentPreset.source == "local",
+                    UserFilamentPreset.orca_pushed_profile_id.is_not(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in pushed_rows:
+        if row.orca_pushed_profile_id in incoming:
+            incoming.pop(row.orca_pushed_profile_id)
+        elif row.orca_pushed_profile_id not in all_pulled_ids:
+            row.orca_pushed_profile_id = None
+            row.orca_pushed_at = None
+            row.orca_push_dirty = False
+            row.orca_pushed_updated_time = None
+
     owner_id = user.id if user is not None else None
     return await _reconcile(db, owner_id=owner_id, ecosystem="orca", source="cloud_orca", incoming=incoming)
 
