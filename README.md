@@ -340,7 +340,7 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 - MQTT publishing for Home Assistant
 - Prometheus metrics for Grafana
 - Local OrcaSlicer preset import
-- **Orca Cloud profile sync** — pair once and use your Orca Cloud printer/process/filament presets as a preset tier in the slice dialog and AMS-slot picker; mirrored server-side into the filament family catalog alongside Bambu Cloud's
+- **Orca Cloud profile sync & push** — pair once (under BamDude's own registered app identity, via a device code) and use your Orca Cloud printer/process/filament presets as a preset tier in the slice dialog and AMS-slot picker; mirrored server-side into the filament family catalog alongside Bambu Cloud's. Authored filament families push back to Orca Cloud too, with explicit conflict resolution when a profile changed in the cloud
 - K-profiles (pressure advance)
 - Git backup (GitHub + GitLab)
 - API keys & webhooks
