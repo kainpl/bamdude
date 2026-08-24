@@ -303,6 +303,10 @@ async def list_families(
         mine = await _my_family_ids(db)
         if not mine:
             mine = None  # fresh install — show everything
+        else:
+            # The standard shelf: generics are everyone's. Without them the
+            # FIRST spool of a new material has no family to browse for.
+            mine = mine | catalog.generic_family_ids()
     out = [
         {
             "filament_id": f.filament_id,

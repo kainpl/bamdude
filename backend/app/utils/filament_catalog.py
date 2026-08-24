@@ -157,6 +157,19 @@ def search_families(q: str, limit: int = 50) -> list[CatalogFamily]:
     return sorted(out.values(), key=lambda f: f.alias)[:limit]
 
 
+@cache
+def generic_family_ids() -> frozenset[str]:
+    """The "standard shelf": every Generic-vendor family across ecosystems.
+    The mine-scope browse list always carries these — the first spool of a
+    new material needs its generic before anything references it."""
+    ids = set()
+    for eco in _ECOSYSTEMS:
+        for fam in _load(eco).families.values():
+            if (fam.vendor or "").strip().lower() == "generic":
+                ids.add(fam.filament_id)
+    return frozenset(ids)
+
+
 def generic_family_for_material(material: str) -> CatalogFamily | None:
     mat = (material or "").strip().upper()
     if not mat:

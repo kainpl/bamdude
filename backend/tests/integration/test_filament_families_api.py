@@ -58,14 +58,16 @@ async def test_default_scope_is_the_users_own_set(async_client: AsyncClient, db_
     resp = await async_client.get("/api/v1/filament-families", params={"limit": 200})
     assert len(resp.json()) > 50
 
-    # A spool linked to GFA00 narrows the browse list to it.
+    # A spool linked to GFA00 narrows the browse list to it — plus the
+    # always-present generic shelf (user-approved 2026-08-25).
     from backend.app.models.spool import Spool
+    from backend.app.utils.filament_catalog import generic_family_ids
 
     db_session.add(Spool(material="PLA", filament_family_id="GFA00"))
     await db_session.commit()
-    resp = await async_client.get("/api/v1/filament-families")
+    resp = await async_client.get("/api/v1/filament-families", params={"limit": 200})
     ids = {row["filament_id"] for row in resp.json()}
-    assert ids == {"GFA00"}
+    assert ids == {"GFA00"} | set(generic_family_ids())
 
     # Searching still reaches the whole catalog.
     resp = await async_client.get("/api/v1/filament-families", params={"q": "petg"})
@@ -249,3 +251,25 @@ async def test_push_resolve_refuses_someone_elses_owned_row(async_client: AsyncC
         json={"preset_row_id": row.id, "action": "force"},
     )
     assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_generic_families_are_always_on_the_browse_shelf(async_client: AsyncClient, db_session):
+    """The mine-scope browse list carries every Generic family even when
+    nothing references that material yet — otherwise the FIRST spool of a
+    new material has no family to pick (chicken-and-egg, user-approved
+    2026-08-25). BS's own installed-filaments default ships the generics."""
+    from backend.app.models.spool import Spool
+
+    # a non-empty "mine" so the fresh-install full-catalog fallback is NOT active
+    db_session.add(Spool(color_name="x", material="PETG", filament_family_id="GFG99", label_weight=1000))
+    await db_session.commit()
+
+    resp = await async_client.get("/api/v1/filament-families?q=&limit=200")
+    assert resp.status_code == 200
+    ids = {f["filament_id"] for f in resp.json()}
+    assert "GFU99" in ids  # Generic TPU — no TPU anywhere in this install
+    assert "GFR99" in ids  # Generic EVA
+    # a non-generic family nothing references stays out of the browse list
+    assert "GFU01" not in ids  # Bambu TPU 95A
