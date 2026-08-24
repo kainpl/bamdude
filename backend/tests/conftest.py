@@ -144,6 +144,7 @@ async def test_engine():
         bug_report,
         calibration_audit,
         calibration_session,
+        cloud_link,
         color_catalog,
         external_link,
         filament_calibration,

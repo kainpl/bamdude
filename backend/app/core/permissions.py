@@ -179,6 +179,10 @@ class Permission(StrEnum):
     # Cloud Auth (admin-level)
     CLOUD_AUTH = "cloud:auth"
     ORCA_CLOUD_AUTH = "orca_cloud:auth"
+    # Cloud Link — pairing this instance with the BamDude portal. A different
+    # question from CLOUD_AUTH: that one signs us in to somebody else's cloud,
+    # this one decides that somebody else's cloud may reach in here.
+    CLOUD_LINK_MANAGE = "cloud_link:manage"
 
     # API Keys (admin-level)
     API_KEYS_READ = "api_keys:read"
@@ -345,6 +349,7 @@ PERMISSION_CATEGORIES = {
     "Cloud": [
         Permission.CLOUD_AUTH,
         Permission.ORCA_CLOUD_AUTH,
+        Permission.CLOUD_LINK_MANAGE,
     ],
     "API Keys": [
         Permission.API_KEYS_READ,

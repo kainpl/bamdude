@@ -1238,6 +1238,14 @@ _APIKEY_DENIED_PERMISSIONS: frozenset[Permission] = frozenset(
         Permission.SMART_SENSORS_DELETE,
         # Network scanning — operator only (no API-key scope for this).
         Permission.DISCOVERY_SCAN,
+        # Cloud Link pairing. Deliberately NOT folded into can_access_cloud:
+        # that scope says "this key may talk to a cloud on the owner's behalf",
+        # which is outbound and revocable at the far end. CLOUD_LINK_MANAGE is
+        # the opposite direction — it decides that something outside the LAN may
+        # reach in, and mints the instance secret that lets it. A credential
+        # that lives in somebody's automation script does not get to make that
+        # call, so there is no scope column for it and none should be added.
+        Permission.CLOUD_LINK_MANAGE,
     }
 )
 

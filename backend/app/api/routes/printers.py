@@ -718,6 +718,7 @@ def _printer_cascade_models() -> tuple[type, ...]:
     from backend.app.models.ams_setting_audit import AmsSettingAudit
     from backend.app.models.calibration_audit import CalibrationAudit
     from backend.app.models.calibration_session import CalibrationSession
+    from backend.app.models.cloud_link import CloudLinkPrinter
     from backend.app.models.filament_calibration import FilamentCalibration
     from backend.app.models.firmware import FirmwareBatchItem
     from backend.app.models.printer_setting_audit import PrinterSettingAudit
@@ -732,6 +733,7 @@ def _printer_cascade_models() -> tuple[type, ...]:
         AmsSettingAudit,
         CalibrationAudit,
         CalibrationSession,
+        CloudLinkPrinter,
         FilamentCalibration,
         FirmwareBatchItem,
         PrinterSettingAudit,
