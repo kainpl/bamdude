@@ -5834,6 +5834,34 @@ class TestRunoutTailThroughExternal:
         client.on_tray_change.assert_called_once_with(254, 23)
         assert client.state.last_loaded_tray == 254
 
+    def test_repeated_tail_reports_log_once_at_info_then_debug(self, client, caplog):
+        """The firmware repeats tray_now=254 every second for the whole tube
+        drain — one INFO line per episode is signal, forty are noise."""
+        import logging
+
+        with caplog.at_level(logging.DEBUG, logger="backend.app.services.bambu_mqtt"):
+            self._feed(client, 254)
+            self._feed(client, 254)
+            self._feed(client, 254)
+
+        tail_lines = [r for r in caplog.records if "runout tail" in r.message]
+        assert [r.levelno for r in tail_lines] == [logging.INFO, logging.DEBUG, logging.DEBUG]
+
+    def test_a_new_episode_logs_info_again(self, client, caplog):
+        import logging
+
+        with caplog.at_level(logging.DEBUG, logger="backend.app.services.bambu_qtt".replace("qtt", "mqtt")):
+            self._feed(client, 254)
+            # the tray comes back (refill), slot loaded again, prints on...
+            client.state.raw_data["ams"]["ams"][0]["tray"][0]["tray_type"] = "PETG"
+            self._feed(client, 2)
+            # ...and empties once more — a NEW episode
+            client.state.raw_data["ams"]["ams"][0]["tray"][0]["tray_type"] = ""
+            self._feed(client, 254)
+
+        tail_lines = [r for r in caplog.records if "runout tail" in r.message]
+        assert [r.levelno for r in tail_lines] == [logging.INFO, logging.INFO]
+
     def test_runout_after_the_tail_still_lands_on_the_ams_tray(self, client):
         # the X2D reported the runout on the emptied AMS slot itself
         self._feed(client, 254)

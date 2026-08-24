@@ -1883,6 +1883,10 @@ class BambuMQTTClient:
         self._last_valid_layer_num: int = 0  # Last non-zero layer (firmware resets on cancel)
         self._startup_reconcile_done: bool = False  # one-shot guard for reconcile_printer_prints
         self._is_dual_nozzle: bool = False  # Set when device.extruder.info has >= 2 entries
+        # Last suppressed runout-tail (tray, origin) — repeats of the same
+        # episode log at DEBUG; the first sighting (and each new episode) at
+        # INFO. Cleared on a real tray change and on new-print reset.
+        self._last_tail_suppressed: tuple[int, int] | None = None
         self._last_message_time: float = 0.0  # Track when we last received a message
         # Count of report-topic messages received since the last (re)connect.
         # Lets check_staleness() distinguish "printer never sent a status
@@ -4062,13 +4066,20 @@ class BambuMQTTClient:
                         # last_loaded_tray deliberately stays on the origin so
                         # the post-refill return (or an AMS-backup hop) reads
                         # as one clean change from the origin tray.
-                        logger.info(
+                        _pair = (tn, self.state.last_loaded_tray)
+                        logger.log(
+                            logging.DEBUG if self._last_tail_suppressed == _pair else logging.INFO,
                             "[%s] tray_now=%d with emptied source slot %d - runout tail, not a tray change",
                             self.serial_number,
                             tn,
                             self.state.last_loaded_tray,
                         )
+                        self._last_tail_suppressed = _pair
                     else:
+                        # Any non-suppressed journal-tray sighting ends the
+                        # tail episode — including the quiet return to the
+                        # refilled origin slot, which is not a "change".
+                        self._last_tail_suppressed = None
                         if changed:
                             self.state.tray_change_log.append((tn, self.state.layer_num))
                             logger.info(
@@ -6277,6 +6288,7 @@ class BambuMQTTClient:
             # 2026-08-24; the earlier print only had a boundary because a
             # backend restart happened to reset the client).
             self.state.last_loaded_tray = tn if self._is_journal_tray(tn) else -1
+            self._last_tail_suppressed = None
             # Initialize timelapse tracking based on current state
             # NOTE: xcam data is parsed BEFORE this code runs in _process_message,
             # so self.state.timelapse may already be set from this message.
