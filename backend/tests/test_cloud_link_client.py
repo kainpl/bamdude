@@ -265,6 +265,44 @@ async def read_config(session_factory):
         return await get_config(session)
 
 
+#: asyncio's own transport machinery. The proactor loop keeps a pending
+#: ``accept`` task alive for the test portal's listening socket for as long as
+#: the server runs, and it is created lazily — during the client's run, which
+#: puts it squarely in the diff below. It is the event loop's, not the
+#: client's. ⚠️ ``locks.py`` is deliberately NOT in this list: ``stop_event
+#: .wait()`` lives there and is precisely the task the assertion must catch.
+LOOP_TRANSPORT_FILES = ("windows_events.py", "proactor_events.py", "selector_events.py")
+
+
+def is_loop_transport(task: asyncio.Task) -> bool:
+    code = getattr(task.get_coro(), "cr_code", None)
+    if code is None:
+        return False
+    path = code.co_filename.replace("\\", "/")
+    return "/asyncio/" in path and path.rsplit("/", 1)[-1] in LOOP_TRANSPORT_FILES
+
+
+async def leaked_since(before: set, timeout: float = 2.0) -> set:
+    """Tasks that are still pending and were not there before the client ran.
+
+    A snapshot diff rather than a filter on the coroutine's repr: the tasks
+    ``run()`` owns are not only its own methods — ``stop_event.wait()`` is a
+    bare asyncio coroutine, and a version of ``_live`` that forgot to cancel it
+    would leak a task that no name-based filter would ever name.
+
+    The wait exists for the portal's own request handler, which finishes a loop
+    turn or two after the agent closes the socket; a genuinely leaked task
+    never finishes and so survives the whole window.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        leaked = {t for t in asyncio.all_tasks() if not t.done() and not is_loop_transport(t)} - before
+        if not leaked or loop.time() >= deadline:
+            return leaked
+        await asyncio.sleep(0.01)
+
+
 # ------------------------------------------------------------------ the URL
 
 
@@ -569,11 +607,17 @@ async def test_a_revoke_command_persists_the_revocation_and_ends_the_run(session
     await pair_with(session_factory, url)
     client = make_client(session_factory)
 
+    before = set(asyncio.all_tasks())
     stop = asyncio.Event()
     task = asyncio.create_task(client.run(stop))
     try:
         result = await instance.expect(is_type("cmd_result"))
         await asyncio.wait_for(task, 5)
+        # ⚠️ Checked HERE, before the stop below is ever set. This is the only
+        # ending in the suite that ``stop_event`` never resolves, so it is the
+        # only one where a stop-waiter that ``_live`` forgot to cancel stays
+        # pending forever instead of quietly completing.
+        assert await leaked_since(before | {task}) == set(), "the teardown left tasks behind"
     finally:
         stop.set()
         with contextlib.suppress(TimeoutError, asyncio.CancelledError):
@@ -675,6 +719,65 @@ async def test_a_socket_that_drops_mid_session_brings_the_agent_back(session_fac
     for conversation in instance.per_connection[:3]:
         assert [f["type"] for f in conversation][:2] == ["hello", "snapshot"]
     assert "disconnect" in await audit_kinds(session_factory)
+
+
+async def test_a_portal_that_accepts_then_drops_keeps_escalating_the_backoff(session_factory, portal):
+    """A handshake is not a healthy link.
+
+    This is the shape of a half-deployed portal: the upgrade succeeds, the
+    ``hello_ok`` arrives, and the socket dies immediately. Resetting the
+    attempt counter at ``hello_ok`` would clear it on every one of those, so
+    the delay would never leave its base and the agent would spin at roughly
+    1 Hz — a connect audit, a config UPDATE, a full snapshot build and a
+    disconnect audit each time round, forever. The delays below have to GROW.
+    """
+
+    async def script(ws, instance, index):
+        # A heartbeat interval this connection cannot possibly survive.
+        await instance.accept(ws, index, heartbeat_interval_s=30.0)
+        await ws.close()
+
+    instance, url = await portal(script)
+    await pair_with(session_factory, url)
+    client = make_client(session_factory, backoff_base_s=0.01, backoff_cap_s=10.0, rng=lambda: 0.5)
+
+    delays: list[float] = []
+    real_next_delay = client._next_delay
+
+    def recording_next_delay() -> float:
+        delays.append(real_next_delay())
+        return delays[-1]
+
+    client._next_delay = recording_next_delay  # type: ignore[method-assign]
+
+    async with running(client):
+        await instance.expect(is_type("hello"), connection=3)
+
+    assert delays[:3] == [0.01, 0.02, 0.04], f"the backoff must escalate, got {delays}"
+
+
+async def test_a_link_that_survives_a_heartbeat_settles_the_backoff(session_factory, portal):
+    """The other half of the rule: a connection that proves itself is forgiven.
+
+    One heartbeat interval is the cheapest available proof that the link is
+    more than a successful upgrade, so the counter clears at the first
+    heartbeat and the next failure starts again from the base delay.
+    """
+
+    async def script(ws, instance, index):
+        await instance.accept(ws, index, heartbeat_interval_s=0.02)
+        if index == 0:
+            await ws.close()
+
+    instance, url = await portal(script)
+    await pair_with(session_factory, url)
+    client = make_client(session_factory)
+
+    async with running(client):
+        await instance.expect(is_type("hello"), connection=1)
+        assert client._attempt == 1, "the first connection's failure is still on the counter"
+        await instance.expect(is_type("heartbeat"), connection=1)
+        assert client._attempt == 0, "a link that lasted a heartbeat starts the backoff over"
 
 
 async def test_every_successful_hello_clears_what_the_dead_socket_left_behind(session_factory, portal):
@@ -832,8 +935,7 @@ async def test_an_unpaired_agent_does_not_open_a_socket_at_all(session_factory, 
 
 
 async def test_stopping_the_agent_closes_the_socket_and_returns(session_factory, portal):
-    """``run()`` owns every task it spawns — the leak fixture is the assertion
-    that none of them outlives it."""
+    """``run()`` owns every task it spawns and outlives none of them."""
 
     async def script(ws, instance, index):
         await instance.accept(ws, index)
@@ -842,6 +944,7 @@ async def test_stopping_the_agent_closes_the_socket_and_returns(session_factory,
     await pair_with(session_factory, url)
     client = make_client(session_factory)
 
+    before = set(asyncio.all_tasks())
     stop = asyncio.Event()
     task = asyncio.create_task(client.run(stop))
     await instance.expect(is_type("snapshot"))
@@ -849,8 +952,7 @@ async def test_stopping_the_agent_closes_the_socket_and_returns(session_factory,
     await asyncio.wait_for(task, 5)
 
     assert task.done() and not task.cancelled()
-    leftover = [t for t in asyncio.all_tasks() if not t.done() and "CloudLinkClient" in repr(t.get_coro())]
-    assert leftover == [], f"run() left its own tasks behind: {leftover}"
+    assert await leaked_since(before | {task}) == set(), "run() left tasks behind"
     assert "disconnect" in await audit_kinds(session_factory)
 
 
@@ -871,3 +973,75 @@ async def test_a_portal_that_never_answers_the_handshake_is_retried(session_fact
 
     assert instance.connections >= 2
     assert (await read_config(session_factory)).revoked is False
+
+
+async def test_a_stop_during_a_long_backoff_returns_at_once(session_factory, portal):
+    """Shutting down must not wait out a five-minute reconnect delay.
+
+    The backoff is a wait on the stop event, not a sleep, so a farm being
+    restarted comes down in milliseconds rather than whenever the next attempt
+    happened to be due. A plain ``asyncio.sleep`` here would hold the whole
+    application's shutdown for as long as the cap.
+    """
+
+    async def script(ws, instance, index):
+        await instance.accept(ws, index)
+        await ws.close()
+
+    instance, url = await portal(script)
+    await pair_with(session_factory, url)
+    client = make_client(session_factory, backoff_base_s=30.0, backoff_cap_s=300.0)
+
+    stop = asyncio.Event()
+    task = asyncio.create_task(client.run(stop))
+    try:
+        # Wait until the client is genuinely inside the backoff: the counter is
+        # advanced by ``_next_delay``, which is the first thing the wait does.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 5
+        while client._attempt == 0:
+            assert loop.time() < deadline, "the client never reached its backoff"
+            await asyncio.sleep(0.01)
+
+        stop.set()
+        await asyncio.wait_for(task, 2.0)
+    finally:
+        stop.set()
+        with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+            await asyncio.wait_for(task, 5)
+
+    assert task.done() and not task.cancelled()
+
+
+async def test_an_audit_that_cannot_be_written_never_breaks_the_loop(session_factory, portal, monkeypatch):
+    """An audit row is the operator's record, never a step of the protocol.
+
+    A database that is locked, mid-migration or simply gone must cost the
+    record and not the link — otherwise the one condition an operator most
+    needs the link for is the condition that takes it away. Both bookkeeping
+    paths are covered here: the ``disconnect`` written when the first socket
+    dies, and the ``connect`` written when the second one comes up.
+    """
+
+    async def explodes(*args, **kwargs):
+        raise RuntimeError("the audit table is locked")
+
+    monkeypatch.setattr(client_module, "write_audit", explodes)
+
+    async def script(ws, instance, index):
+        await instance.accept(ws, index)
+        await instance.expect(is_type("snapshot"), connection=index)
+        if index == 0:
+            await ws.close()
+            return
+        await ws.send_json(cmd("ping", "after-a-failed-audit"))
+
+    instance, url = await portal(script)
+    await pair_with(session_factory, url)
+
+    async with running(make_client(session_factory)):
+        result = await instance.expect(is_type("cmd_result"))
+
+    assert result["re"] == "after-a-failed-audit", "the link reconnected and kept working"
+    assert instance.connections >= 2
+    assert await audit_kinds(session_factory) == [], "every row failed to write, and none of them mattered"

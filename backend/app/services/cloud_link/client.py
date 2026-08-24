@@ -39,6 +39,16 @@ purpose: the handler got far enough to raise, so the agent does not know
 whether the work happened and ``ok=false`` would be a claim it cannot make. The
 portal times that request out, which is the honest outcome, and the
 ``cmd:failed`` audit row is what an operator finds afterwards.
+
+**A handshake is not a healthy link.** The reconnect backoff resets only once a
+connection has SURVIVED one heartbeat interval, never at ``hello_ok``. A portal
+that accepts the handshake and then drops the socket — a half-deployed
+instance, a proxy terminating idle upgrades, a load balancer with one bad
+member — would otherwise reset the counter on every attempt and pin the agent
+at the base delay forever: roughly one connect audit, one config UPDATE, one
+full snapshot build and one disconnect audit per second, for as long as the
+fault lasted. That is precisely the stampede the jitter exists to prevent, and
+it writes about 170 000 audit rows a day. See :meth:`CloudLinkClient._settle`.
 """
 
 from __future__ import annotations
@@ -48,6 +58,7 @@ import contextlib
 import json
 import logging
 import random
+import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Literal
@@ -188,7 +199,6 @@ class CloudLinkClient:
         *,
         session_factory: async_sessionmaker[AsyncSession],
         uplink: Uplink,
-        heartbeat_override_s: float | None = None,
         backoff_base_s: float = BACKOFF_BASE_S,
         backoff_cap_s: float = BACKOFF_CAP_S,
         idle_sleep_s: float = IDLE_SLEEP_S,
@@ -205,15 +215,12 @@ class CloudLinkClient:
             uplink: The uplink for this link. Registering it as a broadcast
                 listener is the service's job, not this one's — the client only
                 drains it.
-            heartbeat_override_s: Ignore the portal's interval and use this.
-                For tests; production takes what ``hello_ok`` says.
             rng: Source of the backoff jitter, injected so the sequence is
                 pinnable.
         """
         self._session_factory = session_factory
         self._uplink = uplink
         self._ctx = CommandContext(session_factory=session_factory, uplink=uplink)
-        self._heartbeat_override_s = heartbeat_override_s
         self._heartbeat_interval_s = DEFAULT_HEARTBEAT_INTERVAL_S
         self._backoff_base_s = backoff_base_s
         self._backoff_cap_s = backoff_cap_s
@@ -223,6 +230,9 @@ class CloudLinkClient:
         self._unknown_command_limit = unknown_command_limit
         self._rng = rng
         self._attempt = 0
+        # When the current connection entered its live phase, on the monotonic
+        # clock. ``None`` between connections. See :meth:`_settle`.
+        self._live_since: float | None = None
         # Serialises the three tasks that share one socket. aiohttp writes a
         # frame in one call today, but that is an implementation detail and
         # compression changes it — an interleaved write is a corrupt frame the
@@ -254,6 +264,7 @@ class CloudLinkClient:
                 reconnect = True
             finally:
                 self.connected = False
+                self._live_since = None
 
             if not reconnect or stop_event.is_set():
                 break
@@ -371,23 +382,23 @@ class CloudLinkClient:
         caches, and a stale outbox frame drained between the two would be
         describing the world the snapshot is in the middle of replacing.
         """
-        interval = self._heartbeat_override_s
-        if interval is None:
-            interval = hello_ok.data.heartbeat_interval_s
-            if interval <= 0:
-                logger.warning(
-                    "Cloud Link: the portal asked for a %.3fs heartbeat — using %.1fs instead",
-                    interval,
-                    DEFAULT_HEARTBEAT_INTERVAL_S,
-                )
-                interval = DEFAULT_HEARTBEAT_INTERVAL_S
+        interval = hello_ok.data.heartbeat_interval_s
+        if interval <= 0:
+            logger.warning(
+                "Cloud Link: the portal asked for a %.3fs heartbeat — using %.1fs instead",
+                interval,
+                DEFAULT_HEARTBEAT_INTERVAL_S,
+            )
+            interval = DEFAULT_HEARTBEAT_INTERVAL_S
         self._heartbeat_interval_s = interval
 
         throttle = hello_ok.data.throttle_min_interval_s
         if throttle >= 0:
             self._uplink.min_interval_s = throttle
 
-        self._attempt = 0  # the backoff is about failures, and this was not one
+        # ⚠️ The backoff is NOT reset here — a handshake is not a healthy link.
+        # :meth:`_settle` does it once this connection has lasted a heartbeat.
+        self._live_since = time.monotonic()
         self.connected = True
         self._uplink.reset_transient()
         await self._record_connected()
@@ -556,10 +567,13 @@ class CloudLinkClient:
         """Say we are still here, on the portal's interval.
 
         Sleeps first: the hello and the snapshot that just went out are better
-        proof of liveness than a heartbeat sent on top of them.
+        proof of liveness than a heartbeat sent on top of them. That first
+        sleep is also what makes this the right place to :meth:`_settle` the
+        backoff — reaching it *is* the connection having lasted an interval.
         """
         while True:
             await asyncio.sleep(self._heartbeat_interval_s)
+            self._settle()
             await self._send(ws, Heartbeat(v=1, id=new_frame_id(), ts=frame_timestamp(), type="heartbeat"))
 
     async def _pump_loop(self, ws: aiohttp.ClientWebSocketResponse) -> None:
@@ -647,6 +661,29 @@ class CloudLinkClient:
             logger.warning("Cloud Link: could not write the '%s' audit row: %s", kind, e)
 
     # ------------------------------------------------------------- the backoff
+
+    def _settle(self) -> None:
+        """Forget the failed attempts — but only once this link has earned it.
+
+        ⚠️ **The reset belongs here and NOT at ``hello_ok``.** A portal that
+        completes the handshake and then drops the socket is a real and boring
+        failure mode (a half-deployed instance, a proxy that terminates idle
+        upgrades, a load balancer with one bad member). Resetting on the
+        handshake would clear the counter on every one of those attempts, so
+        the delay would never leave its 1 s base and the agent would spin at
+        roughly 1 Hz — a connect audit, a config UPDATE, a full snapshot build
+        and a disconnect audit each time, some 170 000 audit rows a day, which
+        is the exact stampede the jitter exists to prevent.
+
+        Surviving one heartbeat interval is the cheapest available proof that
+        the connection is more than a successful upgrade: a link that dies
+        sooner goes on escalating toward the 300 s cap, and a healthy one is
+        forgiven at its first heartbeat.
+        """
+        if self._live_since is None:
+            return
+        if time.monotonic() - self._live_since >= self._heartbeat_interval_s:
+            self._attempt = 0
 
     def _next_delay(self) -> float:
         """The next reconnect delay, and advance the sequence.
