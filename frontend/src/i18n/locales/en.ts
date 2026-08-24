@@ -7338,6 +7338,7 @@ export default {
     enable: {
       label: 'Cloud Link',
       hint: 'Turns the connection to the portal on and off. The pairing is remembered either way.',
+      toggleAria: 'Turn the connection to the portal on or off',
     },
     status: {
       label: 'Status',

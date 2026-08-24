@@ -50,11 +50,22 @@ const unpairedStatus = {
 
 const emptyAudit = { items: [], total: 0, page: 1, page_size: 20 };
 
-function mockStatus(status: object) {
+/** Only the fields the panel reads. `GET /printers/` excludes archived rows but
+ *  NOT maintenance-mode ones, which is the whole point of two of the tests
+ *  below — so `is_active` varies here while `archived` stays false. */
+const printer = (id: number, name: string, is_active = true) => ({
+  id,
+  name,
+  model: 'X1C',
+  is_active,
+  archived: false,
+});
+
+function mockStatus(status: object, printers: object[] = []) {
   server.use(
     http.get('/api/v1/cloud-link/status', () => HttpResponse.json(status)),
     http.get('/api/v1/cloud-link/audit', () => HttpResponse.json(emptyAudit)),
-    http.get('/api/v1/printers/', () => HttpResponse.json([])),
+    http.get('/api/v1/printers/', () => HttpResponse.json(printers)),
   );
 }
 
@@ -79,8 +90,15 @@ describe('CloudLinkSettings', () => {
     expect(screen.queryByText('Offline')).not.toBeInTheDocument();
   });
 
-  it('asks for confirmation before unpairing', async () => {
+  it('asks for confirmation before unpairing, and does not act on the ask', async () => {
     const user = userEvent.setup();
+    let unpairCalls = 0;
+    server.use(
+      http.post('/api/v1/cloud-link/unpair', () => {
+        unpairCalls += 1;
+        return HttpResponse.json(unpairedStatus);
+      }),
+    );
     render(<CloudLinkSettings />);
 
     const unpair = await screen.findByRole('button', { name: 'Unpair' });
@@ -90,6 +108,46 @@ describe('CloudLinkSettings', () => {
     await user.click(unpair);
 
     expect(await screen.findByText('Unpair from the portal?')).toBeInTheDocument();
+    // Opening the dialog deletes nothing — the whole reason it exists.
+    expect(unpairCalls).toBe(0);
+  });
+
+  it('does not offer a printer the backend would refuse', async () => {
+    // `archived` and `is_active` are independent axes: `GET /printers/` drops
+    // archived rows, but a Maintenance Mode printer comes back with
+    // `is_active: false` — and the publish-set validator refuses it.
+    mockStatus(pairedStatus, [printer(1, 'Alpha'), printer(2, 'Beta', false)]);
+    render(<CloudLinkSettings />);
+
+    expect(await screen.findByText('Alpha')).toBeInTheDocument();
+    expect(screen.queryByText('Beta')).not.toBeInTheDocument();
+    expect(screen.getByText('1 of 1 selected')).toBeInTheDocument();
+  });
+
+  it('never sends a saved id the picker cannot show', async () => {
+    const user = userEvent.setup();
+    let sent: unknown = null;
+    // 2 was published and has since been parked in Maintenance Mode; 99 was
+    // published and has since been archived away entirely. Both still sit in
+    // `published_printer_ids`, and both would 422 the whole save.
+    mockStatus({ ...pairedStatus, published_printer_ids: [1, 2, 99] }, [
+      printer(1, 'Alpha'),
+      printer(2, 'Beta', false),
+    ]);
+    server.use(
+      http.put('/api/v1/cloud-link/publish-set', async ({ request }) => {
+        sent = await request.json();
+        return HttpResponse.json({ ...pairedStatus, published_printer_ids: [1] });
+      }),
+    );
+    render(<CloudLinkSettings />);
+
+    // The count agrees with what is on screen, not with what is stored.
+    expect(await screen.findByText('1 of 1 selected')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Save published set' }));
+
+    await waitFor(() => expect(sent).toEqual({ printer_ids: [1] }));
   });
 
   it('reports a 502 from the portal as "refused or unreachable"', async () => {

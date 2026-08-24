@@ -56,6 +56,11 @@ const AUDIT_PAGE_SIZE = 20;
 /** How often the panel re-reads the status while the link is running. */
 const STATUS_POLL_MS = 5_000;
 
+/** How often the audit table re-reads while the link is up. Slower than the
+ *  badge on purpose — it is a log somebody scans, not a state somebody waits
+ *  on — but not never: a frozen table beside a live badge reads as a bug. */
+const AUDIT_POLL_MS = 15_000;
+
 function formatWhen(iso: string | null): string | null {
   if (!iso) return null;
   // parseUTCDate forces UTC interpretation — a bare `new Date("...T10:00:00")`
@@ -96,20 +101,25 @@ export function CloudLinkSettings() {
   const paired = !!status?.paired;
 
   // House rule: `getPrinters()` stays param-free so the many bare
-  // `queryFn: api.getPrinters` call sites keep their inference. Archived and
-  // maintenance-mode printers are already excluded by it, which is the same
-  // definition of "available" the backend validates the publish set against.
+  // `queryFn: api.getPrinters` call sites keep their inference.
+  //
+  // ⚠️ It excludes ARCHIVED printers and nothing else. `archived` and
+  // `is_active` are INDEPENDENT axes — Maintenance Mode parks a printer with
+  // `is_active === false` and keeps its card visible — while the backend
+  // validates the publish set against `is_active AND NOT archived`. So the
+  // picker has to apply the second half itself, or it offers rows whose only
+  // possible outcome is a 422 that refuses the WHOLE save.
   const printersQuery = useQuery({
     queryKey: ['printers'],
     queryFn: api.getPrinters,
     enabled: canManage && paired,
   });
-  const printers = printersQuery.data ?? [];
 
   const auditQuery = useQuery({
     queryKey: ['cloudLink', 'audit', auditPage],
     queryFn: () => api.getCloudLinkAudit(auditPage, AUDIT_PAGE_SIZE),
     enabled: canManage && paired,
+    refetchInterval: AUDIT_POLL_MS,
   });
 
   /** Every mutating route answers with the full status — take it rather than
@@ -282,11 +292,31 @@ export function CloudLinkSettings() {
   })();
   const BadgeIcon = badge.Icon;
 
+  // "Available" is both halves of the backend's definition — see the comment
+  // on `printersQuery` above.
+  const availablePrinters = (printersQuery.data ?? []).filter(
+    (p) => p.is_active && !p.archived,
+  );
+  const availableIds = new Set(availablePrinters.map((p) => p.id));
+
   const savedSet = status.published_printer_ids;
-  const selectedSet = draftSet ?? savedSet;
+  // ⚠️ A saved id outlives the printer it names: publish a printer, then
+  // archive it or park it in Maintenance Mode, and its id stays in
+  // `published_printer_ids` with no row to render. Left in the selection it
+  // would be invisible, ride into every save, and 422 the whole thing forever
+  // — while "N of M selected" counted rows that are not on screen. Prune it
+  // from the seed the moment the picker has actually loaded (never before, or
+  // a slow list would silently clear the selection).
+  const seedSet = printersQuery.isSuccess
+    ? savedSet.filter((id) => availableIds.has(id))
+    : savedSet;
+  const selectedSet = draftSet ?? seedSet;
+  // Measured against what is SAVED, not against the seed: a pruned seed is a
+  // real difference from the stored set, and leaving Save disabled there would
+  // show the user a selection they cannot commit.
   const publishDirty =
-    draftSet !== null &&
-    (draftSet.length !== savedSet.length || draftSet.some((id) => !savedSet.includes(id)));
+    selectedSet.length !== savedSet.length ||
+    selectedSet.some((id) => !savedSet.includes(id));
 
   const togglePrinter = (id: number) => {
     setPublishError(null);
@@ -357,7 +387,7 @@ export function CloudLinkSettings() {
             <input
               type="checkbox"
               className="sr-only peer"
-              aria-label={t('cloudLink.enable.label')}
+              aria-label={t('cloudLink.enable.toggleAria')}
               checked={status.enabled}
               disabled={toggleEnabled.isPending}
               onChange={(e) => toggleEnabled.mutate(e.target.checked)}
@@ -468,12 +498,12 @@ export function CloudLinkSettings() {
                 <Loader2 className="w-4 h-4 animate-spin" />
                 {t('common.loading')}
               </p>
-            ) : printers.length === 0 ? (
+            ) : availablePrinters.length === 0 ? (
               <p className="text-sm text-bambu-gray italic">{t('cloudLink.publish.empty')}</p>
             ) : (
               <>
                 <div className="space-y-1 max-h-56 overflow-y-auto pr-1">
-                  {printers.map((p) => (
+                  {availablePrinters.map((p) => (
                     <label
                       key={p.id}
                       className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-bambu-dark cursor-pointer"
@@ -493,7 +523,7 @@ export function CloudLinkSettings() {
                   <span className="text-xs text-bambu-gray">
                     {t('cloudLink.publish.selected', {
                       selected: selectedSet.length,
-                      total: printers.length,
+                      total: availablePrinters.length,
                     })}
                   </span>
                   <button
