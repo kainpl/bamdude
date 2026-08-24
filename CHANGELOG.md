@@ -180,6 +180,8 @@
 
 ### Fixed
 
+- **A ticked start/end macro now actually fires on a direct library print.** The print dialog collected the event-macro selection but the "print now" path for library files never sent it — the queue path and archive reprints did — so a macro like "turn the chamber light off on start" silently never ran. One payload field restored, with a regression test pinning it.
+
 - **Generic TPU no longer masquerades as Generic EVA.** Bambu reused the `GFSR99` preset-id space — the bare id is the legacy Generic TPU while most of its versioned variants are Generic EVA — and the catalog index let an EVA variant shadow the exact TPU key. A tray configured as Generic TPU in Bambu Studio (or a TPU spool auto-linked by its old preset id) then resolved to Generic EVA in the slot dialog, the spool form and the family catalog. Exact preset ids now always win over stripped aliases.
 
 - **External prints on AMS-less printers (A1 mini + spool holder) are tracked properly again.** Three faces of one root cause: BambuStudio remaps the external holder to slot `0` when a machine has no AMS, and BamDude read that `0` as "AMS slot A1". The false "missing spool assignment for A1" warning on every mini print is gone, the print-start capture no longer skips AMS-less machines entirely (their prints now get start events, a session and the runout machinery), and completion attribution resolves the remapped `0` to the external spool in both inventory backends instead of crediting a slot that doesn't exist.

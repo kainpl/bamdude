@@ -81,6 +81,64 @@ describe('PrintModal', () => {
     );
   });
 
+  describe('library-file direct print carries the macro selection', () => {
+    it('sends selected_macro_ids in the printLibraryFile payload', async () => {
+      // The archive-reprint sibling always sent it; the library-file direct
+      // print silently dropped the ticked macros (P1S chamber-light macro
+      // never fired, measured live 2026-08-25).
+      let printBody: Record<string, unknown> | null = null;
+      server.use(
+        http.get('/api/v1/library/files/:id/plates', () =>
+          HttpResponse.json({ is_multi_plate: false, plates: [] }),
+        ),
+        http.get('/api/v1/library/files/:id/filament-requirements', () =>
+          HttpResponse.json({ filaments: [] }),
+        ),
+        http.get('/api/v1/macros/', () =>
+          HttpResponse.json([
+            {
+              id: 7,
+              name: 'P1S TurnOff on Start',
+              action_type: 'mqtt_action',
+              mqtt_action: 'chamber_light',
+              mqtt_action_param: 'off',
+              event: 'print_started',
+              printer_models: ['P1S', 'X1C', 'A1M'],
+              enabled: true,
+              swap_mode_only: false,
+            },
+          ]),
+        ),
+        http.post('/api/v1/library/files/:id/print', async ({ request }) => {
+          printBody = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json({ status: 'started', archive_id: 1 });
+        }),
+      );
+
+      render(
+        <PrintModal
+          mode="reprint"
+          libraryFileId={42}
+          archiveName="test.3mf"
+          onClose={mockOnClose}
+          onSuccess={mockOnSuccess}
+        />,
+      );
+      const user = userEvent.setup();
+      await waitFor(() => expect(screen.getByText('X1 Carbon')).toBeInTheDocument());
+      await user.click(screen.getByText('X1 Carbon'));
+
+      // tick the event macro if its panel rendered a row for it
+      const macroRow = await screen.findByText('P1S TurnOff on Start').catch(() => null);
+      if (macroRow) await user.click(macroRow);
+
+      await user.click(screen.getByRole('button', { name: /^print$/i }));
+      await waitFor(() => expect(printBody).not.toBeNull());
+      expect(printBody).toHaveProperty('selected_macro_ids');
+      expect(Array.isArray((printBody as Record<string, unknown>).selected_macro_ids)).toBe(true);
+    });
+  });
+
   describe('reprint mode', () => {
     it('renders the modal title', () => {
       render(

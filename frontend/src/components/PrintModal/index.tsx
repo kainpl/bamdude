@@ -1039,6 +1039,7 @@ export function PrintModal({
                 ams_mapping: printerMapping,
                 ...printOptions,
                 ...swapPayload,
+                selected_macro_ids: selectedMacroIds,
                 quantity,
                 project_id: projectId,
                 cleanup_library_after_dispatch: cleanupLibraryAfterDispatch,
