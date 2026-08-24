@@ -810,6 +810,15 @@ async def test_a_link_that_survives_a_heartbeat_settles_the_backoff(session_fact
     One heartbeat interval is the cheapest available proof that the link is
     more than a successful upgrade, so the counter clears at the first
     heartbeat and the next failure starts again from the base delay.
+
+    ⚠️ **The settle is awaited, not read at the instant the heartbeat lands.**
+    ``asyncio.sleep`` may return up to one clock resolution EARLY — 15.6 ms on
+    Windows, most of a 20 ms interval — while ``_settle`` measures real elapsed
+    time against the interval it was given. So the first heartbeat can go out
+    just short of proving anything, and the counter clears at the second one
+    instead: the same rule, one tick later, and harmless in production (a
+    backoff forgiven 20 ms late). Read at the instant, this failed two runs in
+    six on a Windows dev box.
     """
 
     async def script(ws, instance, index):
@@ -825,6 +834,10 @@ async def test_a_link_that_survives_a_heartbeat_settles_the_backoff(session_fact
         await instance.expect(is_type("hello"), connection=1)
         assert client._attempt == 1, "the first connection's failure is still on the counter"
         await instance.expect(is_type("heartbeat"), connection=1)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 2.0
+        while client._attempt != 0 and loop.time() < deadline:
+            await asyncio.sleep(0.005)
         assert client._attempt == 0, "a link that lasted a heartbeat starts the backoff over"
 
 
