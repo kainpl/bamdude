@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "type": "hello_ok",
+  "id": "f-hello-ok",
+  "ts": "2026-08-24T12:00:00Z",
+  "data": {
+    "envelope_version": 1,
+    "heartbeat_interval_s": 30,
+    "throttle_min_interval_s": 2
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "v": 1,
+  "type": "event",
+  "id": "f-event",
+  "ts": "2026-08-24T12:00:00Z",
+  "data": {
+    "kind": "print_started",
+    "printer_id": "p-001",
+    "detail": {
+      "job_name": "bracket_v3.gcode.3mf"
+    }
+  }
+}

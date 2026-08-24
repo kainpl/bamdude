@@ -1,0 +1,19 @@
+{
+  "v": 1,
+  "type": "hello",
+  "id": "f-hello",
+  "ts": "2026-08-24T12:00:00Z",
+  "data": {
+    "instance_id": "inst-7f3a",
+    "secret": "sk-test-secret",
+    "agent_version": "0.5.5",
+    "envelope_versions": [
+      1
+    ],
+    "capabilities": [
+      "status",
+      "cmd",
+      "event"
+    ]
+  }
+}
