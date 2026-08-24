@@ -148,15 +148,22 @@ class TestOnPrintStart:
         assert session.tray_remain_start == {}  # Empty, no valid remain
 
     @pytest.mark.asyncio
-    async def test_skips_without_ams_data(self):
-        """No session created when no AMS data available."""
+    async def test_amsless_machine_still_gets_a_session(self):
+        """An AMS-less machine (mini + external holder) has nothing to
+        snapshot but still needs the session: it carries the dispatched
+        mapping, seeds the journal start row and anchors the runout
+        machinery. The old "no AMS -> skip everything" gate silently killed
+        all of that (2026-08-24, four minis with no start events)."""
         state = MagicMock()
-        state.raw_data = {"ams": []}
+        state.raw_data = {"ams": [], "vt_tray": [{"id": 254, "tray_type": "PETG"}]}
+        state.tray_now = 254
+        state.tray_change_log = [(254, 0)]
         pm = _make_printer_manager(state)
 
         await on_print_start(1, {"subtask_name": "test"}, pm)
 
-        assert 1 not in _active_sessions
+        assert 1 in _active_sessions
+        assert _active_sessions[1].tray_remain_start == {}
 
 
 class TestOnPrintCompleteAMSDelta:
@@ -421,6 +428,55 @@ class TestTrackFrom3MF:
             )
 
         assert results == []
+
+    @pytest.mark.asyncio
+    async def test_zero_mapping_on_an_amsless_machine_charges_the_external(self):
+        """BS remaps the external to 0 with use_ams=False when the machine
+        has no AMS. Honouring 0 as AMS0-T0 there charges a slot that does
+        not exist (2026-08-24: four minis would have gone uncharged the
+        moment the session started carrying the dispatched [0])."""
+        spool = _make_spool(id=272, label_weight=1000, weight_used=0)
+        assignment = _make_assignment(spool_id=272, ams_id=255, tray_id=0)
+        archive = MagicMock()
+        archive.file_path = "archives/test.3mf"
+
+        db = AsyncMock()
+        # no queue lookup: the print-cmd mapping short-circuits it
+        db.execute = AsyncMock(
+            side_effect=[
+                MagicMock(scalar_one_or_none=MagicMock(return_value=archive)),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=assignment)),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=spool)),
+            ]
+        )
+
+        state = _make_printer_state([], tray_now=254)  # NO AMS units
+        state.raw_data["vt_tray"] = [{"id": 254, "tray_type": "PETG"}]
+        pm = _make_printer_manager(state)
+        filament_usage = [{"slot_id": 1, "used_g": 364.9, "type": "PETG", "color": ""}]
+
+        with (
+            patch("backend.app.core.config.settings") as mock_settings,
+            patch("backend.app.utils.threemf_tools.extract_filament_usage_from_3mf", return_value=filament_usage),
+        ):
+            mock_path = MagicMock()
+            mock_path.exists.return_value = True
+            mock_settings.base_dir.__truediv__ = MagicMock(return_value=mock_path)
+
+            results = await _track_from_3mf(
+                printer_id=1,
+                archive_id=10,
+                status="completed",
+                print_name="test",
+                handled_trays=set(),
+                printer_manager=pm,
+                db=db,
+                ams_mapping=[0],
+            )
+
+        assert len(results) == 1
+        assert (results[0]["ams_id"], results[0]["tray_id"]) == (255, 0)
+        assert results[0]["spool_id"] == 272
 
     @pytest.mark.asyncio
     async def test_minus_one_mapping_charges_the_external_spool(self):

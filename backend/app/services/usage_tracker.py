@@ -1052,6 +1052,18 @@ async def _resolve_spool_id_for_tray(
     return None
 
 
+def _machine_tray_lookup(printer_manager, printer_id: int) -> dict | None:
+    """The machine's current global-tray map (AMS + externals), or None when
+    no state is available. Used to reverse BS's send-side mapping remaps."""
+    state = printer_manager.get_status(printer_id)
+    raw = getattr(state, "raw_data", None) if state else None
+    if not raw:
+        return None
+    from backend.app.services.spoolman_tracking import build_ams_tray_lookup
+
+    return build_ams_tray_lookup(raw)
+
+
 async def on_print_start(
     printer_id: int,
     data: dict,
@@ -1081,9 +1093,11 @@ async def on_print_start(
 
     ams_raw = state.raw_data.get("ams", [])
     ams_data = ams_raw.get("ams", []) if isinstance(ams_raw, dict) else ams_raw if isinstance(ams_raw, list) else []
-    if not ams_data:
-        logger.debug("[UsageTracker] No AMS data for printer %d, skipping", printer_id)
-        return
+    # An AMS-less machine (mini + external holder) has no remains to snapshot
+    # — but it still needs everything else this function does: the session
+    # carries the dispatched mapping, seeds the journal start row and anchors
+    # the runout machinery. The old "no AMS -> skip" gate silently killed all
+    # of that (2026-08-24: four minis printed with no start events at all).
 
     tray_remain_start: dict[tuple[int, int], int] = {}
     tray_uuid_start: dict[tuple[int, int], str] = {}
@@ -1894,6 +1908,18 @@ async def _track_from_3mf(
                 mapped = slot_to_tray[slot_id - 1]
                 if isinstance(mapped, int) and mapped >= 0:
                     global_tray_id = mapped
+                    if mapped == 0:
+                        # On an AMS-less machine BambuStudio remaps the
+                        # external to 0 with use_ams=False ("No AMS detected"
+                        # on our send path) — honour 0 as AMS0-T0 only where
+                        # that tray actually exists, else it is the external
+                        # in disguise (2026-08-24: four minis).
+                        _lookup = _machine_tray_lookup(printer_manager, printer_id)
+                        if _lookup is not None and 0 not in _lookup:
+                            for _ext_id in (254, 255):
+                                if _ext_id in _lookup:
+                                    global_tray_id = _ext_id
+                                    break
                 elif mapped == -1:
                     # ``-1`` means the EXTERNAL holder — BambuStudio converts
                     # 254/255 to -1 in ams_mapping before sending the print
@@ -1902,14 +1928,10 @@ async def _track_from_3mf(
                     # position-based default below and charged the first AMS
                     # reel for an external print (P1S, 2026-08-24). Never let
                     # an explicit external marker reach that default.
-                    _ext_state = printer_manager.get_status(printer_id)
-                    _ext_raw = getattr(_ext_state, "raw_data", None) if _ext_state else None
-                    if _ext_raw:
-                        from backend.app.services.spoolman_tracking import build_ams_tray_lookup
-
-                        _ext_lookup = build_ams_tray_lookup(_ext_raw)
+                    _lookup = _machine_tray_lookup(printer_manager, printer_id)
+                    if _lookup is not None:
                         for _ext_id in (254, 255):
-                            if _ext_id in _ext_lookup:
+                            if _ext_id in _lookup:
                                 global_tray_id = _ext_id
                                 break
                     if global_tray_id is None:

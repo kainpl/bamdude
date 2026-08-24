@@ -52,3 +52,19 @@ class TestResolveGlobalTrayIdExternalSpool:
         """Regression: position-based default still picks sorted_tray_ids[slot_id - 1]."""
         ams_trays = {0: {}, 1: {}, 254: {}}
         assert _resolve_global_tray_id(3, slot_to_tray=None, ams_trays=ams_trays) == 254
+
+
+class TestResolveGlobalTrayIdAmslessZero:
+    """AMS-less machines (A1 mini + external holder): BambuStudio remaps the
+    external to ``0`` with ``use_ams=False`` ("No AMS detected" on our send
+    path too). Honouring 0 as AMS0-T0 on a machine that HAS no AMS0-T0
+    credited nothing (2026-08-24, four minis). 0 stays literal wherever the
+    tray actually exists."""
+
+    def test_zero_on_an_amsless_machine_resolves_to_the_external(self):
+        ams_trays = {254: {}}
+        assert _resolve_global_tray_id(1, slot_to_tray=[0], ams_trays=ams_trays) == 254
+
+    def test_zero_on_an_ams_machine_stays_tray_zero(self):
+        ams_trays = {0: {}, 1: {}, 254: {}}
+        assert _resolve_global_tray_id(1, slot_to_tray=[0], ams_trays=ams_trays) == 0

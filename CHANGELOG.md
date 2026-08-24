@@ -180,6 +180,8 @@
 
 ### Fixed
 
+- **External prints on AMS-less printers (A1 mini + spool holder) are tracked properly again.** Three faces of one root cause: BambuStudio remaps the external holder to slot `0` when a machine has no AMS, and BamDude read that `0` as "AMS slot A1". The false "missing spool assignment for A1" warning on every mini print is gone, the print-start capture no longer skips AMS-less machines entirely (their prints now get start events, a session and the runout machinery), and completion attribution resolves the remapped `0` to the external spool in both inventory backends instead of crediting a slot that doesn't exist.
+
 - **The size-S printer card now offers both answers to a full plate.** A finished printer awaiting a plate clear showed only the round "mark cleared" icon on compact cards — "Repeat print" existed on every other size but was never added to S. Both icon buttons now appear side by side, with or without a queue.
 
 - **An external-spool print no longer charges the first AMS reel.** The print command marks the external holder as `-1` in its slot mapping; the built-in inventory's attribution only accepted non-negative trays, fell through to the position-based default and billed the first loaded AMS slot (the Spoolman path has handled `-1` correctly since it was fixed upstream). Usage history entries written in the same second (a print row and its runout close-out) now also keep a stable order.

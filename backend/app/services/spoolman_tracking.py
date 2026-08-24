@@ -138,6 +138,13 @@ def _resolve_global_tray_id(slot_id: int, slot_to_tray: list | None, ams_trays: 
     """
     if slot_to_tray and slot_id <= len(slot_to_tray):
         mapped_tray = slot_to_tray[slot_id - 1]
+        if mapped_tray == 0 and ams_trays and 0 not in ams_trays:
+            # AMS-less machines: BS remaps the external to 0 with
+            # use_ams=False, so 0 is the external in disguise unless the
+            # machine actually has an AMS0-T0 (2026-08-24, four minis).
+            for ext_id in (254, 255):
+                if ext_id in ams_trays:
+                    return ext_id
         if mapped_tray >= 0:
             return mapped_tray
         if mapped_tray == -1 and ams_trays:
