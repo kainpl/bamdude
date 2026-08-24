@@ -183,3 +183,42 @@ async def test_push_resolve_validates_and_routes_the_action(async_client: AsyncC
         json={"preset_row_id": row.id, "action": "merge"},
     )
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_authored_listing_carries_both_push_states(async_client: AsyncClient, db_session):
+    from backend.app.models.user_filament import UserFilamentFamily, UserFilamentPreset
+
+    db_session.add(
+        UserFilamentFamily(
+            filament_id="Plisted1",
+            ecosystem="local",
+            alias="Listed PETG",
+            vendor="Poly",
+            filament_type="PETG",
+            origin="authored",
+        )
+    )
+    db_session.add(
+        UserFilamentPreset(
+            owner_user_id=None,
+            ecosystem="orca",
+            source="local",
+            name="Listed @P1S",
+            family_filament_id="Plisted1",
+            pushed_cloud_id="PFUS_1",
+            push_dirty=True,
+            orca_pushed_profile_id="uuid-1",
+        )
+    )
+    await db_session.commit()
+
+    resp = await async_client.get("/api/v1/filament-families/authored")
+    assert resp.status_code == 200
+    fam = next(f for f in resp.json()["families"] if f["filament_id"] == "Plisted1")
+    preset = fam["presets"][0]
+    assert preset["bambu_pushed_id"] == "PFUS_1"
+    assert preset["bambu_dirty"] is True
+    assert preset["orca_profile_id"] == "uuid-1"
+    assert preset["orca_dirty"] is False

@@ -18,8 +18,9 @@ class CreateFamilyRequest(BaseModel):
     source: Literal["orca_cloud", "cloud", "local", "standard"] | None = None
     source_id: str | None = None
     push_to_bambu: bool = False
-    # False = cloud-only creation (Bambu-tab flow): identity + pushed cloud
-    # copies, no LocalPreset rows. Requires push_to_bambu.
+    push_to_orca: bool = False
+    # False = cloud-only creation (cloud-tab flows): identity + pushed cloud
+    # copies, no LocalPreset rows. Requires at least one push_to_* flag.
     save_local: bool = True
 
 
@@ -46,6 +47,7 @@ class CreateFamilyResponse(BaseModel):
     roots: list[ClonedRootOut]
     warnings: list[str]
     push: list[dict] | None = None
+    push_orca: list[dict] | None = None
 
 
 class FamilyPushResolveRequest(BaseModel):

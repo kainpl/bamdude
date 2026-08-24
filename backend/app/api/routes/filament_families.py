@@ -57,7 +57,7 @@ async def create_family_endpoint(
     straight to the cloud and the sync mirrors them back."""
     from backend.app.services import filament_authoring as authoring
 
-    if not req.save_local and not req.push_to_bambu:
+    if not req.save_local and not (req.push_to_bambu or req.push_to_orca):
         raise HTTPException(400, "nothing to create: neither local presets nor a cloud push requested")
     try:
         result = await authoring.create_family(
@@ -89,6 +89,22 @@ async def create_family_endpoint(
                 push_results = []
         except authoring.AuthoringError as e:
             push_results = [{"status": "error", "detail": str(e)}]
+    push_orca_results: list[dict] | None = None
+    if req.push_to_orca:
+        from backend.app.services.filament_push import push_blobs, push_family
+
+        try:
+            if req.save_local:
+                push_orca_results = await push_family(
+                    db, filament_id=result.filament_id, ecosystem="orca", user=current_user
+                )
+            elif result.blobs:
+                push_orca_results = await push_blobs(db, blobs=result.blobs, ecosystem="orca", user=current_user)
+                request_sync_soon()  # mirror the fresh cloud copies without the 5-min wait
+            else:
+                push_orca_results = []
+        except authoring.AuthoringError as e:
+            push_orca_results = [{"status": "error", "detail": str(e)}]
     return CreateFamilyResponse(
         filament_id=result.filament_id,
         name=result.name,
@@ -96,6 +112,7 @@ async def create_family_endpoint(
         roots=[ClonedRootOut(**vars(r)) for r in result.roots],
         warnings=result.warnings,
         push=push_results,
+        push_orca=push_orca_results,
     )
 
 
@@ -208,6 +225,60 @@ async def _my_family_ids(db: AsyncSession) -> set[str]:
         if row:
             ids.add(row)
     return ids
+
+
+@router.get("/authored")
+async def authored_families(
+    _=RequirePermission(Permission.INVENTORY_READ),
+    db: AsyncSession = Depends(get_db),
+):
+    """The user's authored families with per-preset push state for BOTH
+    clouds — the management section's one query (spec-B wiring + Orca leg)."""
+    fams = (
+        (
+            await db.execute(
+                select(UserFilamentFamily)
+                .where(UserFilamentFamily.origin == "authored")
+                .order_by(UserFilamentFamily.alias)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    out = []
+    for fam in fams:
+        rows = (
+            (
+                await db.execute(
+                    select(UserFilamentPreset).where(
+                        UserFilamentPreset.family_filament_id == fam.filament_id,
+                        UserFilamentPreset.source == "local",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        out.append(
+            {
+                "filament_id": fam.filament_id,
+                "alias": fam.alias,
+                "vendor": fam.vendor,
+                "filament_type": fam.filament_type,
+                "presets": [
+                    {
+                        "row_id": r.id,
+                        "name": r.name,
+                        "bambu_pushed_id": r.pushed_cloud_id,
+                        "bambu_dirty": bool(r.push_dirty),
+                        "orca_profile_id": r.orca_pushed_profile_id,
+                        "orca_dirty": bool(r.orca_push_dirty),
+                    }
+                    for r in rows
+                ],
+            }
+        )
+    return {"families": out}
 
 
 @router.get("")
