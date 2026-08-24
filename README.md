@@ -46,6 +46,7 @@ If you have a printer and want it to do something useful:
 | | |
 |---|---|
 | **[DrukArmy](https://drukarmy.org.ua/ua)** | Ukraine's largest volunteer 3D-printing community, printing for the front line. BamDude was born in this workshop — and if you have a printer, there is useful work waiting for it: **[join](https://app.drukarmy.org.ua/inv/ujnv7w8i)**. |
+| **[Dragons of Defense](https://dragons.in.ua/)** | A volunteer 3D-printing initiative: a 24/7 print farm making plastic gear for Ukraine's defense forces, with fully transparent finances — everything public, counted automatically. |
 | **[AdditHub](https://addithub.com/)** | Ukraine's #1 3D-printing marketplace: post a job and verified makers place blind bids — FDM, SLA and SLS printing, 3D modelling and post-processing. |
 
 ---
