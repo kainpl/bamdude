@@ -22,7 +22,6 @@
   <a href="https://hub.docker.com/r/kainpl/bamdude"><img alt="Docker Hub" src="https://img.shields.io/badge/Docker-Hub-2496ED?style=flat-square&logo=docker&logoColor=white"></a>
   <a href="https://github.com/kainpl/bamdude/releases"><img alt="Latest Release" src="https://img.shields.io/github/v/release/kainpl/bamdude?style=flat-square&logo=github"></a>
   <a href="https://send.monobank.ua/jar/2vREyf3SrF"><img alt="Support BamDude" src="https://img.shields.io/badge/Support-monobank%20jar-ffd60a?style=flat-square&logo=buymeacoffee&logoColor=black"></a>
-  <a href="https://app.drukarmy.org.ua/inv/ujnv7w8i"><img alt="Join DrukArmy" src="https://img.shields.io/badge/%F0%9F%87%BA%F0%9F%87%A6-Join%20DrukArmy-005bbb?style=flat-square"></a>
 </p>
 
 ---
@@ -39,6 +38,15 @@ why Ukrainian is a first-class locale rather than an afterthought.
 
 If you have a printer and want it to do something useful:
 **[join DrukArmy](https://app.drukarmy.org.ua/inv/ujnv7w8i)**.
+
+---
+
+## Partners
+
+| | |
+|---|---|
+| **[DrukArmy](https://drukarmy.org.ua/ua)** | Ukraine's largest volunteer 3D-printing community, printing for the front line. BamDude was born in this workshop — and if you have a printer, there is useful work waiting for it: **[join](https://app.drukarmy.org.ua/inv/ujnv7w8i)**. |
+| **[AdditHub](https://addithub.com/)** | Ukraine's #1 3D-printing marketplace: post a job and verified makers place blind bids — FDM, SLA and SLS printing, 3D modelling and post-processing. |
 
 ---
 
