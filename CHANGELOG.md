@@ -6,6 +6,8 @@
 
 ### Added
 
+- **BamDude now pairs with Orca Cloud under its own name — and can push profiles there.** The Orca Cloud team issued BamDude a dedicated client id, so the approval card finally shows who is actually asking. The pairing now requests write access, which powers a full push leg for authored filament families: push or re-push a family to Orca Cloud (and Bambu Cloud) from the new **Authored families** block under Profiles → Local, create families straight into Orca Cloud from its tab, and delete a family together with its pushed cloud copies. If a profile was edited in Orca Cloud after your push, BamDude detects it before writing and asks per preset: overwrite the cloud copy, or adopt the cloud version locally. ⚠️ **Every existing Orca Cloud pairing must be re-connected once** — the identity and the granted scope are baked into the issued tokens, and both changed together so one re-pair covers both.
+
 - **Bug reports now show what happened next.** The **Report a Bug** dialog gained a "My reports" list: every report submitted from this install, with its live GitHub status (open / fixed / not planned) synced through the bamdude.top relay — no GitHub account or token needed on your side.
 
 - **A printer can be excluded from auto-queue routing.** The route icon on a queue card toggles whether the AutoQueue distributor may send work to that printer — for machines reserved for manual jobs. The opt-out existed in the database since the auto-queue shipped but had no switch; pause is unaffected and manual queueing still works.
