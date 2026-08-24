@@ -214,10 +214,20 @@ class CloudLinkService:
         The ``finally`` is the reason this wrapper exists: the client loop ends
         on its own in cases nobody calls ``stop()`` for — an unpaired farm, a
         revocation — and the listener has to go with it.
+
+        ``run`` is documented to return rather than raise on everything it
+        knows about, so the ``except`` here is for what it does not. It is
+        logged rather than left on the task: an unretrieved task exception
+        surfaces at garbage-collection time, in a warning that names no
+        subsystem, possibly minutes later.
         """
         prune = asyncio.create_task(self._prune_loop(), name=PRUNE_TASK_NAME)
         try:
             await client.run(stop_event)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Cloud Link: the client loop ended unexpectedly")
         finally:
             prune.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -284,10 +294,12 @@ class CloudLinkService:
     async def restart(self) -> None:
         """Stop, then start. What the settings page calls after a change.
 
-        ⚠️ The reconnect backoff starts over: ``run`` resets it on entry. That
-        is accepted — a restart is somebody deciding to restart, and a fresh
-        decision deserves a fresh first attempt rather than the five-minute
-        wait the previous one had escalated to.
+        ⚠️ The reconnect backoff starts over — this builds a new client, and a
+        new client has never failed at anything. Accepted: a restart is
+        somebody deciding to restart, and a fresh decision deserves a fresh
+        first attempt rather than the five-minute wait the previous one had
+        escalated to. An operator hammering it against a broken portal is
+        bounded only by their patience.
         """
         await self.stop()
         await self.start()
