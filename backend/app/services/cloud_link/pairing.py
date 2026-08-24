@@ -132,9 +132,20 @@ async def pair(session: AsyncSession, pairing_code: str) -> None:
     if status != 201:
         # Anything else is the portal, not the code — a 500, a proxy's 502, an
         # HTML error page. "Try again" is the right advice for all of them, and
-        # that is what ``network`` means to the caller. The status and the first
-        # of the body go to the log so it can be diagnosed without guessing.
-        logger.warning("Cloud Link: pairing refused by %s — HTTP %s: %s", url, status, body[:200])
+        # that is what ``network`` means to the caller. The status goes to the
+        # log so it can be diagnosed without guessing.
+        #
+        # ⚠️ **The body is logged only for an error status.** An off-contract
+        # 2xx is the one case where the far end believed it was answering
+        # successfully, and a success body from a pairing endpoint is exactly
+        # where a credential lives — a portal that answered 200 instead of 201
+        # would have its issued secret copied into the application log, where
+        # it outlives the encrypted column and travels in every bug report.
+        # A 4xx/5xx body is an error page and carries nothing to protect.
+        if status >= 400:
+            logger.warning("Cloud Link: pairing refused by %s — HTTP %s: %s", url, status, body[:200])
+        else:
+            logger.warning("Cloud Link: pairing refused by %s — HTTP %s (body withheld)", url, status)
         raise PairingError("network")
 
     try:
@@ -153,5 +164,15 @@ async def pair(session: AsyncSession, pairing_code: str) -> None:
     # The summary is read by a human in a table and kept for a month — the id
     # identifies the pairing, the secret is never written anywhere but the
     # encrypted column.
-    await write_audit(session, "up", "pair", f"paired with {config.portal_url} as instance {instance_id}")
+    #
+    # ⚠️ **Bookkeeping must not un-pair a pairing.** The credential is already
+    # committed by the line above; if the audit insert fails (a locked
+    # database, a session the caller left in a bad state) letting it escape
+    # would report a failed pairing to a user who is, in fact, paired — and
+    # send them to redeem a code that has already been spent. A missing audit
+    # row is a gap in the record; a false error is a farm that cannot connect.
+    try:
+        await write_audit(session, "up", "pair", f"paired with {config.portal_url} as instance {instance_id}")
+    except Exception as exc:
+        logger.warning("Cloud Link: paired, but the audit row could not be written — %s", exc)
     logger.info("Cloud Link: paired with %s as instance %s", config.portal_url, instance_id)

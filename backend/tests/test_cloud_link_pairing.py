@@ -239,6 +239,51 @@ async def test_a_201_without_credentials_saves_nothing(db_session: AsyncSession,
     assert (await get_config(db_session)).instance_id is None
 
 
+async def test_an_off_contract_success_is_logged_without_its_body(db_session: AsyncSession, portal, caplog):
+    """A 2xx that is not 201 still fails — but its body never reaches the log.
+
+    This is the one refusal where the far end believed it was succeeding, and a
+    pairing endpoint's success body is where a credential lives. A portal that
+    answered 200 instead of 201 would have its issued secret copied into the
+    application log, which outlives the encrypted column and travels in every
+    bug report. An error page (4xx/5xx) carries nothing to protect and is still
+    logged in full, because that is what makes a broken proxy diagnosable.
+    """
+
+    async def wrong_success_code(request):
+        return web.json_response({"instance_id": "inst_abc", "instance_secret": "leaked-if-logged-000111"}, status=200)
+
+    await _point_at(db_session, await portal(wrong_success_code))
+
+    with caplog.at_level("WARNING"), pytest.raises(PairingError) as ei:
+        await pair(db_session, "ABCD-EFGH")
+
+    assert ei.value.code == "network"
+    assert "leaked-if-logged-000111" not in caplog.text
+    assert "200" in caplog.text, "the status must still be logged, or the failure is undiagnosable"
+
+
+async def test_an_audit_that_cannot_be_written_does_not_unpair_the_pairing(
+    db_session: AsyncSession, portal, monkeypatch
+):
+    """The credential is committed before the audit row. If the bookkeeping
+    insert fails, the pairing has still happened — reporting an error would
+    send the user to redeem a code that has already been spent, and the portal
+    will not issue the same one twice."""
+    handler, _ = _issues_credentials()
+    await _point_at(db_session, await portal(handler))
+
+    async def refuses(*args, **kwargs):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr("backend.app.services.cloud_link.pairing.write_audit", refuses)
+
+    await pair(db_session, "ABCD-EFGH")
+
+    assert await get_secret(db_session) == "s3cr3t-instance-token-000111"
+    assert (await db_session.execute(select(CloudLinkAudit))).scalars().all() == []
+
+
 # ------------------------------------------------------------ the format gate
 
 
