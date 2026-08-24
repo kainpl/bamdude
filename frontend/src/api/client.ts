@@ -1984,6 +1984,8 @@ export interface OrcaAuthStatusResponse {
   connected: boolean;
   email: string | null;
   user_id: string | null;
+  /** granted scope of the pairing (e.g. "external_app:connect sync:write") */
+  scope?: string | null;
 }
 
 // Orca profiles are shaped to match Bambu Cloud's SlicerSetting on the wire
@@ -2209,7 +2211,8 @@ export interface CreateFamilyRequest {
   source?: string | null;
   source_id?: string | null;
   push_to_bambu?: boolean;
-  /** false = cloud-only creation (Bambu-tab flow). */
+  push_to_orca?: boolean;
+  /** false = cloud-only creation (cloud-tab flows). */
   save_local?: boolean;
 }
 
@@ -2228,6 +2231,34 @@ export interface CreateFamilyResponse {
   roots: ClonedRootOut[];
   warnings: string[];
   push: Array<{ name?: string; status: string; setting_id?: string | null; detail?: string | null }> | null;
+  push_orca: FamilyPushResult[] | null;
+}
+
+export interface FamilyPushResult {
+  name?: string;
+  status: string; // pushed | updated | up_to_date | conflict | error | overwritten | adopted
+  setting_id?: string | null; // bambu leg
+  profile_id?: string | null; // orca leg
+  row_id?: number; // set on status=conflict — feeds push-resolve
+  server_updated_time?: number | null;
+  detail?: string | null;
+}
+
+export interface AuthoredFamilyPreset {
+  row_id: number;
+  name: string;
+  bambu_pushed_id: string | null;
+  bambu_dirty: boolean;
+  orca_profile_id: string | null;
+  orca_dirty: boolean;
+}
+
+export interface AuthoredFamily {
+  filament_id: string;
+  alias: string | null;
+  vendor: string | null;
+  filament_type: string | null;
+  presets: AuthoredFamilyPreset[];
 }
 
 export interface FamilyPresetInfo {
@@ -7822,11 +7853,17 @@ export const api = {
       `/filament-families/${encodeURIComponent(filamentId)}?also_cloud=${alsoCloud}`,
       { method: 'DELETE' },
     ),
-  pushFilamentFamily: (filamentId: string) =>
-    request<{ results: Array<{ name: string; status: string; setting_id: string | null; detail: string | null }> }>(
-      `/filament-families/${encodeURIComponent(filamentId)}/push`,
+  pushFilamentFamily: (filamentId: string, ecosystem: 'bambu' | 'orca' = 'bambu') =>
+    request<{ results: FamilyPushResult[] }>(
+      `/filament-families/${encodeURIComponent(filamentId)}/push?ecosystem=${ecosystem}`,
       { method: 'POST' },
     ),
+  resolvePushFamilyConflict: (filamentId: string, presetRowId: number, action: 'force' | 'adopt') =>
+    request<{ status: string; profile_id: string | null }>(
+      `/filament-families/${encodeURIComponent(filamentId)}/push-resolve`,
+      { method: 'POST', body: JSON.stringify({ preset_row_id: presetRowId, action }) },
+    ),
+  getAuthoredFamilies: () => request<{ families: AuthoredFamily[] }>('/filament-families/authored'),
 
   // Inventory
   getSpools: (includeArchived = false) =>

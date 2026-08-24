@@ -19,6 +19,7 @@ import type { LocalPreset, LocalPresetsResponse } from '../api/client';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
 import { CreateFilamentFamilyModal } from './CreateFilamentFamilyModal';
+import { AuthoredFamiliesSection } from './AuthoredFamiliesSection';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -351,6 +352,8 @@ export function LocalProfilesView() {
           <CreateFilamentFamilyModal open={createFamilyOpen} onClose={() => setCreateFamilyOpen(false)} />
         </div>
       )}
+      {/* Authored families management (spec-B wiring + Orca write leg) */}
+      {hasPermission('settings:update') && <AuthoredFamiliesSection />}
       {/* Import Zone */}
       {hasPermission('settings:update') && (
         <div

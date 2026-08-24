@@ -91,6 +91,7 @@ describe('CreateFilamentFamilyModal', () => {
         source: null,
         source_id: null,
         push_to_bambu: false,
+        push_to_orca: false,
         save_local: true,
       });
     });

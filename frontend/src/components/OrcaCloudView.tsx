@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Cloud, ExternalLink, LogOut, Loader2, AlertCircle, Check } from 'lucide-react';
+import { Cloud, ExternalLink, LogOut, Loader2, AlertCircle, Check , Plus } from 'lucide-react';
 
 import { api } from '../api/client';
 import type { OrcaDeviceStartResponse, OrcaDevicePollStatus } from '../api/client';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
+import { CreateFilamentFamilyModal } from './CreateFilamentFamilyModal';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { OrcaCloudProfilesView } from './OrcaCloudProfilesView';
@@ -40,6 +41,7 @@ export function OrcaCloudView() {
   });
 
   const connected = !!status?.connected;
+  const [createFamilyOpen, setCreateFamilyOpen] = useState(false);
 
   const {
     data: profilesData,
@@ -172,16 +174,33 @@ export function OrcaCloudView() {
               )}
             </span>
           </div>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => logoutMutation.mutate()}
-            disabled={logoutMutation.isPending || !canManage}
-            title={!canManage ? t('profiles.orcaCloud.noLogoutPermission') : undefined}
-          >
-            <LogOut className="w-4 h-4" />
-            {t('profiles.orcaCloud.logout')}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              onClick={() => setCreateFamilyOpen(true)}
+              disabled={!canManage}
+              title={!canManage ? t('profiles.orcaCloud.noLogoutPermission') : undefined}
+            >
+              <Plus className="w-4 h-4" />
+              {t('authoring.createButton')}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => logoutMutation.mutate()}
+              disabled={logoutMutation.isPending || !canManage}
+              title={!canManage ? t('profiles.orcaCloud.noLogoutPermission') : undefined}
+            >
+              <LogOut className="w-4 h-4" />
+              {t('profiles.orcaCloud.logout')}
+            </Button>
+          </div>
+          <CreateFilamentFamilyModal
+            variant="orca"
+            open={createFamilyOpen}
+            onClose={() => setCreateFamilyOpen(false)}
+            onCreated={() => refetchProfiles()}
+          />
         </div>
       )}
 
