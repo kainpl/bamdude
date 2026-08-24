@@ -1,8 +1,9 @@
 """Cloud Link persistence + authorization ground (Phase 0).
 
-Three tables and one permission. The store functions land in the next task and
-are written against exactly this shape, so the field names are pinned here
-rather than left to be discovered from a route later.
+Three tables, one permission, and the store that is their only writer. The
+model half comes first and pins the shape; the store half below it drives
+``services/cloud_link/store.py``, which is where the settings route, the
+connect loop and the command handler all reach these tables from.
 
 The permission tests are the load-bearing half. ``cloud_link:manage`` decides
 whether this farm is reachable from outside the LAN, and an API key is a
@@ -12,6 +13,8 @@ meet. ``_APIKEY_DENIED_PERMISSIONS`` is the explicit marker; the allowlist in
 """
 
 from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -295,3 +298,287 @@ async def test_seeding_twice_does_not_duplicate_the_entry(test_engine):
     async with factory() as db:
         perms = (await db.execute(select(Group.permissions).where(Group.name == "Administrators"))).scalar_one()
     assert perms.count("cloud_link:manage") == 1
+
+
+# ------------------------------------------------------------------ the store
+#
+# Everything below drives ``services/cloud_link/store.py``. The store is the
+# only writer of these three tables, which is what lets the settings route, the
+# connect loop and the command handler each hold their own session without
+# having to agree on a transaction.
+
+
+async def test_asking_for_the_config_creates_the_singleton_and_then_reuses_it(db_session: AsyncSession):
+    """Get-or-create, because every caller needs a row and none of them owns
+    creating it — the settings page, the connect loop and a fresh install all
+    arrive at an empty table and must not each make their own."""
+    from backend.app.services.cloud_link.store import get_config
+
+    first = await get_config(db_session)
+    assert first.id == 1
+    assert first.enabled is False
+    assert first.portal_url == "https://cloud.bamdude.top"
+
+    second = await get_config(db_session)
+    assert second.id == 1
+
+    rows = list((await db_session.execute(select(CloudLink.id))).scalars())
+    assert rows == [1], "a singleton that can be created twice is two answers to one question"
+
+
+async def test_a_caller_that_looked_too_early_reads_what_the_winner_wrote(db_session: AsyncSession):
+    """Two callers racing to create the singleton on a fresh install.
+
+    The startup connect loop and the first settings request both find an empty
+    table and both insert ``id = 1``; the database tells the loser so. Forced
+    here by blinding one lookup — the primary-key violation, the rollback and
+    the re-read that follow are all real. Without that recovery this is a 500
+    on a first boot that nobody can reproduce afterwards, because every later
+    attempt finds the row.
+    """
+    from backend.app.services.cloud_link.store import get_config
+
+    await db_session.execute(text("INSERT INTO cloud_link (id) VALUES (1)"))
+    await db_session.commit()
+
+    real_get = db_session.get
+    looked_early = []
+
+    async def blind_the_first_look(*args, **kwargs):
+        if not looked_early:
+            looked_early.append(True)
+            return None
+        return await real_get(*args, **kwargs)
+
+    db_session.get = blind_the_first_look
+    try:
+        row = await get_config(db_session)
+    finally:
+        db_session.get = real_get
+
+    assert looked_early, "the race branch was never entered — this test proves nothing"
+    assert row.id == 1
+    assert list((await db_session.execute(select(CloudLink.id))).scalars()) == [1]
+
+
+async def test_the_secret_round_trips_but_never_lands_in_the_row(db_session: AsyncSession):
+    """The instance secret is the whole credential — anyone holding it can
+    speak for this farm. It goes to disk as Fernet ciphertext and comes back
+    only through the store."""
+    from backend.app.core.encryption import is_encryption_active
+    from backend.app.services.cloud_link.store import get_secret, save_credentials
+
+    assert is_encryption_active(), "the plaintext-fallback path would make the assertion below vacuous"
+
+    secret = "s3cr3t-instance-token-000111"
+    await save_credentials(db_session, instance_id="inst_abc", secret=secret)
+
+    row = (await db_session.execute(select(CloudLink).where(CloudLink.id == 1))).scalar_one()
+    assert row.instance_id == "inst_abc"
+    assert row.instance_secret_encrypted
+    assert secret not in row.instance_secret_encrypted
+
+    assert await get_secret(db_session) == secret
+
+
+async def test_a_fresh_pair_is_a_fresh_start(db_session: AsyncSession):
+    """Pairing again clears ``revoked`` and ``last_error``.
+
+    Both describe the credential that was just replaced. Left standing they
+    would tell the settings page the farm is revoked while it holds a
+    brand-new, working credential — and send the user off to re-pair a link
+    that is already paired.
+    """
+    from backend.app.services.cloud_link.store import get_config, save_credentials
+
+    config = await get_config(db_session)
+    config.revoked = True
+    config.last_error = "portal said: instance revoked"
+    await db_session.commit()
+
+    row = await save_credentials(db_session, instance_id="inst_new", secret="brand-new")
+    assert row.revoked is False
+    assert row.last_error is None
+
+
+async def test_there_is_no_secret_before_pairing(db_session: AsyncSession):
+    from backend.app.services.cloud_link.store import get_secret
+
+    assert await get_secret(db_session) is None
+
+
+async def test_reading_the_secret_does_not_create_the_config_row(db_session: AsyncSession):
+    """A read stays a read. ``get_secret`` runs on the connect path, which is
+    the one place that must be able to answer "are we paired" without writing
+    to a database it may be sharing with a migration."""
+    from backend.app.services.cloud_link.store import get_secret
+
+    await get_secret(db_session)
+
+    assert list((await db_session.execute(select(CloudLink.id))).scalars()) == []
+
+
+async def test_clearing_the_credentials_leaves_nothing_to_reconnect_with(db_session: AsyncSession):
+    from backend.app.services.cloud_link.store import clear_credentials, get_secret, save_credentials
+
+    await save_credentials(db_session, instance_id="inst_abc", secret="to-be-wiped")
+    await clear_credentials(db_session)
+
+    row = (await db_session.execute(select(CloudLink).where(CloudLink.id == 1))).scalar_one()
+    assert row.instance_id is None
+    assert row.instance_secret_encrypted is None
+    assert await get_secret(db_session) is None
+
+
+async def test_the_publish_set_is_replaced_not_merged(db_session: AsyncSession, printer_factory):
+    """The set the user saved IS the set — a merge would mean a printer can
+    only ever be added, and unticking one on the settings page would silently
+    do nothing."""
+    from backend.app.services.cloud_link.store import get_publish_set, set_publish_set
+
+    a = await printer_factory(name="A")
+    b = await printer_factory(name="B")
+    c = await printer_factory(name="C")
+
+    await set_publish_set(db_session, [a.id, b.id])
+    assert await get_publish_set(db_session) == {a.id, b.id}
+
+    await set_publish_set(db_session, [b.id, c.id])
+    assert await get_publish_set(db_session) == {b.id, c.id}
+
+
+async def test_an_empty_publish_set_exposes_nothing(db_session: AsyncSession, printer_factory):
+    from backend.app.services.cloud_link.store import get_publish_set, set_publish_set
+
+    printer = await printer_factory(name="A")
+    await set_publish_set(db_session, [printer.id])
+    await set_publish_set(db_session, [])
+
+    assert await get_publish_set(db_session) == set()
+
+
+async def test_naming_a_printer_twice_lists_it_once(db_session: AsyncSession, printer_factory):
+    """``printer_id`` is the primary key, so a duplicate in the caller's list
+    would be an IntegrityError rather than a second row — the store
+    de-duplicates so a UI that sends the same id twice is not a 500."""
+    from backend.app.services.cloud_link.store import get_publish_set, set_publish_set
+
+    printer = await printer_factory(name="A")
+    await set_publish_set(db_session, [printer.id, printer.id])
+
+    assert await get_publish_set(db_session) == {printer.id}
+
+
+async def test_the_publish_set_is_empty_before_anyone_sets_one(db_session: AsyncSession):
+    """Deny by default: enabling the link exposes no machine until a person
+    picks one."""
+    from backend.app.services.cloud_link.store import get_publish_set
+
+    assert await get_publish_set(db_session) == set()
+
+
+async def test_an_audit_row_is_written_stamped_and_readable(db_session: AsyncSession):
+    from backend.app.services.cloud_link.store import write_audit
+
+    entry = await write_audit(db_session, "up", "status", "printer 3 is RUNNING")
+
+    assert entry.id is not None
+    assert entry.ts is not None, "the returned row carries its stamp — callers log it without a second query"
+    assert entry.ok is True
+
+    row = (await db_session.execute(select(CloudLinkAudit))).scalar_one()
+    assert (row.direction, row.kind, row.summary) == ("up", "status", "printer 3 is RUNNING")
+
+
+async def test_an_audit_row_can_record_a_refusal(db_session: AsyncSession):
+    from backend.app.services.cloud_link.store import write_audit
+
+    entry = await write_audit(db_session, "down", "cmd", "pause rejected: printer offline", ok=False)
+    assert entry.ok is False
+
+
+async def test_pruning_deletes_only_what_is_older_than_the_window(db_session: AsyncSession):
+    """The audit is the operator's only record of what the portal saw, so the
+    sweep is bounded by time and by nothing else — never by a row count, which
+    would throw away a busy day and keep a quiet month."""
+    from backend.app.services.cloud_link.store import prune_audit
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    db_session.add_all(
+        [
+            CloudLinkAudit(ts=now - timedelta(days=31), direction="up", kind="status", summary="ancient"),
+            CloudLinkAudit(ts=now - timedelta(days=29), direction="up", kind="status", summary="recent"),
+            CloudLinkAudit(ts=now, direction="up", kind="status", summary="fresh"),
+        ]
+    )
+    await db_session.commit()
+
+    deleted = await prune_audit(db_session)
+    assert deleted == 1
+
+    kept = sorted((await db_session.execute(select(CloudLinkAudit.summary))).scalars())
+    assert kept == ["fresh", "recent"]
+
+
+async def test_the_pruning_window_is_the_callers_to_widen(db_session: AsyncSession):
+    from backend.app.services.cloud_link.store import prune_audit
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    db_session.add_all(
+        [
+            CloudLinkAudit(ts=now - timedelta(days=10), direction="up", kind="status", summary="ten"),
+            CloudLinkAudit(ts=now - timedelta(days=2), direction="up", kind="status", summary="two"),
+        ]
+    )
+    await db_session.commit()
+
+    assert await prune_audit(db_session, older_than_days=7) == 1
+    assert list((await db_session.execute(select(CloudLinkAudit.summary))).scalars()) == ["two"]
+
+
+# ------------------------------------------------------------ the portal URL
+
+
+def test_a_public_portal_must_be_reached_over_tls():
+    """The link carries the instance secret and every command the portal
+    sends. Plain http to a host on the internet publishes both."""
+    from backend.app.services.cloud_link.store import validate_portal_url
+
+    with pytest.raises(ValueError):
+        validate_portal_url("http://example.com")
+    with pytest.raises(ValueError):
+        validate_portal_url("ws://example.com")
+
+
+def test_the_two_tls_schemes_are_accepted():
+    from backend.app.services.cloud_link.store import validate_portal_url
+
+    assert validate_portal_url("https://cloud.bamdude.top") == "https://cloud.bamdude.top"
+    assert validate_portal_url("wss://cloud.bamdude.top") == "wss://cloud.bamdude.top"
+
+
+def test_a_portal_on_this_machine_needs_no_certificate():
+    """A developer running the portal on localhost is not crossing a network,
+    so demanding TLS there buys nothing and costs a self-signed certificate in
+    every dev setup."""
+    from backend.app.services.cloud_link.store import validate_portal_url
+
+    assert validate_portal_url("http://localhost:3002") == "http://localhost:3002"
+    assert validate_portal_url("http://127.0.0.1:3002") == "http://127.0.0.1:3002"
+
+
+def test_a_url_without_a_scheme_or_a_host_is_not_a_portal():
+    from backend.app.services.cloud_link.store import validate_portal_url
+
+    for bad in ("", "   ", "cloud.bamdude.top", "//cloud.bamdude.top", "https://"):
+        with pytest.raises(ValueError):
+            validate_portal_url(bad)
+
+
+def test_the_returned_url_is_normalised():
+    """Trailing slash and surrounding whitespace are stripped, so the value
+    stored is the one every caller concatenates a path onto."""
+    from backend.app.services.cloud_link.store import validate_portal_url
+
+    assert validate_portal_url("  https://cloud.bamdude.top/  ") == "https://cloud.bamdude.top"
+    assert validate_portal_url("https://cloud.bamdude.top/portal/") == "https://cloud.bamdude.top/portal"
