@@ -267,6 +267,26 @@ class Uplink:
         """Replace the in-memory allowlist ``drain`` filters against."""
         self._publish = set(ids)
 
+    def reset_transient(self) -> None:
+        """Drop frames that were built for a connection which no longer exists.
+
+        The client loop calls this after every successful hello and **before**
+        it builds the fresh snapshot. The outbox can be holding the second half
+        of a connection edge whose first half went out over a socket that then
+        died: delivered after the reconnect it would reach the portal *behind*
+        the snapshot, overwriting that printer's current reading with a moment
+        the snapshot has already superseded.
+
+        ⚠️ **The message queue is deliberately NOT cleared.** Those are raw
+        broadcasts that were never turned into frames, so nothing about them
+        was ever sent to anybody; they are the farm's backlog, and the throttle
+        in :meth:`drain` already collapses whatever is stale among them.
+        Clearing them would throw away the ``print_finished`` that arrived
+        while the link was down — the one message with no later push to correct
+        it.
+        """
+        self._outbox.clear()
+
     # -------------------------------------------------------------- the drain
 
     async def drain(self) -> AnyFrame | None:
