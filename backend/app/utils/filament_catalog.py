@@ -76,6 +76,7 @@ def _load(ecosystem: str) -> _Indexed:
     by_setting: dict[str, CatalogPreset] = {}
     by_name: dict[str, CatalogPreset] = {}
     by_family: dict[str, list[CatalogPreset]] = {}
+    all_presets: list[CatalogPreset] = []
     for p in data.get("presets", []):
         low, high = (p.get("nozzle_temp") or [None, None])[:2]
         preset = CatalogPreset(
@@ -87,11 +88,18 @@ def _load(ecosystem: str) -> _Indexed:
             nozzle_temp_min=low,
             nozzle_temp_max=high,
         )
+        all_presets.append(preset)
         by_setting.setdefault(preset.setting_id, preset)
-        # Base form: rows are name-sorted, so the first writer wins deterministically.
-        by_setting.setdefault(_base_setting_id(preset.setting_id), preset)
         by_name[preset.name] = preset
         by_family.setdefault(preset.filament_id, []).append(preset)
+    # Base aliases in a SECOND pass, into still-free keys only: an exact
+    # setting id must never lose to a stripped alias. Bambu reused the
+    # GFSR99 space — the bare id is the legacy Generic TPU (GFU99) while
+    # most GFSR99_NN variants are Generic EVA (GFR99); one pass let EVA's
+    # alias clobber the exact TPU key (rows are name-sorted, EVA first) and
+    # a tray configured as Generic TPU resolved to EVA everywhere.
+    for preset in all_presets:
+        by_setting.setdefault(_base_setting_id(preset.setting_id), preset)
     return _Indexed(
         families,
         by_setting,

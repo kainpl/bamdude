@@ -180,6 +180,8 @@
 
 ### Fixed
 
+- **Generic TPU no longer masquerades as Generic EVA.** Bambu reused the `GFSR99` preset-id space — the bare id is the legacy Generic TPU while most of its versioned variants are Generic EVA — and the catalog index let an EVA variant shadow the exact TPU key. A tray configured as Generic TPU in Bambu Studio (or a TPU spool auto-linked by its old preset id) then resolved to Generic EVA in the slot dialog, the spool form and the family catalog. Exact preset ids now always win over stripped aliases.
+
 - **External prints on AMS-less printers (A1 mini + spool holder) are tracked properly again.** Three faces of one root cause: BambuStudio remaps the external holder to slot `0` when a machine has no AMS, and BamDude read that `0` as "AMS slot A1". The false "missing spool assignment for A1" warning on every mini print is gone, the print-start capture no longer skips AMS-less machines entirely (their prints now get start events, a session and the runout machinery), and completion attribution resolves the remapped `0` to the external spool in both inventory backends instead of crediting a slot that doesn't exist.
 
 - **The size-S printer card now offers both answers to a full plate.** A finished printer awaiting a plate clear showed only the round "mark cleared" icon on compact cards — "Repeat print" existed on every other size but was never added to S. Both icon buttons now appear side by side, with or without a queue.
