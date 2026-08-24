@@ -64,6 +64,8 @@ class User(Base):
     orca_cloud_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     orca_cloud_email: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
     orca_cloud_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    # Granted scope from the last token response — the UI gates push controls on it (m154).
+    orca_cloud_scope: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
     # Transient PKCE state held between /orca-cloud/auth/start and /orca-cloud/auth/finish.
     # Cleared on successful finish; expires after 10 minutes if the user abandons the flow.
     orca_cloud_pending_verifier: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)

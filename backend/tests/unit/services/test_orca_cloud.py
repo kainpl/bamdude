@@ -118,6 +118,48 @@ class TestRequestDeviceCode:
 # ---------------------------------------------------------------------------
 
 
+class TestIdentityDefaults:
+    """The identity switch (2026-08-24): BamDude pairs under its OWN client id
+    with the write scope — both changed in the same release, so users re-pair
+    exactly once. Pinned so a merge can't silently revert either half."""
+
+    def test_the_default_client_id_is_bamdudes_own(self):
+        import os
+
+        if os.environ.get("ORCA_CLOUD_CLIENT_ID"):
+            pytest.skip("env override active")
+        assert ORCA_CLIENT_ID == "oc_app_69bdc4a77b23b2335cdb212d"
+
+    def test_the_default_scope_requests_write(self):
+        import os
+
+        from backend.app.services.orca_cloud import ORCA_SCOPE
+
+        if os.environ.get("ORCA_CLOUD_SCOPE"):
+            pytest.skip("env override active")
+        assert ORCA_SCOPE == "sync:write"
+
+
+class TestGrantedScopeCapture:
+    @pytest.mark.asyncio
+    async def test_token_response_scope_is_kept(self, svc):
+        svc._apply_token_response(
+            {
+                "access_token": "oc_ext_a",
+                "refresh_token": "oc_ext_rt_b",
+                "expires_in": 86400,
+                "scope": "external_app:connect sync:write",
+            }
+        )
+        assert svc.granted_scope == "external_app:connect sync:write"
+
+    @pytest.mark.asyncio
+    async def test_a_response_without_scope_keeps_the_previous_value(self, svc):
+        svc.granted_scope = "sync:write"
+        svc._apply_token_response({"access_token": "oc_ext_a", "expires_in": 3600})
+        assert svc.granted_scope == "sync:write"
+
+
 class TestPollToken:
     @pytest.mark.asyncio
     async def test_success_applies_tokens_and_returns_complete(self, svc):

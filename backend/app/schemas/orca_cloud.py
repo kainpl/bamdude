@@ -45,6 +45,8 @@ class OrcaAuthStatusResponse(BaseModel):
     connected: bool
     email: str | None = None
     user_id: str | None = None
+    # granted scope from the last token response — the UI gates push controls on it
+    scope: str | None = None
 
 
 class OrcaProfileMeta(BaseModel):

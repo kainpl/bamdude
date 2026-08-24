@@ -63,20 +63,20 @@ ORCA_API_BASE = os.environ.get("ORCA_CLOUD_API_BASE", _DEFAULT_API_BASE).rstrip(
 # browser-visible requests — but it must accompany every /oauth/device/code and
 # /oauth/token call (incl. refreshes) or the server returns ``invalid_client``.
 #
-# The default is the upstream project's registered id, carried over so pairing
-# works out of the box. Open question, deliberately left visible rather than
-# silently inherited: this id is what Orca names on the approval card and files
-# the pairing under, so a BamDude-specific one is probably what we want —
-# override with ORCA_CLOUD_CLIENT_ID once that's settled.
-ORCA_CLIENT_ID = os.environ.get("ORCA_CLOUD_CLIENT_ID", "oc_app_e873d49ce7dbcc7dca8ba386")
+# BamDude's OWN registered id, issued by the Orca Cloud team 2026-08-24
+# (developer guide: temp/external_app_pairing_developer_guide.md). Until then
+# the default was the upstream project's id inherited with the integration
+# port — switching ids invalidates every pairing made under the old one, which
+# is why the scope bump to sync:write shipped in the same release: users
+# re-pair exactly once.
+ORCA_CLIENT_ID = os.environ.get("ORCA_CLOUD_CLIENT_ID", "oc_app_69bdc4a77b23b2335cdb212d")
 
 
-# Scope requested at pairing time. BamDude currently only READS the user's
-# Orca Cloud profiles (list + view), so we request the minimum — read-only.
-# ``sync:read`` grants pull + versions; bump to ``sync:write`` here if/when a
-# push-to-cloud feature lands (which forces existing users to re-pair, since
-# the granted scope is baked into the issued token).
-ORCA_SCOPE = os.environ.get("ORCA_CLOUD_SCOPE", "sync:read")
+# Scope requested at pairing time. ``sync:write`` implies read (guide §Scopes)
+# and feeds the authored-family push leg; the granted scope is baked into the
+# issued token, so this changed together with the client id above — one
+# re-pair covers both. Override to ``sync:read`` for a read-only deployment.
+ORCA_SCOPE = os.environ.get("ORCA_CLOUD_SCOPE", "sync:write")
 
 # Honest client identity. Same posture as the Bambu Cloud client: identifies
 # BamDude without impersonating Orca's desktop client. Also the thing that
@@ -161,6 +161,8 @@ class OrcaCloudService:
         self.access_token: str | None = None
         self.refresh_token: str | None = None
         self.token_expiry: datetime | None = None
+        # Last granted scope seen in a token response (space-separated list).
+        self.granted_scope: str | None = None
         # Mirror the bambu_cloud pattern for client ownership: prefer injected
         # client (tests), fall back to app-scoped shared client (production),
         # else create our own so ad-hoc scripts still work.
@@ -209,6 +211,7 @@ class OrcaCloudService:
         self.access_token = None
         self.refresh_token = None
         self.token_expiry = None
+        self.granted_scope = None
 
     def _api_headers(self) -> dict[str, str]:
         """Headers for calls to the external API. Requires a bearer token —
@@ -356,6 +359,11 @@ class OrcaCloudService:
             self.token_expiry = datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
         else:
             self.token_expiry = None
+        # The granted scope rides every token response; the UI gates the push
+        # controls on it, so keep the last known value when a response omits it.
+        scope = data.get("scope")
+        if scope:
+            self.granted_scope = str(scope)
 
     # ------------------------------------------------------------------
     # External API

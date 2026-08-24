@@ -47,6 +47,13 @@ class UserFilamentPreset(Base):
     pushed_cloud_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     pushed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     push_dirty: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # Orca half of the per-ecosystem push bookkeeping (m154) — a row can be
+    # pushed to BOTH clouds. The anchor holds the SERVER updated_time of our
+    # last push: the only honest reference for "cloud changed since".
+    orca_pushed_profile_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    orca_pushed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    orca_push_dirty: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    orca_pushed_updated_time: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class UserFilamentFamily(Base):
