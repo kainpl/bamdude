@@ -17,6 +17,8 @@ Two rules outlive any single frame type:
   ``ValueError``, so the parser can be reimplemented without touching them.
 """
 
+import uuid
+from datetime import datetime, timezone
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -211,6 +213,29 @@ def parse_frame(raw: dict) -> AnyFrame:
         return _adapter.validate_python(raw)
     except ValidationError as e:
         raise ValueError(str(e)) from e
+
+
+def new_frame_id() -> str:
+    """A fresh correlation id for one outgoing frame.
+
+    A random hex rather than a counter: the agent reconnects, and a counter
+    that restarts at zero would hand the portal a second frame ``1`` for the
+    same instance — which is exactly the id a ``cmd_result`` is matched back to.
+    """
+    return uuid.uuid4().hex
+
+
+def frame_timestamp() -> str:
+    """Now, in the shape the contract's fixtures carry — ``...Z``, to the second.
+
+    Explicitly formatted rather than ``isoformat()``, which renders the offset
+    as ``+00:00``; the fixtures under ``tests/fixtures/cloud_link/`` are the
+    only sample of the portal's parser we hold, and every one of them ends in
+    ``Z``. Sub-second precision is deliberately absent: ordering on the portal
+    side is by arrival, and :func:`new_frame_id` is what correlates a frame —
+    a timestamp is a human-readable fact about a frame, not its identity.
+    """
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def make_frame(model: AnyFrame) -> dict:
