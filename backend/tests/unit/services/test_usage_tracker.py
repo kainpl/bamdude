@@ -423,6 +423,61 @@ class TestTrackFrom3MF:
         assert results == []
 
     @pytest.mark.asyncio
+    async def test_minus_one_mapping_charges_the_external_spool(self):
+        """``-1`` in ams_mapping means the external holder — BambuStudio
+        converts 254/255 to -1 before sending the print command. Spoolman's
+        resolver has honoured that since upstream #1276; this path fell
+        through to the position-based default and charged the first AMS
+        reel instead (P1S, 2026-08-24: 156 g onto the wrong spool)."""
+        spool = _make_spool(id=276, label_weight=1000, weight_used=0)
+        assignment = _make_assignment(spool_id=276, ams_id=255, tray_id=0)
+        archive = MagicMock()
+        archive.file_path = "archives/test.3mf"
+
+        db = AsyncMock()
+        # no queue lookup: the print-cmd mapping short-circuits it
+        db.execute = AsyncMock(
+            side_effect=[
+                MagicMock(scalar_one_or_none=MagicMock(return_value=archive)),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=assignment)),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=spool)),
+            ]
+        )
+
+        # A loaded AMS slot 0 beside the external — the position-based
+        # default would wrongly pick it for slot 1.
+        state = _make_printer_state(
+            [{"id": 0, "tray": [{"id": 0, "tray_type": "PETG"}]}],
+            tray_now=254,
+        )
+        state.raw_data["vt_tray"] = [{"id": 254, "tray_type": "PETG"}]
+        pm = _make_printer_manager(state)
+        filament_usage = [{"slot_id": 1, "used_g": 156.5, "type": "PETG", "color": ""}]
+
+        with (
+            patch("backend.app.core.config.settings") as mock_settings,
+            patch("backend.app.utils.threemf_tools.extract_filament_usage_from_3mf", return_value=filament_usage),
+        ):
+            mock_path = MagicMock()
+            mock_path.exists.return_value = True
+            mock_settings.base_dir.__truediv__ = MagicMock(return_value=mock_path)
+
+            results = await _track_from_3mf(
+                printer_id=1,
+                archive_id=10,
+                status="completed",
+                print_name="test",
+                handled_trays=set(),
+                printer_manager=pm,
+                db=db,
+                ams_mapping=[-1],
+            )
+
+        assert len(results) == 1
+        assert (results[0]["ams_id"], results[0]["tray_id"]) == (255, 0)
+        assert results[0]["spool_id"] == 276
+
+    @pytest.mark.asyncio
     async def test_slot_to_tray_mapping(self):
         """3MF slot_id maps correctly to (ams_id, tray_id) via tray_now."""
         # tray_now=4 → ams_id=1, tray_id=0 (single filament uses tray_now)

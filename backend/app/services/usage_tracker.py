@@ -1894,6 +1894,26 @@ async def _track_from_3mf(
                 mapped = slot_to_tray[slot_id - 1]
                 if isinstance(mapped, int) and mapped >= 0:
                     global_tray_id = mapped
+                elif mapped == -1:
+                    # ``-1`` means the EXTERNAL holder — BambuStudio converts
+                    # 254/255 to -1 in ams_mapping before sending the print
+                    # command. Spoolman's _resolve_global_tray_id has honoured
+                    # that since upstream #1276; this path fell through to the
+                    # position-based default below and charged the first AMS
+                    # reel for an external print (P1S, 2026-08-24). Never let
+                    # an explicit external marker reach that default.
+                    _ext_state = printer_manager.get_status(printer_id)
+                    _ext_raw = getattr(_ext_state, "raw_data", None) if _ext_state else None
+                    if _ext_raw:
+                        from backend.app.services.spoolman_tracking import build_ams_tray_lookup
+
+                        _ext_lookup = build_ams_tray_lookup(_ext_raw)
+                        for _ext_id in (254, 255):
+                            if _ext_id in _ext_lookup:
+                                global_tray_id = _ext_id
+                                break
+                    if global_tray_id is None:
+                        global_tray_id = 254
             # Position-based default: sort available tray IDs so external spools (254/255)
             # naturally follow standard AMS trays, matching slicer slot numbering
             if global_tray_id is None:

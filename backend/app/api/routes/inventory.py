@@ -2074,7 +2074,9 @@ async def get_spool_usage_history(
     result = await db.execute(
         select(SpoolUsageHistory)
         .where(SpoolUsageHistory.spool_id == spool_id)
-        .order_by(SpoolUsageHistory.created_at.desc())
+        # id breaks the tie: a runout close-out lands in the same second as
+        # the print's own rows, and date alone shows them in random order
+        .order_by(SpoolUsageHistory.created_at.desc(), SpoolUsageHistory.id.desc())
         .limit(limit)
     )
     return list(result.scalars().all())
@@ -2090,7 +2092,11 @@ async def get_all_usage_history(
     """Get global usage history, optionally filtered by printer."""
     from backend.app.models.spool_usage_history import SpoolUsageHistory
 
-    query = select(SpoolUsageHistory).order_by(SpoolUsageHistory.created_at.desc()).limit(limit)
+    query = (
+        select(SpoolUsageHistory)
+        .order_by(SpoolUsageHistory.created_at.desc(), SpoolUsageHistory.id.desc())
+        .limit(limit)
+    )
     if printer_id is not None:
         query = query.where(SpoolUsageHistory.printer_id == printer_id)
     result = await db.execute(query)
