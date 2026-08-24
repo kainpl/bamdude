@@ -26,6 +26,7 @@ from backend.app.api.routes import (
     camera,
     camwall,
     cloud,
+    cloud_link,
     discovery,
     external_links,
     filament_calibration as filament_calibration_routes,
@@ -8477,6 +8478,7 @@ app.include_router(orca_cloud.router, prefix=app_settings.api_prefix)
 app.include_router(labels.router, prefix=app_settings.api_prefix)
 app.include_router(settings_routes.router, prefix=app_settings.api_prefix)
 app.include_router(cloud.router, prefix=app_settings.api_prefix)
+app.include_router(cloud_link.router, prefix=app_settings.api_prefix)
 app.include_router(local_presets.router, prefix=app_settings.api_prefix)
 app.include_router(slicer_presets.router, prefix=app_settings.api_prefix)
 app.include_router(slicer_pipelines.router, prefix=app_settings.api_prefix)
