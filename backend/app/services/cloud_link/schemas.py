@@ -19,7 +19,15 @@ Two rules outlive any single frame type:
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    TypeAdapter,
+    ValidationError,
+    model_serializer,
+)
 
 
 class _Model(BaseModel):
@@ -32,8 +40,10 @@ class _Base(_Model):
     """Fields every frame carries, whichever direction it travels."""
 
     v: Literal[1]
-    id: str
-    ts: str
+    # ``z.string().min(1)`` in the contract — an empty id or timestamp is not a
+    # frame anybody can correlate or order.
+    id: Annotated[str, Field(min_length=1)]
+    ts: Annotated[str, Field(min_length=1)]
 
 
 # --- shared payload pieces -------------------------------------------------
@@ -50,6 +60,14 @@ class Temps(_Model):
     chamber: float | None
 
 
+class PrinterError(_Model):
+    """What a printer is complaining about. Both halves are required: a code
+    nobody can read, or a message nothing can be keyed off, is half an error."""
+
+    code: str
+    message: str
+
+
 class UplinkPrinter(_Model):
     """One printer as the portal sees it — deliberately a small projection of
     our own model, not a dump of it."""
@@ -62,9 +80,7 @@ class UplinkPrinter(_Model):
     progress: Annotated[float, Field(ge=0, le=100)] | None
     job_name: str | None
     temps: Temps
-    # ``{code, message}`` — left untyped until the portal contract pins its
-    # optionality; a guess here would drift from zod silently.
-    error: dict | None
+    error: PrinterError | None
 
 
 # --- handshake -------------------------------------------------------------
@@ -155,8 +171,19 @@ class Cmd(_Base):
 
 class CmdResultData(_Model):
     ok: bool
+    # OPTIONAL, not nullable. The contract says ``z.string().optional()`` /
+    # ``z.record(...).optional()``, and zod refuses an explicit ``null`` for
+    # those — so when there is nothing to say, the key must be ABSENT.
+    # Everything else nullable in this contract (progress, job_name, temps,
+    # printer error) is the opposite and must keep its explicit null.
     error: str | None = None
     payload: dict | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_the_unset_optionals(self, handler: SerializerFunctionWrapHandler) -> dict:
+        """Drop the None-valued keys — no field of this model is nullable, so a
+        None here always means "unset", never "reported as empty"."""
+        return {key: value for key, value in handler(self).items() if value is not None}
 
 
 class CmdResult(_Base):
@@ -189,7 +216,10 @@ def parse_frame(raw: dict) -> AnyFrame:
 def make_frame(model: AnyFrame) -> dict:
     """Serialise a frame model to the plain dict that goes on the wire.
 
-    Nulls are kept: the contract's nullable fields say "nothing to report",
-    which is not the same as an absent field.
+    Nulls are kept, because the contract's ``.nullable()`` fields say "nothing to
+    report", which is not the same as an absent field. Its ``.optional()`` fields
+    are the mirror image and must be omitted instead — that is not a global
+    setting but a property of those two fields, so it lives on the model that has
+    them (:class:`CmdResultData`).
     """
     return model.model_dump(mode="json", exclude_none=False)
