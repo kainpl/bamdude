@@ -222,3 +222,30 @@ async def test_authored_listing_carries_both_push_states(async_client: AsyncClie
     assert preset["bambu_dirty"] is True
     assert preset["orca_profile_id"] == "uuid-1"
     assert preset["orca_dirty"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_push_resolve_refuses_someone_elses_owned_row(async_client: AsyncClient, db_session):
+    """Authored mirrors are farm-global (owner NULL) and pass freely; a row
+    that DOES carry another owner is refused — defence in depth for a future
+    where owned rows grow push bookkeeping."""
+    from backend.app.models.user_filament import UserFilamentPreset
+
+    row = UserFilamentPreset(
+        owner_user_id=424242,  # someone who is not the test admin (id=1)
+        ecosystem="orca",
+        source="local",
+        name="Foreign @P1S",
+        family_filament_id="Powned01",
+        orca_pushed_profile_id="uuid-y",
+    )
+    db_session.add(row)
+    await db_session.commit()
+    await db_session.refresh(row)
+
+    resp = await async_client.post(
+        "/api/v1/filament-families/Powned01/push-resolve",
+        json={"preset_row_id": row.id, "action": "force"},
+    )
+    assert resp.status_code == 403

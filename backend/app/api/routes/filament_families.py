@@ -180,6 +180,10 @@ async def push_resolve_endpoint(
     row = await db.get(UserFilamentPreset, body.preset_row_id)
     if row is None or row.family_filament_id != filament_id:
         raise HTTPException(404, "preset row not found in this family")
+    # Authored mirrors are farm-global (owner NULL) — but if an owned row ever
+    # grows push bookkeeping, resolving its conflict stays with its owner.
+    if current_user is not None and row.owner_user_id is not None and row.owner_user_id != current_user.id:
+        raise HTTPException(403, "not authorised to resolve this preset's conflict")
     try:
         return await filament_push.resolve_push_conflict(
             db, row_id=body.preset_row_id, action=body.action, user=current_user
