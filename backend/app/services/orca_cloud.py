@@ -132,6 +132,20 @@ class OrcaCloudAuthError(OrcaCloudError):
     pass
 
 
+class OrcaCloudConflict(OrcaCloudError):
+    """A 409 from the push endpoint. ``code``/``reason`` per the developer
+    guide: -1 timestamp_conflict (profile changed since original_updated_time),
+    -2 duplicate_profile_uuid (creating with an existing id), -3
+    tombstone_uuid_conflict (id belongs to a recently deleted profile).
+    ``server_profile`` is the cloud's ProfileMetadata, or None."""
+
+    def __init__(self, code: int, reason: str, server_profile: dict | None):
+        super().__init__(f"Orca Cloud push conflict ({reason})")
+        self.code = code
+        self.reason = reason
+        self.server_profile = server_profile
+
+
 _shared_http_client: httpx.AsyncClient | None = None
 
 
@@ -422,6 +436,75 @@ class OrcaCloudService:
             return data
         logger.warning("Orca Cloud /external/sync/pull returned unexpected shape: %r", type(data).__name__)
         return []
+
+    async def push_profile(
+        self,
+        *,
+        profile_id: str,
+        name: str,
+        content: Any,
+        original_updated_time: int | None = None,
+    ) -> dict[str, Any]:
+        """Create or update one profile (``POST /api/v1/external/sync/push``).
+
+        For updates pass the server ``updated_time`` we last saw as
+        ``original_updated_time`` — the server rejects the write with a 409
+        (:class:`OrcaCloudConflict`) if the profile changed since. Omit it
+        when creating. Returns ProfileMetadata; take ``updated_time`` from it
+        as the anchor for the next push."""
+        body: dict[str, Any] = {"id": profile_id, "name": name, "content": content}
+        if original_updated_time is not None:
+            body["original_updated_time"] = int(original_updated_time)
+        return await self._push_request("push", body)
+
+    async def force_push_profile(self, *, profile_id: str, name: str, content: Any) -> dict[str, Any]:
+        """Overwrite the cloud copy, skipping the optimistic-lock check.
+        Reserve for explicit user intent — the guide is blunt about this."""
+        body = {"id": profile_id, "name": name, "content": content}
+        return await self._push_request("force-push", body)
+
+    async def _push_request(self, endpoint: str, body: dict[str, Any]) -> dict[str, Any]:
+        url = f"{ORCA_API_BASE}/api/v1/external/sync/{endpoint}"
+        try:
+            resp = await self._client.post(url, json=body, headers=self._api_headers())
+        except httpx.HTTPError as e:
+            raise OrcaCloudError(f"Network error pushing Orca Cloud profile: {e}") from e
+        if resp.status_code == 401:
+            raise OrcaCloudAuthError("Orca Cloud push unauthorized — token expired or revoked")
+        if resp.status_code == 409:
+            try:
+                data = resp.json()
+            except ValueError:
+                data = {}
+            raise OrcaCloudConflict(
+                code=int(data.get("code", 0)),
+                reason=str(data.get("reason", "conflict")),
+                server_profile=data.get("server_profile") if isinstance(data.get("server_profile"), dict) else None,
+            )
+        if resp.status_code == 413:
+            raise OrcaCloudError("Orca Cloud rejected the profile: payload exceeds the 1 MB cap")
+        if resp.status_code >= 400:
+            raise OrcaCloudError(f"Orca Cloud push failed ({resp.status_code}): {resp.text[:200]}")
+        return resp.json()
+
+    async def delete_profiles(self, ids: list[str]) -> dict[str, Any]:
+        """Delete profiles (``DELETE /delete?resource=profiles``). Returns the
+        server's report verbatim — 200 ok / 207 partial_failure / 404 none
+        matched all carry ``{status, deleted?, failed?}`` bodies and the
+        best-effort caller decides what a partial result means."""
+        url = f"{ORCA_API_BASE}/api/v1/external/sync/delete?resource=profiles"
+        try:
+            resp = await self._client.request("DELETE", url, json={"ids": ids}, headers=self._api_headers())
+        except httpx.HTTPError as e:
+            raise OrcaCloudError(f"Network error deleting Orca Cloud profiles: {e}") from e
+        if resp.status_code == 401:
+            raise OrcaCloudAuthError("Orca Cloud delete unauthorized — token expired or revoked")
+        if resp.status_code in (200, 207, 404):
+            try:
+                return resp.json()
+            except ValueError:
+                return {"status": "failed", "failed": []}
+        raise OrcaCloudError(f"Orca Cloud delete failed ({resp.status_code}): {resp.text[:200]}")
 
     async def get_profile(self, profile_id: str) -> dict[str, Any]:
         """Fetch a single profile's full content. The external sync API has no
