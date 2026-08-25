@@ -6916,6 +6916,12 @@ class BambuMQTTClient:
             elif match.kind == "autoswitch" and fired != "autoswitch" and not match.transitional:
                 self._runout_fired[tray] = "autoswitch"
                 self.on_usage_event("runout", "autoswitch", tray, self.state.layer_num)
+            elif fired == "ambiguous" and match.kind != "ambiguous" and not match.transitional:
+                # The firmware escalated its own diagnosis (jam → ran out)
+                # while the pause is still active — the definite kind owns the
+                # episode; record_runout upgrades the row in place.
+                self._runout_fired[tray] = match.kind
+                self.on_usage_event("runout", match.kind, tray, self.state.layer_num)
 
         # Re-arm once an episode ends: when no runout-family code for a tray
         # is active any more (the user reloaded and resumed, or the backup

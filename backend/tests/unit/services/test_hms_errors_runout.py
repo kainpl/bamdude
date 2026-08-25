@@ -6,7 +6,10 @@ from backend.app.services.hms_errors import classify_runout_ecode
 class TestTheMiniHolderPairIsDistinguishedByFullCode:
     """``12FF2000_00020001`` (holder ran out) and ``12FF8000_00020001`` (tangled)
     share the short form ``12FF_0001`` — observed live on an A1 mini, 2026-08-23.
-    Only full-ecode matching tells them apart; the jam must classify as None."""
+    Only full-ecode matching tells them apart: the runout half zeroes, the jam
+    half is ambiguous — a timeline marker so a mid-pause replacement becomes a
+    spool_loaded boundary (a reel's taped tail presents as a jam, measured live
+    2026-08-25), never a zero correction."""
 
     def test_holder_runout_is_external(self):
         m = classify_runout_ecode("12FF200000020001")
@@ -14,8 +17,12 @@ class TestTheMiniHolderPairIsDistinguishedByFullCode:
         assert m.kind == "external"
         assert m.external_tray == 254
 
-    def test_tangled_is_not_a_runout(self):
-        assert classify_runout_ecode("12FF800000020001") is None
+    def test_tangled_is_ambiguous_timeline_only(self):
+        m = classify_runout_ecode("12FF800000020001")
+        assert m is not None
+        assert m.kind == "ambiguous"
+        assert m.scope == "external"
+        assert m.external_tray == 254
 
 
 class TestAmsSlotFamily:

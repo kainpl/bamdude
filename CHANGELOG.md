@@ -190,6 +190,8 @@
 
 ### Fixed
 
+- **Replacing a spool during a holder jam now lands in the usage journal.** A reel's taped tail presents to the A1-family firmware as a jam ("filament may be tangled or stuck"), not a runout — and the journal only accepted a replacement assignment against an open runout episode, so swapping the reel during that pause left no boundary and the whole print was attributed to the finishing spool. The jam code now journals an *ambiguous* runout: assigning a replacement mid-pause becomes the segment boundary, while untangling and resuming with the same reel still splits nothing and never closes anyone's books — and if the firmware escalates its own diagnosis from jam to ran-out inside the same pause, the definite verdict takes over the episode.
+
 - **An HMS error no longer flashes "Unknown HMS code" before its real description.** The per-model HMS catalogue is fetched once per session, and on the first error dialog the row asserted "unknown" while that fetch was still in flight, then blinked into the correct text a moment later. While the catalogue is loading the row now says so; "unknown" is only claimed once the catalogue has arrived and genuinely lacks the code.
 
 - **The Windows installer's shortcuts now carry the BamDude icon.** The bundled `.ico` still held the upstream Bambuddy logo, so the Start-Menu and desktop shortcuts (and Add/Remove Programs) showed the wrong identity. Regenerated from the app's own icon.

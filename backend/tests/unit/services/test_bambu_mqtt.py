@@ -5496,8 +5496,9 @@ class TestRunoutDetector:
     """Runout signals → on_usage_event, full-ecode matched, deduped per print.
 
     The detector must never guess a slot (a spool whose slot was guessed is
-    never zeroed) and must fire nothing for jams — the A1-mini pair
-    12FF2000/12FF8000 shares a short code and differs only in the full ecode.
+    never zeroed). The A1-mini pair 12FF2000/12FF8000 shares a short code and
+    differs only in the full ecode: the runout half fires external, the jam
+    half fires ambiguous (timeline-only — never a zero correction).
     """
 
     @pytest.fixture
@@ -5539,10 +5540,25 @@ class TestRunoutDetector:
         assert client.on_usage_event.call_count == 1
         assert client.on_usage_event.call_args[0] == ("runout", "external", 254, 42)
 
-    def test_jam_and_unrelated_codes_fire_nothing(self, client):
-        client._process_message(self._hms_push(0x12FF8000, 0x00020001))  # tangled/stuck
+    def test_unrelated_codes_fire_nothing(self, client):
         client._process_message(self._hms_push(0x0C000300, 0x0003000B))  # unrelated module
         assert client.on_usage_event.call_count == 0
+
+    def test_holder_jam_fires_an_ambiguous_runout_on_the_external(self, client):
+        # «затряг кінчик»: a reel's taped tail presents as the jam half of the
+        # 12FF_0001 pair. The timeline marker lets the mid-pause replacement
+        # assignment journal a spool_loaded boundary (printer 3, 2026-08-25).
+        client._process_message(self._hms_push(0x12FF8000, 0x00020001))
+        assert client.on_usage_event.call_count == 1
+        assert client.on_usage_event.call_args[0] == ("runout", "ambiguous", 254, 42)
+
+    def test_a_definite_runout_upgrades_a_fired_ambiguous(self, client):
+        # The firmware escalates its own diagnosis (jam -> ran out) inside the
+        # same pause; the definite kind must own the episode.
+        client._process_message(self._hms_push(0x12FF8000, 0x00020001))
+        client._process_message(self._hms_push(0x12FF2000, 0x00020002))
+        kinds = [call[0][1] for call in client.on_usage_event.call_args_list]
+        assert kinds == ["ambiguous", "external"]
 
     def test_slot_is_not_guessed_with_two_units_and_mismatched_tray_now(self, client):
         client.state.raw_data["ams"]["ams"].append({"id": 1, "tray": [{"id": 1, "tray_uuid": ""}]})

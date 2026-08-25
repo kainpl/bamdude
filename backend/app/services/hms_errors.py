@@ -149,9 +149,10 @@ def classify_pause_reason(
 # usage-accuracy-design.md §2). ⚠️ FULL ecodes only — the short ``MMMM_EEEE``
 # form collapses distinct errors: ``12FF2000_00020001`` (holder ran out) and
 # ``12FF8000_00020001`` (tangled/stuck) both shorten to ``12FF_0001``, observed
-# live on an A1 mini 2026-08-23. A jam must never classify as a runout, and a
-# spool whose slot was guessed is never zeroed — so unknown codes return None
-# and ambiguity is an explicit kind, not a fallthrough.
+# live on an A1 mini 2026-08-23. A jam must never classify as a ZEROING
+# runout (it gets at most the ``ambiguous`` kind — timeline marker only), and
+# a spool whose slot was guessed is never zeroed — so unknown codes return
+# None and ambiguity is an explicit kind, not a fallthrough.
 # ---------------------------------------------------------------------------
 
 
@@ -205,6 +206,16 @@ def classify_runout_ecode(full_code: str) -> RunoutMatch | None:
         if code.startswith("12FF20") and code[8:] in ("00020001", "00020002"):
             # A1-family spool holder: ran out / empty. 12FF80xx is the jam half.
             return RunoutMatch("external", "external", None, 254, False)
+        if code.startswith("12FF80") and code[8:] == "00020001":
+            # A1-family holder jam ("may be tangled or stuck") — the other half
+            # of the reused 12FF_0001 short form. A reel's taped tail presents
+            # as a jam, and the human may answer it with a fresh spool (measured
+            # live 2026-08-25: replaced + reassigned mid-pause, and the journal
+            # had nothing to attach the assignment to). Ambiguous puts the
+            # timeline marker in so that assignment becomes a spool_loaded
+            # boundary — never a zero correction, and untangle-and-resume with
+            # the same reel journals no boundary at all.
+            return RunoutMatch("ambiguous", "external", None, 254, False)
         return None
 
     if len(code) == 8:

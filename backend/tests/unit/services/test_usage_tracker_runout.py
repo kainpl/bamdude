@@ -529,3 +529,31 @@ class TestMultiEpisodeBoundaries:
             ev(4, "spool_loaded", None, 254, 250, 11),
         ]
         assert journal_boundaries_for_tray(events, 254) == [(0, 7, None), (80, 9, None), (250, 11, None)]
+
+    def test_a_jam_splits_only_when_a_replacement_was_demonstrably_loaded(self):
+        # Printer 3, 2026-08-25: the holder jam (12FF8000 — a reel's taped
+        # tail) journals an AMBIGUOUS runout. With the mid-pause replacement
+        # assigned it is a boundary; untangle-and-resume splits nothing.
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        replaced = [
+            ev(1, "runout", "ambiguous", 254, 12, 273),
+            ev(2, "spool_loaded", None, 254, 12, 278),
+        ]
+        assert journal_boundaries_for_tray(replaced, 254) == [(0, 273, None), (12, 278, None)]
+
+        untangled = [ev(1, "runout", "ambiguous", 254, 12, 273)]
+        assert journal_boundaries_for_tray(untangled, 254) == []
