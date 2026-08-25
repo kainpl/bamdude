@@ -7811,6 +7811,7 @@ export default {
     pair: {
       title: 'Pair with a portal',
       hint: 'Generate a pairing code in the portal, then enter it here. A code is single-use and expires.',
+      hintRevoked: 'The portal revoked this link. Generate a fresh pairing code there and enter it here to reconnect — no need to unpair first.',
       codeLabel: 'Pairing code',
       codePlaceholder: 'ABCD-EFGH',
       advanced: 'Advanced — portal URL',

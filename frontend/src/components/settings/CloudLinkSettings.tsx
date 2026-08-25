@@ -406,12 +406,16 @@ export function CloudLinkSettings() {
           </label>
         </div>
 
-        {/* ── Pairing (unpaired only) ── */}
-        {!status.paired && (
+        {/* ── Pairing (shown when unpaired, OR when revoked so a killed link
+              can be re-paired in one step rather than forcing an Unpair first —
+              pair() overwrites the credential and clears the revoked flag). ── */}
+        {(!status.paired || status.revoked) && (
           <div className="space-y-3 border-t border-bambu-dark-tertiary pt-4">
             <div>
               <h3 className="text-sm font-semibold text-white">{t('cloudLink.pair.title')}</h3>
-              <p className="text-xs text-bambu-gray">{t('cloudLink.pair.hint')}</p>
+              <p className="text-xs text-bambu-gray">
+                {status.revoked ? t('cloudLink.pair.hintRevoked') : t('cloudLink.pair.hint')}
+              </p>
             </div>
             <form
               className="space-y-3"
