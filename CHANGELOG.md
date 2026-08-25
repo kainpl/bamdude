@@ -1,5 +1,15 @@
 ## [Unreleased]
 
+### Added
+
+- **Link a farm to BamDude Cloud, and see it from outside the house.** Off unless you turn it on, and off again the moment you say so. Settings → Network → Cloud Link takes a pairing code from the portal, and from then on that farm reports itself: which printers are running, how far along, and the things worth knowing as they happen.
+
+    **You choose which printers leave the building.** The link publishes the ones you tick and no others — untick a machine and it stops being described straight away. A printer you archive or park in Maintenance Mode drops out of the published set on its own, and the panel says how many went rather than letting the count quietly change under you.
+
+    **Nothing prints from the portal.** This phase carries status one way and a short, fixed list of administrative commands the other — ask the farm to answer, ask it to resend everything it knows, and tell it to stop. Not "no printer controls yet": the farm will not act on anything outside that list, because the list is part of the version you installed rather than something the far end can extend by asking.
+
+    **There are two ways to end it, and either is enough.** Unpair from Settings and the credential is deleted here; revoke from the portal and the farm is told, stops, and says so — instead of leaving you guessing at a link that has quietly gone. What the two sides said to each other is kept in the panel for a month, so "when did this farm stop being visible, and why" is a question with an answer.
+
 ## [0.5.4] - 2026-08-18
 
 Image: `ghcr.io/kainpl/bamdude:0.5.4` / `kainpl/bamdude:0.5.4` (`:latest` tracks this).
