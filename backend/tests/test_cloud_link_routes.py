@@ -42,6 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.api.routes import cloud_link as cloud_link_routes
 from backend.app.models.cloud_link import DEFAULT_PORTAL_URL, CloudLink, CloudLinkAudit, CloudLinkPrinter
+from backend.app.services.cloud_link import pairing as cloud_link_pairing
 from backend.app.services.cloud_link.service import cloud_link_service
 from backend.app.services.cloud_link.store import get_config, get_secret, save_credentials, set_publish_set
 
@@ -275,6 +276,36 @@ async def test_pairing_stores_the_credential_enables_the_link_and_restarts_it(
     assert [s["pairing_code"] for s in seen] == ["ABCD-EFGH"], "the portal is sent the canonical form"
     assert await get_secret(db_session) == "route-secret-0001"
     assert service_spies["restart"].calls == 1, "a new credential is only useful once the link is rebuilt"
+
+
+async def test_pairing_survives_an_audit_row_that_cannot_be_written(
+    async_client, db_session: AsyncSession, portal, service_spies, monkeypatch
+):
+    """The unpair case's twin, and worse: here the poisoned session is the
+    CALLER's and the statement that trips over it is `config.enabled = True`.
+
+    So without the rollback the false error the catch exists to prevent arrives
+    anyway, one frame further out — a 500 telling the user the pairing failed,
+    sending them to redeem a code that has already been spent, on a farm that
+    is in fact paired.
+    """
+    handler, _ = _issues_credentials(instance_id="inst_audit", secret="audit-secret-0001")
+    url = await portal(handler)
+
+    async def poisons_the_session(session, *args, **kwargs):
+        session.add(CloudLinkAudit(direction="up", kind=None, summary="x"))
+        await session.commit()
+
+    monkeypatch.setattr(cloud_link_pairing, "write_audit", poisons_the_session)
+
+    response = await async_client.post(f"{BASE}/pair", json={"pairing_code": "ABCD-EFGH", "portal_url": url})
+    assert response.status_code == 200, response.text
+    assert response.json()["paired"] is True
+    # The choice the user made by typing a code was still recorded.
+    assert response.json()["enabled"] is True
+
+    db_session.expire_all()
+    assert await get_secret(db_session) == "audit-secret-0001"
 
 
 async def test_a_code_in_the_wrong_shape_is_a_400_and_never_reaches_the_portal(async_client, portal, service_spies):

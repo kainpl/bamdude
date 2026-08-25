@@ -171,8 +171,26 @@ async def pair(session: AsyncSession, pairing_code: str) -> None:
     # would report a failed pairing to a user who is, in fact, paired — and
     # send them to redeem a code that has already been spent. A missing audit
     # row is a gap in the record; a false error is a farm that cannot connect.
+    #
+    # ⚠️ Catching is not enough, because this session belongs to the CALLER.
+    # ``write_audit`` is add + commit, and a commit that fails leaves the
+    # transaction deactivated with the bad insert pending — so the route's own
+    # ``config.enabled = True`` / ``commit`` right after this returns raises
+    # ``PendingRollbackError``, and the false error the catch exists to prevent
+    # arrives anyway, one frame further out.
+    #
+    # ⚠️ And the rollback alone is not enough either: it expires every instance
+    # in the session, ``config`` among them, and the caller is still holding
+    # that object. Touching an expired attribute emits a lazy load from a
+    # non-greenlet context — a ``MissingGreenlet``, i.e. the same 500 wearing a
+    # different name. The refresh is what hands the caller back a usable row.
+    #
+    # The credential committed on the line above and is in its own transaction,
+    # so none of this can cost it.
     try:
         await write_audit(session, "up", "pair", f"paired with {config.portal_url} as instance {instance_id}")
     except Exception as exc:
+        await session.rollback()
+        await session.refresh(config)
         logger.warning("Cloud Link: paired, but the audit row could not be written — %s", exc)
     logger.info("Cloud Link: paired with %s as instance %s", config.portal_url, instance_id)
