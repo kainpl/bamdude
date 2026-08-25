@@ -14,6 +14,7 @@ we actually sent, and the status handling as aiohttp actually delivers it.
 
 from __future__ import annotations
 
+import logging
 import socket
 
 import pytest
@@ -282,6 +283,38 @@ async def test_an_audit_that_cannot_be_written_does_not_unpair_the_pairing(
 
     assert await get_secret(db_session) == "s3cr3t-instance-token-000111"
     assert (await db_session.execute(select(CloudLinkAudit))).scalars().all() == []
+
+
+async def test_a_recovery_that_fails_too_still_leaves_the_pairing_successful(
+    db_session: AsyncSession, portal, monkeypatch, caplog
+):
+    """The handler written to prevent a 500-on-success must not be able to
+    raise one itself.
+
+    ``rollback`` and ``refresh`` are I/O on the database that has just refused
+    a write, so a busy SQLite or a dropped connection makes them fail in turn —
+    and an exception from THERE is the same false "pairing failed" the outer
+    catch exists to prevent, arriving one frame further out. The credential is
+    already committed by then; there is nothing left to attempt, so it is
+    logged and swallowed.
+    """
+    handler, _ = _issues_credentials()
+    await _point_at(db_session, await portal(handler))
+
+    async def refuses(*args, **kwargs):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr("backend.app.services.cloud_link.pairing.write_audit", refuses)
+    # On the instance, not the class: the session the test itself reads back
+    # through has to keep working, and so does the fixture's teardown.
+    monkeypatch.setattr(db_session, "rollback", refuses)
+    monkeypatch.setattr(db_session, "refresh", refuses)
+
+    with caplog.at_level(logging.WARNING):
+        await pair(db_session, "ABCD-EFGH")
+
+    assert await get_secret(db_session) == "s3cr3t-instance-token-000111"
+    assert "could not restore the caller's session" in caplog.text
 
 
 # ------------------------------------------------------------ the format gate

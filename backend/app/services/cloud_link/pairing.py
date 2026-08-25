@@ -98,7 +98,12 @@ async def pair(session: AsyncSession, pairing_code: str) -> None:
         raise PairingError("bad_format")
 
     config = await get_config(session)
-    url = _pair_url(config.portal_url)
+    # Read off the row once, here. Everything below logs it, and the recovery
+    # path at the bottom can leave ``config`` expired — an attribute read after
+    # that point is a lazy load from a non-greenlet context, i.e. the very
+    # failure this function goes to some trouble not to produce.
+    portal_url = config.portal_url
+    url = _pair_url(portal_url)
     payload = {
         "pairing_code": code,
         # The name is what the operator will pick this farm out by in a portal
@@ -187,10 +192,23 @@ async def pair(session: AsyncSession, pairing_code: str) -> None:
     #
     # The credential committed on the line above and is in its own transaction,
     # so none of this can cost it.
+    #
+    # ⚠️ And the recovery itself is wrapped, because it is I/O on the same
+    # database that just failed. A busy SQLite or a dropped connection makes
+    # ``rollback``/``refresh`` raise in turn, and an exception escaping from
+    # HERE is the exact 500-on-a-successful-pairing this whole block exists to
+    # prevent — arriving from the handler written to prevent it. There is
+    # nothing further to try at that point, so it is logged and swallowed: the
+    # credential is committed either way, and the caller's own failure (if the
+    # session really is unusable) will be an honest one about the caller's own
+    # write rather than about pairing.
     try:
-        await write_audit(session, "up", "pair", f"paired with {config.portal_url} as instance {instance_id}")
+        await write_audit(session, "up", "pair", f"paired with {portal_url} as instance {instance_id}")
     except Exception as exc:
-        await session.rollback()
-        await session.refresh(config)
         logger.warning("Cloud Link: paired, but the audit row could not be written — %s", exc)
-    logger.info("Cloud Link: paired with %s as instance %s", config.portal_url, instance_id)
+        try:
+            await session.rollback()
+            await session.refresh(config)
+        except Exception as recovery_exc:
+            logger.warning("Cloud Link: could not restore the caller's session after that — %s", recovery_exc)
+    logger.info("Cloud Link: paired with %s as instance %s", portal_url, instance_id)
