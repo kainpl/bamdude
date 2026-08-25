@@ -61,16 +61,24 @@ const printer = (id: number, name: string, is_active = true) => ({
   archived: false,
 });
 
+/** How many times the picker has asked for the printer list — the only way to
+ *  know a background refetch has actually been attempted. */
+let printersFetches = 0;
+
 function mockStatus(status: object, printers: object[] = []) {
   server.use(
     http.get('/api/v1/cloud-link/status', () => HttpResponse.json(status)),
     http.get('/api/v1/cloud-link/audit', () => HttpResponse.json(emptyAudit)),
-    http.get('/api/v1/printers/', () => HttpResponse.json(printers)),
+    http.get('/api/v1/printers/', () => {
+      printersFetches += 1;
+      return HttpResponse.json(printers);
+    }),
   );
 }
 
 describe('CloudLinkSettings', () => {
   beforeEach(() => {
+    printersFetches = 0;
     mockStatus(pairedStatus);
   });
 
@@ -148,6 +156,75 @@ describe('CloudLinkSettings', () => {
     await user.click(screen.getByRole('button', { name: 'Save published set' }));
 
     await waitFor(() => expect(sent).toEqual({ printer_ids: [1] }));
+  });
+
+  it('says out loud that it dropped published printers it cannot show', async () => {
+    // Silently pruning is right; silently pruning *without saying so* is not.
+    // "1 of 1 selected" beside a stored set of three is otherwise the only clue
+    // that two machines are about to stop being published on the next save.
+    mockStatus({ ...pairedStatus, published_printer_ids: [1, 2, 99] }, [
+      printer(1, 'Alpha'),
+      printer(2, 'Beta', false),
+    ]);
+    render(<CloudLinkSettings />);
+
+    expect(
+      await screen.findByText(
+        '2 published printers are no longer available and will be removed when you save.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('keeps the prune while a background refetch of the printers is failing', async () => {
+    // TanStack drops `isSuccess` to false for the length of a failed background
+    // refetch even though the cached list is still there and still rendered. A
+    // prune gated on `isSuccess` therefore un-prunes inside that window: the
+    // dead ids walk back into the selection under a picker that has not
+    // changed, and a save landing then is a 422 on the whole set.
+    mockStatus({ ...pairedStatus, published_printer_ids: [1, 99] }, [printer(1, 'Alpha')]);
+    render(<CloudLinkSettings />);
+
+    expect(await screen.findByText('1 of 1 selected')).toBeInTheDocument();
+
+    server.use(
+      http.get('/api/v1/printers/', () => {
+        printersFetches += 1;
+        return new HttpResponse(null, { status: 500 });
+      }),
+    );
+    // What TanStack's focus manager listens on — a tab coming back to the
+    // foreground is exactly when this refetch happens for real.
+    window.dispatchEvent(new Event('visibilitychange'));
+
+    await waitFor(() => expect(printersFetches).toBeGreaterThan(1));
+    // Still pruned, still counted against what is on screen.
+    expect(screen.getByText('1 of 1 selected')).toBeInTheDocument();
+    expect(screen.getByText(/no longer available/)).toBeInTheDocument();
+  });
+
+  it('keeps quiet when every published printer is still on screen', async () => {
+    mockStatus(pairedStatus, [printer(1, 'Alpha')]);
+    render(<CloudLinkSettings />);
+
+    expect(await screen.findByText('Alpha')).toBeInTheDocument();
+    expect(screen.queryByText(/no longer available/)).not.toBeInTheDocument();
+  });
+
+  it('stops the notice once the selection is the user\'s own', async () => {
+    const user = userEvent.setup();
+    mockStatus({ ...pairedStatus, published_printer_ids: [1, 99] }, [printer(1, 'Alpha')]);
+    render(<CloudLinkSettings />);
+
+    expect(await screen.findByText(/no longer available/)).toBeInTheDocument();
+
+    await user.click(screen.getByText('Alpha'));
+
+    // From the first tick the set on screen is a draft the user built. Still
+    // blaming the difference on a vanished printer would be describing a
+    // change they made themselves.
+    await waitFor(() =>
+      expect(screen.queryByText(/no longer available/)).not.toBeInTheDocument(),
+    );
   });
 
   it('reports a 502 from the portal as "refused or unreachable"', async () => {

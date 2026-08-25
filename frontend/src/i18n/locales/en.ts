@@ -7372,6 +7372,8 @@ export default {
       title: 'Published printers',
       hint: 'Only ticked printers are ever described to the portal. Unticking one stops publishing it straight away.',
       empty: 'No printers are available to publish.',
+      pruned_one: '{{count}} published printer is no longer available and will be removed when you save.',
+      pruned_other: '{{count}} published printers are no longer available and will be removed when you save.',
       selected: '{{selected}} of {{total}} selected',
       save: 'Save published set',
       saving: 'Saving…',

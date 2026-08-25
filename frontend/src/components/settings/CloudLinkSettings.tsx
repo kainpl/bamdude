@@ -307,9 +307,19 @@ export function CloudLinkSettings() {
   // — while "N of M selected" counted rows that are not on screen. Prune it
   // from the seed the moment the picker has actually loaded (never before, or
   // a slow list would silently clear the selection).
-  const seedSet = printersQuery.isSuccess
-    ? savedSet.filter((id) => availableIds.has(id))
-    : savedSet;
+  //
+  // ⚠️ The gate is "have we ever had the list", not `isSuccess`. TanStack flips
+  // `isSuccess` to false while a background refetch is failing even though the
+  // cached data is still there and still on screen — so keying off it would
+  // un-prune the seed for the length of that window, re-admitting the dead ids
+  // into a selection the user can see and save.
+  const seedSet =
+    printersQuery.data !== undefined
+      ? savedSet.filter((id) => availableIds.has(id))
+      : savedSet;
+  // What the prune actually removed, so the user is told rather than left to
+  // notice that "N of M selected" quietly went down on its own.
+  const prunedCount = savedSet.length - seedSet.length;
   const selectedSet = draftSet ?? seedSet;
   // Measured against what is SAVED, not against the seed: a pruned seed is a
   // real difference from the stored set, and leaving Save disabled there would
@@ -493,6 +503,16 @@ export function CloudLinkSettings() {
               <h3 className="text-sm font-semibold text-white">{t('cloudLink.publish.title')}</h3>
               <p className="text-xs text-bambu-gray">{t('cloudLink.publish.hint')}</p>
             </div>
+            {/* Sits above the list rather than inside it, because the case that
+                needs it most is every published printer having gone — where the
+                list is the "no printers available" line and has nowhere to put
+                a note. Suppressed once the user starts a draft: from then on
+                the selection is theirs, not something we quietly changed. */}
+            {draftSet === null && prunedCount > 0 && (
+              <p className="text-xs text-yellow-700 dark:text-yellow-400">
+                {t('cloudLink.publish.pruned', { count: prunedCount })}
+              </p>
+            )}
             {printersQuery.isLoading ? (
               <p className="flex items-center gap-2 text-sm text-bambu-gray">
                 <Loader2 className="w-4 h-4 animate-spin" />
