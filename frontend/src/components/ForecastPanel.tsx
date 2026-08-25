@@ -46,7 +46,8 @@ interface SkuForecast {
   stockBreakAlert: boolean;
 }
 
-type SortKey = 'material' | 'used' | 'days_left' | 'stock';
+type SortKey = 'material' | 'spools' | 'used' | 'days_left' | 'stock' | 'empty_by' | 'reorder_by';
+type SpoolSortKey = 'id' | 'remaining' | 'used' | 'label';
 type SortDir = 'asc' | 'desc';
 type ChartDays = 7 | 30 | 180;
 
@@ -54,6 +55,24 @@ type ChartDays = 7 | 30 | 180;
 
 const Z_95 = 1.65;
 const CHART_COLORS = ['#1DB954', '#3B82F6', '#F59E0B', '#EF4444', '#8B5CF6'];
+
+// Sort preferences survive reloads, same pattern as the inventory table.
+const FORECAST_SORT_KEY = 'bamdude-forecast-sort';
+const FORECAST_SPOOL_SORT_KEY = 'bamdude-forecast-spool-sort';
+
+function loadSort<T>(storageKey: string): T | null {
+  try {
+    const stored = localStorage.getItem(storageKey);
+    if (stored) return JSON.parse(stored) as T;
+  } catch { /* ignore */ }
+  return null;
+}
+
+function saveSort(storageKey: string, state: unknown) {
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(state));
+  } catch { /* ignore */ }
+}
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
@@ -190,8 +209,12 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
 
   // All hooks must run unconditionally — guard render is deferred until after hooks
   const [alertsOpen, setAlertsOpen] = useState(false);
-  const [sortKey, setSortKey] = useState<SortKey>('material');
-  const [sortDir, setSortDir] = useState<SortDir>('asc');
+  const [sortKey, setSortKey] = useState<SortKey>(
+    () => loadSort<{ key: SortKey; dir: SortDir }>(FORECAST_SORT_KEY)?.key ?? 'material',
+  );
+  const [sortDir, setSortDir] = useState<SortDir>(
+    () => loadSort<{ key: SortKey; dir: SortDir }>(FORECAST_SORT_KEY)?.dir ?? 'asc',
+  );
   const [materialFilter, setMaterialFilter] = useState('');
   const [brandFilter, setBrandFilter] = useState('');
   const [cartModal, setCartModal] = useState<SkuForecast | null>(null);
@@ -322,6 +345,18 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
         case 'stock':
           va = a.totalRemainingG; vb = b.totalRemainingG;
           break;
+        case 'spools':
+          va = a.totalSpools; vb = b.totalSpools;
+          break;
+        case 'empty_by':
+          // Dateless rows (no rate) always sink to the end, whatever the direction.
+          va = a.projectedEmptyDate?.getTime() ?? (sortDir === 'asc' ? Infinity : -Infinity);
+          vb = b.projectedEmptyDate?.getTime() ?? (sortDir === 'asc' ? Infinity : -Infinity);
+          break;
+        case 'reorder_by':
+          va = a.reorderTriggerDate?.getTime() ?? (sortDir === 'asc' ? Infinity : -Infinity);
+          vb = b.reorderTriggerDate?.getTime() ?? (sortDir === 'asc' ? Infinity : -Infinity);
+          break;
       }
       const cmp = va < vb ? -1 : va > vb ? 1 : 0;
       return sortDir === 'asc' ? cmp : -cmp;
@@ -350,8 +385,13 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
   }
 
   function handleSort(key: SortKey) {
-    if (sortKey === key) setSortDir((d) => d === 'asc' ? 'desc' : 'asc');
-    else { setSortKey(key); setSortDir(key === 'days_left' ? 'asc' : 'desc'); }
+    // Dates and days-left start soonest-first; quantities start largest-first.
+    const dir: SortDir = sortKey === key
+      ? (sortDir === 'asc' ? 'desc' : 'asc')
+      : (['days_left', 'empty_by', 'reorder_by', 'material'].includes(key) ? 'asc' : 'desc');
+    setSortKey(key);
+    setSortDir(dir);
+    saveSort(FORECAST_SORT_KEY, { key, dir });
   }
 
   const shoppingListBadge = shoppingList.length > 0 ? shoppingList.length : null;
@@ -483,9 +523,9 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
                   <SortableTh col="material" active={sortKey} dir={sortDir} onSort={handleSort}>
                     {t('forecast.sku')}
                   </SortableTh>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">
+                  <SortableTh col="spools" active={sortKey} dir={sortDir} onSort={handleSort}>
                     {t('forecast.spools')}
-                  </th>
+                  </SortableTh>
                   <SortableTh col="stock" active={sortKey} dir={sortDir} onSort={handleSort}>
                     {t('forecast.stock')}
                   </SortableTh>
@@ -495,12 +535,12 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
                   <SortableTh col="days_left" active={sortKey} dir={sortDir} onSort={handleSort}>
                     {t('forecast.daysLeft')}
                   </SortableTh>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">
+                  <SortableTh col="empty_by" active={sortKey} dir={sortDir} onSort={handleSort}>
                     {t('forecast.emptyBy')}
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">
+                  </SortableTh>
+                  <SortableTh col="reorder_by" active={sortKey} dir={sortDir} onSort={handleSort}>
                     {t('forecast.reorderBy')}
-                  </th>
+                  </SortableTh>
                   {/* Actions */}
                   <th className="w-24 px-4 py-3" />
                 </tr>
@@ -560,13 +600,13 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
 
 // ── Sortable th ───────────────────────────────────────────────────────────────
 
-function SortableTh({
+function SortableTh<K extends string>({
   col, active, dir, onSort, children,
 }: {
-  col: SortKey;
-  active: SortKey;
+  col: K;
+  active: K | null;
   dir: SortDir;
-  onSort: (k: SortKey) => void;
+  onSort: (k: K) => void;
   children: React.ReactNode;
 }) {
   const isActive = active === col;
@@ -823,6 +863,14 @@ function ForecastRow({
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
+  // Nested per-spool table sort; null = the group's natural order. One shared
+  // preference for every group — a per-group memory would be noise.
+  const [spoolSortKey, setSpoolSortKey] = useState<SpoolSortKey | null>(
+    () => loadSort<{ key: SpoolSortKey | null; dir: SortDir }>(FORECAST_SPOOL_SORT_KEY)?.key ?? null,
+  );
+  const [spoolSortDir, setSpoolSortDir] = useState<SortDir>(
+    () => loadSort<{ key: SpoolSortKey | null; dir: SortDir }>(FORECAST_SPOOL_SORT_KEY)?.dir ?? 'asc',
+  );
   const [editingLead, setEditingLead] = useState(false);
   const [editingMargin, setEditingMargin] = useState(false);
   const [leadInput, setLeadInput] = useState(String(f.settings?.lead_time_days ?? 0));
@@ -879,6 +927,35 @@ function ForecastRow({
     : <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-bambu-dark-tertiary text-bambu-gray/60"><span className="w-1.5 h-1.5 rounded-full bg-bambu-gray/40" />{t('forecast.noData')}</span>;
 
   const rowAlertBorder = snoozed ? '' : f.stockBreakAlert ? 'bg-red-500/5' : f.reorderAlert ? 'bg-yellow-500/5' : '';
+
+  function handleSpoolSort(key: SpoolSortKey) {
+    const dir: SortDir = spoolSortKey === key
+      ? (spoolSortDir === 'asc' ? 'desc' : 'asc')
+      : (key === 'id' ? 'asc' : 'desc');
+    setSpoolSortKey(key);
+    setSpoolSortDir(dir);
+    saveSort(FORECAST_SPOOL_SORT_KEY, { key, dir });
+  }
+
+  const sortedSpools = spoolSortKey === null
+    ? f.group.spools
+    : [...f.group.spools].sort((a, b) => {
+        let va = 0; let vb = 0;
+        switch (spoolSortKey) {
+          case 'id': va = a.id; vb = b.id; break;
+          case 'remaining':
+            va = Math.max(0, a.label_weight - a.weight_used);
+            vb = Math.max(0, b.label_weight - b.weight_used);
+            break;
+          case 'used':
+            va = Math.max(0, a.weight_used - (a.weight_used_baseline ?? 0));
+            vb = Math.max(0, b.weight_used - (b.weight_used_baseline ?? 0));
+            break;
+          case 'label': va = a.label_weight; vb = b.label_weight; break;
+        }
+        const cmp = va < vb ? -1 : va > vb ? 1 : 0;
+        return spoolSortDir === 'asc' ? cmp : -cmp;
+      });
 
   return (
     <>
@@ -1053,14 +1130,14 @@ function ForecastRow({
                     <table className="w-full">
                       <thead>
                         <tr className="border-b border-bambu-dark-tertiary bg-bambu-dark-tertiary/30">
-                          <th className="px-4 py-3 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">#</th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('inventory.remaining')}</th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('inventory.used')}</th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('forecast.labelWeight')}</th>
+                          <SortableTh col="id" active={spoolSortKey} dir={spoolSortDir} onSort={handleSpoolSort}>#</SortableTh>
+                          <SortableTh col="remaining" active={spoolSortKey} dir={spoolSortDir} onSort={handleSpoolSort}>{t('inventory.remaining')}</SortableTh>
+                          <SortableTh col="used" active={spoolSortKey} dir={spoolSortDir} onSort={handleSpoolSort}>{t('inventory.used')}</SortableTh>
+                          <SortableTh col="label" active={spoolSortKey} dir={spoolSortDir} onSort={handleSpoolSort}>{t('forecast.labelWeight')}</SortableTh>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-bambu-dark-tertiary">
-                        {f.group.spools.map((s) => {
+                        {sortedSpools.map((s) => {
                           const remaining = Math.max(0, s.label_weight - s.weight_used);
                           const pct = s.label_weight > 0 ? (remaining / s.label_weight) * 100 : 0;
                           return (

@@ -190,6 +190,8 @@
 
 ### Added
 
+- **Every forecast column sorts, and the choice sticks.** The Filament → Forecast table gained sorting on the three columns that lacked it (Spools, Empty By, Reorder By — dateless rows always sink to the end), and the per-spool table inside an expanded row is now sortable by every column too. Both remember the chosen column and direction across reloads, the same way the inventory table does.
+
 - **A deliberate mid-print spool change now splits the usage — the assignment dialog asks.** Swapping a reel preventively ("take this colour to another printer", "don't want it running out overnight") only ever happens with the print paused, but until now the assignment made around that pause was read as a wrong-link correction and the whole print was attributed to the finishing spool. The dialog now follows the pauses: with the printer *paused*, assigning a spool asks one question — *replacement or correction?* — and "replacement" journals a boundary at the current layer, so the outgoing spool keeps what it already fed and is never force-closed at its label weight. Already *resumed* by the time you get to the UI — the usual flow at the machine — and the dialog offers a default-off checkbox instead; ticking it places the boundary on the layer of the pause where the swap actually happened, not on the moment of the click. A print that was never paused shows neither: the feeding spool cannot physically be swapped without pausing, so an assignment then is always a correction — and bulk re-linking mid-print (started the job, then remembered the assignments) stays exactly as friction-free as before.
 
 ### Fixed
