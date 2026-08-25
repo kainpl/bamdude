@@ -188,6 +188,8 @@
 
 ### Fixed
 
+- **An HMS error no longer flashes "Unknown HMS code" before its real description.** The per-model HMS catalogue is fetched once per session, and on the first error dialog the row asserted "unknown" while that fetch was still in flight, then blinked into the correct text a moment later. While the catalogue is loading the row now says so; "unknown" is only claimed once the catalogue has arrived and genuinely lacks the code.
+
 - **The Windows installer's shortcuts now carry the BamDude icon.** The bundled `.ico` still held the upstream Bambuddy logo, so the Start-Menu and desktop shortcuts (and Add/Remove Programs) showed the wrong identity. Regenerated from the app's own icon.
 
 - **A ticked start/end macro now actually fires on a direct library print.** The print dialog collected the event-macro selection but the "print now" path for library files never sent it — the queue path and archive reprints did — so a macro like "turn the chamber light off on start" silently never ran. One payload field restored, with a regression test pinning it.

@@ -141,7 +141,7 @@ export function HMSErrorModal({ printerName, errors, onClose, printerId, serialN
   // ⚠️ Static per model and language, and megabytes on the wire — never let
   // this refetch on a re-render or on every modal open.
   const devicePrefix = (serialNumber ?? '').slice(0, 3).toUpperCase();
-  const { data: catalogue } = useQuery({
+  const { data: catalogue, isLoading: catalogueLoading } = useQuery({
     queryKey: ['hms-descriptions', devicePrefix, i18n.language],
     queryFn: () => api.getHMSDescriptions(devicePrefix, i18n.language),
     staleTime: Infinity,
@@ -238,7 +238,13 @@ export function HMSErrorModal({ printerName, errors, onClose, printerId, serialN
                 let description =
                   error.full_code === HMS_MQTT_VERIFY_FAILED
                     ? t('hmsErrors.mqttVerifyFailedDescription')
-                    : (lookupDescription(descriptions, error.full_code, shortCode) ?? t('hmsErrors.unknownCode'));
+                    : (lookupDescription(descriptions, error.full_code, shortCode) ??
+                      // "Unknown" is a claim, not a placeholder: while the
+                      // megabytes-large catalogue is still on the wire the
+                      // honest text is "loading" — asserting unknown first
+                      // made every first HMS of a session flash the wrong
+                      // text and blink into the real one (live, 2026-08-25).
+                      (catalogueLoading ? t('hmsErrors.descriptionLoading') : t('hmsErrors.unknownCode')));
                 // The remedy is ours, not Bambu's — their wiki says "update
                 // Studio or Handy", which is no help to someone printing from
                 // BamDude. Same override shape as the runout guidance below.

@@ -3106,6 +3106,7 @@ export default {
     noErrors: 'Немає помилок',
     viewOnWiki: 'Переглянути на Bambu Lab Wiki',
     unknownCode: 'Невідомий код HMS — деталі дивіться у вікі Bambu Lab.',
+    descriptionLoading: 'Завантаження опису…',
     mqttVerifyFailedDescription:
       'Принтер відхилив команду, бо не зміг її перевірити. Друки, зміни температури й завантаження філаменту з BamDude ігноруватимуться, доки це не виправлено.',
     mqttVerifyFailedRemedy:
