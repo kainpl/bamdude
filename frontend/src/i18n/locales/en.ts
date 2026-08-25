@@ -7644,6 +7644,8 @@ export default {
   },
   printOptionsPrefs: {
     cardTitle: 'Saved Print Profiles',
+    eventMacrosHint: 'Ticked macros run with every print of this model. Stored as exceptions - a macro created later starts ticked.',
+    macrosOff: 'Macros off',
     description:
       'Per-(user, printer-model) PrintModal toggle defaults. Each user gets their own set; the modal pre-fills and persists automatically when they print.',
     add: 'Add profile',

@@ -15,6 +15,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Trash2, Pencil, Copy, Flame } from 'lucide-react';
 import {
   api,
+  macrosApi,
   type CalibrationMode,
   type Printer,
   type PrintOptionsPreferenceAdminEntry,
@@ -48,6 +49,7 @@ const DEFAULT_PRINT_OPTIONS: PrintOptionsPreferenceData = {
     execute: true,
     events: ['swap_mode_start', 'swap_mode_change_table'],
   },
+  event_macros: { deselected_ids: [] },
 };
 
 type DialogMode =
@@ -279,6 +281,10 @@ function summariseOptions(
   if (data.swap_macros.execute && data.swap_macros.events.length > 0) {
     enabled.push(`${t('printModal.swapMacros')} (${data.swap_macros.events.length})`);
   }
+  const deselected = data.event_macros?.deselected_ids?.length ?? 0;
+  if (deselected > 0) {
+    enabled.push(`${t('printOptionsPrefs.macrosOff')} (${deselected})`);
+  }
   if (enabled.length === 0) return t('printOptionsPrefs.allOff');
   return enabled.join(', ');
 }
@@ -377,6 +383,34 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
           events: has
             ? prev.swap_macros.events.filter((e) => e !== event)
             : [...prev.swap_macros.events, event],
+        },
+      };
+    });
+  };
+
+  // Event macros for the model — same listing the PrintModal uses. The
+  // profile stores EXCEPTIONS (deselected ids), so a macro created after the
+  // profile was saved arrives ticked; here that means "unlisted id" is shown
+  // nowhere and simply expires from the row on the next save.
+  const { data: modelMacros } = useQuery({
+    queryKey: ['macros', 'for-model', printerModel],
+    queryFn: () => macrosApi.getMacrosForModel(printerModel),
+    enabled: !isSystemRow && printerModel.trim().length > 0,
+    staleTime: 60 * 1000,
+  });
+  const eventMacros = useMemo(
+    () => (modelMacros ?? []).filter((m) => m.enabled && !m.event.startsWith('swap_mode_')),
+    [modelMacros],
+  );
+  const deselectedIds = data.event_macros?.deselected_ids ?? [];
+
+  const toggleEventMacro = (id: number) => {
+    setData((prev) => {
+      const current = prev.event_macros?.deselected_ids ?? [];
+      return {
+        ...prev,
+        event_macros: {
+          deselected_ids: current.includes(id) ? current.filter((x) => x !== id) : [...current, id],
         },
       };
     });
@@ -557,6 +591,29 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
             </div>
           )}
         </div>
+
+        {!isSystemRow && eventMacros.length > 0 && (
+          <div className="border-t border-bambu-dark-tertiary pt-3 mb-4">
+            <h4 className="text-sm font-medium text-white mb-2">{t('printModal.eventMacros')}</h4>
+            <p className="text-xs text-bambu-gray mb-2">{t('printOptionsPrefs.eventMacrosHint')}</p>
+            <div className="space-y-1">
+              {eventMacros.map((m) => (
+                <label key={m.id} className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!deselectedIds.includes(m.id)}
+                    onChange={() => toggleEventMacro(m.id)}
+                    className="accent-bambu-green"
+                  />
+                  <span className="text-sm text-white">{m.name}</span>
+                  <span className="text-xs text-bambu-gray">
+                    {t(`settings.macroEvents.${m.event}`, { defaultValue: m.event })}
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
 
         {swapEligible && !isSystemRow && (
           <div className="border-t border-bambu-dark-tertiary pt-3 mb-4">
