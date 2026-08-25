@@ -30,7 +30,7 @@ import { FilamentMapping } from './FilamentMapping';
 import { PlateSelector } from './PlateSelector';
 import { PrinterSelector } from './PrinterSelector';
 import { PrintOptionsPanel } from './PrintOptions';
-import { autoCalibrationCaps } from '../../utils/printerCapabilities';
+import { autoCalibrationCaps, isDualNozzleModel } from '../../utils/printerCapabilities';
 import { ScheduleOptionsPanel } from './ScheduleOptions';
 import { SwapMacrosPanel } from './SwapMacros';
 import { EventMacrosPanel } from './EventMacros';
@@ -291,16 +291,13 @@ export function PrintModal({
   // has no concrete printer, so it mirrors the backend model list against the
   // chosen target model; specific / edit mode uses the canonical MQTT-detected
   // nozzle_count so a printer without a stored model still resolves correctly.
-  const DUAL_NOZZLE_MODELS = useMemo(() => new Set(['H2D', 'H2DPRO', 'H2C', 'X2D']), []);
   const showDualNozzleOptions = useMemo(() => {
     if (isAutoMode) {
-      const m = autoModeOptions.target_model;
-      if (!m) return false;
-      return DUAL_NOZZLE_MODELS.has(m.toUpperCase().replace(/[\s-]/g, ''));
+      return isDualNozzleModel(autoModeOptions.target_model);
     }
     if (!printers || selectedPrinters.length === 0) return false;
     return selectedPrinters.some((id) => printers.find((p) => p.id === id)?.nozzle_count === 2);
-  }, [isAutoMode, autoModeOptions.target_model, printers, selectedPrinters, DUAL_NOZZLE_MODELS]);
+  }, [isAutoMode, autoModeOptions.target_model, printers, selectedPrinters]);
 
   // ⚠️ Which selected printers cannot record a timelapse, asked HERE because
   // here there is somebody who can act on the answer. The same query key the

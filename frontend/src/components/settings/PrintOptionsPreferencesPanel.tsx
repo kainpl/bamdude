@@ -23,7 +23,7 @@ import {
   type UserSlim,
 } from '../../api/client';
 import { CalibrationModeControl } from '../PrintModal/CalibrationModeControl';
-import { autoCalibrationCaps } from '../../utils/printerCapabilities';
+import { autoCalibrationCaps, isDualNozzleModel } from '../../utils/printerCapabilities';
 import { useToast } from '../../contexts/ToastContext';
 import { MAX_CHAMBER_TEMP_C } from '../../utils/printer';
 
@@ -363,7 +363,7 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
     }));
   };
 
-  const setCalibrationMode = (key: 'bed_levelling' | 'flow_cali', mode: CalibrationMode) => {
+  const setCalibrationMode = (key: 'bed_levelling' | 'flow_cali' | 'nozzle_offset_cali', mode: CalibrationMode) => {
     setData((prev) => ({
       ...prev,
       print_options: { ...prev.print_options, [key]: mode },
@@ -522,6 +522,11 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
               [
                 ['bed_levelling', 'printModal.bedLeveling'],
                 ['flow_cali', 'printModal.flowCalibration'],
+                // Dual-nozzle only (#1682) — same gate as the PrintModal's
+                // auto mode; single-nozzle machines skip it in MQTT anyway.
+                ...(isDualNozzleModel(printerModel)
+                  ? ([['nozzle_offset_cali', 'printModal.nozzleOffsetCali']] as const)
+                  : []),
               ] as const
             ).map(([key, labelKey]) => (
               <CalibrationModeControl
@@ -634,7 +639,12 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
             </label>
             {data.swap_macros.execute && (
               <div className="ml-5 space-y-1">
-                {(['swap_mode_start', 'swap_mode_change_table'] as const).map((event) => (
+                {(
+                  [
+                    ['swap_mode_start', 'printModal.swapEventStart'],
+                    ['swap_mode_change_table', 'printModal.swapEventChangeTable'],
+                  ] as const
+                ).map(([event, labelKey]) => (
                   <label key={event} className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="checkbox"
@@ -642,7 +652,7 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
                       onChange={() => toggleSwapEvent(event)}
                       className="accent-bambu-green"
                     />
-                    <span className="text-xs text-bambu-gray">{event}</span>
+                    <span className="text-xs text-bambu-gray">{t(labelKey)}</span>
                   </label>
                 ))}
               </div>
