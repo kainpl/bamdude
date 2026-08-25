@@ -1,5 +1,6 @@
 import json
 import logging
+from typing import Literal
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -2407,9 +2408,11 @@ class FilamentSkuSettingsUpsert(BaseModel):
     subtype: str | None = None
     brand: str | None = None
     color_name: str | None = None
-    lead_time_days: int = 0
-    safety_margin_value: int = 14
-    safety_margin_unit: str = "days"
+    lead_time_days: int = Field(0, ge=0)
+    safety_margin_value: int = Field(14, ge=0)
+    # The forecast math is client-side; this enum is the only server-side
+    # guard against a unit no reader understands.
+    safety_margin_unit: Literal["days", "g", "kg"] = "days"
     alerts_snoozed: bool = False
 
 

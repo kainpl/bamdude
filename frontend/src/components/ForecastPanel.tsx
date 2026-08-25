@@ -46,6 +46,7 @@ interface SkuForecast {
   stockBreakAlert: boolean;
 }
 
+type MarginUnit = 'days' | 'g' | 'kg';
 type SortKey = 'material' | 'spools' | 'used' | 'days_left' | 'stock' | 'empty_by' | 'reorder_by';
 type SpoolSortKey = 'id' | 'remaining' | 'used' | 'label';
 type SortDir = 'asc' | 'desc';
@@ -75,6 +76,17 @@ function saveSort(storageKey: string, state: unknown) {
 }
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * The grams a safety margin is worth. 'days' converts through the daily rate
+ * (5 g/day placeholder when no rate exists yet — keeps the ROP non-zero for
+ * brand-new SKUs); 'g' and 'kg' are fixed weights.
+ */
+function marginGrams(value: number, unit: MarginUnit, dailyRateG: number | null): number {
+  if (unit === 'g') return value;
+  if (unit === 'kg') return value * 1000;
+  return dailyRateG !== null ? dailyRateG * value : value * 5;
+}
 
 function skuKey(material: string, subtype: string | null, brand: string | null, colorName: string | null) {
   return `${material}||${subtype ?? ''}||${brand ?? ''}||${colorName ?? ''}`;
@@ -284,9 +296,7 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
       const σ = dailyRateStdDev ?? (dailyRateG !== null ? dailyRateG * 0.2 : 0);
       const statisticalSafetyStockG = Z_95 * σ * Math.sqrt(effectiveLeadTimeDays);
       // safety margin: user-defined buffer on top of statistical safety stock
-      const safetyMarginG = marginUnit === 'g'
-        ? marginValue
-        : (dailyRateG !== null ? dailyRateG * marginValue : marginValue * 5);
+      const safetyMarginG = marginGrams(marginValue, marginUnit, dailyRateG);
       const safetyStockG = statisticalSafetyStockG + safetyMarginG;
       const reorderPointG = dailyRateG !== null
         ? dailyRateG * effectiveLeadTimeDays + safetyStockG
@@ -875,7 +885,7 @@ function ForecastRow({
   const [editingMargin, setEditingMargin] = useState(false);
   const [leadInput, setLeadInput] = useState(String(f.settings?.lead_time_days ?? 0));
   const [marginInput, setMarginInput] = useState(String(f.settings?.safety_margin_value ?? 14));
-  const [marginUnit, setMarginUnit] = useState<'days' | 'g'>(f.settings?.safety_margin_unit ?? 'days');
+  const [marginUnit, setMarginUnit] = useState<MarginUnit>(f.settings?.safety_margin_unit ?? 'days');
 
   // Sync inputs when remote settings change and the field is not actively being edited.
   useEffect(() => {
@@ -911,7 +921,7 @@ function ForecastRow({
     : f.daysRemaining < 30 ? 'text-yellow-700 dark:text-yellow-400'
     : 'text-green-700 dark:text-green-400';
 
-  function upsert(lead: number, marginVal: number, marginUnitArg: 'days' | 'g', alertsSnoozed = snoozed) {
+  function upsert(lead: number, marginVal: number, marginUnitArg: MarginUnit, alertsSnoozed = snoozed) {
     upsertMutation.mutate({ material: f.group.material, subtype: f.group.subtype, brand: f.group.brand, color_name: f.group.colorName, lead_time_days: lead, safety_margin_value: marginVal, safety_margin_unit: marginUnitArg, alerts_snoozed: alertsSnoozed });
   }
 
@@ -1241,20 +1251,23 @@ function SafetyMarginField({
   onInputChange, onUnitChange, onEdit, onSave, onCancel, isPending,
   saveLabel = 'Save', cancelLabel = 'Cancel', safetyMarginLabel = 'Safety Margin',
 }: {
-  value: number; unit: 'days' | 'g'; editing: boolean; inputValue: string;
+  value: number; unit: MarginUnit; editing: boolean; inputValue: string;
   dailyRateG: number | null;
-  onInputChange: (v: string) => void; onUnitChange: (u: 'days' | 'g') => void;
+  onInputChange: (v: string) => void; onUnitChange: (u: MarginUnit) => void;
   onEdit: () => void; onSave: () => void; onCancel: () => void; isPending: boolean;
   saveLabel?: string; cancelLabel?: string; safetyMarginLabel?: string;
 }) {
   const { t } = useTranslation();
-  const displayG = unit === 'g' ? value : (dailyRateG !== null ? Math.round(dailyRateG * value) : null);
+  const displayG = unit === 'days' && dailyRateG === null ? null : Math.round(marginGrams(value, unit, dailyRateG));
+  const approxDays = dailyRateG !== null && dailyRateG > 0 && unit !== 'days'
+    ? Math.round(marginGrams(value, unit, dailyRateG) / dailyRateG)
+    : null;
   const hint = unit === 'days'
     ? t('forecast.safetyMarginHintDays', {
         approx: displayG !== null ? t('forecast.safetyMarginHintDaysApprox', { g: displayG }) : '',
       })
     : t('forecast.safetyMarginHintG', {
-        approx: dailyRateG !== null ? t('forecast.safetyMarginHintGApprox', { days: Math.round(value / dailyRateG) }) : '',
+        approx: approxDays !== null ? t('forecast.safetyMarginHintGApprox', { days: approxDays }) : '',
       });
 
   return (
@@ -1266,7 +1279,7 @@ function SafetyMarginField({
       {editing ? (
         <form className="flex items-center gap-2 flex-wrap" onSubmit={(e) => { e.preventDefault(); onSave(); }}>
           <input
-            type="number" min={0} max={unit === 'g' ? 10000 : 365}
+            type="number" min={0} max={unit === 'g' ? 1000000 : unit === 'kg' ? 10000 : 365}
             value={inputValue} onChange={(e) => onInputChange(e.target.value)}
             className="w-20 px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-sm text-white focus:outline-none focus:border-bambu-green"
             autoFocus disabled={isPending}
@@ -1275,6 +1288,7 @@ function SafetyMarginField({
           <div className="flex bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded overflow-hidden text-xs">
             <button type="button" onClick={() => onUnitChange('days')} className={`px-2 py-1 transition-colors ${unit === 'days' ? 'bg-bambu-green text-white' : 'text-bambu-gray hover:text-white'}`}>days</button>
             <button type="button" onClick={() => onUnitChange('g')} className={`px-2 py-1 transition-colors ${unit === 'g' ? 'bg-bambu-green text-white' : 'text-bambu-gray hover:text-white'}`}>g</button>
+            <button type="button" onClick={() => onUnitChange('kg')} className={`px-2 py-1 transition-colors ${unit === 'kg' ? 'bg-bambu-green text-white' : 'text-bambu-gray hover:text-white'}`}>kg</button>
           </div>
           <button type="submit" disabled={isPending} className="px-2 py-1 bg-bambu-green text-white text-xs rounded hover:bg-bambu-green/80 disabled:opacity-50">{saveLabel}</button>
           <button type="button" onClick={onCancel} disabled={isPending} className="px-2 py-1 text-xs text-bambu-gray hover:text-white">{cancelLabel}</button>
@@ -1286,8 +1300,8 @@ function SafetyMarginField({
           {displayG !== null && unit === 'days' && (
             <span className="text-lg font-semibold text-white">≈ {displayG}g</span>
           )}
-          {unit === 'g' && dailyRateG !== null && (
-            <span className="text-lg font-semibold text-white">≈ {Math.round(value / dailyRateG)}d</span>
+          {unit !== 'days' && dailyRateG !== null && dailyRateG > 0 && (
+            <span className="text-lg font-semibold text-white">≈ {Math.round(marginGrams(value, unit, dailyRateG) / dailyRateG)}d</span>
           )}
           <button onClick={onEdit} className="p-1 text-bambu-gray hover:text-white rounded transition-colors"><Edit2 className="w-3 h-3" /></button>
         </div>

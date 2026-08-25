@@ -4431,7 +4431,7 @@ export interface FilamentSkuSettings {
   color_name: string | null;
   lead_time_days: number;
   safety_margin_value: number;
-  safety_margin_unit: 'days' | 'g';
+  safety_margin_unit: 'days' | 'g' | 'kg';
   alerts_snoozed: boolean;
 }
 

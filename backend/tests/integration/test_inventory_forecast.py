@@ -43,6 +43,27 @@ class TestSkuSettingsEndpoints:
         list_resp = await async_client.get("/api/v1/inventory/sku-settings")
         assert len(list_resp.json()) == 1
 
+    async def test_kilograms_are_a_valid_margin_unit_and_garbage_is_not(self, async_client: AsyncClient):
+        # Farm-scale buffers don't fit a grams input (#safety-margin-kg):
+        # 'kg' is stored as-is — the forecast math is client-side — and the
+        # Literal guard is the only server-side defence against a unit no
+        # reader understands.
+        payload = {
+            "material": "ASA",
+            "safety_margin_value": 1000,
+            "safety_margin_unit": "kg",
+        }
+        response = await async_client.post("/api/v1/inventory/sku-settings", json=payload)
+        assert response.status_code == 200
+        assert response.json()["safety_margin_unit"] == "kg"
+        assert response.json()["safety_margin_value"] == 1000
+
+        bad = await async_client.post(
+            "/api/v1/inventory/sku-settings",
+            json={**payload, "safety_margin_unit": "tonnes"},
+        )
+        assert bad.status_code == 422
+
     async def test_upsert_updates_existing_row(self, async_client: AsyncClient):
         """Second POST for the same SKU tuple mutates instead of duplicating."""
         first = {
