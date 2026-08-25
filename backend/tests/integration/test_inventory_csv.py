@@ -42,6 +42,25 @@ class TestInventoryCsvExport:
         assert "e8e8e8ff" in body
         assert "#e8e8e8ff" not in body
 
+    async def test_export_locale_options(self, async_client: AsyncClient, db_session: AsyncSession):
+        # The next stop is usually a spreadsheet: semicolon cells + comma
+        # decimals for a European locale, and the BOM is the only thing that
+        # makes Windows Excel read UTF-8 as UTF-8.
+        db_session.add(Spool(material="PLA", brand="X", color_name="Red", label_weight=1000, weight_used=250.5))
+        await db_session.commit()
+
+        response = await async_client.get(
+            "/api/v1/inventory/spools/export?delimiter=semicolon&decimal=comma&encoding=utf-8-bom"
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.content[:3] == bytes([0xEF, 0xBB, 0xBF])  # the UTF-8 BOM
+        text = response.content.decode("utf-8-sig")
+        assert text.splitlines()[0].startswith("material;brand;")
+        # weight_used 250.5 rendered with a comma decimal; the cell gets quoted
+        # only if it contained the delimiter, and ';' files leave ',' bare.
+        assert "250,5" in text
+
     async def test_export_excludes_archived(self, async_client: AsyncClient, db_session: AsyncSession):
         from datetime import datetime, timezone
 
@@ -114,6 +133,33 @@ class TestInventoryCsvImportDryRun:
         assert data["error_count"] == 0
         gray = next(r for r in data["rows"] if r["color_name"] == "Gray")
         assert gray["spool"]["weight_used"] == 1027.5
+
+    async def test_explicit_options_unlock_what_auto_cannot(self, async_client: AsyncClient):
+        # cp1251 decodes almost any byte string, so it is never guessed — only
+        # chosen; and '1.027,5' is only unambiguous once the user names the
+        # decimal mark.
+        csv_text = "material;brand;color_name;label_weight;weight_used\nPETG;Generic;Сірий;3000;1.027,5\n"
+        files = {"file": ("inventory.csv", csv_text.encode("cp1251"), "text/csv")}
+
+        response = await async_client.post(
+            "/api/v1/inventory/spools/import?dry_run=true&encoding=windows-1251&delimiter=semicolon&decimal=comma",
+            files=files,
+        )
+
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["valid_count"] == 1, data
+        row = data["rows"][0]
+        assert row["color_name"] == "Сірий"
+        assert row["spool"]["weight_used"] == 1027.5
+
+    async def test_auto_refuses_a_legacy_encoding_with_a_pointer(self, async_client: AsyncClient):
+        files = {"file": ("inventory.csv", "material\nСірий\n".encode("cp1251"), "text/csv")}
+        response = await async_client.post("/api/v1/inventory/spools/import?dry_run=true", files=files)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["valid_count"] == 0
+        assert any("encoding" in w for w in data["warnings"])
 
     async def test_missing_material_column_fails_whole_file(self, async_client: AsyncClient):
         csv_text = "brand,color_name\nPolymaker,Jade White\n"

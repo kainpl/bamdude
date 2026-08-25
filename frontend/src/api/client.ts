@@ -5420,12 +5420,18 @@ export interface PACalibHistoryEntryOut {
 /** Upload a CSV to the spool import endpoint (#1576). Multipart, so it bypasses
  *  `request<T>()` (which sends JSON): the browser must set the form-data
  *  boundary itself. `dryRun` toggles preview-only vs. real import. */
-async function uploadSpoolsCsv<T>(file: File, dryRun: boolean): Promise<T> {
+async function uploadSpoolsCsv<T>(file: File, dryRun: boolean, options?: CsvImportOptions): Promise<T> {
   const form = new FormData();
   form.append('file', file);
   const headers: Record<string, string> = {};
   if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-  const response = await fetch(`${API_BASE}/inventory/spools/import${dryRun ? '?dry_run=true' : ''}`, {
+  const params = new URLSearchParams();
+  if (dryRun) params.set('dry_run', 'true');
+  if (options?.encoding && options.encoding !== 'auto') params.set('encoding', options.encoding);
+  if (options?.delimiter && options.delimiter !== 'auto') params.set('delimiter', options.delimiter);
+  if (options?.decimal && options.decimal !== 'auto') params.set('decimal', options.decimal);
+  const qs = params.toString();
+  const response = await fetch(`${API_BASE}/inventory/spools/import${qs ? `?${qs}` : ''}`, {
     method: 'POST',
     headers,
     body: form,
@@ -5442,6 +5448,21 @@ async function uploadSpoolsCsv<T>(file: File, dryRun: boolean): Promise<T> {
 }
 
 // ── CSV import/export (#1576) ──────────────────────────────────────────────
+/** Locale knobs for the CSV importer — 'auto' everywhere by default (sniffed
+ *  delimiter, strict decimal-comma tolerance, UTF-8). Explicit choices exist
+ *  for what auto cannot safely guess: legacy encodings and thousands-separated
+ *  numbers. */
+export interface CsvImportOptions {
+  encoding?: 'auto' | 'utf-8' | 'windows-1251' | 'windows-1252';
+  delimiter?: 'auto' | 'comma' | 'semicolon' | 'tab';
+  decimal?: 'auto' | 'dot' | 'comma';
+}
+/** Export-side locale knobs; the BOM is what makes Windows Excel read UTF-8. */
+export interface CsvExportOptions {
+  encoding?: 'utf-8' | 'utf-8-bom';
+  delimiter?: 'comma' | 'semicolon' | 'tab';
+  decimal?: 'dot' | 'comma';
+}
 /** One row's outcome from the import preview / real import. */
 export interface CsvImportRow {
   row_number: number;
@@ -7944,12 +7965,19 @@ export const api = {
   // ── CSV import/export (#1576) ────────────────────────────────────────────
   // dry_run=true → preview (no write); omitted → real import. Both share one
   // multipart upload helper; see `uploadSpoolsCsv` above.
-  importSpoolsCsvPreview: (file: File): Promise<CsvImportPreview> => uploadSpoolsCsv<CsvImportPreview>(file, true),
-  importSpoolsCsv: (file: File): Promise<CsvImportResult> => uploadSpoolsCsv<CsvImportResult>(file, false),
-  exportSpoolsCsv: async (): Promise<void> => {
+  importSpoolsCsvPreview: (file: File, options?: CsvImportOptions): Promise<CsvImportPreview> =>
+    uploadSpoolsCsv<CsvImportPreview>(file, true, options),
+  importSpoolsCsv: (file: File, options?: CsvImportOptions): Promise<CsvImportResult> =>
+    uploadSpoolsCsv<CsvImportResult>(file, false, options),
+  exportSpoolsCsv: async (options?: CsvExportOptions): Promise<void> => {
     const headers: Record<string, string> = {};
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-    const response = await fetch(`${API_BASE}/inventory/spools/export`, { headers });
+    const params = new URLSearchParams();
+    if (options?.delimiter && options.delimiter !== 'comma') params.set('delimiter', options.delimiter);
+    if (options?.decimal && options.decimal !== 'dot') params.set('decimal', options.decimal);
+    if (options?.encoding && options.encoding !== 'utf-8') params.set('encoding', options.encoding);
+    const qs = params.toString();
+    const response = await fetch(`${API_BASE}/inventory/spools/export${qs ? `?${qs}` : ''}`, { headers });
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
       throw new Error(error.detail || `HTTP ${response.status}`);

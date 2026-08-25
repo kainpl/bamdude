@@ -1,9 +1,50 @@
 import { useState, useRef, type DragEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Upload, X, FileText, Loader2, CheckCircle, XCircle, MinusCircle, Wand2, AlertTriangle, Copy } from 'lucide-react';
-import { api, type CsvImportPreview, type CsvImportRow } from '../api/client';
+import { api, type CsvExportOptions, type CsvImportOptions, type CsvImportPreview, type CsvImportRow } from '../api/client';
 import { getSwatchStyle } from '../utils/colors';
 import { Button } from './Button';
+
+// The chosen locale knobs outlive the dialog — the same spreadsheet produces
+// the next file too.
+const IMPORT_OPTS_KEY = 'bamdude-csv-import-options';
+const EXPORT_OPTS_KEY = 'bamdude-csv-export-options';
+
+function loadOpts<T>(storageKey: string, fallback: T): T {
+  try {
+    const stored = localStorage.getItem(storageKey);
+    if (stored) return { ...fallback, ...(JSON.parse(stored) as Partial<T>) };
+  } catch { /* ignore */ }
+  return fallback;
+}
+
+function saveOpts(storageKey: string, value: unknown) {
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(value));
+  } catch { /* ignore */ }
+}
+
+function OptionSelect({ label, value, choices, onChange }: {
+  label: string;
+  value: string;
+  choices: { value: string; label: string }[];
+  onChange: (v: string) => void;
+}) {
+  return (
+    <label className="flex flex-col gap-1 text-xs text-bambu-gray min-w-[9rem] flex-1">
+      {label}
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-sm text-white focus:outline-none focus:border-bambu-green"
+      >
+        {choices.map((c) => (
+          <option key={c.value} value={c.value}>{c.label}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
 
 interface SpoolCsvImportModalProps {
   onClose: () => void;
@@ -24,21 +65,32 @@ export function SpoolCsvImportModal({ onClose, onImported }: SpoolCsvImportModal
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [options, setOptions] = useState<CsvImportOptions>(() =>
+    loadOpts<CsvImportOptions>(IMPORT_OPTS_KEY, { encoding: 'auto', delimiter: 'auto', decimal: 'auto' }));
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const loadPreview = async (selected: File) => {
+  const loadPreview = async (selected: File, opts: CsvImportOptions = options) => {
     setFile(selected);
     setPreview(null);
     setError(null);
     setLoading(true);
     try {
-      const result = await api.importSpoolsCsvPreview(selected);
+      const result = await api.importSpoolsCsvPreview(selected, opts);
       setPreview(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : t('inventory.csv.previewError', 'Could not read the CSV file'));
     } finally {
       setLoading(false);
     }
+  };
+
+  // Changing a knob with a file already picked re-runs the preview under the
+  // new reading — the counts answer "did that fix it?" immediately.
+  const setOption = (patch: Partial<CsvImportOptions>) => {
+    const next = { ...options, ...patch };
+    setOptions(next);
+    saveOpts(IMPORT_OPTS_KEY, next);
+    if (file) loadPreview(file, next);
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -58,7 +110,7 @@ export function SpoolCsvImportModal({ onClose, onImported }: SpoolCsvImportModal
     setImporting(true);
     setError(null);
     try {
-      const result = await api.importSpoolsCsv(file);
+      const result = await api.importSpoolsCsv(file, options);
       onImported(result.created);
     } catch (err) {
       setError(err instanceof Error ? err.message : t('inventory.csv.importError', 'Import failed'));
@@ -85,6 +137,43 @@ export function SpoolCsvImportModal({ onClose, onImported }: SpoolCsvImportModal
         </div>
 
         <div className="p-4 space-y-4 overflow-y-auto flex-1">
+          {/* Locale knobs — 'auto' by default; explicit choices for what auto
+              cannot safely guess (legacy encodings, thousands separators). */}
+          <div className="flex flex-wrap gap-3">
+            <OptionSelect
+              label={t('inventory.csv.optEncoding', 'Encoding')}
+              value={options.encoding ?? 'auto'}
+              choices={[
+                { value: 'auto', label: t('inventory.csv.optAuto', 'Auto') },
+                { value: 'utf-8', label: 'UTF-8' },
+                { value: 'windows-1251', label: 'Windows-1251' },
+                { value: 'windows-1252', label: 'Windows-1252' },
+              ]}
+              onChange={(v) => setOption({ encoding: v as CsvImportOptions['encoding'] })}
+            />
+            <OptionSelect
+              label={t('inventory.csv.optDelimiter', 'Delimiter')}
+              value={options.delimiter ?? 'auto'}
+              choices={[
+                { value: 'auto', label: t('inventory.csv.optAuto', 'Auto') },
+                { value: 'comma', label: t('inventory.csv.optComma', 'Comma (,)') },
+                { value: 'semicolon', label: t('inventory.csv.optSemicolon', 'Semicolon (;)') },
+                { value: 'tab', label: t('inventory.csv.optTab', 'Tab') },
+              ]}
+              onChange={(v) => setOption({ delimiter: v as CsvImportOptions['delimiter'] })}
+            />
+            <OptionSelect
+              label={t('inventory.csv.optDecimal', 'Decimal mark')}
+              value={options.decimal ?? 'auto'}
+              choices={[
+                { value: 'auto', label: t('inventory.csv.optAuto', 'Auto') },
+                { value: 'dot', label: t('inventory.csv.optDot', 'Dot (.)') },
+                { value: 'comma', label: t('inventory.csv.optComma', 'Comma (,)') },
+              ]}
+              onChange={(v) => setOption({ decimal: v as CsvImportOptions['decimal'] })}
+            />
+          </div>
+
           {/* Drop zone / file picker */}
           <div
             onDragOver={(e) => {
@@ -234,6 +323,97 @@ export function SpoolCsvImportModal({ onClose, onImported }: SpoolCsvImportModal
             ) : (
               t('inventory.csv.noValidRows', 'No valid rows')
             )}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+/**
+ * Export options (#csv-locale-options): the same locale knobs as the import,
+ * chosen BEFORE the download because the next stop is usually a spreadsheet —
+ * a European locale wants ';' cells and ',' decimals, and Windows Excel needs
+ * the BOM to read UTF-8 at all.
+ */
+export function SpoolCsvExportModal({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation();
+  const [options, setOptions] = useState<CsvExportOptions>(() =>
+    loadOpts<CsvExportOptions>(EXPORT_OPTS_KEY, { encoding: 'utf-8', delimiter: 'comma', decimal: 'dot' }));
+  const [exporting, setExporting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const setOption = (patch: Partial<CsvExportOptions>) => {
+    const next = { ...options, ...patch };
+    setOptions(next);
+    saveOpts(EXPORT_OPTS_KEY, next);
+  };
+
+  const handleExport = async () => {
+    setExporting(true);
+    setError(null);
+    try {
+      await api.exportSpoolsCsv(options);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('inventory.csv.exportError', 'Export failed'));
+      setExporting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-md border border-bambu-dark-tertiary">
+        <div className="p-4 border-b border-bambu-dark-tertiary flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-white">{t('inventory.csv.exportTitle', 'Export spools to CSV')}</h2>
+          <button onClick={onClose} className="p-1 hover:bg-bambu-dark rounded">
+            <X className="w-5 h-5 text-bambu-gray" />
+          </button>
+        </div>
+        <div className="p-4 space-y-4">
+          <p className="text-xs text-bambu-gray">
+            {t('inventory.csv.exportHint', 'Match your spreadsheet: a European locale wants semicolons and comma decimals; Excel on Windows needs UTF-8 + BOM.')}
+          </p>
+          <div className="flex flex-wrap gap-3">
+            <OptionSelect
+              label={t('inventory.csv.optEncoding', 'Encoding')}
+              value={options.encoding ?? 'utf-8'}
+              choices={[
+                { value: 'utf-8', label: 'UTF-8' },
+                { value: 'utf-8-bom', label: t('inventory.csv.optUtf8Bom', 'UTF-8 + BOM (Excel)') },
+              ]}
+              onChange={(v) => setOption({ encoding: v as CsvExportOptions['encoding'] })}
+            />
+            <OptionSelect
+              label={t('inventory.csv.optDelimiter', 'Delimiter')}
+              value={options.delimiter ?? 'comma'}
+              choices={[
+                { value: 'comma', label: t('inventory.csv.optComma', 'Comma (,)') },
+                { value: 'semicolon', label: t('inventory.csv.optSemicolon', 'Semicolon (;)') },
+                { value: 'tab', label: t('inventory.csv.optTab', 'Tab') },
+              ]}
+              onChange={(v) => setOption({ delimiter: v as CsvExportOptions['delimiter'] })}
+            />
+            <OptionSelect
+              label={t('inventory.csv.optDecimal', 'Decimal mark')}
+              value={options.decimal ?? 'dot'}
+              choices={[
+                { value: 'dot', label: t('inventory.csv.optDot', 'Dot (.)') },
+                { value: 'comma', label: t('inventory.csv.optComma', 'Comma (,)') },
+              ]}
+              onChange={(v) => setOption({ decimal: v as CsvExportOptions['decimal'] })}
+            />
+          </div>
+          {error && <p className="text-sm text-red-700 dark:text-red-300 break-words">{error}</p>}
+        </div>
+        <div className="p-4 border-t border-bambu-dark-tertiary flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose} disabled={exporting}>
+            {t('common.cancel')}
+          </Button>
+          <Button onClick={handleExport} disabled={exporting}>
+            {exporting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+            {t('inventory.csv.exportButton', 'Export')}
           </Button>
         </div>
       </div>

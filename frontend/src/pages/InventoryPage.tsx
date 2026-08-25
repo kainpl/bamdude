@@ -5,7 +5,7 @@ import { LoadingBlock } from '../components/LoadingBlock';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
-  Plus, Loader2, Trash2, Archive, RotateCcw, Edit2, Package,
+  Plus, Trash2, Archive, RotateCcw, Edit2, Package,
   Search,
   TrendingDown, Layers, Printer, AlertTriangle, X, Clock, LayoutGrid, TableProperties, Columns,
   ArrowUp, ArrowDown, ArrowUpDown, Group, ChevronDown, Check, RefreshCw, Disc3, Copy, Eraser,
@@ -17,7 +17,7 @@ import type { InventorySpool, SpoolAssignment, SpoolCatalogEntry } from '../api/
 import { Button } from '../components/Button';
 import { PaginationBar } from '../components/PaginationBar';
 import { SpoolFormModal, type SpoolFormMode } from '../components/SpoolFormModal';
-import { SpoolCsvImportModal } from '../components/SpoolCsvImportModal';
+import { SpoolCsvExportModal, SpoolCsvImportModal } from '../components/SpoolCsvImportModal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { ColumnConfigModal, type ColumnConfig } from '../components/ColumnConfigModal';
 import { LabelTemplatePickerModal } from '../components/LabelTemplatePickerModal';
@@ -762,19 +762,11 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   // CSV import/export (#1576). Local inventory only — disabled in Spoolman mode
   // (Spoolman owns the data store and has its own CSV import/export there).
   const [csvImportOpen, setCsvImportOpen] = useState(false);
-  const [exportingCsv, setExportingCsv] = useState(false);
+  // Export goes through a small options dialog (encoding / delimiter /
+  // decimal mark) — the next stop is usually a locale-bound spreadsheet.
+  const [csvExportOpen, setCsvExportOpen] = useState(false);
   // Structured storage-location catalog manager (upstream #1505).
   const [locationsModalOpen, setLocationsModalOpen] = useState(false);
-  const handleExportCsv = useCallback(async () => {
-    setExportingCsv(true);
-    try {
-      await api.exportSpoolsCsv();
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : t('inventory.csv.exportError', 'Export failed'), 'error');
-    } finally {
-      setExportingCsv(false);
-    }
-  }, [showToast, t]);
   // Tooltip on both CSV buttons when they're disabled in Spoolman mode.
   const spoolmanCsvHint = spoolmanMode
     ? t('inventory.csv.spoolmanHint', 'In Spoolman mode, use Spoolman\'s built-in CSV import/export.')
@@ -1602,8 +1594,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             <Upload className="w-4 h-4" />
             {t('inventory.csv.importButton', 'Import CSV')}
           </Button>
-          <Button variant="secondary" disabled={spoolmanMode || exportingCsv} onClick={handleExportCsv} title={spoolmanCsvHint}>
-            {exportingCsv ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+          <Button variant="secondary" disabled={spoolmanMode} onClick={() => setCsvExportOpen(true)} title={spoolmanCsvHint}>
+            <Download className="w-4 h-4" />
             {t('inventory.csv.exportButton', 'Export CSV')}
           </Button>
           <Button variant="secondary" onClick={() => setLocationsModalOpen(true)}>
@@ -2469,6 +2461,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       )}
 
       {/* CSV import modal (#1576) */}
+      {csvExportOpen && <SpoolCsvExportModal onClose={() => setCsvExportOpen(false)} />}
+
       {csvImportOpen && (
         <SpoolCsvImportModal
           onClose={() => setCsvImportOpen(false)}

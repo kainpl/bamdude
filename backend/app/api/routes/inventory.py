@@ -1017,16 +1017,24 @@ _CSV_UPLOAD_CHUNK_BYTES = 64 * 1024
 
 @router.get("/spools/export")
 async def export_spools_csv(
+    delimiter: Literal["comma", "semicolon", "tab"] = Query("comma"),
+    decimal: Literal["dot", "comma"] = Query("dot"),
+    encoding: Literal["utf-8", "utf-8-bom"] = Query("utf-8"),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
-    """Export the active inventory as CSV (same schema the importer accepts)."""
+    """Export the active inventory as CSV (same schema the importer accepts).
+
+    The locale knobs exist because a spreadsheet is usually the next stop:
+    a European locale wants ``;`` cells and ``,`` decimals to see columns and
+    numbers, and Windows Excel needs the BOM to read UTF-8 at all.
+    """
     from datetime import datetime, timezone
 
     query = select(Spool).where(Spool.archived_at.is_(None)).order_by(Spool.material, Spool.brand, Spool.color_name)
     result = await db.execute(query)
     spools = list(result.scalars().all())
-    content = serialize(spools)
+    content = serialize(spools, delimiter=delimiter, decimal=decimal, bom=encoding == "utf-8-bom")
     # Date-stamp the filename so repeat exports don't overwrite each other in
     # the browser's default download folder.
     filename = f"bamdude_inventory_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
@@ -1041,6 +1049,9 @@ async def export_spools_csv(
 async def import_spools_csv(
     file: UploadFile = File(...),
     dry_run: bool = Query(False),
+    encoding: Literal["auto", "utf-8", "windows-1251", "windows-1252"] = Query("auto"),
+    delimiter: Literal["auto", "comma", "semicolon", "tab"] = Query("auto"),
+    decimal: Literal["auto", "dot", "comma"] = Query("auto"),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
@@ -1073,7 +1084,7 @@ async def import_spools_csv(
         raw.extend(chunk)
         if len(raw) > MAX_CSV_IMPORT_BYTES:
             raise _too_large()
-    preview = await parse_and_validate(bytes(raw), db)
+    preview = await parse_and_validate(bytes(raw), db, encoding=encoding, delimiter=delimiter, decimal=decimal)
 
     if dry_run:
         return preview
