@@ -258,6 +258,32 @@ class TestRunoutZeroPoint:
         assert [(s, w, st) for s, w, st in await _history(db_session) if st == RUNOUT_STATUS] == []
 
     @pytest.mark.asyncio
+    async def test_manual_replacement_never_corrects(self, db_session, tmp_path, monkeypatch):
+        # A preventively swapped reel is not empty — the declared mid-pause
+        # replacement shares the ambiguous contract on the zero-out side.
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        spool_a = await _make_spool(db_session, weight_used=100)
+        await _journal(
+            db_session,
+            printer,
+            archive,
+            [(EVENT_RUNOUT, "manual", 0, 140, spool_a.id)],
+        )
+        _active_sessions[printer.id] = _session(printer.id, spool_assignments={(0, 0): spool_a.id})
+
+        p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 300.0, "type": "PLA", "color": ""}])
+        with p1, p2:
+            await on_print_complete(
+                printer.id, {"status": "completed"}, _pm(total_layers=200), db_session, archive_id=archive.id
+            )
+
+        await db_session.refresh(spool_a)
+        assert spool_a.weight_used == pytest.approx(400.0)  # print grams only, no zero-out
+        assert [(s, w, st) for s, w, st in await _history(db_session) if st == RUNOUT_STATUS] == []
+
+    @pytest.mark.asyncio
     async def test_multicolor_runout_splits_only_the_runout_slot(self, db_session, tmp_path, monkeypatch):
         monkeypatch.setattr(app_settings, "base_dir", tmp_path)
         printer = await _make_printer(db_session)

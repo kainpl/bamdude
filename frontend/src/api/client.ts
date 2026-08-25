@@ -8125,6 +8125,9 @@ export const api = {
     printer_id: number;
     ams_id: number;
     tray_id: number;
+    // "This is a physical replacement" answer from the mid-pause prompt —
+    // journals a usage-split boundary at the current layer (409 unless paused).
+    mid_print_replacement?: boolean;
   }) =>
     request<InventorySpool>('/spoolman/inventory/slot-assignments', {
       method: 'POST',
@@ -8158,7 +8161,14 @@ export const api = {
 
   getAssignments: (printerId?: number) =>
     request<SpoolAssignment[]>(`/inventory/assignments${printerId ? `?printer_id=${printerId}` : ''}`),
-  assignSpool: (data: { spool_id: number; printer_id: number; ams_id: number; tray_id: number }) =>
+  assignSpool: (data: {
+    spool_id: number;
+    printer_id: number;
+    ams_id: number;
+    tray_id: number;
+    // See assignSpoolmanSlot — mid-pause "replacement" answer.
+    mid_print_replacement?: boolean;
+  }) =>
     request<SpoolAssignment>('/inventory/assignments', {
       method: 'POST',
       body: JSON.stringify(data),

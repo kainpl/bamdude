@@ -577,13 +577,14 @@ async def _apply_runout_zero_corrections_spoolman(client, journal_events: list, 
         EVENT_SPOOL_LOADED,
         KIND_AMBIGUOUS,
         KIND_AUTOSWITCH,
+        KIND_MANUAL,
     )
 
     runouts = [
         e
         for e in (journal_events or [])
         if getattr(e, "event", "") == EVENT_RUNOUT
-        and getattr(e, "kind", None) != KIND_AMBIGUOUS
+        and getattr(e, "kind", None) not in (KIND_AMBIGUOUS, KIND_MANUAL)
         and getattr(e, "global_tray_id", None) is not None
         and getattr(e, "spoolman_spool_id", None)
     ]

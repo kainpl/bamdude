@@ -26,6 +26,10 @@ KIND_PAUSE = "pause"
 KIND_AUTOSWITCH = "autoswitch"
 KIND_EXTERNAL = "external"
 KIND_AMBIGUOUS = "ambiguous"
+# A deliberate mid-pause spool change the human declared via the assignment
+# prompt — no firmware event witnesses it. Shares the ambiguous contract:
+# a segment boundary only through spool_loaded, never a zero correction.
+KIND_MANUAL = "manual"
 
 
 class PrintUsageEvent(Base):

@@ -244,6 +244,69 @@ async def record_runout(
     )
 
 
+async def note_manual_replacement_intent(
+    db: AsyncSession,
+    *,
+    printer_id: int,
+    ams_id: int,
+    tray_id: int,
+) -> bool:
+    """The human declared the assignment that follows a REPLACEMENT — a
+    deliberate mid-pause spool change with no firmware event to witness it
+    (the feeding spool cannot physically be swapped while RUNNING, so a
+    runout/jam code is the only other way a mid-print change happens).
+
+    Journals a ``manual`` runout with the outgoing spool frozen from the
+    still-current assignment — call BEFORE the assignment is rewritten — so
+    the assignment that follows closes it as the ``spool_loaded`` boundary.
+    ``manual`` shares the ambiguous contract: a boundary only through
+    spool_loaded, never a zero correction (a preventively swapped reel is
+    not empty). Accepted only while PAUSED with an active print; returns
+    False (nothing journaled) otherwise so the caller can refuse the flag
+    loudly instead of mis-journaling a correction.
+    """
+    from backend.app.models.print_usage_event import KIND_MANUAL
+
+    archive_id = await active_archive_id(db, printer_id)
+    if archive_id is None:
+        return False
+    try:
+        from backend.app.services.printer_manager import printer_manager
+
+        state = printer_manager.get_status(printer_id)
+    except Exception:
+        state = None
+    if state is None or (getattr(state, "state", None) or "").upper() != "PAUSE":
+        return False
+
+    if ams_id >= 254:
+        global_tray = 254 + tray_id
+    elif ams_id >= 128:
+        global_tray = ams_id
+    else:
+        global_tray = ams_id * 4 + tray_id
+
+    spool_id, spoolman_spool_id = await freeze_spool_ids(db, printer_id, global_tray)
+    logger.info(
+        "[UsageJournal] Manual replacement declared for tray %d on printer %d (outgoing spool=%s/%s)",
+        global_tray,
+        printer_id,
+        spool_id,
+        spoolman_spool_id,
+    )
+    await record_runout(
+        db,
+        printer_id=printer_id,
+        archive_id=archive_id,
+        layer_num=getattr(state, "layer_num", 0) or 0,
+        kind=KIND_MANUAL,
+        global_tray_id=global_tray,
+        spool_id=spool_id,
+        spoolman_spool_id=spoolman_spool_id,
+    )
+    return True
+
+
 async def note_assignment_change(
     db: AsyncSession,
     *,

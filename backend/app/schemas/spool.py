@@ -227,6 +227,11 @@ class SpoolAssignmentCreate(BaseModel):
     printer_id: int
     ams_id: int
     tray_id: int
+    # The human answered the mid-pause prompt with "this is a replacement":
+    # journal a manual runout boundary so the print's usage splits at the
+    # current layer. Refused (409) unless the printer is PAUSED mid-print.
+    # False = plain assignment (wrong-link correction semantics).
+    mid_print_replacement: bool = False
 
 
 class SpoolAssignmentResponse(BaseModel):

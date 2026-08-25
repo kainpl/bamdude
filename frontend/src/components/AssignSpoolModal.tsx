@@ -44,6 +44,11 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     spoolProfile?: string;
     trayProfile?: string;
   } | null>(null);
+  // Mid-pause the same gesture means two opposite things: a physical spool
+  // replacement (usage must split at the current layer) or a wrong-link
+  // correction (the new spool owns the whole print). While RUNNING the
+  // feeding spool cannot physically be swapped, so only a paused print asks.
+  const [replacementPrompt, setReplacementPrompt] = useState<{ spoolId?: number; spoolmanId?: number } | null>(null);
 
   // Reset selected spool(s) when filtering mode changes
   useEffect(() => {
@@ -55,6 +60,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   useEffect(() => {
     if (isOpen) {
       setDisableFiltering(false);
+      setReplacementPrompt(null);
     }
   }, [isOpen]);
 
@@ -117,9 +123,22 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     );
   }, [allSpoolmanAssignments, printerId, amsId, trayId]);
 
+  const { data: printerStatus } = useQuery({
+    queryKey: ['printer-status-assign', printerId],
+    queryFn: () => api.getPrinterStatus(printerId),
+    enabled: isOpen,
+  });
+  const printIsPaused = printerStatus?.state === 'PAUSE';
+
   const assignMutation = useMutation({
-    mutationFn: (spoolId: number) =>
-      api.assignSpool({ spool_id: spoolId, printer_id: printerId, ams_id: amsId, tray_id: trayId }),
+    mutationFn: ({ spoolId, midPrintReplacement }: { spoolId: number; midPrintReplacement: boolean }) =>
+      api.assignSpool({
+        spool_id: spoolId,
+        printer_id: printerId,
+        ams_id: amsId,
+        tray_id: trayId,
+        mid_print_replacement: midPrintReplacement,
+      }),
     onSuccess: (newAssignment) => {
       // Immediately update cache so UI reflects the new assignment without waiting for refetch
       queryClient.setQueryData<SpoolAssignment[]>(['spool-assignments'], (old) => {
@@ -145,12 +164,13 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   });
 
   const assignSpoolmanMutation = useMutation({
-    mutationFn: (spoolmanSpoolId: number) =>
+    mutationFn: ({ spoolmanSpoolId, midPrintReplacement }: { spoolmanSpoolId: number; midPrintReplacement: boolean }) =>
       api.assignSpoolmanSlot({
         spoolman_spool_id: spoolmanSpoolId,
         printer_id: printerId,
         ams_id: amsId,
         tray_id: trayId,
+        mid_print_replacement: midPrintReplacement,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['spoolman-inventory-spools'] });
@@ -267,9 +287,24 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     return spoolDisplayNameMatches(haystack, searchFilter);
   });
 
+  // The single funnel every assignment goes through. With the printer paused
+  // mid-print and no answer yet, ask first; the answer re-enters with the
+  // flag decided.
+  const fireAssign = (target: { spoolId?: number; spoolmanId?: number }, midPrintReplacement?: boolean) => {
+    if (midPrintReplacement === undefined && printIsPaused) {
+      setReplacementPrompt(target);
+      return;
+    }
+    if (target.spoolmanId !== undefined) {
+      assignSpoolmanMutation.mutate({ spoolmanSpoolId: target.spoolmanId, midPrintReplacement: !!midPrintReplacement });
+    } else if (target.spoolId !== undefined) {
+      assignMutation.mutate({ spoolId: target.spoolId, midPrintReplacement: !!midPrintReplacement });
+    }
+  };
+
   const handleAssign = () => {
     if (selectedSpoolmanSpoolId !== null) {
-      assignSpoolmanMutation.mutate(selectedSpoolmanSpoolId);
+      fireAssign({ spoolmanId: selectedSpoolmanSpoolId });
       return;
     }
     if (!selectedSpoolId) return;
@@ -316,12 +351,12 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
         return;
       }
     }
-    assignMutation.mutate(selectedSpoolId);
+    fireAssign({ spoolId: selectedSpoolId });
   };
 
   const handleConfirmMismatch = () => {
     if (!pendingAssignId) return;
-    assignMutation.mutate(pendingAssignId);
+    fireAssign({ spoolId: pendingAssignId });
     setShowMismatchConfirm(false);
     setPendingAssignId(null);
   };
@@ -623,6 +658,45 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
           />
         );
       })()}
+
+      {replacementPrompt && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setReplacementPrompt(null)} />
+          <div className="relative w-full max-w-md bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl p-5">
+            <h3 className="text-lg font-semibold text-white">{t('inventory.midPrintReplacement.title')}</h3>
+            <p className="mt-3 text-sm text-bambu-gray whitespace-pre-line">
+              {t('inventory.midPrintReplacement.body')}
+            </p>
+            <div className="mt-5 flex flex-col gap-2">
+              <Button
+                variant="primary"
+                disabled={assignMutation.isPending || assignSpoolmanMutation.isPending}
+                onClick={() => {
+                  const target = replacementPrompt;
+                  setReplacementPrompt(null);
+                  fireAssign(target, true);
+                }}
+              >
+                {t('inventory.midPrintReplacement.replace')}
+              </Button>
+              <Button
+                variant="secondary"
+                disabled={assignMutation.isPending || assignSpoolmanMutation.isPending}
+                onClick={() => {
+                  const target = replacementPrompt;
+                  setReplacementPrompt(null);
+                  fireAssign(target, false);
+                }}
+              >
+                {t('inventory.midPrintReplacement.correct')}
+              </Button>
+              <Button variant="ghost" onClick={() => setReplacementPrompt(null)}>
+                {t('common.cancel')}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

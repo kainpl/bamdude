@@ -427,6 +427,9 @@ class SpoolSlotAssignmentRequest(BaseModel):
     # ams_id 0–7 for physical AMS units; 255 = external/virtual spool extruder slot
     ams_id: int = Field(..., ge=0, le=255)
     tray_id: int = Field(..., ge=0, le=3)
+    # The human answered the mid-pause prompt with "this is a replacement" —
+    # journal a manual runout boundary (see inventory.SpoolAssignmentCreate).
+    mid_print_replacement: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -1419,6 +1422,17 @@ async def assign_spoolman_slot(
     # This prevents ghost rows pointing at non-existent spool IDs.
     async with _translate_spoolman_errors():
         spool = await client.get_spool(body.spoolman_spool_id)
+
+    # Deliberate mid-pause replacement: journal the manual runout NOW, while
+    # the outgoing spool is still the current assignment, so the assignment
+    # below closes it as the spool_loaded boundary (see inventory.assign_spool).
+    if body.mid_print_replacement:
+        from backend.app.services.print_usage_journal import note_manual_replacement_intent
+
+        if not await note_manual_replacement_intent(
+            db, printer_id=body.printer_id, ams_id=body.ams_id, tray_id=body.tray_id
+        ):
+            raise HTTPException(status_code=409, detail="Mid-print replacement needs a paused print on this printer")
 
     # Spool confirmed in Spoolman — upsert into local slot-assignment table
     # assigned_at is intentionally not refreshed on re-assign (original timestamp preserved)

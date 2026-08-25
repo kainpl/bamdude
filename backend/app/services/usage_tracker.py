@@ -724,6 +724,7 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
         EVENT_TRAY_CHANGE,
         KIND_AMBIGUOUS,
         KIND_AUTOSWITCH,
+        KIND_MANUAL,
     )
 
     runouts = [e for e in (events or []) if e.event == EVENT_RUNOUT and e.global_tray_id == global_tray_id]
@@ -739,9 +740,10 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
             (e for e in loads if e.id > runout.id and (next_runout_id is None or e.id < next_runout_id)),
             None,
         )
-        if runout.kind == KIND_AMBIGUOUS:
-            # Could equally be a jam — a boundary only when the human
-            # demonstrably loaded a replacement.
+        if runout.kind in (KIND_AMBIGUOUS, KIND_MANUAL):
+            # Ambiguous could equally be a jam; manual is a declared intent —
+            # either way, a boundary only when the human demonstrably loaded
+            # a replacement.
             if loaded is not None:
                 segments.append((runout.layer_num, loaded.spool_id, loaded.spoolman_spool_id))
             continue
@@ -842,8 +844,9 @@ async def apply_runout_zero_corrections(
     over-counted; per the AMS-sync rule a downward move is a correction, not a
     negative print: silent clamp, baseline pulled, low-stock re-armed, no row.
 
-    Never fires for ``ambiguous`` kinds (a tangled spool people swap out is
-    not empty) or for events whose slot/spool was not positively known.
+    Never fires for ``ambiguous``/``manual`` kinds (a tangled or preventively
+    swapped spool is not empty) or for events whose slot/spool was not
+    positively known.
 
     A pause-runout closes the books only when its episode was CLOSED by a
     spool_loaded — the same reel reinserted (AMS without backup, or a
@@ -859,12 +862,16 @@ async def apply_runout_zero_corrections(
         EVENT_SPOOL_LOADED,
         KIND_AMBIGUOUS,
         KIND_AUTOSWITCH,
+        KIND_MANUAL,
     )
 
     runouts = [
         e
         for e in (events or [])
-        if e.event == EVENT_RUNOUT and e.kind != KIND_AMBIGUOUS and e.global_tray_id is not None and e.spool_id
+        if e.event == EVENT_RUNOUT
+        and e.kind not in (KIND_AMBIGUOUS, KIND_MANUAL)
+        and e.global_tray_id is not None
+        and e.spool_id
     ]
     if not runouts:
         return []

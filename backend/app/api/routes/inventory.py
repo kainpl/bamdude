@@ -1776,6 +1776,19 @@ async def assign_spool(
                 if isinstance(raw_state, int):
                     tray_state = raw_state
 
+    # Deliberate mid-pause replacement (the user answered the "replacement or
+    # correction?" prompt with "replacement"): journal the manual runout NOW,
+    # while the outgoing spool is still the current assignment, so the
+    # assignment below closes it as the spool_loaded boundary. Refusal is
+    # loud — silently downgrading to a correction would misattribute.
+    if data.mid_print_replacement:
+        from backend.app.services.print_usage_journal import note_manual_replacement_intent
+
+        if not await note_manual_replacement_intent(
+            db, printer_id=data.printer_id, ams_id=data.ams_id, tray_id=data.tray_id
+        ):
+            raise HTTPException(409, "Mid-print replacement needs a paused print on this printer")
+
     # 3. Upsert assignment (replace if same printer+ams+tray)
     existing = await db.execute(
         select(SpoolAssignment).where(

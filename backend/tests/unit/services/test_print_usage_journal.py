@@ -231,6 +231,64 @@ class TestAssignmentChangeAfterRunout:
         assert [(e.event, e.global_tray_id, e.spool_id) for e in events[-1:]] == [("spool_loaded", 2, 9)]
 
 
+class TestManualReplacementIntent:
+    """The mid-pause prompt's "replacement" answer: a manual runout journaled
+    with the OUTGOING spool frozen, so the assignment that follows becomes the
+    spool_loaded boundary. Only a paused print accepts the declaration —
+    everything else returns False and journals nothing."""
+
+    def _paused_state(self, monkeypatch, state="PAUSE", layer=120):
+        from types import SimpleNamespace
+
+        from backend.app.services import printer_manager as pm_module
+
+        monkeypatch.setattr(
+            pm_module.printer_manager,
+            "get_status",
+            lambda printer_id: SimpleNamespace(state=state, layer_num=layer),
+        )
+
+    @pytest.mark.asyncio
+    async def test_declared_replacement_journals_the_manual_boundary(self, db_session, printer, monkeypatch):
+        from backend.app.services.print_usage_journal import (
+            note_assignment_change,
+            note_manual_replacement_intent,
+        )
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        archive = await _make_archive(db_session, printer)
+        db_session.add(SpoolAssignment(spool_id=31, printer_id=printer.id, ams_id=255, tray_id=0, fingerprint_color=""))
+        await db_session.commit()
+        self._paused_state(monkeypatch)
+
+        assert await note_manual_replacement_intent(db_session, printer_id=printer.id, ams_id=255, tray_id=0)
+        # The very assignment the human is making — closes the episode.
+        await note_assignment_change(db_session, printer_id=printer.id, ams_id=255, tray_id=0, spool_id=32)
+
+        events = await load_events(db_session, printer.id, archive.id)
+        assert [(e.event, e.kind, e.global_tray_id, e.spool_id) for e in events] == [
+            ("runout", "manual", 254, 31),
+            ("spool_loaded", None, 254, 32),
+        ]
+        assert journal_boundaries_for_tray(events, 254) == [(0, 31, None), (120, 32, None)]
+
+    @pytest.mark.asyncio
+    async def test_a_running_print_refuses_the_declaration(self, db_session, printer, monkeypatch):
+        from backend.app.services.print_usage_journal import note_manual_replacement_intent
+
+        archive = await _make_archive(db_session, printer)
+        self._paused_state(monkeypatch, state="RUNNING")
+        assert not await note_manual_replacement_intent(db_session, printer_id=printer.id, ams_id=255, tray_id=0)
+        assert await load_events(db_session, printer.id, archive.id) == []
+
+    @pytest.mark.asyncio
+    async def test_no_active_print_refuses_the_declaration(self, db_session, printer, monkeypatch):
+        from backend.app.services.print_usage_journal import note_manual_replacement_intent
+
+        self._paused_state(monkeypatch)
+        assert not await note_manual_replacement_intent(db_session, printer_id=printer.id, ams_id=255, tray_id=0)
+
+
 class TestRunoutEpisodeRows:
     @pytest.mark.asyncio
     async def test_closed_episode_gets_a_new_row(self, db_session, printer):

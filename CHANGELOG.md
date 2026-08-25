@@ -188,6 +188,10 @@
 
 - **The `:dev` image now tracks the latest pre-release instead of the latest commit.** It used to be rebuilt on every push, by a workflow that ran alongside the tests rather than after them — so the one image aimed at testers was the one image nobody checked, and a commit with failing tests published it anyway. It is now published together with each beta, and passes the same green-CI gate as a stable release. Anyone pinning `:dev` gets fewer updates and tested ones.
 
+### Added
+
+- **A deliberate mid-print spool change now splits the usage — the assignment dialog asks.** Swapping a reel preventively ("take this colour to another printer", "don't want it running out overnight") only ever happens with the print paused, but until now the assignment made during that pause was read as a wrong-link correction and the whole print was attributed to the finishing spool. When the printer is paused mid-print, assigning a spool now asks one question — *replacement or correction?* Answering "replacement" journals a boundary at the current layer, so the outgoing spool keeps what it already fed and is never force-closed at its label weight; "correction" keeps the old semantics of attributing the whole print to the assigned spool. While printing the question never appears: the feeding spool cannot physically be swapped without pausing, so an assignment then is always a correction.
+
 ### Fixed
 
 - **Replacing a spool during a holder jam now lands in the usage journal.** A reel's taped tail presents to the A1-family firmware as a jam ("filament may be tangled or stuck"), not a runout — and the journal only accepted a replacement assignment against an open runout episode, so swapping the reel during that pause left no boundary and the whole print was attributed to the finishing spool. The jam code now journals an *ambiguous* runout: assigning a replacement mid-pause becomes the segment boundary, while untangling and resuming with the same reel still splits nothing and never closes anyone's books — and if the firmware escalates its own diagnosis from jam to ran-out inside the same pause, the definite verdict takes over the episode.
