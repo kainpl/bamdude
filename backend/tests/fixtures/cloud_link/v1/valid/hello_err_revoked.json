@@ -1,0 +1,9 @@
+{
+  "v": 1,
+  "type": "hello_err",
+  "id": "f-hello-err-revoked",
+  "ts": "2026-08-24T12:00:00Z",
+  "data": {
+    "code": "revoked"
+  }
+}

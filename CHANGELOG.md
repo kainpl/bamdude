@@ -6,6 +6,14 @@
 
 ### Added
 
+- **Link a farm to BamDude Cloud, and see it from outside the house.** Off unless you turn it on, and off again the moment you say so. Settings → Network → Cloud Link takes a pairing code from the portal, and from then on that farm reports itself: which printers are running, how far along, and the things worth knowing as they happen.
+
+    **You choose which printers leave the building.** The link publishes the ones you tick and no others — untick a machine and it stops being described straight away. A printer you archive or park in Maintenance Mode drops out of the published set on its own, and the panel says how many went rather than letting the count quietly change under you.
+
+    **Nothing prints from the portal.** This phase carries status one way and a short, fixed list of administrative commands the other — ask the farm to answer, ask it to resend everything it knows, and tell it to stop. Not "no printer controls yet": the farm will not act on anything outside that list, because the list is part of the version you installed rather than something the far end can extend by asking.
+
+    **There are two ways to end it, and either is enough.** Unpair from Settings and the credential is deleted here; revoke from the portal and the farm is told, stops, and says so — instead of leaving you guessing at a link that has quietly gone. What the two sides said to each other is kept in the panel for a month, so "when did this farm stop being visible, and why" is a question with an answer.
+
 - **BamDude now pairs with Orca Cloud under its own name — and can push profiles there.** The Orca Cloud team issued BamDude a dedicated client id, so the approval card finally shows who is actually asking. The pairing now requests write access, which powers a full push leg for authored filament families: push or re-push a family to Orca Cloud (and Bambu Cloud) from the new **Authored families** block under Profiles → Local, create families straight into Orca Cloud from its tab, and delete a family together with its pushed cloud copies. If a profile was edited in Orca Cloud after your push, BamDude detects it before writing and asks per preset: overwrite the cloud copy, or adopt the cloud version locally. ⚠️ **Every existing Orca Cloud pairing must be re-connected once** — the identity and the granted scope are baked into the issued tokens, and both changed together so one re-pair covers both.
 
 - **Bug reports now show what happened next.** The **Report a Bug** dialog gained a "My reports" list: every report submitted from this install, with its live GitHub status (open / fixed / not planned) synced through the bamdude.top relay — no GitHub account or token needed on your side.

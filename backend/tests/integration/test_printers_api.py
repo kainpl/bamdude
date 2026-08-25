@@ -258,6 +258,136 @@ class TestPrintersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_archive_makes_cloud_link_re_ask_what_it_may_publish(
+        self, async_client: AsyncClient, printer_factory, db_session, monkeypatch
+    ):
+        """A ``CloudLinkPrinter`` row survives archiving on purpose — the
+        allowlist has no opinion about a printer's lifecycle — so availability
+        is filtered on the read side, in ``Uplink.build_snapshot``. A link that
+        is already running holds the set that snapshot produced, and nothing
+        about archiving reaches it: the machine is gone from the whole app while
+        the portal is still being told about it, until the next reconnect.
+        """
+        from backend.app.services.cloud_link.service import cloud_link_service
+
+        calls = []
+
+        async def spy():
+            calls.append(1)
+
+        monkeypatch.setattr(cloud_link_service, "request_snapshot", spy)
+
+        p = await printer_factory(name="ToArchive", serial_number="ARCHCL1")
+        with patch("backend.app.api.routes.printers.printer_manager") as pm:
+            pm.is_print_active.return_value = False
+            resp = await async_client.post(f"/api/v1/printers/{p.id}/archive")
+
+        assert resp.status_code == 200
+        assert calls == [1]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_parking_a_printer_makes_cloud_link_re_ask_too(
+        self, async_client: AsyncClient, printer_factory, db_session, monkeypatch
+    ):
+        """Maintenance Mode takes a printer out of "available" exactly as
+        archiving does — ``is_active AND NOT archived`` — so it leaves a running
+        link publishing it for the same reason."""
+        from backend.app.services.cloud_link.service import cloud_link_service
+
+        calls = []
+
+        async def spy():
+            calls.append(1)
+
+        monkeypatch.setattr(cloud_link_service, "request_snapshot", spy)
+
+        p = await printer_factory(name="ToPark", serial_number="ARCHCL2")
+        with patch("backend.app.api.routes.printers.printer_manager") as pm:
+            pm.connect_printer = AsyncMock(return_value=True)
+            resp = await async_client.patch(f"/api/v1/printers/{p.id}", json={"is_active": False})
+
+        assert resp.status_code == 200
+        assert calls == [1]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_an_edit_that_does_not_change_availability_asks_for_nothing(
+        self, async_client: AsyncClient, printer_factory, db_session, monkeypatch
+    ):
+        """Renaming a printer is not an availability change. The snapshot costs
+        a round trip to the portal and re-reads the publish set, so firing it on
+        every PATCH would make a settings page a source of uplink traffic."""
+        from backend.app.services.cloud_link.service import cloud_link_service
+
+        calls = []
+
+        async def spy():
+            calls.append(1)
+
+        monkeypatch.setattr(cloud_link_service, "request_snapshot", spy)
+
+        p = await printer_factory(name="Untouched", serial_number="ARCHCL3")
+        resp = await async_client.patch(f"/api/v1/printers/{p.id}", json={"name": "Renamed"})
+
+        assert resp.status_code == 200
+        assert calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_cloud_link_that_cannot_be_told_does_not_fail_the_archive(
+        self, async_client: AsyncClient, printer_factory, db_session, monkeypatch
+    ):
+        """The archive is COMMITTED before the portal is told anything.
+
+        With a live link `request_snapshot` opens a fresh session to re-read the
+        publish set, so a database that is busy at that moment would raise
+        AFTER the commit and turn a completed archive into a 500. The user
+        reads that as "it did not work", retries, and the retry acts on a
+        printer that is already archived. The portal being told a pump cycle
+        late is the cheaper failure by a wide margin.
+        """
+        from backend.app.services.cloud_link.service import cloud_link_service
+
+        async def refuses():
+            raise RuntimeError("database is locked")
+
+        monkeypatch.setattr(cloud_link_service, "request_snapshot", refuses)
+
+        p = await printer_factory(name="StillArchives", serial_number="ARCHCL4")
+        with patch("backend.app.api.routes.printers.printer_manager") as pm:
+            pm.is_print_active.return_value = False
+            resp = await async_client.post(f"/api/v1/printers/{p.id}/archive")
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["archived"] is True
+        await db_session.refresh(p)
+        assert p.archived is True, "the commit stands whatever the portal heard"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_cloud_link_that_cannot_be_told_does_not_fail_the_park(
+        self, async_client: AsyncClient, printer_factory, db_session, monkeypatch
+    ):
+        """The same trap on the PATCH path — same commit-then-notify order."""
+        from backend.app.services.cloud_link.service import cloud_link_service
+
+        async def refuses():
+            raise RuntimeError("database is locked")
+
+        monkeypatch.setattr(cloud_link_service, "request_snapshot", refuses)
+
+        p = await printer_factory(name="StillParks", serial_number="ARCHCL5")
+        with patch("backend.app.api.routes.printers.printer_manager") as pm:
+            pm.connect_printer = AsyncMock(return_value=True)
+            resp = await async_client.patch(f"/api/v1/printers/{p.id}", json={"is_active": False})
+
+        assert resp.status_code == 200, resp.text
+        await db_session.refresh(p)
+        assert p.is_active is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_readd_archived_serial_hints_unarchive(self, async_client: AsyncClient, printer_factory, db_session):
         """Re-adding a printer whose serial matches an archived one returns a
         409 pointing at unarchive rather than a generic duplicate error."""

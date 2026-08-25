@@ -26,6 +26,7 @@ from backend.app.api.routes import (
     camera,
     camwall,
     cloud,
+    cloud_link,
     discovery,
     external_links,
     filament_calibration as filament_calibration_routes,
@@ -8582,9 +8583,30 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logging.getLogger(__name__).warning("Failed to start archive auto-purge sweeper: %s", e)
 
+    # Cloud Link (opt-in, off by default). ``start()`` reads the pairing row
+    # and returns having done nothing unless the link is enabled, paired and
+    # not revoked — so an upgrade never connects a farm to anything.
+    try:
+        from backend.app.services.cloud_link.service import cloud_link_service
+
+        await cloud_link_service.start()
+    except Exception as e:
+        logging.getLogger(__name__).warning("Failed to start Cloud Link: %s", e)
+
     yield
 
     # Shutdown
+    # Cloud Link first: it holds a socket and describes this farm, so it should
+    # let go before the services it describes start disappearing underneath it.
+    # ``stop()`` cancels the client task rather than waiting on its stop event
+    # — the wait can be ~35 s inside a handshake, longer than the grace period
+    # Docker and systemd give us.
+    try:
+        from backend.app.services.cloud_link.service import cloud_link_service
+
+        await cloud_link_service.stop()
+    except Exception as e:
+        logging.getLogger(__name__).warning("Failed to stop Cloud Link: %s", e)
     # Stop Telegram bot
     try:
         from backend.app.services.telegram_bot import stop_telegram_bot
@@ -9213,6 +9235,7 @@ app.include_router(label_templates.router, prefix=app_settings.api_prefix)
 app.include_router(label_devices.router, prefix=app_settings.api_prefix)
 app.include_router(settings_routes.router, prefix=app_settings.api_prefix)
 app.include_router(cloud.router, prefix=app_settings.api_prefix)
+app.include_router(cloud_link.router, prefix=app_settings.api_prefix)
 app.include_router(local_presets.router, prefix=app_settings.api_prefix)
 app.include_router(slicer_presets.router, prefix=app_settings.api_prefix)
 app.include_router(slicer_pipelines.router, prefix=app_settings.api_prefix)

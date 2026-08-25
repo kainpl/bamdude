@@ -64,6 +64,7 @@ const CATEGORY_KEYS: Record<string, string> = {
   'Settings': 'settings',
   'Backup': 'backup',
   'Cloud': 'cloud',
+  'Cloud Link': 'cloudLink',
   'API Keys': 'apiKeys',
   'User Management': 'userManagement',
   'Notification Templates': 'notificationTemplates',
@@ -111,6 +112,7 @@ const ACTION_KEYS: Record<string, string> = {
   'Purge': 'purge',
   'Import': 'import',
   'Connect': 'connect',
+  'Manage': 'manage',
 };
 
 // Labels that don't follow the simple "Action Resource" pattern

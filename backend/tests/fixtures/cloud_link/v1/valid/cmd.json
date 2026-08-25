@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "type": "cmd",
+  "id": "f-cmd",
+  "ts": "2026-08-24T12:00:00Z",
+  "data": {
+    "cmd": "printer.pause",
+    "args": {
+      "printer_id": "p-001"
+    }
+  }
+}

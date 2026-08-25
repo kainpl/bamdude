@@ -58,6 +58,7 @@ from backend.app.services.bambu_mqtt import (
     airduct_mode_effective,
     airduct_parts_effective,
 )
+from backend.app.services.cloud_link.service import cloud_link_service
 from backend.app.services.mqtt_recorder import mqtt_recorder
 from backend.app.services.printer_diagnostic import run_connection_diagnostic
 from backend.app.services.printer_files.factory import transport_for
@@ -490,6 +491,16 @@ async def update_printer(
         if printer.is_active:
             await printer_manager.connect_printer(printer)
 
+    # Parking a printer (Maintenance Mode) takes it out of "available" exactly
+    # as archiving does, and leaves a running Cloud Link publishing it for the
+    # same reason — see ``archive_printer``, including why this cannot be
+    # allowed to fail the request that has already been committed.
+    if "is_active" in update_data and not printer.is_active:
+        try:
+            await cloud_link_service.request_snapshot()
+        except Exception as e:
+            logger.warning("Cloud Link: could not refresh the publish set after parking printer %s: %s", printer_id, e)
+
     return printer
 
 
@@ -658,6 +669,24 @@ async def archive_printer(
     await db.commit()
     await db.refresh(printer)
     printer_manager.disconnect_printer(printer_id)
+    # A ``CloudLinkPrinter`` row survives archiving on purpose, so the allowlist
+    # still names this machine — availability is filtered on the READ side, in
+    # ``Uplink.build_snapshot``. A running link is holding the set that snapshot
+    # produced, and nothing about archiving reaches it: the printer is gone from
+    # the whole app while the portal is still being told about it. This is what
+    # makes it re-ask. Safe with no link running — the service returns at once.
+    #
+    # ⚠️ Best-effort, and the try is the point. The archive is COMMITTED by the
+    # line above; with a live link this opens a fresh session to re-read the
+    # publish set, so a database that is busy right now would raise here and
+    # turn a completed archive into a 500 the user reads as "it did not work" —
+    # they retry, and the second attempt 404s or no-ops on a printer that is
+    # already archived. The portal being told late is a pump cycle; a false
+    # failure is a user acting on a lie.
+    try:
+        await cloud_link_service.request_snapshot()
+    except Exception as e:
+        logger.warning("Cloud Link: could not refresh the publish set after archiving printer %s: %s", printer_id, e)
 
     payload = _serialize_printer(printer, include_secret=False).model_dump()
     payload["cancelled_items"] = cancelled
@@ -817,6 +846,7 @@ def _printer_cascade_models() -> tuple[type, ...]:
     from backend.app.models.ams_setting_audit import AmsSettingAudit
     from backend.app.models.calibration_audit import CalibrationAudit
     from backend.app.models.calibration_session import CalibrationSession
+    from backend.app.models.cloud_link import CloudLinkPrinter
     from backend.app.models.filament_calibration import FilamentCalibration
     from backend.app.models.firmware import FirmwareBatchItem
     from backend.app.models.print_usage_event import PrintUsageEvent
@@ -832,6 +862,7 @@ def _printer_cascade_models() -> tuple[type, ...]:
         AmsSettingAudit,
         CalibrationAudit,
         CalibrationSession,
+        CloudLinkPrinter,
         FilamentCalibration,
         FirmwareBatchItem,
         PrintUsageEvent,

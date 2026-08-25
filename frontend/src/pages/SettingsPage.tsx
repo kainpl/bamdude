@@ -62,6 +62,7 @@ import { LabelTemplateEditor } from '../components/labels/LabelTemplateEditor';
 import { LabelSheetEditor } from '../components/labels/LabelSheetEditor';
 import { RetentionCard } from '../components/settings/RetentionCard';
 import { PrinterLocationsCard } from '../components/settings/PrinterLocationsCard';
+import { CloudLinkSettings } from '../components/settings/CloudLinkSettings';
 import { PreheatFilamentTargetsEditor } from '../components/PreheatFilamentTargetsEditor';
 import { adoptUntouchedServerChanges } from '../utils/settingsReconcile';
 
@@ -86,6 +87,7 @@ registerSettingsSearch({ labelKey: 'settings.tabs.filament', tab: 'filament', ke
 registerSettingsSearch({ labelKey: 'settings.tabs.notifications', tab: 'notifications', keywords: 'notifications providers telegram discord email webhook ntfy pushover home assistant message templates notification text edit digest log viewer', anchor: 'tab-notifications' });
 registerSettingsSearch({ labelKey: 'settings.tabs.smartPlugs', tab: 'plugs', keywords: 'smart plugs energy power automation tapo kasa tplink shelly tasmota discovery kwh monitoring', anchor: 'tab-plugs' });
 registerSettingsSearch({ labelKey: 'settings.tabs.network', tab: 'network', keywords: 'network external url reverse proxy public notification link ftp retry upload retries backoff home assistant ha hass mqtt publishing broker topic integration prometheus metrics grafana monitoring bearer token', anchor: 'tab-network' });
+registerSettingsSearch({ labelKey: 'settings.tabs.cloudLink', tab: 'network', keywords: 'cloud link portal remote pairing publish', anchor: 'card-cloud-link' });
 registerSettingsSearch({ labelKey: 'settings.tabs.virtualPrinter', tab: 'virtual-printer', keywords: 'virtual printer proxy archive slicer bambustudio orcaslicer ip bind port', anchor: 'tab-virtual-printer' });
 registerSettingsSearch({ labelKey: 'settings.tabs.apiKeys', tab: 'apikeys', keywords: 'api keys create permission scope webhook endpoint post http browser documentation test token bearer', anchor: 'tab-apikeys' });
 registerSettingsSearch({ labelKey: 'cameraTokens.title', tab: 'apikeys', keywords: 'camera token long-lived home assistant frigate kiosk stream bblt', anchor: 'card-camera-tokens' });
@@ -4286,6 +4288,11 @@ export function SettingsPage() {
               )}
             </CardContent>
           </Card>
+
+          {/* Cloud Link — pairing this farm with a BamDude portal. Panel owns
+              its own status/audit queries and renders nothing without
+              `cloud_link:manage`. */}
+          <CloudLinkSettings />
         </div>
       </div>
       )}

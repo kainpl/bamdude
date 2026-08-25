@@ -1955,6 +1955,46 @@ export interface CloudLoginResponse {
   reason?: 'captcha' | string | null;
 }
 
+// ── Cloud Link ─────────────────────────────────────────────
+// Pairing this farm with the BamDude portal. A different question from the
+// Bambu / Orca cloud logins below: those sign us in to somebody else's cloud,
+// this one decides that somebody else's cloud may reach in here.
+//
+// `paired`, `enabled` and `connected` are three separate answers — holding a
+// credential, choosing to use it, and currently having a socket — and
+// `revoked` is a fourth that the portal decides on its own. The settings panel
+// offers a different repair for each, so none of them collapse into one flag.
+export interface CloudLinkStatus {
+  enabled: boolean;
+  paired: boolean;
+  connected: boolean;
+  portal_url: string;
+  instance_id: string | null;
+  last_connected_at: string | null;
+  /** Free text from the link itself — English, not a localised message. */
+  last_error: string | null;
+  revoked: boolean;
+  /** The allowlist **as saved**, which is what the checkboxes reflect. */
+  published_printer_ids: number[];
+}
+
+export interface CloudLinkAuditEntry {
+  ts: string;
+  /** `'up'` — we told the portal; `'down'` — the portal asked us. */
+  direction: string;
+  kind: string;
+  summary: string;
+  ok: boolean;
+}
+
+export interface CloudLinkAuditPage {
+  items: CloudLinkAuditEntry[];
+  /** Rows in the whole audit, not on this page — sizes the pager. */
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 // Orca Cloud types — paste-flow PKCE handshake against auth.orcaslicer.com.
 // See backend/app/services/orca_cloud.py for the deep dive on why this
 // flow is paste-based rather than callback-based.
@@ -4615,7 +4655,7 @@ export type Permission =
   | 'system:read'
   | 'settings:read' | 'settings:update' | 'settings:backup' | 'settings:restore'
   | 'git:backup' | 'git:restore'
-  | 'cloud:auth' | 'orca_cloud:auth'
+  | 'cloud:auth' | 'orca_cloud:auth' | 'cloud_link:manage'
   | 'makerworld:view' | 'makerworld:import'
   | 'api_keys:read' | 'api_keys:create' | 'api_keys:update' | 'api_keys:delete'
   | 'users:read' | 'users:create' | 'users:update' | 'users:delete'
@@ -7034,6 +7074,38 @@ export const api = {
     request<OrcaProfileListResponse>('/orca-cloud/profiles'),
   orcaCloudGetProfile: (id: string) =>
     request<OrcaProfileDetail>(`/orca-cloud/profiles/${id}`),
+
+  // Cloud Link — the six calls the settings panel makes, all behind
+  // `cloud_link:manage`. Every mutating one answers with the FULL status
+  // rather than an acknowledgement: a save changes several of the fields the
+  // panel is already displaying, so a caller that had to re-fetch would show a
+  // stale link for one round trip and the wrong one if the re-fetch failed.
+  // ⚠️ `pairCloudLink` blocks for up to ~15 s — it is a synchronous HTTPS call
+  // to the portal, with no job to poll.
+  getCloudLinkStatus: () => request<CloudLinkStatus>('/cloud-link/status'),
+  pairCloudLink: (pairing_code: string, portal_url?: string) =>
+    request<CloudLinkStatus>('/cloud-link/pair', {
+      method: 'POST',
+      // `portal_url` is omitted rather than sent as null when the user left the
+      // advanced field alone: absent means "keep the saved portal", and the
+      // backend reads absence, not emptiness.
+      body: JSON.stringify(portal_url ? { pairing_code, portal_url } : { pairing_code }),
+    }),
+  unpairCloudLink: () =>
+    request<CloudLinkStatus>('/cloud-link/unpair', { method: 'POST' }),
+  /** Replaces the allowlist wholesale — an empty array means "publish nothing". */
+  setCloudLinkPublishSet: (printer_ids: number[]) =>
+    request<CloudLinkStatus>('/cloud-link/publish-set', {
+      method: 'PUT',
+      body: JSON.stringify({ printer_ids }),
+    }),
+  setCloudLinkEnabled: (enabled: boolean) =>
+    request<CloudLinkStatus>('/cloud-link/enabled', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+  getCloudLinkAudit: (page = 1, pageSize = 20) =>
+    request<CloudLinkAuditPage>(`/cloud-link/audit?page=${page}&page_size=${pageSize}`),
   getCloudSettings: (version = '02.04.00.70') =>
     request<SlicerSettingsResponse>(`/cloud/settings?version=${version}`),
   getBuiltinFilaments: () =>
