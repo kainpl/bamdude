@@ -52,11 +52,27 @@ class SwapMacrosPref(BaseModel):
     events: list[str] = Field(default_factory=list)
 
 
+class EventMacrosPref(BaseModel):
+    """Event-macro selection, stored as EXCEPTIONS.
+
+    The deselected ids, not the selected — a macro created after the
+    preference was saved must arrive ticked instead of silently absent
+    (mirrors the PrintModal's own rule). The PrintModal sent this section
+    from day one; until 2026-08-25 the schema silently dropped it
+    (Pydantic's extra='ignore'), so an unticked macro came back ticked on
+    every open — the one part of the saved profile that never round-tripped.
+    """
+
+    deselected_ids: list[int] = Field(default_factory=list)
+
+
 class PrintOptionsPreferenceData(BaseModel):
     """Body shape for upsert + the ``options`` payload returned on read."""
 
     print_options: PrintOptionsToggles
     swap_macros: SwapMacrosPref
+    # Defaulted so rows saved before the field survived the schema still parse.
+    event_macros: EventMacrosPref = Field(default_factory=EventMacrosPref)
 
 
 class PrintOptionsPreferenceResponse(BaseModel):
