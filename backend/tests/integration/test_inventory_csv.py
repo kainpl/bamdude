@@ -95,6 +95,26 @@ class TestInventoryCsvImportDryRun:
         result = await db_session.execute(select(Spool))
         assert result.scalars().first() is None
 
+    async def test_semicolon_csv_with_decimal_commas_imports(self, async_client: AsyncClient):
+        # A European-locale spreadsheet re-saves the exported CSV with ';' as
+        # the list separator and ',' as the decimal mark (measured live
+        # 2026-08-25: the whole header came back as one unknown column and the
+        # import refused the file it had itself exported).
+        csv_text = (
+            "material;brand;color_name;label_weight;weight_used\n"
+            "PETG;Generic;Gray;3000;1027,5\n"
+            "PLA;Polymaker;Jade White;1000;\n"
+        )
+
+        response = await async_client.post("/api/v1/inventory/spools/import?dry_run=true", files=_csv_upload(csv_text))
+
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["valid_count"] == 2
+        assert data["error_count"] == 0
+        gray = next(r for r in data["rows"] if r["color_name"] == "Gray")
+        assert gray["spool"]["weight_used"] == 1027.5
+
     async def test_missing_material_column_fails_whole_file(self, async_client: AsyncClient):
         csv_text = "brand,color_name\nPolymaker,Jade White\n"
 

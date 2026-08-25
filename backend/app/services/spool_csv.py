@@ -14,6 +14,7 @@ only the rows that came back `valid`.
 
 import csv
 import io
+import re
 from datetime import datetime
 
 from pydantic import BaseModel, ValidationError
@@ -126,6 +127,35 @@ class ImportResult(BaseModel):
     skipped: int
     errors: int
     error_rows: list[ImportRowResult] = []
+
+
+def _sniff_delimiter(text: str) -> str:
+    """The delimiter is whichever candidate splits the header widest.
+
+    Our own export writes commas, but a spreadsheet in a European locale
+    re-saves CSV with ';' (LibreOffice/Excel list separator — measured live
+    2026-08-25: an exported inventory edited in Calc came back
+    semicolon-separated and the whole header read as one unknown column),
+    and a tab-separated paste is real too. Counted on the header line only —
+    data cells may legitimately contain commas.
+    """
+    header_line = text.split("\n", 1)[0]
+    counts = {d: header_line.count(d) for d in (",", ";", "\t")}
+    best = max(counts, key=lambda d: counts[d])
+    return best if counts[best] > 0 else ","
+
+
+_DECIMAL_COMMA_RE = re.compile(r"^-?\d+,\d+$")
+
+
+def _numeric_text(value: str) -> str:
+    """Accept a decimal COMMA in numeric cells ('1027,5').
+
+    The same locale that saves semicolon-CSV writes decimal commas; the
+    pattern is strict (one comma, digits both sides) so a thousands-separated
+    '1.027,5' still fails loudly instead of importing a wrong number.
+    """
+    return value.replace(",", ".", 1) if _DECIMAL_COMMA_RE.match(value) else value
 
 
 def _normalize_header(name: str) -> str:
@@ -281,7 +311,7 @@ async def parse_and_validate(raw_bytes: bytes, db: AsyncSession) -> ImportPrevie
     except UnicodeDecodeError:
         return _empty_preview(["File is not valid UTF-8 text."])
 
-    reader = csv.reader(io.StringIO(text))
+    reader = csv.reader(io.StringIO(text), delimiter=_sniff_delimiter(text))
     try:
         header = next(reader)
     except StopIteration:
@@ -370,7 +400,7 @@ async def parse_and_validate(raw_bytes: bytes, db: AsyncSession) -> ImportPrevie
                 value = cell(raw_row, field)
                 if value:
                     try:
-                        data[field] = float(value)
+                        data[field] = float(_numeric_text(value))
                     except ValueError:
                         row_error = f"{field} must be a number (got '{value}')"
                         break

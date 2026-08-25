@@ -198,6 +198,8 @@
 
 ### Fixed
 
+- **A spool CSV edited in a European-locale spreadsheet imports again.** LibreOffice and Excel in those locales re-save CSV with `;` as the separator and `,` as the decimal mark — so the file BamDude had itself exported came back unreadable: the whole header parsed as one unknown column and the import refused it. The importer now detects the delimiter (comma, semicolon or tab) from the header and accepts decimal commas in numeric cells; a thousands-separated number still fails loudly rather than importing a wrong value.
+
 - **Replacing a spool during a holder jam now lands in the usage journal.** A reel's taped tail presents to the A1-family firmware as a jam ("filament may be tangled or stuck"), not a runout — and the journal only accepted a replacement assignment against an open runout episode, so swapping the reel during that pause left no boundary and the whole print was attributed to the finishing spool. The jam code now journals an *ambiguous* runout: assigning a replacement mid-pause becomes the segment boundary, while untangling and resuming with the same reel still splits nothing and never closes anyone's books — and if the firmware escalates its own diagnosis from jam to ran-out inside the same pause, the definite verdict takes over the episode.
 
 - **An HMS error no longer flashes "Unknown HMS code" before its real description.** The per-model HMS catalogue is fetched once per session, and on the first error dialog the row asserted "unknown" while that fetch was still in flight, then blinked into the correct text a moment later. While the catalogue is loading the row now says so; "unknown" is only claimed once the catalogue has arrived and genuinely lacks the code.
