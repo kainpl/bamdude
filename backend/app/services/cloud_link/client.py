@@ -76,6 +76,7 @@ from backend.app.services.cloud_link import snapshot
 from backend.app.services.cloud_link.commands import (
     ALLOWED_COMMANDS,
     MAX_AUDITED_NAME,
+    PER_CONNECTION_AUDIT_LIMIT,
     CommandContext,
     PostAction,
     dispatch,
@@ -122,8 +123,8 @@ ENVELOPE_VERSION = 1
 #: The reverse is fine and deliberate: the allowlist is what the agent *does*,
 #: and it stays the security artifact whatever this tuple says.
 #:
-#: A tuple because the set is a fact about the release; :meth:`_hello` copies it
-#: into the frame so nothing that touches one hello can edit the next.
+#: A tuple because the set is a fact about the release and not a collection
+#: anything mutates — the same reason ``commands.ALLOWED_COMMANDS`` is frozen.
 AGENT_CAPABILITIES = ("camera_snapshot",)
 
 #: Bounds establishing the TCP/TLS connection, and nothing else — the socket
@@ -167,7 +168,12 @@ BACKOFF_JITTER = 0.2
 #: How many unknown commands may reach :func:`dispatch` — and therefore write an
 #: audit row — on ONE connection. Past it the reader answers them itself. See
 #: :meth:`CloudLinkClient._reader_loop`.
-UNKNOWN_COMMAND_AUDIT_LIMIT = 5
+#:
+#: An alias, not a second number: this and the camera-snapshot budget bound the
+#: same thing — a portal that has been taken over filling the table an operator
+#: reads — and there is nothing to be gained from letting one drift from the
+#: other.
+UNKNOWN_COMMAND_AUDIT_LIMIT = PER_CONNECTION_AUDIT_LIMIT
 
 #: What the reader hands back to the connection when it ends.
 _CLOSED = "closed"
@@ -407,10 +413,10 @@ class CloudLinkClient:
                 secret=secret,
                 agent_version=APP_VERSION,
                 envelope_versions=[ENVELOPE_VERSION],
-                # A copy, never the constant: pydantic keeps the object it is
-                # handed, so passing the tuple's contents by reference would
-                # let anything that mutated one frame's list edit what every
-                # later hello claims.
+                # ``list`` because the field is one. Nothing hangs on the copy:
+                # pydantic v2 validates a ``list[str]`` into a new list of its
+                # own, so the frame could not have shared this object even if it
+                # were handed the constant itself.
                 capabilities=list(AGENT_CAPABILITIES),
             ),
         )
@@ -533,18 +539,28 @@ class CloudLinkClient:
     async def _reader_loop(self, ws: aiohttp.ClientWebSocketResponse) -> _ReaderOutcome:
         """Inbound frames, until the socket ends or a revoke tears it down.
 
-        ⚠️ **The unknown-command cap is a write bound, not a rate limit.**
-        :func:`dispatch` audits every command it refuses, which is right for
-        the handful an operator will ever see and wrong for a portal that has
-        been taken over and is spraying names: each one would be a row in a
-        table kept for a month. After :data:`UNKNOWN_COMMAND_AUDIT_LIMIT`
-        refusals on one connection the reader answers them itself — the wire
-        contract is unchanged, every request still gets its ``cmd_result``, and
-        the table stops growing. The counter is per connection because a
-        reconnect is the natural place for an operator's mistyped command to be
-        forgiven, and an attacker gains only one further row per socket.
+        ⚠️ **The audit caps are write bounds, not rate limits.** Every audit row
+        a portal can drive is bounded per connection, and there are two ways it
+        can drive one. An unknown command is refused by :func:`dispatch`, which
+        audits it — right for the handful an operator will ever see, wrong for a
+        portal that has been taken over and is spraying names — so after
+        :data:`UNKNOWN_COMMAND_AUDIT_LIMIT` refusals the reader answers them
+        itself. A ``camera_snapshot`` *is* in the allowlist, so it reaches a
+        handler however hostile the portal is, and the row it produces (bad
+        arguments here, a refused printer or destination in :mod:`snapshot`, a
+        failed upload in either) is bounded by the shared
+        :class:`~backend.app.services.cloud_link.commands.CameraAuditBudget`
+        instead.
+
+        Both are per connection, because a reconnect is the natural place for an
+        operator's mistyped command to be forgiven, and an attacker gains only
+        one further row per socket. Neither changes what the portal is told:
+        every request still gets its ``cmd_result``, and a capped snapshot is
+        guarded, attempted and uploaded exactly as an uncapped one.
         """
         unknown = 0
+        camera_audit = self._ctx.camera_audit
+        camera_audit.reset()
         try:
             async for msg in ws:
                 if msg.type is WSMsgType.ERROR:
@@ -579,6 +595,15 @@ class CloudLinkClient:
                     "Cloud Link: %d unknown command(s) refused on this connection (%d audited)",
                     unknown,
                     min(unknown, self._unknown_command_limit),
+                )
+            if camera_audit.suppressed:
+                # The one place the suppressed outcomes exist at all. An
+                # operator looking at five rows must have a way to find out
+                # there were fifty.
+                logger.info(
+                    "Cloud Link: %d camera snapshot outcome(s) went unaudited on this connection (cap %d)",
+                    camera_audit.suppressed,
+                    camera_audit.limit,
                 )
         return _CLOSED
 
@@ -642,6 +667,11 @@ class CloudLinkClient:
 
         ``CancelledError`` is re-raised: it is the loop shutting down and has to
         keep travelling.
+
+        The row goes through the connection's budget rather than
+        :meth:`_audit`, and it is the same budget the capture itself was handed
+        — a portal can ask for a snapshot as often as it likes, so a bound that
+        only covered the capture's own refusals would be no bound at all.
         """
         try:
             await snapshot.capture_and_upload(
@@ -649,15 +679,14 @@ class CloudLinkClient:
                 uplink=self._uplink,
                 printer_id=post_action.data["printer_id"],
                 upload_url=post_action.data["upload_url"],
+                audit=self._ctx.camera_audit,
             )
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.exception("Cloud Link: the camera snapshot upload failed")
-            await self._audit(
-                "cmd:camera_snapshot",
+            await self._ctx.camera_audit.write(
                 f"the camera snapshot could not be delivered — {type(e).__name__}",
-                direction="down",
                 ok=False,
             )
 

@@ -13,12 +13,16 @@ time rather than the dispatcher's.
 field the portal sends in ``hello_ok``, not something ``args`` can extend. That
 is the whole defence against the spec's central threat (§5, "compromised
 portal"): a portal that has been taken over can read what the publish set
-exposes, can ask for a camera frame from a published printer, and can unlink
-itself — and there is no fourth option to find, because there is no code path
-that reads a command name from anywhere but this set. Growing the literal in a
-release is the sanctioned way to add a command, and it costs a diff a reviewer
-sees; adding a way to configure the set over the channel is not, and never
-becomes so.
+exposes, can ask for a camera frame from a **published, available** printer —
+pushed to that portal's own address and nowhere else — and can unlink itself.
+There is no fourth option to find, because there is no code path that reads a
+command name from anywhere but this set. Growing the literal in a release is the
+sanctioned way to add a command, and it costs a diff a reviewer sees; adding a
+way to configure the set over the channel is not, and never becomes so.
+
+Both qualifiers in that sentence are enforced in
+:mod:`~backend.app.services.cloud_link.snapshot` rather than here — see
+:func:`_camera_snapshot` for why the shape check and the policy are split.
 
 **Deciding is not acting.** :func:`dispatch` answers with a ``cmd_result`` and,
 where the command implies more, a :class:`PostAction` for the client loop to run
@@ -103,14 +107,85 @@ class PostAction:
 #: operator reads, kept for the whole retention window.
 MAX_AUDITED_NAME = 64
 
+#: How many audit rows ONE connection may be made to write for ONE
+#: attacker-drivable kind. Past it the agent behaves identically and simply
+#: stops recording — see :class:`CameraAuditBudget` and the client loop's
+#: unknown-command cap, which is deliberately this same number: both bound the
+#: same thing (a portal that has been taken over filling the table an operator
+#: reads), so two numbers would only be two things to reason about.
+#:
+#: Per connection because a reconnect is the natural place to forgive an
+#: operator's mistake, and an attacker gains one further row per socket.
+PER_CONNECTION_AUDIT_LIMIT = 5
+
+#: The kind every camera-snapshot row is written under. Three modules produce
+#: those rows — this one, the capture in
+#: :mod:`~backend.app.services.cloud_link.snapshot`, and the client loop's
+#: containment — and all three write it through :class:`CameraAuditBudget`, so
+#: the string exists in exactly one place. That is the point: a fourth kind
+#: spelled slightly differently would be a row no cap bounds and no operator's
+#: filter shows.
+CAMERA_SNAPSHOT_KIND = "cmd:camera_snapshot"
+
+
+@dataclass
+class CameraAuditBudget:
+    """The whole per-connection bound on ``cmd:camera_snapshot`` audit rows.
+
+    ⚠️ **One counter over every camera-snapshot row, wherever it is written.**
+    A snapshot can be refused for bad arguments (here), refused for the printer
+    or for the destination (in
+    :mod:`~backend.app.services.cloud_link.snapshot`), or fail on the way out —
+    and every one of those is something a hostile portal can ask for again
+    immediately. Capping them separately would multiply the bound by the number
+    of ways to fail, which is the opposite of a bound; so the budget is an
+    *object*, owned by the connection and passed down to everything that writes.
+
+    It owns the write as well as the count on purpose. A bare counter would
+    leave three ``if budget.take():`` sites free to disagree about the kind, the
+    direction or what to do when the database is busy.
+
+    Past the limit the agent does not change what it does — it answers, guards
+    and uploads exactly as before, and only the row stops. A cap that also
+    changed behaviour would tell a portal how many times it had been refused.
+
+    Args:
+        session_factory: Opens a database session. A **factory**, never a live
+            session: rows are written on failure paths, and a session that has
+            already seen a failed statement refuses the next commit.
+        limit: Rows per connection. Cleared by :meth:`reset` when a new
+            connection starts.
+    """
+
+    session_factory: async_sessionmaker[AsyncSession]
+    limit: int = PER_CONNECTION_AUDIT_LIMIT
+    #: Rows actually written on this connection.
+    written: int = 0
+    #: Outcomes that happened and went unrecorded. Logged once at disconnect —
+    #: an operator seeing five rows must be able to find out there were fifty.
+    suppressed: int = 0
+
+    def reset(self) -> None:
+        """Start a fresh connection's budget."""
+        self.written = 0
+        self.suppressed = 0
+
+    async def write(self, summary: str, *, ok: bool) -> None:
+        """Record one camera-snapshot outcome, if this connection still may."""
+        if self.written >= self.limit:
+            self.suppressed += 1
+            return
+        self.written += 1
+        await _write_row(self.session_factory, CAMERA_SNAPSHOT_KIND, summary, ok)
+
 
 @dataclass
 class CommandContext:
     """What a handler is allowed to reach.
 
-    Deliberately two fields. It is the argument every future handler will be
-    written against, so anything added here is reachable from a command the
-    portal triggers — the list is a privilege boundary, not a convenience bag.
+    Deliberately short. It is the argument every future handler will be written
+    against, so anything added here is reachable from a command the portal
+    triggers — the list is a privilege boundary, not a convenience bag.
 
     Args:
         session_factory: Opens a database session. A **factory**, never a live
@@ -123,10 +198,21 @@ class CommandContext:
             without the call site growing a second argument. Imported for the
             annotation only, so this module stays free of the uplink's own
             dependencies.
+        camera_audit: The connection's :class:`CameraAuditBudget`. ``None`` is
+            accepted as an *argument* only — :meth:`__post_init__` fills it — so
+            that a caller which does not care about the bound still cannot end
+            up with an unbounded one. The client loop passes the budget it also
+            hands the capture, which is what makes the cap one counter rather
+            than one per writer.
     """
 
     session_factory: async_sessionmaker[AsyncSession]
     uplink: Uplink
+    camera_audit: CameraAuditBudget | None = None
+
+    def __post_init__(self) -> None:
+        if self.camera_audit is None:
+            self.camera_audit = CameraAuditBudget(session_factory=self.session_factory)
 
 
 #: A handler answers with the ``data`` half of the result and, optionally, work
@@ -212,10 +298,13 @@ async def _camera_snapshot(cmd_frame: Cmd, ctx: CommandContext) -> tuple[CmdResu
     docstring), and the capture's own outcome is what
     :mod:`~backend.app.services.cloud_link.snapshot` and the client loop audit.
 
-    ⚠️ **The validation is a shape check, not a URL policy.** Both arguments
-    must be non-empty strings and nothing further is asked of them here —
-    judging the destination belongs to the code that opens it, and half a
-    policy in two places is worse than one policy in one.
+    ⚠️ **The validation is a shape check, not a policy.** Both arguments must be
+    non-empty strings and nothing further is asked of them here. Whether that
+    printer may be looked at and whether that URL may be posted to are
+    :func:`~backend.app.services.cloud_link.snapshot.capture_and_upload`'s
+    questions — they need the database and the configured portal URL, this
+    handler answers on the reader task before the ``cmd_result`` goes out, and
+    half a policy in two places is worse than one policy in one.
     """
     args = cmd_frame.data.args or {}
     printer_id = args.get("printer_id")
@@ -226,7 +315,11 @@ async def _camera_snapshot(cmd_frame: Cmd, ctx: CommandContext) -> tuple[CmdResu
         # down — a URL of any length would land in ``summary`` verbatim, and
         # what an operator needs from this row is that a snapshot was asked for
         # and refused, not the text that got it refused.
-        await _audit(ctx, "cmd:camera_snapshot", "refused a camera_snapshot with unusable arguments", ok=False)
+        #
+        # Through the budget and not ``_audit``: this row and the capture's own
+        # refusals are the same attacker pressing the same button, so they share
+        # one per-connection cap.
+        await ctx.camera_audit.write("refused a camera_snapshot with unusable arguments", ok=False)
         return CmdResultData(ok=False, error="bad_args"), None
 
     return CmdResultData(ok=True), PostAction("upload_snapshot", {"printer_id": printer_id, "upload_url": upload_url})
@@ -288,7 +381,23 @@ def _bounded(name: str) -> str:
 
 
 async def _audit(ctx: CommandContext, kind: str, summary: str, ok: bool = True) -> None:
-    """Record one downlink command, in its own session, failing silently.
+    """Record one downlink command. Uncapped — for the kinds nothing can spam.
+
+    ``revoke`` happens once and ends the link; ``cmd:unknown`` is bounded by the
+    client loop, which stops feeding the dispatcher after a handful. The one
+    kind a portal can drive repeatedly *and* keep reaching a handler with is
+    ``camera_snapshot``, and that one goes through :class:`CameraAuditBudget`.
+    """
+    await _write_row(ctx.session_factory, kind, summary, ok)
+
+
+async def _write_row(
+    session_factory: async_sessionmaker[AsyncSession],
+    kind: str,
+    summary: str,
+    ok: bool,
+) -> None:
+    """One downlink audit row, in its own session, failing silently.
 
     An audit row is the operator's record, never a step of the protocol, so a
     database that is unreachable, locked or mid-migration must cost the portal
@@ -299,7 +408,7 @@ async def _audit(ctx: CommandContext, kind: str, summary: str, ok: bool = True) 
     shutting down and has to keep travelling.
     """
     try:
-        async with ctx.session_factory() as session:
+        async with session_factory() as session:
             await write_audit(session, direction="down", kind=kind, summary=summary, ok=ok)
     except Exception as e:
         logger.warning("Cloud Link: could not write the '%s' audit row: %s", kind, e)

@@ -18,10 +18,15 @@ Four things these tests exist to pin, none of which a happy path would notice:
   out, so an escaping exception would drop the socket over one unplugged
   camera. Pinned by making the upload explode and then insisting the next
   command is still answered on the same connection.
-* **An attacker cannot make us write.** ``dispatch`` audits every unknown
-  command, so a portal that has been taken over could fill the audit table by
-  spamming names. The reader stops feeding it after a handful and answers on
-  its own, which keeps the wire contract and bounds the table.
+* **An attacker cannot make us write.** Every audit row a portal can drive is
+  bounded per connection, and there are two ways it can drive one. An unknown
+  command reaches ``dispatch``, which audits it — so the reader stops feeding it
+  after a handful and answers on its own. A ``camera_snapshot`` is in the
+  allowlist and always reaches a handler, so its rows — bad arguments, a refused
+  printer or destination, a failed upload — share one ``CameraAuditBudget``
+  across all three writers. Both caps keep the wire contract exactly: every
+  request is still answered, and a capped snapshot is still guarded and still
+  attempted.
 
 Timings are injected everywhere — heartbeat, backoff base, pump idle — so the
 suite runs in milliseconds and never sleeps on a real interval.
@@ -817,6 +822,52 @@ async def test_unknown_commands_are_answered_forever_but_audited_only_five_times
             select(func.count()).select_from(CloudLinkAudit).where(CloudLinkAudit.kind == "cmd:unknown")
         )
     assert audited == 5, "the cap is five per connection, and the sixth onward is answered without a row"
+
+
+async def test_every_camera_snapshot_row_shares_one_cap_per_connection(session_factory, portal, caplog):
+    """Three writers, one counter — and the answers do not change at the cap.
+
+    ``camera_snapshot`` is in the allowlist, so unlike an unknown command it
+    always reaches a handler: the reader cannot short-circuit it, and a portal
+    that has been taken over can ask for one as fast as it can write frames.
+    Its refusals are written from two different modules (bad arguments by the
+    dispatcher, an unpublished printer by the capture), which is exactly why the
+    budget is one object passed to both — a cap per writer would multiply the
+    bound by the number of ways to fail.
+
+    Seven requests, five rows, seven answers, and the two that went unrecorded
+    are in the log rather than nowhere.
+    """
+    names = [f"snap-bad-{i}" for i in range(3)] + [f"snap-refused-{i}" for i in range(4)]
+
+    async def script(ws, instance, index):
+        await instance.accept(ws, index)
+        await instance.expect(is_type("snapshot"), connection=index)
+        for frame_id in names:
+            # The first three are refused for their shape, by the dispatcher;
+            # the rest are well-formed and refused by the capture, because no
+            # printer has been published to this portal.
+            args = {"printer_id": "7"}
+            if frame_id.startswith("snap-refused"):
+                args["upload_url"] = "https://portal.test/upload"
+            await ws.send_json(cmd("camera_snapshot", frame_id, args=args))
+
+    instance, url = await portal(script)
+    await pair_with(session_factory, url)
+
+    with caplog.at_level(logging.INFO, logger="backend.app.services.cloud_link.client"):
+        async with running(make_client(session_factory)):
+            await instance.expect(lambda f: f.get("re") == "snap-refused-3")
+
+    answered = [f["re"] for f in instance.frames if f["type"] == "cmd_result"]
+    assert answered == names, "every request is still answered, capped or not"
+
+    async with session_factory() as session:
+        audited = await session.scalar(
+            select(func.count()).select_from(CloudLinkAudit).where(CloudLinkAudit.kind == "cmd:camera_snapshot")
+        )
+    assert audited == 5, "one cap across both writers, not five each"
+    assert "went unaudited" in caplog.text, "and the two that were dropped are not simply gone"
 
 
 async def test_the_capped_refusal_is_the_same_answer_the_dispatcher_would_give(session_factory):
