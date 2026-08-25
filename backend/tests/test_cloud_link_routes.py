@@ -42,6 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.api.routes import cloud_link as cloud_link_routes
 from backend.app.models.cloud_link import DEFAULT_PORTAL_URL, CloudLink, CloudLinkAudit, CloudLinkPrinter
+from backend.app.schemas.cloud_link import CloudLinkStatus
 from backend.app.services.cloud_link import pairing as cloud_link_pairing
 from backend.app.services.cloud_link.service import cloud_link_service
 from backend.app.services.cloud_link.store import get_config, get_secret, save_credentials, set_publish_set
@@ -229,6 +230,23 @@ async def test_status_describes_a_farm_that_has_configured_nothing(async_client)
     assert body["portal_url"] == DEFAULT_PORTAL_URL
     assert body["instance_id"] is None
     assert body["published_printer_ids"] == []
+
+
+async def test_the_response_model_carries_exactly_what_the_two_halves_produce(db_session: AsyncSession):
+    """``CloudLinkStatus`` is assembled from two sources — ``service.status()``
+    and three keys the route adds — and pydantic checks only one direction.
+
+    A field DROPPED from ``service.status()`` is the silent case: the model
+    would still validate as long as it has a default or is optional, and the
+    settings page would render a blank where a state used to be. Naming the
+    split here makes the next change to either half fail out loud, in the one
+    place that knows both.
+    """
+    service_keys = set(await cloud_link_service.status(db_session))
+    route_added = {"portal_url", "instance_id", "published_printer_ids"}
+
+    assert service_keys.isdisjoint(route_added), "one key, one owner — a field cannot come from both halves"
+    assert set(CloudLinkStatus.model_fields) == service_keys | route_added
 
 
 async def test_status_reports_the_allowlist_as_saved_not_as_published(
