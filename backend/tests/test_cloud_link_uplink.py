@@ -242,7 +242,7 @@ def test_the_status_allowlist_is_what_the_snapshot_adapter_actually_reads():
     A constant that claims to be the allowlist while the code reads whatever it
     likes is worse than no constant, because a reviewer trusts it.
     """
-    assert set(_status_of(_running_state())) == set(STATUS_FIELDS)
+    assert set(_status_of(_running_state(), "X2D")) == set(STATUS_FIELDS)
 
 
 def test_the_temperature_allowlist_is_exactly_the_contracts_temps():
@@ -872,6 +872,108 @@ async def test_a_snapshot_of_a_disconnected_printer_seeds_the_watcher_the_other_
     frame = await uplink.drain()
     assert frame is not None
     assert frame.data.kind == "printer_online"
+
+
+# ------------------------------------------------ the chamber that isn't there
+
+
+async def test_a_model_without_a_chamber_sensor_reports_no_chamber_in_the_snapshot(
+    db_session: AsyncSession,
+):
+    """P1P, P1S, A1 and A1 mini report a ``chamber_temper`` that means nothing,
+    and ``printer_state_to_dict`` drops it before any browser sees it.
+
+    The snapshot reads ``state.temperatures`` raw, so without the same filter
+    the portal received a number here and ``null`` in every status frame after
+    it — the reading flip-flopping once per agent reconnect, which is worse
+    than either answer on its own.
+    """
+    await _add_printer(db_session, 1, "P1S Shelf", "P1S")
+    await _publish(db_session, 1)
+
+    uplink = Uplink(manager=FakeManager(states={1: _running_state()}))
+    snapshot = await uplink.build_snapshot(db_session)
+
+    temps = snapshot.data.printers[0].temps
+    assert temps.chamber is None
+    # The rest of the readings are untouched — this filter is about one sensor.
+    assert temps.bed == 60.0
+    assert temps.nozzle == 219.5
+
+
+async def test_a_model_with_a_chamber_sensor_keeps_its_reading_in_the_snapshot(
+    db_session: AsyncSession,
+):
+    """The other half, or the test above would pass against a filter that
+    simply never reports a chamber."""
+    await _add_printer(db_session, 1, "X2D Front-Left", "X2D")
+    await _publish(db_session, 1)
+
+    uplink = Uplink(manager=FakeManager(states={1: _running_state()}))
+    snapshot = await uplink.build_snapshot(db_session)
+
+    assert snapshot.data.printers[0].temps.chamber == 38.0
+
+
+async def test_a_printer_with_no_model_recorded_reports_no_chamber(db_session: AsyncSession):
+    """Unknown model, no chamber — the same answer ``printer_state_to_dict``
+    gives when ``printer_manager.get_model`` returns ``None``. Guessing the
+    other way would publish the meaningless reading for exactly the printers
+    nobody has identified yet."""
+    await _add_printer(db_session, 1, "Nameless", "")
+    await _publish(db_session, 1)
+
+    uplink = Uplink(manager=FakeManager(states={1: _running_state()}))
+    snapshot = await uplink.build_snapshot(db_session)
+
+    assert snapshot.data.printers[0].temps.chamber is None
+
+
+def test_the_snapshot_adapter_strips_the_same_chamber_keys_the_browser_path_does():
+    """Shape parity, not just the one key the contract carries.
+
+    ``_status_of``'s output has to be interchangeable with a broadcast's
+    ``data`` — that is the whole reason both paths can share one builder — so
+    it drops ``chamber_target`` and ``chamber_heating`` too, even though
+    :data:`TEMPERATURE_FIELDS` never reads them.
+    """
+    state = PrinterState(
+        connected=True,
+        state="RUNNING",
+        temperatures={"bed": 60.0, "chamber": 38.0, "chamber_target": 0.0, "chamber_heating": False},
+    )
+    assert set(_status_of(state, "P1S")["temperatures"]) == {"bed"}
+    assert set(_status_of(state, "X1C")["temperatures"]) == {"bed", "chamber", "chamber_target", "chamber_heating"}
+
+
+async def test_the_status_path_arrives_already_filtered_for_a_chamberless_model():
+    """The claim the snapshot fix rests on, pinned against the real helpers.
+
+    Status frames are built from ``printer_status`` broadcasts, and every
+    broadcast of that type in the product is ``printer_state_to_dict``'s output
+    — so the status path needs no filter of its own. If that ever stops being
+    true this fails here rather than as a chamber reading nobody can explain.
+    """
+    manager = ConnectionManager()
+    uplink = make_uplink({7})
+    uplink._identity[7] = ("P1S Shelf", "P1S")
+    manager.add_internal_listener(uplink.feed)
+
+    state = PrinterState(
+        connected=True,
+        state="RUNNING",
+        subtask_name="bracket_v3",
+        progress=42.0,
+        temperatures={"bed": 60.0, "bed_target": 60.0, "nozzle": 219.5, "nozzle_target": 220.0, "chamber": 38.0},
+    )
+    await manager.send_printer_status(7, printer_state_to_dict(state, 7, "P1S"))
+
+    frame = await uplink.drain()
+    assert frame is not None
+    assert frame.data.printer.temps.chamber is None
+    assert frame.data.printer.temps.bed == 60.0
+
+    manager.remove_internal_listener(uplink.feed)
 
 
 # --------------------------------------------------------------- end to end

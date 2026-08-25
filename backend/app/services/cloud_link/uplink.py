@@ -619,7 +619,7 @@ class Uplink:
                     state = manager.get_status(printer_id) if manager else None
                 except Exception as e:  # pragma: no cover — defensive around a foreign object
                     logger.debug("Cloud Link: no live state for printer %s: %s", printer_id, e)
-                status = _status_of(state)
+                status = _status_of(state, model)
                 # ⚠️ Seed the connection watcher from what the snapshot reports.
                 # ``_connection_event`` stays silent on a printer it has never
                 # seen, so without this every agent reconnect would swallow the
@@ -638,7 +638,28 @@ class Uplink:
         )
 
 
-def _status_of(state: Any) -> dict[str, Any]:
+#: The chamber keys ``printer_state_to_dict`` removes for a model without a
+#: real sensor. Copied from it deliberately rather than narrowed to the one key
+#: :data:`TEMPERATURE_FIELDS` reads: the point is that ``_status_of``'s output
+#: is shape-identical to a broadcast's ``data``, so the two paths cannot drift.
+_CHAMBER_KEYS = ("chamber", "chamber_target", "chamber_heating")
+
+
+def _chamber_filtered(temperatures: Mapping[str, Any], model: str | None) -> dict[str, Any]:
+    """``temperatures`` as the browser would receive it for this model.
+
+    Imported inside the function on purpose — the module is deliberately
+    importable without the MQTT stack behind it (see :meth:`Uplink._printer_manager`),
+    and ``supports_chamber_temp`` lives in ``printer_manager``.
+    """
+    from backend.app.services.printer_manager import supports_chamber_temp
+
+    if supports_chamber_temp(model):
+        return dict(temperatures)
+    return {k: v for k, v in temperatures.items() if k not in _CHAMBER_KEYS}
+
+
+def _status_of(state: Any, model: str | None) -> dict[str, Any]:
     """A live ``PrinterState`` narrowed to :data:`STATUS_FIELDS`.
 
     The adapter that lets the snapshot and the broadcast tap share one builder.
@@ -649,6 +670,16 @@ def _status_of(state: Any) -> dict[str, Any]:
     ``None`` — a printer that is configured but not connected — becomes a
     status that says exactly that. Leaving it out of the snapshot instead would
     read as "not in this farm".
+
+    ⚠️ ``model`` is not optional, and it is not decoration. The snapshot reads
+    ``state.temperatures`` RAW, while every ``printer_status`` broadcast the
+    status path taps has already been through ``printer_state_to_dict`` — which
+    drops the chamber readings for the models that report a meaningless one
+    (P1P, P1S, A1, A1 mini have no chamber sensor). Without this the same
+    printer arrived at the portal with a number in the snapshot and ``null`` in
+    every status frame after it, flip-flopping once per agent reconnect. So the
+    filter is applied here too, with the product's own predicate — the model
+    list lives in ``printer_manager`` and must never be re-derived here.
     """
     if state is None:
         return {"connected": False}
@@ -663,6 +694,6 @@ def _status_of(state: Any) -> dict[str, Any]:
         "progress": getattr(state, "progress", None),
         "subtask_name": getattr(state, "subtask_name", None),
         "current_print": getattr(state, "current_print", None),
-        "temperatures": getattr(state, "temperatures", None) or {},
+        "temperatures": _chamber_filtered(getattr(state, "temperatures", None) or {}, model),
         "hms_errors": hms_errors,
     }
