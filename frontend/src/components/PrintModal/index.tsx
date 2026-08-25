@@ -403,9 +403,17 @@ export function PrintModal({
   // initial apply aren't clobbered by a re-render. The set lives in a ref
   // because we don't want it to participate in render-triggered effect deps.
   const appliedPreferenceModelsRef = useRef<Set<string>>(new Set());
+  // The operator's own clicks outrank the stored profile. Without this guard,
+  // unticking a toggle BEFORE picking a printer (the model — and with it the
+  // preference — only resolves after the pick) let the late-arriving profile
+  // silently flip the toggle back, and the submit then saved the flip as the
+  // new profile (measured live 2026-08-25: vibration fast-check).
+  const touchedOptionsRef = useRef(false);
   useEffect(() => {
     if (!effectivePrinterModel || !preferenceData) return;
     if (appliedPreferenceModelsRef.current.has(effectivePrinterModel)) return;
+    appliedPreferenceModelsRef.current.add(effectivePrinterModel);
+    if (touchedOptionsRef.current) return;
     // Merge over DEFAULT so a preference saved before a new option existed
     // (e.g. nozzle_offset_cali, #1682) still gets a defined value.
     setPrintOptions({ ...DEFAULT_PRINT_OPTIONS, ...preferenceData.options.print_options });
@@ -415,7 +423,6 @@ export function PrintModal({
         (e): e is SwapMacroEvent => (SWAP_MACRO_EVENTS as readonly string[]).includes(e),
       ),
     });
-    appliedPreferenceModelsRef.current.add(effectivePrinterModel);
   }, [effectivePrinterModel, preferenceData]);
 
   // Tick everything the operator has not explicitly turned off for this model.
@@ -446,10 +453,17 @@ export function PrintModal({
           deselected_ids: applicableMacros.filter((m) => !selectedMacroIds.includes(m.id)).map((m) => m.id),
         },
       })
+      .then(() => {
+        // Drop the cached read NOW: staleTime is 60s, and a dialog reopened
+        // inside that window read the pre-save profile, applied it, and its
+        // own submit then saved the STALE values back — the user's change
+        // quietly reverted itself (measured live 2026-08-25).
+        void queryClient.invalidateQueries({ queryKey: ['print-options-preference', effectivePrinterModel] });
+      })
       .catch(() => {
         // silent — preference is best-effort
       });
-  }, [effectivePrinterModel, printOptions, swapMacros, applicableMacros, selectedMacroIds]);
+  }, [effectivePrinterModel, printOptions, swapMacros, applicableMacros, selectedMacroIds, queryClient]);
 
   const { data: spoolAssignments } = useQuery({
     queryKey: ['spool-assignments'],
@@ -1483,7 +1497,7 @@ export function PrintModal({
 
             {/* Print options */}
             {(mode === 'reprint' || effectivePrinterCount > 0 || isAutoMode) && (
-              <PrintOptionsPanel options={printOptions} onChange={setPrintOptions} defaultExpanded={!!initialSelectedPrinterIds?.length} showDualNozzleOptions={showDualNozzleOptions} autoCaps={autoCaps} timelapseBlockers={timelapseBlockers} selectedPrinterCount={selectedPrinters.length} timelapseLowSpace={timelapseLowSpace} canChooseTimelapseStorage={canChooseTimelapseStorage} onFreeTimelapseSpace={(id) => freeTimelapseSpace.mutate(id)} freeingTimelapseSpace={freeTimelapseSpace.isPending} />
+              <PrintOptionsPanel options={printOptions} onChange={(o) => { touchedOptionsRef.current = true; setPrintOptions(o); }} defaultExpanded={!!initialSelectedPrinterIds?.length} showDualNozzleOptions={showDualNozzleOptions} autoCaps={autoCaps} timelapseBlockers={timelapseBlockers} selectedPrinterCount={selectedPrinters.length} timelapseLowSpace={timelapseLowSpace} canChooseTimelapseStorage={canChooseTimelapseStorage} onFreeTimelapseSpace={(id) => freeTimelapseSpace.mutate(id)} freeingTimelapseSpace={freeTimelapseSpace.isPending} />
             )}
 
             {/* Swap-mode macros — only relevant when at least one selected
@@ -1497,7 +1511,7 @@ export function PrintModal({
                 ? (printers ?? []).some(p => p.swap_mode_enabled)
                 : selectedPrinters.some(id => printers?.find(p => p.id === id)?.swap_mode_enabled)
             ) && (
-              <SwapMacrosPanel options={swapMacros} onChange={setSwapMacros} />
+              <SwapMacrosPanel options={swapMacros} onChange={(o) => { touchedOptionsRef.current = true; setSwapMacros(o); }} />
             )}
 
             {/* Which of the other macros run for this print. Outside the swap

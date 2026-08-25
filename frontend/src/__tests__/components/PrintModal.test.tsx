@@ -81,6 +81,71 @@ describe('PrintModal', () => {
     );
   });
 
+  describe('saved profile vs the operator (2026-08-25)', () => {
+    it('a late-arriving profile never clobbers a toggle the operator already flipped', async () => {
+      // The model — and with it the saved profile — only resolves after a
+      // printer is picked. Unticking a toggle first, picking a printer second
+      // used to let the profile flip the toggle back, and the submit then
+      // saved the flip as the new profile (live: vibration fast-check).
+      const { delay } = await import('msw');
+      server.use(
+        http.get('/api/v1/print-option-preferences/:model', async () => {
+          await delay(800);
+          return HttpResponse.json({
+            printer_model: 'A1M',
+            options: {
+              print_options: {
+                bed_levelling: 'on',
+                flow_cali: 'off',
+                layer_inspect: false,
+                timelapse: false,
+                timelapse_storage: null,
+                mesh_mode_fast_check: true,
+                gcode_injection: false,
+                nozzle_offset_cali: 'on',
+                preheat_override: 'inherit',
+                preheat_chamber_target_override: null,
+              },
+              swap_macros: { execute: false, events: [] },
+              event_macros: { deselected_ids: [] },
+            },
+            updated_at: '2026-08-25T00:00:00Z',
+          });
+        })
+      );
+      const user = userEvent.setup();
+      render(
+        <PrintModal
+          mode="add-to-queue"
+          archiveId={1}
+          archiveName="Test Print"
+          onClose={mockOnClose}
+          onSuccess={mockOnSuccess}
+        />
+      );
+
+      // Pick a printer — the model resolves, the profile fetch starts (slow).
+      await user.click(await screen.findByText('A1 Mini'));
+
+      // Expand the options panel and flip the fast-check off while the
+      // profile is still on the wire.
+      await user.click(await screen.findByText('Print Options'));
+      const row = (await screen.findByText('Quick Vibration Check')).closest('label')!;
+      const toggle = row.querySelector('div.relative') as HTMLElement;
+      expect(toggle.className).toContain('bg-bambu-green'); // default: on
+      await user.click(toggle);
+      expect(toggle.className).not.toContain('bg-bambu-green');
+
+      // Let the profile land.
+      await new Promise((r) => setTimeout(r, 1200));
+
+      // The operator's click survives the profile's arrival.
+      const rowAfter = screen.getByText('Quick Vibration Check').closest('label')!;
+      const toggleAfter = rowAfter.querySelector('div.relative') as HTMLElement;
+      expect(toggleAfter.className).not.toContain('bg-bambu-green');
+    });
+  });
+
   describe('library-file direct print carries the macro selection', () => {
     it('sends selected_macro_ids in the printLibraryFile payload', async () => {
       // The archive-reprint sibling always sent it; the library-file direct
