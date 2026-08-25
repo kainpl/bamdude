@@ -38,7 +38,10 @@ command, never the link, and the frame it failed on is left unanswered on
 purpose: the handler got far enough to raise, so the agent does not know
 whether the work happened and ``ok=false`` would be a claim it cannot make. The
 portal times that request out, which is the honest outcome, and the
-``cmd:failed`` audit row is what an operator finds afterwards.
+``cmd:failed`` audit row is what an operator finds afterwards. A **post-action**
+that raises is contained the same way and differs in one respect: its result
+frame has already gone out saying ``ok=true``, so the audit row is not a
+supplement to the answer, it is the only record the outcome has.
 
 **A handshake is not a healthy link.** The reconnect backoff resets only once a
 connection has SURVIVED one heartbeat interval, never at ``hello_ok``. A portal
@@ -69,10 +72,13 @@ from aiohttp import WSMsgType
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.core.config import APP_VERSION
+from backend.app.services.cloud_link import snapshot
 from backend.app.services.cloud_link.commands import (
     ALLOWED_COMMANDS,
     MAX_AUDITED_NAME,
+    PER_CONNECTION_AUDIT_LIMIT,
     CommandContext,
+    PostAction,
     dispatch,
 )
 from backend.app.services.cloud_link.schemas import (
@@ -106,6 +112,20 @@ WS_SCHEMES = {"http": "ws", "https": "wss", "ws": "ws", "wss": "wss"}
 #: The envelope version this agent speaks. A list on the wire, so a later agent
 #: can offer two while the portal picks.
 ENVELOPE_VERSION = 1
+
+#: What this release offers beyond the envelope itself, announced in ``hello``
+#: so the portal can hide a feature an older agent has never heard of instead
+#: of inferring it from a version number.
+#:
+#: ⚠️ **A claim, not a grant.** Every name here must also be in
+#: ``commands.ALLOWED_COMMANDS`` — a test pins that — because a capability the
+#: portal can see but the agent will not run is a button that fails on click.
+#: The reverse is fine and deliberate: the allowlist is what the agent *does*,
+#: and it stays the security artifact whatever this tuple says.
+#:
+#: A tuple because the set is a fact about the release and not a collection
+#: anything mutates — the same reason ``commands.ALLOWED_COMMANDS`` is frozen.
+AGENT_CAPABILITIES = ("camera_snapshot",)
 
 #: Bounds establishing the TCP/TLS connection, and nothing else — the socket
 #: itself is long-lived, so a total timeout would kill a healthy link.
@@ -148,7 +168,12 @@ BACKOFF_JITTER = 0.2
 #: How many unknown commands may reach :func:`dispatch` — and therefore write an
 #: audit row — on ONE connection. Past it the reader answers them itself. See
 #: :meth:`CloudLinkClient._reader_loop`.
-UNKNOWN_COMMAND_AUDIT_LIMIT = 5
+#:
+#: An alias, not a second number: this and the camera-snapshot budget bound the
+#: same thing — a portal that has been taken over filling the table an operator
+#: reads — and there is nothing to be gained from letting one drift from the
+#: other.
+UNKNOWN_COMMAND_AUDIT_LIMIT = PER_CONNECTION_AUDIT_LIMIT
 
 #: What the reader hands back to the connection when it ends.
 _CLOSED = "closed"
@@ -388,10 +413,11 @@ class CloudLinkClient:
                 secret=secret,
                 agent_version=APP_VERSION,
                 envelope_versions=[ENVELOPE_VERSION],
-                # Phase 0 claims nothing beyond the envelope itself. The field
-                # exists so a later agent can offer a feature without the
-                # portal having to infer it from a version number.
-                capabilities=[],
+                # ``list`` because the field is one. Nothing hangs on the copy:
+                # pydantic v2 validates a ``list[str]`` into a new list of its
+                # own, so the frame could not have shared this object even if it
+                # were handed the constant itself.
+                capabilities=list(AGENT_CAPABILITIES),
             ),
         )
 
@@ -513,18 +539,28 @@ class CloudLinkClient:
     async def _reader_loop(self, ws: aiohttp.ClientWebSocketResponse) -> _ReaderOutcome:
         """Inbound frames, until the socket ends or a revoke tears it down.
 
-        ⚠️ **The unknown-command cap is a write bound, not a rate limit.**
-        :func:`dispatch` audits every command it refuses, which is right for
-        the handful an operator will ever see and wrong for a portal that has
-        been taken over and is spraying names: each one would be a row in a
-        table kept for a month. After :data:`UNKNOWN_COMMAND_AUDIT_LIMIT`
-        refusals on one connection the reader answers them itself — the wire
-        contract is unchanged, every request still gets its ``cmd_result``, and
-        the table stops growing. The counter is per connection because a
-        reconnect is the natural place for an operator's mistyped command to be
-        forgiven, and an attacker gains only one further row per socket.
+        ⚠️ **The audit caps are write bounds, not rate limits.** Every audit row
+        a portal can drive is bounded per connection, and there are two ways it
+        can drive one. An unknown command is refused by :func:`dispatch`, which
+        audits it — right for the handful an operator will ever see, wrong for a
+        portal that has been taken over and is spraying names — so after
+        :data:`UNKNOWN_COMMAND_AUDIT_LIMIT` refusals the reader answers them
+        itself. A ``camera_snapshot`` *is* in the allowlist, so it reaches a
+        handler however hostile the portal is, and the row it produces (bad
+        arguments here, a refused printer or destination in :mod:`snapshot`, a
+        failed upload in either) is bounded by the shared
+        :class:`~backend.app.services.cloud_link.commands.CameraAuditBudget`
+        instead.
+
+        Both are per connection, because a reconnect is the natural place for an
+        operator's mistyped command to be forgiven, and an attacker gains only
+        one further row per socket. Neither changes what the portal is told:
+        every request still gets its ``cmd_result``, and a capped snapshot is
+        guarded, attempted and uploaded exactly as an uncapped one.
         """
         unknown = 0
+        camera_audit = self._ctx.camera_audit
+        camera_audit.reset()
         try:
             async for msg in ws:
                 if msg.type is WSMsgType.ERROR:
@@ -560,6 +596,15 @@ class CloudLinkClient:
                     unknown,
                     min(unknown, self._unknown_command_limit),
                 )
+            if camera_audit.suppressed:
+                # The one place the suppressed outcomes exist at all. An
+                # operator looking at five rows must have a way to find out
+                # there were fifty.
+                logger.info(
+                    "Cloud Link: %d camera snapshot outcome(s) went unaudited on this connection (cap %d)",
+                    camera_audit.suppressed,
+                    camera_audit.limit,
+                )
         return _CLOSED
 
     async def _handle_cmd(self, ws: aiohttp.ClientWebSocketResponse, frame: Cmd) -> _ReaderOutcome | None:
@@ -567,8 +612,9 @@ class CloudLinkClient:
 
         The result goes out **before** the post-action, always: ``resync``
         would otherwise build a snapshot on the reader task while the portal
-        waited for its acknowledgement, and ``revoke`` would close the socket
-        the acknowledgement had to leave through.
+        waited for its acknowledgement, ``camera_snapshot`` would hold the
+        request open for two round trips to a camera, and ``revoke`` would
+        close the socket the acknowledgement had to leave through.
         """
         try:
             result, post_action = await dispatch(frame, self._ctx)
@@ -587,11 +633,62 @@ class CloudLinkClient:
 
         await self._send(ws, result)
 
-        if post_action == "send_snapshot":
+        if post_action is None:
+            return None
+        if post_action.kind == "send_snapshot":
             await self._send_snapshot(ws)
-        elif post_action == "teardown_revoked":
+        elif post_action.kind == "teardown_revoked":
             return _REVOKED
+        elif post_action.kind == "upload_snapshot":
+            await self._upload_snapshot(post_action)
+        else:
+            # Unreachable while this chain and ``PostAction.kind`` agree — and a
+            # silent no-op is the wrong way to discover that they don't. The
+            # dispatcher decided work had to happen; dropping it without a line
+            # in the log is the failure nobody would ever find.
+            logger.error("Cloud Link: no follow-up is wired for the %r post-action", post_action.kind)
         return None
+
+    async def _upload_snapshot(self, post_action: PostAction) -> None:
+        """Push one camera frame to the portal's URL, at no risk to the link.
+
+        ⚠️ **Nothing this raises may leave.** The capture reaches a camera that
+        may be unplugged, a printer that may be offline and a portal that may
+        be mid-deploy — on a print farm all three are ordinary — and this runs
+        on the reader task, so an escaping exception would end the reader, drop
+        the socket and take the whole link down over one bad snapshot. Contained
+        exactly as a raising :func:`dispatch` is, one line up: log, audit
+        ``ok=False``, keep reading.
+
+        The ``cmd_result`` said ``ok=True`` before any of this started, which is
+        why the audit row is the only place the outcome exists. That is the
+        deliberate trade: the portal learns the command was *accepted*
+        immediately, and an operator learns whether it *worked* from the row.
+
+        ``CancelledError`` is re-raised: it is the loop shutting down and has to
+        keep travelling.
+
+        The row goes through the connection's budget rather than
+        :meth:`_audit`, and it is the same budget the capture itself was handed
+        — a portal can ask for a snapshot as often as it likes, so a bound that
+        only covered the capture's own refusals would be no bound at all.
+        """
+        try:
+            await snapshot.capture_and_upload(
+                session_factory=self._session_factory,
+                uplink=self._uplink,
+                printer_id=post_action.data["printer_id"],
+                upload_url=post_action.data["upload_url"],
+                audit=self._ctx.camera_audit,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.exception("Cloud Link: the camera snapshot upload failed")
+            await self._ctx.camera_audit.write(
+                f"the camera snapshot could not be delivered — {type(e).__name__}",
+                ok=False,
+            )
 
     def _parse(self, raw: str) -> AnyFrame | None:
         """One inbound text message → a frame, or ``None`` with a log line.
@@ -657,10 +754,16 @@ class CloudLinkClient:
 
     async def _send_snapshot(self, ws: aiohttp.ClientWebSocketResponse) -> None:
         """Build the farm's full picture and send it. Its own session, held
-        only for the read — the socket write is not the database's business."""
+        only for the read — the socket write is not the database's business.
+
+        The local is ``frame`` and not ``snapshot`` on purpose: :mod:`snapshot`
+        is a module this file imports, and shadowing it inside the one method
+        whose name matches is how a later edit here reaches for the camera
+        module and gets a frame instead.
+        """
         async with self._session_factory() as session:
-            snapshot = await self._uplink.build_snapshot(session)
-        await self._send(ws, snapshot)
+            frame = await self._uplink.build_snapshot(session)
+        await self._send(ws, frame)
 
     async def _send(self, ws: aiohttp.ClientWebSocketResponse, frame: AnyFrame) -> None:
         async with self._send_lock:

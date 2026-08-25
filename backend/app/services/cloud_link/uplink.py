@@ -112,6 +112,17 @@ DEFAULT_MIN_INTERVAL_S = 5.0
 #: printer status out of a 500-deep queue before the link drained one.
 INTERESTING_TYPES = frozenset({"printer_status", "print_start", "print_complete"})
 
+#: What "available" means to this link, as SQL criteria — the product's own
+#: definition, ``is_active AND NOT archived``, and the second half of the answer
+#: to "may the portal see this printer" (the first is the publish set).
+#:
+#: A shared constant because it is asked in two places that must never drift:
+#: :meth:`Uplink.build_snapshot` filters the whole set with it, and
+#: :mod:`~backend.app.services.cloud_link.snapshot` re-asks it for the one
+#: printer a ``camera_snapshot`` names. A camera is the more sensitive of the
+#: two, so the looser of two definitions would be the wrong one to have there.
+AVAILABLE_PRINTER = (Printer.is_active.is_(True), Printer.archived.is_(False))
+
 #: Everything a printer's status contributes to a frame. THE allowlist — see
 #: the module docstring. Keys are ``printer_manager.printer_state_to_dict``'s.
 STATUS_FIELDS = ("connected", "state", "progress", "subtask_name", "current_print", "temperatures", "hms_errors")
@@ -604,8 +615,7 @@ class Uplink:
                 await session.execute(
                     select(Printer.id, Printer.name, Printer.model)
                     .where(Printer.id.in_(published))
-                    .where(Printer.is_active.is_(True))
-                    .where(Printer.archived.is_(False))
+                    .where(*AVAILABLE_PRINTER)
                     .order_by(Printer.id)
                 )
             ).all()
