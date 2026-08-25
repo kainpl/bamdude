@@ -325,7 +325,22 @@ class CloudLinkClient:
         url = ws_url(portal_url)
         timeout = aiohttp.ClientTimeout(total=None, connect=self._connect_timeout_s)
         logger.info("Cloud Link: connecting to %s", url)
-        async with aiohttp.ClientSession(timeout=timeout) as http, http.ws_connect(url) as ws:
+        # ⚠️ ``heartbeat=`` is what makes a dead path *fail* rather than hang.
+        # Our own application heartbeat proves nothing about the return leg: a
+        # NAT rebind or a hung proxy blackholes the connection while both ends
+        # go on believing they are connected, and TCP retransmit takes minutes
+        # to say otherwise. aiohttp's protocol-level ping/pong fails the reader
+        # instead, which is a reconnect.
+        #
+        # The interval is whatever the LAST connection negotiated, or the
+        # default on the first — the socket has to exist before ``hello_ok``
+        # can tell us anything, so it cannot be the value this connection will
+        # settle on. That asymmetry is harmless: this is a liveness probe, not
+        # a contract, and the portal is not being promised a rate.
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as http,
+            http.ws_connect(url, heartbeat=self._heartbeat_interval_s) as ws,
+        ):
             return await self._converse(ws, url, instance_id, secret, stop_event)
 
     async def _converse(

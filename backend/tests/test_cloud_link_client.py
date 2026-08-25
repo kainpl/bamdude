@@ -30,6 +30,7 @@ import json
 import uuid
 from contextlib import asynccontextmanager
 
+import aiohttp
 import pytest
 from aiohttp import WSMsgType, web
 from sqlalchemy import func, select
@@ -40,6 +41,7 @@ from backend.app.models.cloud_link import CloudLinkAudit
 from backend.app.services.cloud_link import client as client_module
 from backend.app.services.cloud_link.client import (
     BACKOFF_CAP_S,
+    DEFAULT_HEARTBEAT_INTERVAL_S,
     LINK_PATH,
     MIN_THROTTLE_S,
     CloudLinkClient,
@@ -1006,6 +1008,76 @@ async def test_a_negative_throttle_gets_the_floor_too(session_factory, portal):
         await instance.expect(is_type("snapshot"))
 
     assert uplink.min_interval_s == MIN_THROTTLE_S
+
+
+# -------------------------------------------------------------- ws liveness
+
+
+async def test_the_socket_is_opened_with_a_protocol_level_heartbeat(session_factory, portal, monkeypatch):
+    """A blackholed path has to FAIL, not hang.
+
+    Our own ``heartbeat`` frame proves nothing about the return leg: after a
+    NAT rebind or behind a hung proxy both ends go on believing they are
+    connected and TCP retransmit takes minutes to disagree. ``heartbeat=`` puts
+    aiohttp's ping/pong under the conversation, which fails the reader instead
+    — and a failed reader is a reconnect.
+
+    The assertion is the argument rather than a severed connection: killing a
+    path convincingly enough to out-wait a retransmit is not something a unit
+    test can do honestly, and the argument is the whole of what this agent
+    contributes.
+    """
+    seen: list[float | None] = []
+    original = aiohttp.ClientSession.ws_connect
+
+    def spy(self, url, **kwargs):
+        seen.append(kwargs.get("heartbeat"))
+        return original(self, url, **kwargs)
+
+    monkeypatch.setattr(aiohttp.ClientSession, "ws_connect", spy)
+
+    async def script(ws, instance, index):
+        await instance.accept(ws, index)
+
+    instance, url = await portal(script)
+    await pair_with(session_factory, url)
+
+    async with running(make_client(session_factory)):
+        await instance.expect(is_type("snapshot"))
+
+    assert seen == [DEFAULT_HEARTBEAT_INTERVAL_S], "the first connection has nothing negotiated yet"
+
+
+async def test_the_next_socket_carries_the_interval_the_portal_negotiated(session_factory, portal, monkeypatch):
+    """The asymmetry, stated as a test: the socket exists before ``hello_ok``
+    can say anything, so connection N+1 is the first that can carry the value
+    connection N settled on. Harmless — this is a liveness probe, not a rate
+    the portal is promised."""
+    seen: list[float | None] = []
+    original = aiohttp.ClientSession.ws_connect
+
+    def spy(self, url, **kwargs):
+        seen.append(kwargs.get("heartbeat"))
+        return original(self, url, **kwargs)
+
+    monkeypatch.setattr(aiohttp.ClientSession, "ws_connect", spy)
+
+    async def script(ws, instance, index):
+        await instance.accept(ws, index, heartbeat_interval_s=7.5)
+        if index == 0:
+            # Drop the first connection so the agent comes back with what it
+            # has just learned.
+            await instance.expect(is_type("snapshot"), connection=0)
+            await ws.close()
+
+    instance, url = await portal(script)
+    await pair_with(session_factory, url)
+
+    async with running(make_client(session_factory)):
+        await instance.expect(is_type("snapshot"), connection=1)
+
+    assert seen[0] == DEFAULT_HEARTBEAT_INTERVAL_S
+    assert seen[1] == 7.5
 
 
 # ----------------------------------------------------------------- the guards
