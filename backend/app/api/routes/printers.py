@@ -59,6 +59,7 @@ from backend.app.services.bambu_mqtt import (
     airduct_mode_effective,
     airduct_parts_effective,
 )
+from backend.app.services.cloud_link.service import cloud_link_service
 from backend.app.services.mqtt_recorder import mqtt_recorder
 from backend.app.services.printer_diagnostic import run_connection_diagnostic
 from backend.app.services.printer_files.factory import transport_for
@@ -471,6 +472,12 @@ async def update_printer(
         if printer.is_active:
             await printer_manager.connect_printer(printer)
 
+    # Parking a printer (Maintenance Mode) takes it out of "available" exactly
+    # as archiving does, and leaves a running Cloud Link publishing it for the
+    # same reason — see ``archive_printer``. Safe with no link running.
+    if "is_active" in update_data and not printer.is_active:
+        await cloud_link_service.request_snapshot()
+
     return printer
 
 
@@ -560,6 +567,13 @@ async def archive_printer(
     await db.commit()
     await db.refresh(printer)
     printer_manager.disconnect_printer(printer_id)
+    # A ``CloudLinkPrinter`` row survives archiving on purpose, so the allowlist
+    # still names this machine — availability is filtered on the READ side, in
+    # ``Uplink.build_snapshot``. A running link is holding the set that snapshot
+    # produced, and nothing about archiving reaches it: the printer is gone from
+    # the whole app while the portal is still being told about it. This is what
+    # makes it re-ask. Safe with no link running — the service returns at once.
+    await cloud_link_service.request_snapshot()
 
     payload = _serialize_printer(printer, include_secret=False).model_dump()
     payload["cancelled_items"] = cancelled
