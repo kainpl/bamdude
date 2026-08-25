@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -198,21 +198,30 @@ class CommandContext:
             without the call site growing a second argument. Imported for the
             annotation only, so this module stays free of the uplink's own
             dependencies.
-        camera_audit: The connection's :class:`CameraAuditBudget`. ``None`` is
-            accepted as an *argument* only — :meth:`__post_init__` fills it — so
-            that a caller which does not care about the bound still cannot end
-            up with an unbounded one. The client loop passes the budget it also
-            hands the capture, which is what makes the cap one counter rather
-            than one per writer.
+        budget: The connection's :class:`CameraAuditBudget`. Optional to *pass*
+            — omit it and one is created — so a caller that does not care about
+            the bound still cannot end up without one; but never optional to
+            *read*: the :attr:`camera_audit` property below is always a budget,
+            so the three ``ctx.camera_audit.write(...)`` sites need no ``None``
+            guard. The client loop passes the budget it also hands the capture,
+            which is what makes the cap one counter rather than one per writer.
+            (An ``InitVar`` under a different name from the property because a
+            dataclass field and a property that share a name collide — the
+            property would be read as the field's default at class definition.)
     """
 
     session_factory: async_sessionmaker[AsyncSession]
     uplink: Uplink
-    camera_audit: CameraAuditBudget | None = None
+    budget: InitVar[CameraAuditBudget | None] = None
+    _camera_audit: CameraAuditBudget = field(init=False)
 
-    def __post_init__(self) -> None:
-        if self.camera_audit is None:
-            self.camera_audit = CameraAuditBudget(session_factory=self.session_factory)
+    def __post_init__(self, budget: CameraAuditBudget | None) -> None:
+        self._camera_audit = budget or CameraAuditBudget(session_factory=self.session_factory)
+
+    @property
+    def camera_audit(self) -> CameraAuditBudget:
+        """The connection's budget — always present, never ``None``."""
+        return self._camera_audit
 
 
 #: A handler answers with the ``data`` half of the result and, optionally, work

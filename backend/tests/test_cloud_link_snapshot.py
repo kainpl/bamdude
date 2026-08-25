@@ -72,7 +72,7 @@ async def upload_portal():
     """Start loopback upload endpoints, hand back their base URL, clean up."""
     runners = []
 
-    async def _start(status: int = 204) -> tuple[UploadPortal, str]:
+    async def _start(status: int = 204, redirect_to: str | None = None) -> tuple[UploadPortal, str]:
         instance = UploadPortal(status)
 
         async def handler(request: web.Request) -> web.Response:
@@ -84,6 +84,10 @@ async def upload_portal():
                     "body": await request.read(),
                 }
             )
+            if redirect_to is not None:
+                # 307 preserves method + body on the follow-up — which is exactly
+                # why the agent must not follow it.
+                return web.Response(status=307, headers={"Location": redirect_to})
             return web.Response(status=instance.status)
 
         app = web.Application()
@@ -441,6 +445,81 @@ async def test_a_farm_with_no_portal_url_has_nothing_to_pin_against_and_refuses(
     assert [row.ok for row in await camera_rows(session_factory)] == [False]
 
 
+def test_a_wss_portal_accepts_an_https_upload_to_the_same_host():
+    """The pin matches the scheme by family, not by string.
+
+    ``validate_portal_url`` stores a ``wss://`` portal, the link opens its socket
+    to it — but a frame is POSTed over ``https://``. Folding the scheme into a
+    raw equality tuple refused that as "not the portal", a wrong and misleading
+    reason for the one configuration the contract explicitly allows. Host and
+    port match exactly, the schemes are the same family, so this is the portal.
+    """
+    assert snapshot_module._upload_url_refusal("https://portal.test/upload", "wss://portal.test") is None
+    assert snapshot_module._upload_url_refusal("https://portal.test:443/x", "wss://portal.test") is None
+    assert snapshot_module._upload_url_refusal("http://localhost:3002/x", "ws://localhost:3002") is None
+
+
+async def test_an_https_portal_refuses_a_wss_upload_and_the_row_names_the_scheme(
+    session_factory, upload_portal, monkeypatch
+):
+    """The family match must not become a way to POST to a non-http scheme.
+
+    ``wss://`` shares the secure family with ``https://`` and lines its port up,
+    so it clears the portal match — and is then stopped by the separate gate
+    that a frame can only be POSTed to http(s). The refusal names the scheme,
+    because that is the one thing an operator needs to see wrong.
+    """
+    portal, _url = await upload_portal()
+    uplink = await set_up(session_factory, "https://portal.test")
+    calls = a_camera_holding(monkeypatch, FRAME)
+
+    await capture_and_upload(
+        session_factory=session_factory,
+        uplink=uplink,
+        printer_id="7",
+        upload_url="wss://portal.test/upload",
+        audit=budget(session_factory),
+    )
+
+    assert portal.requests == []
+    assert calls == [], "a destination a frame cannot be posted to is not read from a camera"
+    rows = await camera_rows(session_factory)
+    assert [row.ok for row in rows] == [False]
+    assert "wss" in rows[0].summary, "the operator can see which scheme was wrong"
+
+
+async def test_a_redirect_is_never_followed_so_it_cannot_become_an_egress_primitive(
+    session_factory, upload_portal, monkeypatch
+):
+    """The pin checks the URL the portal named — a redirect would checks nothing.
+
+    307 and 308 preserve the method and the body, so a portal that passed the
+    pin could answer ``307 Location: http://10.0.0.5/x`` and, if aiohttp's
+    default were kept, have the agent re-POST the JPEG to an arbitrary address
+    inside the farm's own network. ``allow_redirects=False`` turns that 3xx into
+    a status this module audits. Portal A is the pinned destination; server B is
+    where the redirect points, and it must never see the frame.
+    """
+    elsewhere, elsewhere_url = await upload_portal()  # server B — the redirect target
+    portal, url = await upload_portal(redirect_to=f"{elsewhere_url}/collect")  # portal A — pinned, redirects
+    uplink = await set_up(session_factory, url)
+    a_camera_holding(monkeypatch, FRAME)
+
+    await capture_and_upload(
+        session_factory=session_factory,
+        uplink=uplink,
+        printer_id="7",
+        upload_url=f"{url}/upload",
+        audit=budget(session_factory),
+    )
+
+    assert len(portal.requests) == 1, "the pinned portal was POSTed to exactly once"
+    assert elsewhere.requests == [], "and the redirect target saw nothing — the frame did not follow"
+    rows = await camera_rows(session_factory)
+    assert [row.ok for row in rows] == [False]
+    assert "307" in rows[0].summary, "the 3xx is audited as an ordinary upload failure with its number"
+
+
 # ------------------------------------------------------ the frame acquisition
 
 
@@ -583,6 +662,41 @@ async def test_a_portal_that_answers_anything_but_204_is_an_audited_failure(
     rows = await camera_rows(session_factory)
     assert [row.ok for row in rows] == [False]
     assert "404" in rows[0].summary
+
+
+async def test_the_upload_is_bounded_by_the_fifteen_second_total_timeout(session_factory, upload_portal, monkeypatch):
+    """The 15 s total the brief named actually reaches aiohttp.
+
+    A constant is only a bound if it is passed. This wraps ``ClientTimeout`` to
+    record what the upload asked for, and still runs the real POST so the value
+    is captured on the path that matters, not asserted about a spelling.
+    """
+    assert snapshot_module.UPLOAD_TIMEOUT_S == 15.0
+
+    seen: dict = {}
+    real_timeout = snapshot_module.aiohttp.ClientTimeout
+
+    def recording_timeout(*args, **kwargs):
+        if "total" in kwargs:
+            seen["total"] = kwargs["total"]
+        return real_timeout(*args, **kwargs)
+
+    monkeypatch.setattr(snapshot_module.aiohttp, "ClientTimeout", recording_timeout)
+
+    portal, url = await upload_portal()
+    uplink = await set_up(session_factory, url)
+    a_camera_holding(monkeypatch, FRAME)
+
+    await capture_and_upload(
+        session_factory=session_factory,
+        uplink=uplink,
+        printer_id="7",
+        upload_url=f"{url}/upload",
+        audit=budget(session_factory),
+    )
+
+    assert seen["total"] == 15.0, "the upload was bounded by UPLOAD_TIMEOUT_S"
+    assert len(portal.requests) == 1, "and it was the real upload path, not a spelling check"
 
 
 async def test_a_portal_that_is_not_there_at_all_is_audited_and_never_raised(session_factory, monkeypatch):

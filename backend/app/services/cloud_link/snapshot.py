@@ -28,10 +28,13 @@ answer two different questions:
   last snapshot, so a printer archived a minute ago would still be in it.
 * *May this portal be given the picture?* — ``upload_url`` is a string a
   compromised portal chose, so without a pin the one command that reads
-  hardware would also be the command that says where the reading goes. Scheme,
-  host and port must equal the **configured** portal's, compared as parsed
-  components (``https://portal.test@evil.test/`` is what defeats a prefix
-  match), and TLS is required unless the portal is on this machine.
+  hardware would also be the command that says where the reading goes. Host and
+  port must equal the **configured** portal's exactly and the scheme must match
+  it by family (so a ``wss://`` portal accepts an ``https://`` upload), compared
+  as parsed components (``https://portal.test@evil.test/`` is what defeats a
+  prefix match); the POST target itself must be http(s); TLS is required unless
+  the portal is on this machine; and redirects are never followed, so a portal
+  cannot answer ``307 Location: …`` and have the frame re-POSTed somewhere else.
 
 ⚠️ **Arguments are checked twice, and the split is deliberate.**
 :mod:`~backend.app.services.cloud_link.commands` asks only whether the two
@@ -63,7 +66,10 @@ from backend.app.models.printer import Printer
 from backend.app.services.cloud_link.store import LOOPBACK_HOSTS, get_config
 from backend.app.services.cloud_link.uplink import AVAILABLE_PRINTER
 
-if TYPE_CHECKING:  # pragma: no cover — annotations only, so this module stays light
+if TYPE_CHECKING:  # pragma: no cover — annotation-only names, not a lightness claim
+    # ``uplink`` is already a runtime import just above (``AVAILABLE_PRINTER``),
+    # so ``Uplink`` costs nothing more; ``CameraAuditBudget`` stays here to keep
+    # the annotations from making :mod:`commands` a load-time dependency.
     from backend.app.services.cloud_link.commands import CameraAuditBudget
     from backend.app.services.cloud_link.uplink import Uplink
 
@@ -80,15 +86,27 @@ UPLOAD_TIMEOUT_S = 15.0
 #: already been used, 5xx is a portal mid-deploy.
 UPLOAD_OK_STATUS = 204
 
-#: Schemes an upload may use. The pin below already requires the portal's own
-#: scheme, and a portal URL may legitimately be ``wss://`` — which is not an
-#: address anything can POST to. Naming the two that are keeps that case a clear
-#: refusal instead of an obscure aiohttp error.
+#: The two schemes a frame can actually be POSTed to. A separate gate from the
+#: portal match below, and it stays separate on purpose: the configured
+#: ``portal_url`` may legitimately be ``wss://`` (``validate_portal_url`` stores
+#: it, ``ws_url`` turns it into the socket), which the family check accepts as
+#: the same endpoint as ``https://`` — but the upload target itself must be
+#: http(s), so an https portal can never be talked into a wss upload, and an
+#: unknown scheme falls out here with a readable reason instead of an obscure
+#: aiohttp error.
 UPLOAD_SCHEMES = frozenset({"http", "https"})
+
+#: A scheme's security family. Host and port are pinned exactly; the scheme is
+#: pinned by family, so a portal reached over ``wss://`` still accepts an
+#: ``https://`` upload to the same host — they are one endpoint. An unknown
+#: scheme is its own family and so can never match the portal's.
+SCHEME_FAMILY = {"http": "insecure", "ws": "insecure", "https": "secure", "wss": "secure"}
 
 #: Ports that are implied rather than written. ``https://portal.test`` and
 #: ``https://portal.test:443`` are one endpoint, and a pin that called them two
-#: would refuse a portal for merely spelling its own URL differently.
+#: would refuse a portal for merely spelling its own URL differently. ``ws``/
+#: ``wss`` map to 80/443 too, so a wss portal and an https upload line their
+#: ports up under the family match.
 DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
 
 #: Seconds a camera capture may take. The product's own snapshot endpoint uses
@@ -289,14 +307,22 @@ def _upload_url_refusal(upload_url: str, portal_url: str | None) -> str | None:
     ``https://portal.test.evil.example/``, and ``https://portal.test@evil.test/``
     parses to the host ``evil.test`` with ``portal.test`` as a username — both
     are accepted by the obvious ``startswith`` and both hand a camera to
-    somebody else. Scheme, host and port are compared as a triple, with implied
-    ports made explicit so that a portal spelling its own URL two ways is still
-    one portal.
+    somebody else.
 
-    The TLS rule is a second, independent question, and it mirrors
+    **Host and port are pinned exactly; the scheme is pinned by family.** The
+    configured portal may be stored as ``wss://`` — the link opens a socket to
+    it, but an image is POSTed over ``https://``, and refusing that as "not the
+    portal" would be a wrong and misleading reason. ``https``≡``wss`` and
+    ``http``≡``ws`` (see :data:`SCHEME_FAMILY`), with :data:`DEFAULT_PORTS`
+    lining 443 up with 443 so the authority still matches. Whether the target
+    is a thing a frame can be POSTed to at all is the *next*, separate question
+    — :data:`UPLOAD_SCHEMES` — so an https portal can never be talked into a
+    wss upload, and the row that refuses it names the scheme.
+
+    The TLS rule is a third, independent question, and it mirrors
     ``store.validate_portal_url``: https, unless the portal is on this machine,
     where there is no network to protect and no certificate to be had. It stays
-    even though the pin above already forces the portal's own scheme, because a
+    even though the checks above already tie the upload to the portal, because a
     farm whose stored portal URL is plain http (which ``validate_portal_url``
     refuses, but a hand-edited database would not) must not be talked into
     putting a camera frame on the wire in clear.
@@ -310,19 +336,29 @@ def _upload_url_refusal(upload_url: str, portal_url: str | None) -> str | None:
     try:
         target = urlsplit(upload_url)
         portal = urlsplit(portal_url)
-        endpoint = (target.scheme.lower(), (target.hostname or "").lower(), _port(target))
-        expected = (portal.scheme.lower(), (portal.hostname or "").lower(), _port(portal))
+        target_host = (target.hostname or "").lower()
+        target_scheme = target.scheme.lower()
+        portal_scheme = portal.scheme.lower()
+        target_authority = (target_host, _port(target))
+        portal_authority = ((portal.hostname or "").lower(), _port(portal))
     except ValueError:
         return "the upload URL could not be parsed"
 
-    scheme, host, _unused = endpoint
-    if not host or endpoint != expected:
+    if not target_host or target_authority != portal_authority:
         return "the upload URL does not point at this farm's portal"
-    if scheme not in UPLOAD_SCHEMES:
-        return f"{scheme!r} is not an address a frame can be posted to"
-    if scheme != "https" and host not in LOOPBACK_HOSTS:
+    if _scheme_family(target_scheme) != _scheme_family(portal_scheme):
+        return f"{target_scheme!r} does not belong to the portal's scheme family"
+    if target_scheme not in UPLOAD_SCHEMES:
+        return f"{target_scheme!r} is not an address a frame can be posted to"
+    if target_scheme != "https" and target_host not in LOOPBACK_HOSTS:
         return "the upload URL is plain http and the portal is not on this machine"
     return None
+
+
+def _scheme_family(scheme: str) -> str:
+    """A scheme's security family, or the scheme itself when it is unknown — so
+    an unrecognised scheme can never match the portal's. See :data:`SCHEME_FAMILY`."""
+    return SCHEME_FAMILY.get(scheme, scheme)
 
 
 def _port(parts: SplitResult) -> int | None:
@@ -390,12 +426,25 @@ async def _upload(*, frame: bytes, upload_url: str, printer_id: int, audit: Came
     opens a camera in the portal — minutes apart, not milliseconds — so a
     long-lived pool would hold an idle connection open against a remote host for
     the life of the process, to save a handshake nobody is waiting on.
+
+    ⚠️ **``allow_redirects=False`` is load-bearing, not a default we happen to
+    keep.** aiohttp follows redirects by default, and 307/308 preserve the
+    method and the body — so a portal that passed the pin could answer
+    ``307 Location: http://192.168.1.5:8080/x`` and have the agent re-POST the
+    JPEG to an arbitrary address inside the farm's own network, an egress
+    primitive driven from outside. With it off, that 3xx is just a status this
+    function audits as a failure with a number the operator can see.
     """
     timeout = aiohttp.ClientTimeout(total=UPLOAD_TIMEOUT_S)
     try:
         async with (
             aiohttp.ClientSession(timeout=timeout) as session,
-            session.post(upload_url, data=frame, headers={"Content-Type": "image/jpeg"}) as response,
+            session.post(
+                upload_url,
+                data=frame,
+                headers={"Content-Type": "image/jpeg"},
+                allow_redirects=False,
+            ) as response,
         ):
             status = response.status
     except asyncio.CancelledError:
