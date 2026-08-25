@@ -335,6 +335,59 @@ class TestPrintersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_a_cloud_link_that_cannot_be_told_does_not_fail_the_archive(
+        self, async_client: AsyncClient, printer_factory, db_session, monkeypatch
+    ):
+        """The archive is COMMITTED before the portal is told anything.
+
+        With a live link `request_snapshot` opens a fresh session to re-read the
+        publish set, so a database that is busy at that moment would raise
+        AFTER the commit and turn a completed archive into a 500. The user
+        reads that as "it did not work", retries, and the retry acts on a
+        printer that is already archived. The portal being told a pump cycle
+        late is the cheaper failure by a wide margin.
+        """
+        from backend.app.services.cloud_link.service import cloud_link_service
+
+        async def refuses():
+            raise RuntimeError("database is locked")
+
+        monkeypatch.setattr(cloud_link_service, "request_snapshot", refuses)
+
+        p = await printer_factory(name="StillArchives", serial_number="ARCHCL4")
+        with patch("backend.app.api.routes.printers.printer_manager") as pm:
+            pm.is_print_active.return_value = False
+            resp = await async_client.post(f"/api/v1/printers/{p.id}/archive")
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["archived"] is True
+        await db_session.refresh(p)
+        assert p.archived is True, "the commit stands whatever the portal heard"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_cloud_link_that_cannot_be_told_does_not_fail_the_park(
+        self, async_client: AsyncClient, printer_factory, db_session, monkeypatch
+    ):
+        """The same trap on the PATCH path — same commit-then-notify order."""
+        from backend.app.services.cloud_link.service import cloud_link_service
+
+        async def refuses():
+            raise RuntimeError("database is locked")
+
+        monkeypatch.setattr(cloud_link_service, "request_snapshot", refuses)
+
+        p = await printer_factory(name="StillParks", serial_number="ARCHCL5")
+        with patch("backend.app.api.routes.printers.printer_manager") as pm:
+            pm.connect_printer = AsyncMock(return_value=True)
+            resp = await async_client.patch(f"/api/v1/printers/{p.id}", json={"is_active": False})
+
+        assert resp.status_code == 200, resp.text
+        await db_session.refresh(p)
+        assert p.is_active is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_readd_archived_serial_hints_unarchive(self, async_client: AsyncClient, printer_factory, db_session):
         """Re-adding a printer whose serial matches an archived one returns a
         409 pointing at unarchive rather than a generic duplicate error."""
