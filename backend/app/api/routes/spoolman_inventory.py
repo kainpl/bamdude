@@ -1432,7 +1432,9 @@ async def assign_spoolman_slot(
         if not await note_manual_replacement_intent(
             db, printer_id=body.printer_id, ams_id=body.ams_id, tray_id=body.tray_id
         ):
-            raise HTTPException(status_code=409, detail="Mid-print replacement needs a paused print on this printer")
+            raise HTTPException(
+                status_code=409, detail="Mid-print replacement needs a print that is paused or has been paused"
+            )
 
     # Spool confirmed in Spoolman — upsert into local slot-assignment table
     # assigned_at is intentionally not refreshed on re-assign (original timestamp preserved)

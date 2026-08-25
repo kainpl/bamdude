@@ -244,6 +244,52 @@ async def record_runout(
     )
 
 
+async def manual_replacement_window(db: AsyncSession, printer_id: int) -> dict | None:
+    """Is a declared mid-print replacement currently plausible, and how?
+
+    The feeding spool can only be swapped while the print is paused, so the
+    window is defined by pauses, not by the assignment's moment:
+
+    * printer PAUSED right now → ``{"mode": "prompt", "pause_layer": current}``
+      — a swap is likely, the UI asks a blocking question;
+    * RUNNING but this print HAS a pause behind it → ``{"mode": "optin",
+      "pause_layer": last-pause layer}`` — the swap, if any, happened back at
+      that pause (swap → resume from the printer's screen → only then the UI),
+      so the UI offers a default-off checkbox and the boundary lands on the
+      pause layer, not on the click;
+    * no active print, or never paused → ``None`` — a replacement is
+      physically impossible, every assignment is a wrong-link correction and
+      must stay friction-free (bulk re-linking mid-print is a real workflow).
+    """
+    from backend.app.models.print_usage_event import EVENT_PAUSE
+
+    archive_id = await active_archive_id(db, printer_id)
+    if archive_id is None:
+        return None
+    try:
+        from backend.app.services.printer_manager import printer_manager
+
+        state = printer_manager.get_status(printer_id)
+    except Exception:
+        state = None
+    if state is not None and (getattr(state, "state", None) or "").upper() == "PAUSE":
+        return {"archive_id": archive_id, "mode": "prompt", "pause_layer": getattr(state, "layer_num", 0) or 0}
+    last_pause = (
+        await db.execute(
+            select(PrintUsageEvent)
+            .where(
+                PrintUsageEvent.archive_id == archive_id,
+                PrintUsageEvent.event == EVENT_PAUSE,
+            )
+            .order_by(PrintUsageEvent.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if last_pause is None:
+        return None
+    return {"archive_id": archive_id, "mode": "optin", "pause_layer": last_pause.layer_num or 0}
+
+
 async def note_manual_replacement_intent(
     db: AsyncSession,
     *,
@@ -252,32 +298,24 @@ async def note_manual_replacement_intent(
     tray_id: int,
 ) -> bool:
     """The human declared the assignment that follows a REPLACEMENT — a
-    deliberate mid-pause spool change with no firmware event to witness it
-    (the feeding spool cannot physically be swapped while RUNNING, so a
-    runout/jam code is the only other way a mid-print change happens).
+    deliberate mid-pause spool change with no firmware event to witness it.
 
     Journals a ``manual`` runout with the outgoing spool frozen from the
     still-current assignment — call BEFORE the assignment is rewritten — so
     the assignment that follows closes it as the ``spool_loaded`` boundary.
     ``manual`` shares the ambiguous contract: a boundary only through
     spool_loaded, never a zero correction (a preventively swapped reel is
-    not empty). Accepted only while PAUSED with an active print; returns
-    False (nothing journaled) otherwise so the caller can refuse the flag
-    loudly instead of mis-journaling a correction.
+    not empty). Accepted inside the ``manual_replacement_window`` — paused
+    now, or resumed from a pause this print — with the boundary on the pause
+    layer; returns False (nothing journaled) otherwise so the caller can
+    refuse the flag loudly instead of mis-journaling a correction.
     """
     from backend.app.models.print_usage_event import KIND_MANUAL
 
-    archive_id = await active_archive_id(db, printer_id)
-    if archive_id is None:
+    window = await manual_replacement_window(db, printer_id)
+    if window is None:
         return False
-    try:
-        from backend.app.services.printer_manager import printer_manager
-
-        state = printer_manager.get_status(printer_id)
-    except Exception:
-        state = None
-    if state is None or (getattr(state, "state", None) or "").upper() != "PAUSE":
-        return False
+    archive_id = window["archive_id"]
 
     if ams_id >= 254:
         global_tray = 254 + tray_id
@@ -288,17 +326,18 @@ async def note_manual_replacement_intent(
 
     spool_id, spoolman_spool_id = await freeze_spool_ids(db, printer_id, global_tray)
     logger.info(
-        "[UsageJournal] Manual replacement declared for tray %d on printer %d (outgoing spool=%s/%s)",
+        "[UsageJournal] Manual replacement declared for tray %d on printer %d (outgoing spool=%s/%s, layer=%s)",
         global_tray,
         printer_id,
         spool_id,
         spoolman_spool_id,
+        window["pause_layer"],
     )
     await record_runout(
         db,
         printer_id=printer_id,
         archive_id=archive_id,
-        layer_num=getattr(state, "layer_num", 0) or 0,
+        layer_num=window["pause_layer"],
         kind=KIND_MANUAL,
         global_tray_id=global_tray,
         spool_id=spool_id,

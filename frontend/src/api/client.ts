@@ -8159,6 +8159,13 @@ export const api = {
       body: JSON.stringify(profiles),
     }),
 
+  // How the assign dialog should treat a mid-print assignment right now:
+  // 'prompt' (paused — ask), 'optin' (running after a pause — checkbox),
+  // 'none' (replacement physically impossible — plain assignment).
+  getReplacementWindow: (printerId: number) =>
+    request<{ mode: 'prompt' | 'optin' | 'none'; pause_layer: number | null }>(
+      `/inventory/assignments/replacement-window/${printerId}`,
+    ),
   getAssignments: (printerId?: number) =>
     request<SpoolAssignment[]>(`/inventory/assignments${printerId ? `?printer_id=${printerId}` : ''}`),
   assignSpool: (data: {

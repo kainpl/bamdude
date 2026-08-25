@@ -5491,6 +5491,7 @@ export default {
       body: 'The same assignment can mean two different things right now.\n\nIf you physically put a NEW spool on this slot, the print usage will be split at the current layer — the old spool keeps what it already fed.\n\nIf you are only fixing a wrong link (the spool in the printer never changed), the whole print will be attributed to the spool you are assigning.',
       replace: 'I replaced the spool — split the usage',
       correct: 'I am fixing a wrong link',
+      optin: 'This print was paused at layer {{layer}} and I physically replaced the spool there — split the usage at that layer',
     },
     assignMismatchMessage: 'The selected spool material "{{spoolMaterial}}" does not match the tray material "{{trayMaterial}}" for {{location}}. Assign anyway?',
     assignMismatchConfirm: 'Assign Anyway',

@@ -49,6 +49,8 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   // correction (the new spool owns the whole print). While RUNNING the
   // feeding spool cannot physically be swapped, so only a paused print asks.
   const [replacementPrompt, setReplacementPrompt] = useState<{ spoolId?: number; spoolmanId?: number } | null>(null);
+  // The opt-in checkbox for the running-after-a-pause window.
+  const [replaceAtPause, setReplaceAtPause] = useState(false);
 
   // Reset selected spool(s) when filtering mode changes
   useEffect(() => {
@@ -61,6 +63,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     if (isOpen) {
       setDisableFiltering(false);
       setReplacementPrompt(null);
+      setReplaceAtPause(false);
     }
   }, [isOpen]);
 
@@ -123,12 +126,15 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     );
   }, [allSpoolmanAssignments, printerId, amsId, trayId]);
 
-  const { data: printerStatus } = useQuery({
-    queryKey: ['printer-status-assign', printerId],
-    queryFn: () => api.getPrinterStatus(printerId),
+  const { data: replacementWindow } = useQuery({
+    queryKey: ['replacement-window', printerId],
+    queryFn: () => api.getReplacementWindow(printerId),
     enabled: isOpen,
   });
-  const printIsPaused = printerStatus?.state === 'PAUSE';
+  // 'prompt': paused — a swap is likely, ask before assigning.
+  // 'optin': running after a pause — the swap, if any, happened back then;
+  // a default-off checkbox, so bulk wrong-link corrections stay friction-free.
+  const windowMode = replacementWindow?.mode ?? 'none';
 
   const assignMutation = useMutation({
     mutationFn: ({ spoolId, midPrintReplacement }: { spoolId: number; midPrintReplacement: boolean }) =>
@@ -291,9 +297,12 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   // mid-print and no answer yet, ask first; the answer re-enters with the
   // flag decided.
   const fireAssign = (target: { spoolId?: number; spoolmanId?: number }, midPrintReplacement?: boolean) => {
-    if (midPrintReplacement === undefined && printIsPaused) {
+    if (midPrintReplacement === undefined && windowMode === 'prompt') {
       setReplacementPrompt(target);
       return;
+    }
+    if (midPrintReplacement === undefined) {
+      midPrintReplacement = windowMode === 'optin' && replaceAtPause;
     }
     if (target.spoolmanId !== undefined) {
       assignSpoolmanMutation.mutate({ spoolmanSpoolId: target.spoolmanId, midPrintReplacement: !!midPrintReplacement });
@@ -549,6 +558,23 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
             )}
           </div>
         </div>
+
+        {/* Running after a pause: the swap, if any, happened back at that
+            pause — offer the boundary as a default-off checkbox so bulk
+            wrong-link corrections stay friction-free. */}
+        {windowMode === 'optin' && (
+          <div className="px-4 py-3 border-t border-bambu-dark-tertiary bg-bambu-dark/40">
+            <label className="flex items-start gap-2 text-sm text-bambu-gray cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={replaceAtPause}
+                onChange={(e) => setReplaceAtPause(e.target.checked)}
+                className="mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+              />
+              {t('inventory.midPrintReplacement.optin', { layer: replacementWindow?.pause_layer ?? 0 })}
+            </label>
+          </div>
+        )}
 
         {/* Footer */}
         <div className="flex justify-between items-center p-4 border-t border-bambu-dark-tertiary">

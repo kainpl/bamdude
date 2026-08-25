@@ -273,6 +273,30 @@ class TestManualReplacementIntent:
         assert journal_boundaries_for_tray(events, 254) == [(0, 31, None), (120, 32, None)]
 
     @pytest.mark.asyncio
+    async def test_after_resume_the_boundary_lands_on_the_pause_layer(self, db_session, printer, monkeypatch):
+        # Real workflow: pause -> swap -> resume from the printer's screen ->
+        # only then the UI. The swap happened at the pause, so the boundary
+        # must land on the pause layer, not on the click's layer.
+        from backend.app.models.print_usage_event import EVENT_PAUSE
+        from backend.app.services.print_usage_journal import note_manual_replacement_intent
+
+        archive = await _make_archive(db_session, printer)
+        await record_event(
+            db_session,
+            printer_id=printer.id,
+            archive_id=archive.id,
+            layer_num=87,
+            event=EVENT_PAUSE,
+            global_tray_id=254,
+        )
+        self._paused_state(monkeypatch, state="RUNNING", layer=140)
+
+        assert await note_manual_replacement_intent(db_session, printer_id=printer.id, ams_id=255, tray_id=0)
+        events = await load_events(db_session, printer.id, archive.id)
+        runout = [e for e in events if e.event == "runout"]
+        assert [(e.kind, e.layer_num, e.global_tray_id) for e in runout] == [("manual", 87, 254)]
+
+    @pytest.mark.asyncio
     async def test_a_running_print_refuses_the_declaration(self, db_session, printer, monkeypatch):
         from backend.app.services.print_usage_journal import note_manual_replacement_intent
 

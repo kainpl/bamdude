@@ -1643,6 +1643,28 @@ async def _find_or_create_filament_calibration_for_link(db: AsyncSession, p: Spo
 # ── Spool Assignments ────────────────────────────────────────────────────────
 
 
+@router.get("/assignments/replacement-window/{printer_id}")
+async def get_replacement_window(
+    printer_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_VIEW_ASSIGNMENTS),
+):
+    """How the assign dialog should treat a mid-print assignment right now.
+
+    ``prompt`` — paused: ask "replacement or correction?" before assigning.
+    ``optin`` — running, but this print has a pause behind it: offer a
+    default-off checkbox (the swap, if any, happened at that pause).
+    ``none`` — no active print or never paused: a physical replacement is
+    impossible, plain assignment (wrong-link correction) with no friction.
+    """
+    from backend.app.services.print_usage_journal import manual_replacement_window
+
+    window = await manual_replacement_window(db, printer_id)
+    if window is None:
+        return {"mode": "none", "pause_layer": None}
+    return {"mode": window["mode"], "pause_layer": window["pause_layer"]}
+
+
 @router.get("/assignments", response_model=list[SpoolAssignmentResponse])
 async def list_assignments(
     printer_id: int | None = None,
@@ -1787,7 +1809,7 @@ async def assign_spool(
         if not await note_manual_replacement_intent(
             db, printer_id=data.printer_id, ams_id=data.ams_id, tray_id=data.tray_id
         ):
-            raise HTTPException(409, "Mid-print replacement needs a paused print on this printer")
+            raise HTTPException(409, "Mid-print replacement needs a print that is paused or has been paused")
 
     # 3. Upsert assignment (replace if same printer+ams+tray)
     existing = await db.execute(

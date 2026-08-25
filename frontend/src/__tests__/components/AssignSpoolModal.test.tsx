@@ -13,7 +13,7 @@ vi.mock('../../api/client', () => ({
     assignSpool: vi.fn(),
     getSettings: vi.fn().mockResolvedValue({}),
     getAuthStatus: vi.fn().mockResolvedValue({ auth_enabled: false }),
-    getPrinterStatus: vi.fn().mockResolvedValue({ state: 'IDLE' }),
+    getReplacementWindow: vi.fn().mockResolvedValue({ mode: 'none', pause_layer: null }),
   },
 }));
 
@@ -147,7 +147,7 @@ describe('AssignSpoolModal', () => {
     // must split the usage at the current layer; a wrong-link fix must not).
     // The prompt is the disambiguation — nothing fires until it's answered.
     const { fireEvent } = await import('@testing-library/react');
-    (api.getPrinterStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ state: 'PAUSE' });
+    (api.getReplacementWindow as ReturnType<typeof vi.fn>).mockResolvedValue({ mode: 'prompt', pause_layer: 12 });
     (api.assignSpool as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 1 });
 
     render(<AssignSpoolModal {...defaultProps} />);
@@ -169,8 +169,8 @@ describe('AssignSpoolModal', () => {
   it('an idle printer assigns without the prompt', async () => {
     const { fireEvent } = await import('@testing-library/react');
     // clearAllMocks does not undo mockResolvedValue — pin the state explicitly
-    // so the previous test's PAUSE cannot leak in.
-    (api.getPrinterStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ state: 'IDLE' });
+    // so the previous test's 'prompt' window cannot leak in.
+    (api.getReplacementWindow as ReturnType<typeof vi.fn>).mockResolvedValue({ mode: 'none', pause_layer: null });
     (api.assignSpool as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 1 });
 
     render(<AssignSpoolModal {...defaultProps} />);
@@ -184,6 +184,47 @@ describe('AssignSpoolModal', () => {
       expect(api.assignSpool).toHaveBeenCalledWith(expect.objectContaining({ mid_print_replacement: false }))
     );
     expect(screen.queryByText('The printer is paused mid-print')).not.toBeInTheDocument();
+  });
+
+  it('running after a pause offers the split as a default-off checkbox', async () => {
+    // Real workflow: pause -> swap -> resume at the printer, THEN the UI.
+    // No modal here — bulk wrong-link corrections must stay friction-free —
+    // but ticking the box declares the swap and splits at the pause layer.
+    const { fireEvent } = await import('@testing-library/react');
+    (api.getReplacementWindow as ReturnType<typeof vi.fn>).mockResolvedValue({ mode: 'optin', pause_layer: 87 });
+    (api.assignSpool as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 1 });
+
+    render(<AssignSpoolModal {...defaultProps} />);
+    await waitFor(() => expect(screen.getByText(/Polymaker/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/paused at layer 87/)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText(/Polymaker/));
+
+    // Unticked: a plain assignment — the correction path, no prompt.
+    let buttons = screen.getAllByRole('button', { name: /Assign Spool/ });
+    fireEvent.click(buttons[buttons.length - 1]);
+    await waitFor(() =>
+      expect(api.assignSpool).toHaveBeenCalledWith(expect.objectContaining({ mid_print_replacement: false }))
+    );
+    expect(screen.queryByText('The printer is paused mid-print')).not.toBeInTheDocument();
+  });
+
+  it('the ticked checkbox declares the replacement', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    (api.getReplacementWindow as ReturnType<typeof vi.fn>).mockResolvedValue({ mode: 'optin', pause_layer: 87 });
+    (api.assignSpool as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 1 });
+
+    render(<AssignSpoolModal {...defaultProps} />);
+    await waitFor(() => expect(screen.getByText(/Polymaker/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/paused at layer 87/)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText(/Polymaker/));
+    fireEvent.click(screen.getByText(/paused at layer 87/));
+    const buttons = screen.getAllByRole('button', { name: /Assign Spool/ });
+    fireEvent.click(buttons[buttons.length - 1]);
+    await waitFor(() =>
+      expect(api.assignSpool).toHaveBeenCalledWith(expect.objectContaining({ mid_print_replacement: true }))
+    );
   });
 
   it('drops archived spools always — even with the toggle on', async () => {
