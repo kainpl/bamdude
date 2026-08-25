@@ -188,6 +188,8 @@
 
 ### Fixed
 
+- **The Windows installer's shortcuts now carry the BamDude icon.** The bundled `.ico` still held the upstream Bambuddy logo, so the Start-Menu and desktop shortcuts (and Add/Remove Programs) showed the wrong identity. Regenerated from the app's own icon.
+
 - **A ticked start/end macro now actually fires on a direct library print.** The print dialog collected the event-macro selection but the "print now" path for library files never sent it — the queue path and archive reprints did — so a macro like "turn the chamber light off on start" silently never ran. One payload field restored, with a regression test pinning it.
 
 - **Generic TPU no longer masquerades as Generic EVA.** Bambu reused the `GFSR99` preset-id space — the bare id is the legacy Generic TPU while most of its versioned variants are Generic EVA — and the catalog index let an EVA variant shadow the exact TPU key. A tray configured as Generic TPU in Bambu Studio (or a TPU spool auto-linked by its old preset id) then resolved to Generic EVA in the slot dialog, the spool form and the family catalog. Exact preset ids now always win over stripped aliases.
