@@ -1,9 +1,16 @@
 import { useMemo, useRef, useState, type DragEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ListPlus, Loader2, Sparkles, Trash2, Upload, Zap, ChevronRight } from 'lucide-react';
+import {
+  ListPlus, Loader2, Sparkles, Trash2, Upload, Zap, ChevronRight,
+  ChevronDown, ChevronUp, GripVertical, Pencil,
+} from 'lucide-react';
+import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
+import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { api } from '../../api/client';
 import type { AutoQueueItem } from '../../api/client';
+import { PrintModal } from '../PrintModal';
 import { partitionDroppedFiles, dropRejectionKey } from '../../utils/printableDrop';
 import { isPrintable } from '../../lib/fileTags';
 import { useToast } from '../../contexts/ToastContext';
@@ -25,6 +32,7 @@ export function AutoQueuePanel() {
 
   const canAssign = hasPermission('queue:reorder');
   const canDelete = hasPermission('queue:delete_all');
+  const canEdit = hasPermission('queue:update_all');
   const canDrop = hasPermission('queue:create');
 
   // Drag-drop: drop a sliced file on the panel → upload to library + open
@@ -38,6 +46,11 @@ export function AutoQueuePanel() {
   // The same batch, chosen instead of dropped. Both end in `droppedForQueue`
   // and the same per-file Schedule dialog — only the way in differs.
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Expanded runs (by run key): copies show as individual, individually
+  // draggable rows. Collapsed, a run drags as one block.
+  const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set());
+  // Editing target: the copy (or its whole batch) currently in the PrintModal.
+  const [editTarget, setEditTarget] = useState<{ item: AutoQueueItem; batchCount: number } | null>(null);
   const dragCounterRef = useRef(0);
 
   const { data: items } = useQuery({
@@ -55,6 +68,12 @@ export function AutoQueuePanel() {
     queryFn: () => api.getAutoQueueStats(),
     refetchInterval: 15000,
   });
+
+  // Shortest-job-first overrides manual positions entirely — with it on, a
+  // drag would persist an order the distributor then ignores, so the handles
+  // hide and a hint says who is in charge.
+  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const sjfActive = settings?.queue_shortest_first === true;
 
   const cancelMutation = useMutation({
     mutationFn: (id: number) => api.removeFromAutoQueue(id),
@@ -76,31 +95,88 @@ export function AutoQueuePanel() {
     onError: (err: Error) => showToast(err.message, 'error'),
   });
 
-  const cancelBatchMutation = useMutation({
-    mutationFn: (batchId: string) => api.cancelAutoQueueBatch(batchId),
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['auto-queue'] });
-      showToast(t('autoQueue.batchCancelled', { count: data.affected }));
-    },
+  // Order-faithful grouping: the list follows the actual queue order, and
+  // only CONSECUTIVE copies of one batch collapse into a xN row. A batch whose
+  // copies were spread apart by reordering renders as several runs — the order
+  // is always visible and always true, which global batch-grouping could not
+  // promise once reordering exists.
+  const sortedItems = useMemo(
+    () => [...(items ?? [])].sort((a, b) => a.position - b.position || a.id - b.id),
+    [items],
+  );
+  const runs = useMemo(() => {
+    const out: Array<{ key: string; batchId: string | null; items: AutoQueueItem[] }> = [];
+    for (const it of sortedItems) {
+      const last = out[out.length - 1];
+      if (last && last.batchId !== null && last.batchId === it.batch_id) last.items.push(it);
+      else out.push({ key: `run-${it.id}`, batchId: it.batch_id, items: [it] });
+    }
+    return out;
+  }, [sortedItems]);
+  // Whole-batch copy counts — the edit dialog offers "edit all N copies"
+  // across runs, not just the contiguous ones.
+  const batchTotals = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const it of sortedItems) {
+      if (it.batch_id) m.set(it.batch_id, (m.get(it.batch_id) ?? 0) + 1);
+    }
+    return m;
+  }, [sortedItems]);
+
+  // The sortable list mixes collapsed runs (one block) with the copies of
+  // expanded runs (individual rows). Single-copy runs are just rows.
+  type DisplayEntry =
+    | { kind: 'run'; id: string; run: { key: string; batchId: string | null; items: AutoQueueItem[] } }
+    | { kind: 'item'; id: string; item: AutoQueueItem; runKey: string; copyIndex: number; copyTotal: number };
+  const displayEntries = useMemo((): DisplayEntry[] => {
+    const out: DisplayEntry[] = [];
+    for (const run of runs) {
+      if (run.items.length > 1 && !expandedRuns.has(run.key)) {
+        out.push({ kind: 'run', id: run.key, run });
+      } else {
+        run.items.forEach((item, i) =>
+          out.push({
+            kind: 'item',
+            id: `item-${item.id}`,
+            item,
+            runKey: run.key,
+            copyIndex: i,
+            copyTotal: run.items.length,
+          }),
+        );
+      }
+    }
+    return out;
+  }, [runs, expandedRuns]);
+
+  const reorderMutation = useMutation({
+    mutationFn: (entries: { id: number; position: number }[]) => api.reorderAutoQueue(entries),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['auto-queue'] }),
     onError: (err: Error) => showToast(err.message, 'error'),
   });
 
-  // Group items by batch_id so multi-copy submissions render as one row.
-  const grouped = useMemo(() => {
-    if (!items) return [] as Array<{ key: string; batchId: string | null; items: AutoQueueItem[] }>;
-    const seen = new Map<string, AutoQueueItem[]>();
-    for (const it of items) {
-      const key = it.batch_id ?? `single-${it.id}`;
-      const arr = seen.get(key) ?? [];
-      arr.push(it);
-      seen.set(key, arr);
-    }
-    return [...seen.entries()].map(([key, group]) => ({
-      key,
-      batchId: group[0].batch_id,
-      items: group.sort((a, b) => a.position - b.position),
-    }));
-  }, [items]);
+  const dndSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+  const dragEnabled = canAssign && !sjfActive && displayEntries.length > 1;
+
+  const handleReorderEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!dragEnabled || !over || active.id === over.id) return;
+    const oldIndex = displayEntries.findIndex((e) => e.id === active.id);
+    const newIndex = displayEntries.findIndex((e) => e.id === over.id);
+    if (oldIndex < 0 || newIndex < 0) return;
+    const reordered = arrayMove(displayEntries, oldIndex, newIndex);
+    // Flatten back to items (a run block carries its copies in order) and
+    // renumber the WHOLE pending list 1..N — same contract as the per-printer
+    // queue's drag.
+    const flat = reordered.flatMap((e) => (e.kind === 'run' ? e.run.items : [e.item]));
+    reorderMutation.mutate(flat.map((it, idx) => ({ id: it.id, position: idx + 1 })));
+  };
+
+  const deleteRun = (runItems: AutoQueueItem[]) => {
+    // Per-copy deletes, not the batch endpoint: a split batch's other run
+    // must survive deleting this one.
+    for (const it of runItems) cancelMutation.mutate(it.id);
+  };
 
   const handleDragEnter = (e: DragEvent<HTMLDivElement>) => {
     if (!canDrop) return;
@@ -215,75 +291,65 @@ export function AutoQueuePanel() {
       )}
 
       {!isEmpty && (
-      <div className="space-y-1.5">
-        {grouped.map(({ key, batchId, items: groupItems }) => {
-          const head = groupItems[0];
-          const isBatch = groupItems.length > 1;
-          const label = head.archive_name || head.library_file_name || `#${head.id}`;
-          const targetModel = head.target_model || t('autoQueue.anyModel');
-          const targetLocation = head.target_location?.name;
-          const waitingReason = head.waiting_reason;
-
-          return (
-            <div
-              key={key}
-              className="flex items-center gap-3 p-2.5 bg-bambu-dark rounded border border-bambu-dark-tertiary hover:border-bambu-green/50 transition-colors"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 text-sm text-white truncate">
-                  <span className="truncate">{label}</span>
-                  {isBatch && (
-                    <span className="px-1.5 py-0.5 text-xs bg-bambu-green/20 text-bambu-green rounded shrink-0">
-                      ×{groupItems.length}
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 text-xs text-bambu-gray flex-wrap mt-0.5">
-                  <span>
-                    <ChevronRight className="inline w-3 h-3" />
-                    {targetModel}
-                  </span>
-                  {targetLocation && <span>· {targetLocation}</span>}
-                  {head.force_color_match && <span>· {t('autoQueue.exactColor')}</span>}
-                  {waitingReason && (
-                    <span className="text-yellow-700 dark:text-yellow-400">· {waitingReason}</span>
-                  )}
-                </div>
-              </div>
-
-              {canAssign && !isBatch && (
-                <button
-                  type="button"
-                  onClick={() => assignNowMutation.mutate(head.id)}
-                  disabled={assignNowMutation.isPending}
-                  className="px-2 py-1 text-xs text-bambu-green hover:bg-bambu-green/10 rounded inline-flex items-center gap-1 disabled:opacity-40"
-                  title={t('autoQueue.assignNow')}
-                >
-                  <Zap className="w-3.5 h-3.5" />
-                  {t('autoQueue.assignNow')}
-                </button>
-              )}
-              {canDelete && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (isBatch && batchId) {
-                      cancelBatchMutation.mutate(batchId);
-                    } else {
-                      cancelMutation.mutate(head.id);
+      <>
+      {sjfActive && (
+        <p className="text-[11px] text-bambu-gray italic mb-1.5">{t('autoQueue.sjfOrderHint')}</p>
+      )}
+      <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleReorderEnd}>
+        <SortableContext items={displayEntries.map((e) => e.id)} strategy={verticalListSortingStrategy}>
+          <div className="space-y-1.5">
+            {displayEntries.map((entry) => {
+              if (entry.kind === 'run') {
+                const head = entry.run.items[0];
+                return (
+                  <AutoQueueRow
+                    key={entry.id}
+                    sortableId={entry.id}
+                    item={head}
+                    countBadge={entry.run.items.length}
+                    draggable={dragEnabled}
+                    onExpand={() => setExpandedRuns((prev) => new Set(prev).add(entry.run.key))}
+                    onEdit={
+                      canEdit
+                        ? () => setEditTarget({ item: head, batchCount: head.batch_id ? (batchTotals.get(head.batch_id) ?? 1) : 1 })
+                        : undefined
                     }
-                  }}
-                  disabled={cancelMutation.isPending || cancelBatchMutation.isPending}
-                  className="px-2 py-1 text-xs text-red-700 dark:text-red-400 hover:bg-red-500/10 rounded inline-flex items-center gap-1 disabled:opacity-40"
-                  title={t('common.cancel')}
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </div>
-          );
-        })}
-      </div>
+                    onAssignNow={canAssign ? () => assignNowMutation.mutate(head.id) : undefined}
+                    onDelete={canDelete ? () => deleteRun(entry.run.items) : undefined}
+                    busy={cancelMutation.isPending || assignNowMutation.isPending}
+                    t={t}
+                  />
+                );
+              }
+              return (
+                <AutoQueueRow
+                  key={entry.id}
+                  sortableId={entry.id}
+                  item={entry.item}
+                  copyLabel={entry.copyTotal > 1 ? `${entry.copyIndex + 1}/${entry.copyTotal}` : undefined}
+                  draggable={dragEnabled}
+                  onCollapse={
+                    entry.copyTotal > 1
+                      ? () =>
+                          setExpandedRuns((prev) => {
+                            const next = new Set(prev);
+                            next.delete(entry.runKey);
+                            return next;
+                          })
+                      : undefined
+                  }
+                  onEdit={canEdit ? () => setEditTarget({ item: entry.item, batchCount: 1 }) : undefined}
+                  onAssignNow={canAssign ? () => assignNowMutation.mutate(entry.item.id) : undefined}
+                  onDelete={canDelete ? () => cancelMutation.mutate(entry.item.id) : undefined}
+                  busy={cancelMutation.isPending || assignNowMutation.isPending}
+                  t={t}
+                />
+              );
+            })}
+          </div>
+        </SortableContext>
+      </DndContext>
+      </>
       )}
 
       {/* Archive-backed totals — mirrors the per-printer queue card footer.
@@ -330,6 +396,20 @@ export function AutoQueuePanel() {
           }}
         />
       )}
+      {editTarget && (
+        <PrintModal
+          mode="edit-auto-item"
+          archiveId={editTarget.item.archive_id ?? undefined}
+          libraryFileId={editTarget.item.library_file_id ?? undefined}
+          archiveName={
+            editTarget.item.archive_name || editTarget.item.library_file_name || `#${editTarget.item.id}`
+          }
+          autoQueueItem={editTarget.item}
+          autoQueueBatchCount={editTarget.batchCount}
+          onClose={() => setEditTarget(null)}
+          onSuccess={() => setEditTarget(null)}
+        />
+      )}
       {droppedForQueue && (
         <QueueSequencer
           files={droppedForQueue}
@@ -344,6 +424,130 @@ export function AutoQueuePanel() {
             queryClient.invalidateQueries({ queryKey: ['queue'] });
           }}
         />
+      )}
+    </div>
+  );
+}
+
+
+// ── Sortable row (a collapsed xN run or a single copy) ───────────────────────
+
+function AutoQueueRow({
+  sortableId, item, countBadge, copyLabel, draggable, busy,
+  onExpand, onCollapse, onEdit, onAssignNow, onDelete, t,
+}: {
+  sortableId: string;
+  item: AutoQueueItem;
+  /** Collapsed run: how many copies this block carries. */
+  countBadge?: number;
+  /** Expanded copy: its "i/N" position inside the run. */
+  copyLabel?: string;
+  draggable: boolean;
+  busy: boolean;
+  onExpand?: () => void;
+  onCollapse?: () => void;
+  onEdit?: () => void;
+  onAssignNow?: () => void;
+  onDelete?: () => void;
+  t: (key: string, opts?: Record<string, unknown>) => string;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: sortableId });
+  const label = item.archive_name || item.library_file_name || `#${item.id}`;
+  const targetModel = item.target_model || t('autoQueue.anyModel');
+  const targetLocation = item.target_location?.name;
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : undefined }}
+      className="flex items-center gap-2 p-2.5 bg-bambu-dark rounded border border-bambu-dark-tertiary hover:border-bambu-green/50 transition-colors"
+    >
+      {draggable && (
+        <button
+          type="button"
+          {...attributes}
+          {...listeners}
+          className="p-0.5 text-bambu-gray/50 hover:text-white cursor-grab active:cursor-grabbing touch-none shrink-0"
+          title={t('queueCard.actions.drag')}
+        >
+          <GripVertical className="w-3.5 h-3.5" />
+        </button>
+      )}
+
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 text-sm text-white truncate">
+          <span className="truncate">{label}</span>
+          {countBadge != null && countBadge > 1 && (
+            <button
+              type="button"
+              onClick={onExpand}
+              className="px-1.5 py-0.5 text-xs bg-bambu-green/20 text-bambu-green rounded shrink-0 inline-flex items-center gap-0.5 hover:bg-bambu-green/30"
+              title={t('autoQueue.expandCopies')}
+            >
+              ×{countBadge}
+              <ChevronDown className="w-3 h-3" />
+            </button>
+          )}
+          {copyLabel && (
+            <button
+              type="button"
+              onClick={onCollapse}
+              className="px-1.5 py-0.5 text-xs bg-bambu-dark-tertiary text-bambu-gray rounded shrink-0 inline-flex items-center gap-0.5 hover:text-white"
+              title={t('autoQueue.collapseCopies')}
+            >
+              {copyLabel}
+              {onCollapse && <ChevronUp className="w-3 h-3" />}
+            </button>
+          )}
+          {item.plate_id != null && (
+            <span className="text-xs text-bambu-gray shrink-0">{t('printModal.plateNumber', { number: item.plate_id })}</span>
+          )}
+        </div>
+        <div className="flex items-center gap-2 text-xs text-bambu-gray flex-wrap mt-0.5">
+          <span>
+            <ChevronRight className="inline w-3 h-3" />
+            {targetModel}
+          </span>
+          {targetLocation && <span>· {targetLocation}</span>}
+          {item.force_color_match && <span>· {t('autoQueue.exactColor')}</span>}
+          {item.waiting_reason && (
+            <span className="text-yellow-700 dark:text-yellow-400">· {item.waiting_reason}</span>
+          )}
+        </div>
+      </div>
+
+      {onEdit && (
+        <button
+          type="button"
+          onClick={onEdit}
+          className="p-1.5 text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary rounded shrink-0"
+          title={t('common.edit')}
+        >
+          <Pencil className="w-3.5 h-3.5" />
+        </button>
+      )}
+      {onAssignNow && (
+        <button
+          type="button"
+          onClick={onAssignNow}
+          disabled={busy}
+          className="px-2 py-1 text-xs text-bambu-green hover:bg-bambu-green/10 rounded inline-flex items-center gap-1 disabled:opacity-40 shrink-0"
+          title={t('autoQueue.assignNow')}
+        >
+          <Zap className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">{t('autoQueue.assignNow')}</span>
+        </button>
+      )}
+      {onDelete && (
+        <button
+          type="button"
+          onClick={onDelete}
+          disabled={busy}
+          className="px-2 py-1 text-xs text-red-700 dark:text-red-400 hover:bg-red-500/10 rounded inline-flex items-center gap-1 disabled:opacity-40 shrink-0"
+          title={t('common.cancel')}
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
       )}
     </div>
   );

@@ -449,7 +449,15 @@ async def update_auto_queue_item(
     if item.status != "pending":
         raise HTTPException(400, f"Cannot edit item in status '{item.status}'")
 
-    update_data = data.model_dump(exclude_unset=True)
+    _apply_item_update(item, data.model_dump(exclude_unset=True))
+
+    await db.commit()
+    await db.refresh(item)
+    return _to_response(item)
+
+
+def _apply_item_update(item: AutoQueueItem, update_data: dict) -> None:
+    """Field-by-field update shared by the single-item and batch PUTs."""
     for key, value in update_data.items():
         if key == "filament_overrides" and value is not None:
             value = json.dumps([o if isinstance(o, dict) else o.model_dump() for o in value])
@@ -465,9 +473,35 @@ async def update_auto_queue_item(
             value = normalize_model_name(value)
         setattr(item, key, value)
 
+
+@router.put("/batch/{batch_id}", response_model=AutoQueueBatchActionResponse)
+async def update_auto_queue_batch(
+    batch_id: str,
+    data: AutoQueueItemUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
+):
+    """Apply one edit to every still-pending copy of a batch.
+
+    The batch is N identical copies by construction; editing the group is the
+    common gesture (5 copies = 1 edit, not 5), and a copy already assigned to
+    a printer is deliberately left alone — the per-printer item owns it.
+    ``position`` is excluded: copies must keep their own positions or the
+    group edit would stack the whole batch onto one slot.
+    """
+    result = await db.execute(
+        select(AutoQueueItem).where(AutoQueueItem.batch_id == batch_id, AutoQueueItem.status == "pending")
+    )
+    items = list(result.scalars().all())
+    if not items:
+        raise HTTPException(404, "No pending items in this batch")
+
+    update_data = data.model_dump(exclude_unset=True)
+    update_data.pop("position", None)
+    for item in items:
+        _apply_item_update(item, update_data)
     await db.commit()
-    await db.refresh(item)
-    return _to_response(item)
+    return AutoQueueBatchActionResponse(batch_id=batch_id, affected=len(items))
 
 
 @router.delete("/{item_id}", response_model=AutoQueueItemResponse)
@@ -550,11 +584,6 @@ async def reorder_auto_queue(
     _: User | None = RequirePermission(Permission.QUEUE_REORDER),
 ):
     """Persist a new ordering of pending auto items."""
-    for entry in payload.items:
-        await db.execute(
-            select(AutoQueueItem).where(AutoQueueItem.id == entry.id).execution_options(synchronize_session=False)
-        )
-    # Use ORM update for clarity / per-row event firing
     for entry in payload.items:
         result = await db.execute(select(AutoQueueItem).where(AutoQueueItem.id == entry.id))
         row = result.scalar_one_or_none()

@@ -3485,6 +3485,7 @@ export interface AutoQueueItemUpdate {
   timelapse?: boolean | null;
   use_ams?: boolean | null;
   mesh_mode_fast_check?: boolean | null;
+  timelapse_storage?: TimelapseStorage | null;
   execute_swap_macros?: boolean | null;
   swap_macro_events?: string[] | null;
   selected_macro_ids?: number[] | null;
@@ -7493,6 +7494,13 @@ export const api = {
     }),
   assignAutoQueueNow: (id: number) =>
     request<AutoQueueItem>(`/auto-queue/${id}/assign-now`, { method: 'POST' }),
+  // One edit for every still-pending copy of a batch (position excluded
+  // server-side so a group edit cannot undo a manual reorder).
+  updateAutoQueueBatch: (batchId: string, data: AutoQueueItemUpdate) =>
+    request<{ affected: number; batch_id: string }>(`/auto-queue/batch/${batchId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
   cancelAutoQueueBatch: (batchId: string) =>
     request<{ affected: number; batch_id: string }>(`/auto-queue/batch/${batchId}`, {
       method: 'DELETE',
