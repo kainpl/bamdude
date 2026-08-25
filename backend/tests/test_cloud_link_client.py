@@ -5,7 +5,7 @@ per test. Mocking ``ws_connect`` would test our idea of aiohttp; a socket tests
 the URL we actually built, the frames we actually serialised, and the way a
 half-closed connection actually surfaces.
 
-Three things these tests exist to pin, none of which a happy path would notice:
+Four things these tests exist to pin, none of which a happy path would notice:
 
 * **A reconnect is a fresh start, not a resumption.** Every successful hello
   clears the uplink's outbox and sends a new snapshot, so a frame built for a
@@ -13,6 +13,11 @@ Three things these tests exist to pin, none of which a happy path would notice:
 * **The reader outlives what it dispatches.** A handler that raises must cost
   one command, not the link — and the frame it failed on is deliberately left
   unanswered rather than answered with a guess.
+* **A post-action that raises costs no more than a handler that raises.** The
+  camera snapshot runs on the reader task after its ``cmd_result`` has gone
+  out, so an escaping exception would drop the socket over one unplugged
+  camera. Pinned by making the upload explode and then insisting the next
+  command is still answered on the same connection.
 * **An attacker cannot make us write.** ``dispatch`` audits every unknown
   command, so a portal that has been taken over could fill the audit table by
   spamming names. The reader stops feeding it after a handful and answers on
@@ -27,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import uuid
 from contextlib import asynccontextmanager
 
@@ -38,8 +44,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.core.config import APP_VERSION
 from backend.app.models.cloud_link import CloudLinkAudit
-from backend.app.services.cloud_link import client as client_module
+from backend.app.services.cloud_link import client as client_module, snapshot as snapshot_module
 from backend.app.services.cloud_link.client import (
+    AGENT_CAPABILITIES,
     BACKOFF_CAP_S,
     DEFAULT_HEARTBEAT_INTERVAL_S,
     LINK_PATH,
@@ -47,7 +54,7 @@ from backend.app.services.cloud_link.client import (
     CloudLinkClient,
     ws_url,
 )
-from backend.app.services.cloud_link.commands import CommandContext, dispatch
+from backend.app.services.cloud_link.commands import ALLOWED_COMMANDS, CommandContext, PostAction, dispatch
 from backend.app.services.cloud_link.schemas import Cmd, CmdData, Event, EventData
 from backend.app.services.cloud_link.store import get_config, save_credentials
 from backend.app.services.cloud_link.uplink import Uplink
@@ -378,8 +385,35 @@ async def test_the_handshake_says_who_we_are_and_what_we_speak(session_factory, 
         "secret": "the-secret",
         "agent_version": APP_VERSION,
         "envelope_versions": [1],
-        "capabilities": [],
+        "capabilities": ["camera_snapshot"],
     }, "the version comes from the constant, never a literal"
+
+
+def test_every_capability_the_hello_claims_is_a_command_the_agent_answers():
+    """Drift guard between the two halves of one promise.
+
+    ``capabilities`` is what the portal reads to decide which buttons to offer;
+    ``ALLOWED_COMMANDS`` is what the agent will actually run. A capability with
+    no command behind it is a portal feature that fails on click, and it is
+    invisible on both sides until a user finds it.
+    """
+    assert set(AGENT_CAPABILITIES) <= set(ALLOWED_COMMANDS)
+
+
+def test_the_hello_cannot_be_talked_into_a_shared_capability_list():
+    """The frame gets a copy, not the module constant.
+
+    ``capabilities`` is ``list[str]`` on the wire and pydantic keeps whatever
+    object it was handed. Passing the constant itself would let anything that
+    mutated one frame's list edit what every later hello claims — which is why
+    the constant is a tuple and the frame is built with ``list(...)``.
+    """
+    client = CloudLinkClient(session_factory=None, uplink=Uplink(manager=FakeManager()))
+
+    first = client._hello("inst", "secret")
+    first.data.capabilities.append("reboot_printer")
+
+    assert client._hello("inst", "secret").data.capabilities == list(AGENT_CAPABILITIES)
 
 
 async def test_a_successful_hello_is_followed_by_a_snapshot_then_heartbeats(session_factory, portal):
@@ -587,6 +621,165 @@ async def test_a_handler_that_raises_costs_one_command_and_leaves_it_unanswered(
     assert result["re"] == "survivor", "the reader survived the raise and answered the next frame"
     assert [f for f in instance.frames if f["type"] == "cmd_result"] == [result], "the failed frame got no answer"
     assert "cmd:failed" in await audit_kinds(session_factory)
+
+
+# ------------------------------------------------------- the camera snapshot
+
+
+async def test_a_camera_snapshot_is_answered_first_and_uploaded_after(session_factory, portal, monkeypatch):
+    """The ``cmd_result`` goes out before the camera is ever touched.
+
+    A snapshot is a network round trip to a printer and another to the portal's
+    upload URL; doing it before the answer would hold the reader — and the
+    portal's request — open for the whole of it. The client loop is handed the
+    two arguments the dispatcher validated and the session factory and uplink
+    it owns, so the capture never has to reach back into the loop for them.
+    """
+    called = asyncio.Event()
+    seen: dict = {}
+
+    async def recording_capture_and_upload(**kwargs):
+        seen.update(kwargs)
+        called.set()
+
+    monkeypatch.setattr(snapshot_module, "capture_and_upload", recording_capture_and_upload)
+
+    async def script(ws, instance, index):
+        await instance.accept(ws, index)
+        await instance.expect(is_type("snapshot"), connection=index)
+        await ws.send_json(
+            cmd(
+                "camera_snapshot",
+                "cmd-snap-1",
+                args={"printer_id": "7", "upload_url": "https://portal.test/put/abc"},
+            )
+        )
+
+    instance, url = await portal(script)
+    await pair_with(session_factory, url)
+    uplink = Uplink(manager=FakeManager())
+
+    async with running(make_client(session_factory, uplink=uplink)):
+        result = await instance.expect(is_type("cmd_result"))
+        await asyncio.wait_for(called.wait(), 5)
+
+    assert result["re"] == "cmd-snap-1"
+    assert result["data"] == {"ok": True}
+    assert seen["printer_id"] == "7"
+    assert seen["upload_url"] == "https://portal.test/put/abc"
+    assert seen["uplink"] is uplink
+    assert seen["session_factory"] is session_factory, "its own session, opened where the work happens"
+
+
+async def test_a_camera_snapshot_with_bad_arguments_never_reaches_the_camera(session_factory, portal, monkeypatch):
+    """The refusal is the dispatcher's and the loop respects it.
+
+    ``bad_args`` comes back with no post-action, so there is nothing for the
+    reader to run — pinned from the socket end because a reader that decided
+    for itself which commands imply an upload would bypass the validation
+    entirely.
+    """
+
+    async def never(**kwargs):
+        raise AssertionError("a refused command must not reach the camera")
+
+    monkeypatch.setattr(snapshot_module, "capture_and_upload", never)
+
+    async def script(ws, instance, index):
+        await instance.accept(ws, index)
+        await instance.expect(is_type("snapshot"), connection=index)
+        await ws.send_json(cmd("camera_snapshot", "cmd-snap-bad", args={"printer_id": "7"}))
+        await ws.send_json(cmd("ping", "after-bad"))
+
+    instance, url = await portal(script)
+    await pair_with(session_factory, url)
+
+    async with running(make_client(session_factory)):
+        await instance.expect(lambda f: f.get("re") == "after-bad")
+
+    refusal = next(f for f in instance.frames if f.get("re") == "cmd-snap-bad")
+    assert refusal["data"] == {"ok": False, "error": "bad_args"}
+    assert "cmd:camera_snapshot" in await audit_kinds(session_factory)
+
+
+async def test_a_failing_upload_costs_the_snapshot_and_never_the_link(session_factory, portal, monkeypatch):
+    """A camera that is unreachable is an ordinary Tuesday on a print farm.
+
+    The upload runs on the reader task, so an exception escaping it would end
+    the reader, drop the socket and take the whole link down over one offline
+    camera. It is contained the same way a raising dispatch is — logged,
+    audited ``ok=False``, and the next frame is answered as if nothing had
+    happened.
+    """
+
+    async def exploding_capture_and_upload(**kwargs):
+        raise RuntimeError("the camera is not answering")
+
+    monkeypatch.setattr(snapshot_module, "capture_and_upload", exploding_capture_and_upload)
+
+    async def script(ws, instance, index):
+        await instance.accept(ws, index)
+        await instance.expect(is_type("snapshot"), connection=index)
+        await ws.send_json(
+            cmd(
+                "camera_snapshot",
+                "cmd-snap-boom",
+                args={"printer_id": "7", "upload_url": "https://portal.test/put/abc"},
+            )
+        )
+        await ws.send_json(cmd("ping", "survivor"))
+
+    instance, url = await portal(script)
+    await pair_with(session_factory, url)
+
+    async with running(make_client(session_factory)) as task:
+        survivor = await instance.expect(lambda f: f.get("re") == "survivor")
+        assert not task.done(), "the link outlived the failed upload"
+
+    assert survivor["data"] == {"ok": True, "payload": {"pong": True}}
+    snapped = next(f for f in instance.frames if f.get("re") == "cmd-snap-boom")
+    assert snapped["data"] == {"ok": True}, (
+        "the command was accepted before the upload was attempted — the audit carries the outcome"
+    )
+
+    async with session_factory() as session:
+        failed = await session.scalar(
+            select(func.count())
+            .select_from(CloudLinkAudit)
+            .where(CloudLinkAudit.kind == "cmd:camera_snapshot", CloudLinkAudit.ok.is_(False))
+        )
+    assert failed == 1, "the operator's only record that the snapshot never happened"
+    assert instance.connections == 1, "a failed upload is not a reconnect"
+
+
+async def test_a_post_action_nobody_wired_is_logged_and_not_silently_dropped(session_factory, monkeypatch, caplog):
+    """The one branch that exists only to be loud.
+
+    Unreachable while ``PostAction.kind`` and the loop's chain agree — which is
+    exactly why it earns a line. A kind added to the dataclass and forgotten
+    here would be a command that answers ``ok=true``, does nothing at all, and
+    leaves no log, no audit row and no failing test to say so.
+    """
+    sent: list[dict] = []
+
+    class FakeWebSocket:
+        async def send_str(self, raw: str) -> None:
+            sent.append(json.loads(raw))
+
+    async def dispatch_with_an_unwired_kind(cmd_frame, ctx):
+        result, _post = await dispatch(cmd_frame, ctx)
+        return result, PostAction("dance")  # type: ignore[arg-type]
+
+    monkeypatch.setattr(client_module, "dispatch", dispatch_with_an_unwired_kind)
+    client = make_client(session_factory)
+    frame = Cmd(v=1, id="c-1", ts="2026-08-24T12:00:00Z", type="cmd", data=CmdData(cmd="ping"))
+
+    with caplog.at_level(logging.ERROR, logger="backend.app.services.cloud_link.client"):
+        outcome = await client._handle_cmd(FakeWebSocket(), frame)
+
+    assert outcome is None, "an unwired follow-up is not a reason to end the reader"
+    assert [f["re"] for f in sent] == ["c-1"], "and the portal still got its answer"
+    assert "dance" in caplog.text
 
 
 # --------------------------------------------------- the unknown-command cap

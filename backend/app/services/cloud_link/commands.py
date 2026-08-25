@@ -1,27 +1,33 @@
 """Cloud Link downlink — the only things a portal may ask this farm to do.
 
 The uplink decides what leaves the farm; this module decides what the farm does
-when the portal talks back. Phase 0's answer is deliberately tiny: prove the
-link is alive (``ping``), resend the full picture (``resync``), and end the
-pairing (``revoke``). Nothing here touches a printer.
+when the portal talks back. The answer is deliberately tiny: prove the link is
+alive (``ping``), resend the full picture (``resync``), end the pairing
+(``revoke``), and push one camera frame to a URL the portal supplies
+(``camera_snapshot``). Nothing here moves a printer — the one command that
+reaches hardware only *reads* a camera, and it does so on the client loop's
+time rather than the dispatcher's.
 
 **The allowlist is hardcoded in the release and nothing can widen it.**
 :data:`ALLOWED_COMMANDS` is a literal in this file — not a settings row, not a
 field the portal sends in ``hello_ok``, not something ``args`` can extend. That
 is the whole defence against the spec's central threat (§5, "compromised
 portal"): a portal that has been taken over can read what the publish set
-exposes and can unlink itself, and there is no third option to find, because
-there is no code path that reads a command name from anywhere but this set.
-Phase 2 adds printer commands as *new entries with their own grant checks*;
-it must never add a way to configure the set over the channel.
+exposes, can ask for a camera frame from a published printer, and can unlink
+itself — and there is no fourth option to find, because there is no code path
+that reads a command name from anywhere but this set. Growing the literal in a
+release is the sanctioned way to add a command, and it costs a diff a reviewer
+sees; adding a way to configure the set over the channel is not, and never
+becomes so.
 
 **Deciding is not acting.** :func:`dispatch` answers with a ``cmd_result`` and,
-where the command implies more, a :data:`PostAction` for the client loop to run
+where the command implies more, a :class:`PostAction` for the client loop to run
 *after* that result is on the wire. Doing the work in place would mean
 ``resync`` builds a snapshot on the reader task (a full database read blocking
-the next inbound frame), and ``revoke`` tears the socket down before the
-acknowledgement it is meant to send. The client loop owns the socket, so the
-client loop owns the consequences.
+the next inbound frame), ``camera_snapshot`` holds the portal's request open
+for two network round trips to a camera that may not be there, and ``revoke``
+tears the socket down before the acknowledgement it is meant to send. The
+client loop owns the socket, so the client loop owns the consequences.
 
 ⚠️ **``teardown_revoked`` is the whole teardown, and it is the caller's.**
 This module writes the audit row and nothing else — persisting ``revoked=True``
@@ -34,8 +40,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -60,10 +66,36 @@ logger = logging.getLogger(__name__)
 #:
 #: A frozenset because the set is a fact about the release, not a collection
 #: anything mutates; it still compares equal to the plain set it is written as.
-ALLOWED_COMMANDS = frozenset({"ping", "resync", "revoke"})
+ALLOWED_COMMANDS = frozenset({"ping", "resync", "revoke", "camera_snapshot"})
 
-#: What the client loop must do *after* it has sent the ``cmd_result``.
-PostAction = Literal["send_snapshot", "teardown_revoked"]
+
+@dataclass(frozen=True, slots=True)
+class PostAction:
+    """What the client loop must do *after* it has sent the ``cmd_result``.
+
+    Frozen because a post-action is a decision already taken: it travels from
+    the dispatcher to the reader and back out to nothing else, and anything
+    that edited it in flight would be changing an answer the portal has already
+    been given.
+
+    ``data`` exists because ``upload_snapshot`` needs the two arguments the
+    handler validated. The alternative — the reader re-reading them off the
+    ``cmd`` frame — would put the validated values and the raw ones in two
+    places and make it possible for the loop to act on arguments the handler
+    had refused.
+
+    Args:
+        kind: Which follow-up. The literal is closed on purpose: the loop
+            matches on it exhaustively, so a new kind is a change in both files
+            or it is nothing.
+        data: The follow-up's arguments, already validated. Empty for the kinds
+            that carry none — ``send_snapshot`` reads live state and
+            ``teardown_revoked`` needs nothing at all.
+    """
+
+    kind: Literal["send_snapshot", "teardown_revoked", "upload_snapshot"]
+    data: dict[str, Any] = field(default_factory=dict)
+
 
 #: How much of a rejected command's name reaches the audit. The name is
 #: attacker-chosen and arrives once per frame, while ``summary`` is TEXT and
@@ -151,7 +183,7 @@ async def _resync(cmd_frame: Cmd, ctx: CommandContext) -> tuple[CmdResultData, P
     Not audited either: the snapshot that follows is itself the record of what
     the portal was told, and it is the row worth keeping.
     """
-    return CmdResultData(ok=True), "send_snapshot"
+    return CmdResultData(ok=True), PostAction("send_snapshot")
 
 
 async def _revoke(cmd_frame: Cmd, ctx: CommandContext) -> tuple[CmdResultData, PostAction | None]:
@@ -162,7 +194,42 @@ async def _revoke(cmd_frame: Cmd, ctx: CommandContext) -> tuple[CmdResultData, P
     invite a retry against a farm that has already unlinked.
     """
     await _audit(ctx, "cmd:revoke", "portal revoked this instance — link torn down")
-    return CmdResultData(ok=True), "teardown_revoked"
+    return CmdResultData(ok=True), PostAction("teardown_revoked")
+
+
+async def _camera_snapshot(cmd_frame: Cmd, ctx: CommandContext) -> tuple[CmdResultData, PostAction | None]:
+    """One camera frame, pushed to a URL the portal supplies.
+
+    The first command whose post-action carries data, and therefore the first
+    place where "the request was accepted" and "there is work to do" had to be
+    two separate answers. Bad arguments produce ``ok=False`` **and no
+    post-action** — a refusal that still handed back work would have the agent
+    uploading to an address it had just called unusable.
+
+    ``ok=True`` here means the command was accepted and the capture was
+    scheduled, not that a frame reached the portal. It cannot mean more: the
+    result is on the wire before the camera is touched (see the module
+    docstring), and the capture's own outcome is what
+    :mod:`~backend.app.services.cloud_link.snapshot` and the client loop audit.
+
+    ⚠️ **The validation is a shape check, not a URL policy.** Both arguments
+    must be non-empty strings and nothing further is asked of them here —
+    judging the destination belongs to the code that opens it, and half a
+    policy in two places is worse than one policy in one.
+    """
+    args = cmd_frame.data.args or {}
+    printer_id = args.get("printer_id")
+    upload_url = args.get("upload_url")
+
+    if not _is_nonempty_str(printer_id) or not _is_nonempty_str(upload_url):
+        # The values are attacker-supplied and are deliberately NOT written
+        # down — a URL of any length would land in ``summary`` verbatim, and
+        # what an operator needs from this row is that a snapshot was asked for
+        # and refused, not the text that got it refused.
+        await _audit(ctx, "cmd:camera_snapshot", "refused a camera_snapshot with unusable arguments", ok=False)
+        return CmdResultData(ok=False, error="bad_args"), None
+
+    return CmdResultData(ok=True), PostAction("upload_snapshot", {"printer_id": printer_id, "upload_url": upload_url})
 
 
 #: Name → handler. The keys ARE :data:`ALLOWED_COMMANDS`; a test pins that.
@@ -170,6 +237,7 @@ _HANDLERS: dict[str, _Handler] = {
     "ping": _ping,
     "resync": _resync,
     "revoke": _revoke,
+    "camera_snapshot": _camera_snapshot,
 }
 
 
@@ -191,6 +259,19 @@ def _result(cmd_frame: Cmd, data: CmdResultData) -> CmdResult:
         re=cmd_frame.id,
         data=data,
     )
+
+
+def _is_nonempty_str(value: object) -> bool:
+    """A string with something in it — the only argument shape a handler trusts.
+
+    ``args`` is ``dict`` on the contract, so every value in it is whatever JSON
+    the portal put there: a number, a null, a list, an object. An ``isinstance``
+    check is what keeps a handler from passing one of those to code that
+    expects text, and the emptiness check is what keeps ``""`` — which every
+    ``if not value`` in the codebase would treat as missing anyway — from being
+    handed on as if it named something.
+    """
+    return isinstance(value, str) and value != ""
 
 
 def _bounded(name: str) -> str:
