@@ -223,6 +223,14 @@ async def unpair_instance(
         # Bookkeeping must not un-unpair an unpair. The credential is already
         # gone; a failed audit insert reported as an error would send the user
         # to repeat an operation that has already happened.
+        #
+        # ⚠️ The rollback is what makes that true. A commit that raises leaves
+        # the session poisoned with the failed insert still pending, so the very
+        # next statement — the ``_status`` read three lines below — would raise
+        # ``PendingRollbackError`` and turn a successful unpair into a 500. The
+        # unpair itself committed above, so there is nothing of ours left in the
+        # session to lose here; only the audit row goes.
+        await db.rollback()
         logger.warning("Cloud Link: unpaired, but the audit row could not be written — %s", e)
 
     logger.info("Cloud Link: unpaired%s", f" (was instance {instance_id})" if instance_id else "")

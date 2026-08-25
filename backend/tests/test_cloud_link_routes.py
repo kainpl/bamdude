@@ -314,6 +314,26 @@ async def test_a_portal_that_answers_nothing_is_a_502_that_does_not_blame_the_wi
     assert service_spies["restart"].calls == 0
 
 
+async def test_a_portal_that_answers_500_is_a_502_too(async_client, portal, service_spies):
+    """The other half of the ``network`` classification, pinned on the route.
+
+    A portal that answered — with a 500 — is not a transport failure, but it
+    reaches the user through the same code as a refused connection. That is
+    deliberate (neither is anything the farm can fix), and the point of the
+    test is that the *status* stays 502 rather than becoming a 500 of our own:
+    a 500 from this endpoint would read as "BamDude broke", sending somebody to
+    the wrong logs on the wrong machine.
+    """
+
+    async def falls_over(request):
+        return web.json_response({"detail": "boom"}, status=500)
+
+    url = await portal(falls_over)
+    response = await async_client.post(f"{BASE}/pair", json={"pairing_code": "ABCD-EFGH", "portal_url": url})
+    assert response.status_code == 502, response.text
+    assert service_spies["restart"].calls == 0
+
+
 async def test_a_portal_url_that_is_not_tls_is_refused_before_anything_is_saved(
     async_client, db_session: AsyncSession, service_spies
 ):
@@ -455,6 +475,42 @@ async def test_unpair_takes_the_link_down_forgets_the_credential_and_records_it(
     assert "unpair" in kinds
     summaries = (await db_session.execute(select(CloudLinkAudit.summary))).scalars().all()
     assert not any("secret-to-forget" in s for s in summaries), "a secret never reaches the audit"
+
+
+async def test_unpair_survives_an_audit_row_that_cannot_be_written(
+    async_client, db_session: AsyncSession, service_spies, monkeypatch
+):
+    """The audit is bookkeeping; the unpair is the operation. A failure of the
+    first must not be reported as a failure of the second.
+
+    The failure is reproduced rather than faked: a ``commit`` that raises leaves
+    the session with a dead transaction, and the route's very next statement is
+    the ``_status`` read it answers with. Without the rollback in the handler,
+    that read raises ``PendingRollbackError`` and the user gets a 500 for an
+    unpair that already happened — then clicks again, on a link already gone.
+    """
+    await save_credentials(db_session, instance_id="inst_gone", secret="secret-to-forget")
+    await db_session.commit()
+
+    async def poisons_the_session(session, *args, **kwargs):
+        # Shaped exactly like the real ``write_audit``: add, then commit. The
+        # commit is the half that matters — its flush fails on the NOT NULL
+        # column and deactivates the transaction. (A raw failing ``execute``
+        # does not: the session recovers from that on its own, so a fake built
+        # that way passes with or without the fix and pins nothing.)
+        session.add(CloudLinkAudit(direction="up", kind=None, summary="x"))
+        await session.commit()
+
+    monkeypatch.setattr(cloud_link_routes, "write_audit", poisons_the_session)
+
+    response = await async_client.post(f"{BASE}/unpair")
+    assert response.status_code == 200, response.text
+    assert response.json()["paired"] is False
+
+    # And the operation itself really happened — the 200 is not a lie either.
+    db_session.expire_all()
+    assert await get_secret(db_session) is None
+    assert service_spies["stop"].calls == 1
 
 
 async def test_unpair_is_idempotent(async_client, db_session: AsyncSession, service_spies):
