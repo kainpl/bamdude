@@ -119,6 +119,18 @@ HANDSHAKE_TIMEOUT_S = 20.0
 #: ``0`` would otherwise turn the heartbeat task into a busy loop.
 DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
 
+#: The shortest per-printer status interval this agent will accept from the
+#: portal, whatever ``hello_ok`` asks for.
+#:
+#: ⚠️ **This is a safety floor, not a tuning knob.** ``throttle_min_interval_s``
+#: is the one setting a portal can use to make this farm do more work: at ``0``
+#: the throttle is off entirely and every MQTT push a printer produces — several
+#: a second, per machine — becomes a frame on the wire. A portal that has been
+#: taken over must not be able to turn a farm into its own uplink flood, and the
+#: half-second it costs a legitimate portal is below what anybody watching a
+#: progress bar can see.
+MIN_THROTTLE_S = 0.5
+
 #: How long the pump waits after emptying the uplink before looking again. The
 #: uplink has no "something arrived" signal — it is fed from a synchronous
 #: broadcast callback — so this is a poll, and 0.2 s is imperceptible next to
@@ -410,8 +422,14 @@ class CloudLinkClient:
         self._heartbeat_interval_s = interval
 
         throttle = hello_ok.data.throttle_min_interval_s
-        if throttle >= 0:
-            self._uplink.min_interval_s = throttle
+        if throttle < MIN_THROTTLE_S:
+            logger.warning(
+                "Cloud Link: the portal asked for a %.3fs status throttle — using %.1fs instead",
+                throttle,
+                MIN_THROTTLE_S,
+            )
+            throttle = MIN_THROTTLE_S
+        self._uplink.min_interval_s = throttle
 
         # ⚠️ The backoff is NOT reset here — a handshake is not a healthy link.
         # :meth:`_settle` does it once this connection has lasted a heartbeat.

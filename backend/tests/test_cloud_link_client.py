@@ -41,6 +41,7 @@ from backend.app.services.cloud_link import client as client_module
 from backend.app.services.cloud_link.client import (
     BACKOFF_CAP_S,
     LINK_PATH,
+    MIN_THROTTLE_S,
     CloudLinkClient,
     ws_url,
 )
@@ -963,6 +964,48 @@ async def test_the_portals_throttle_becomes_the_uplinks(session_factory, portal)
         await instance.expect(is_type("snapshot"))
 
     assert uplink.min_interval_s == 12.5
+
+
+async def test_a_portal_asking_for_no_throttle_at_all_gets_the_floor(session_factory, portal):
+    """``0`` means "send me everything", and everything is several frames a
+    second per printer.
+
+    ``throttle_min_interval_s`` is the single setting a portal can use to make
+    this farm do more work, so it is the one place a compromised portal could
+    turn a farm into its own uplink flood. The floor is what makes that not a
+    thing the portal decides.
+    """
+
+    async def script(ws, instance, index):
+        await instance.accept(ws, index, throttle_min_interval_s=0.0)
+
+    instance, url = await portal(script)
+    await pair_with(session_factory, url)
+    uplink = Uplink(manager=FakeManager())
+
+    async with running(make_client(session_factory, uplink=uplink)):
+        await instance.expect(is_type("snapshot"))
+
+    assert uplink.min_interval_s == MIN_THROTTLE_S
+
+
+async def test_a_negative_throttle_gets_the_floor_too(session_factory, portal):
+    """Below the floor is below the floor. Ignoring a nonsense value instead
+    would leave whatever the previous connection negotiated in place, which is
+    a different answer depending on how the agent got here."""
+
+    async def script(ws, instance, index):
+        await instance.accept(ws, index, throttle_min_interval_s=-1.0)
+
+    instance, url = await portal(script)
+    await pair_with(session_factory, url)
+    uplink = Uplink(manager=FakeManager())
+    uplink.min_interval_s = 42.0
+
+    async with running(make_client(session_factory, uplink=uplink)):
+        await instance.expect(is_type("snapshot"))
+
+    assert uplink.min_interval_s == MIN_THROTTLE_S
 
 
 # ----------------------------------------------------------------- the guards
