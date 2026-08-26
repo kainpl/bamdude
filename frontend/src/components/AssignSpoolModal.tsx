@@ -560,19 +560,38 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
         </div>
 
         {/* Running after a pause: the swap, if any, happened back at that
-            pause — offer the boundary as a default-off checkbox so bulk
-            wrong-link corrections stay friction-free. */}
+            pause — offer the boundary as a default-off toggle so bulk
+            wrong-link corrections stay friction-free. Styled as an amber
+            badge panel: a plain checkbox was too easy to miss, and missing
+            it silently mis-attributes the whole print. */}
         {windowMode === 'optin' && (
-          <div className="px-4 py-3 border-t border-bambu-dark-tertiary bg-bambu-dark/40">
-            <label className="flex items-start gap-2 text-sm text-bambu-gray cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={replaceAtPause}
-                onChange={(e) => setReplaceAtPause(e.target.checked)}
-                className="mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-              />
-              {t('inventory.midPrintReplacement.optin', { layer: replacementWindow?.pause_layer ?? 0 })}
-            </label>
+          <div className="px-4 py-3 border-t border-bambu-dark-tertiary">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={replaceAtPause}
+              onClick={() => setReplaceAtPause((v) => !v)}
+              className={`flex items-center gap-3 w-full text-left rounded-lg border px-3 py-2.5 transition-colors ${
+                replaceAtPause
+                  ? 'border-bambu-green/60 bg-bambu-green/10'
+                  : 'border-amber-500/40 bg-amber-500/10 hover:border-amber-500/70'
+              }`}
+            >
+              <span className="text-sm text-white leading-snug flex-1">
+                {t('inventory.midPrintReplacement.optin', { layer: replacementWindow?.pause_layer ?? 0 })}
+              </span>
+              <span
+                className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${
+                  replaceAtPause ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-transform ${
+                    replaceAtPause ? 'translate-x-[22px]' : 'translate-x-0.5'
+                  }`}
+                />
+              </span>
+            </button>
           </div>
         )}
 
