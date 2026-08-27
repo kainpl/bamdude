@@ -7235,6 +7235,17 @@ export const api = {
     }),
 
   // Smart Plugs
+  // The relay's state after mains power returns (ZCL StartUpOnOff) — read
+  // from / written to the device itself, zigbee plugs only.
+  getPlugPowerOnBehavior: (plugId: number) =>
+    request<{ mode: 'on' | 'off' | 'previous' | null; supported: boolean }>(
+      `/smart-plugs/${plugId}/power-on-behavior`,
+    ),
+  setPlugPowerOnBehavior: (plugId: number, mode: 'on' | 'off' | 'previous') =>
+    request<{ mode: 'on' | 'off' | 'previous'; supported: boolean }>(
+      `/smart-plugs/${plugId}/power-on-behavior`,
+      { method: 'PUT', body: JSON.stringify({ mode }) },
+    ),
   getSmartPlugs: () => request<SmartPlug[]>('/smart-plugs/'),
   getSmartPlug: (id: number) => request<SmartPlug>(`/smart-plugs/${id}`),
   getSmartPlugByPrinter: (printerId: number) => request<SmartPlug | null>(`/smart-plugs/by-printer/${printerId}`),

@@ -190,6 +190,8 @@
 
 ### Added
 
+- **A Zigbee plug's power-on behavior is editable from its dialog.** What the relay does when mains power returns — restore last state, always on, always off — read from and written to the device itself (ZCL StartUpOnOff), never stored locally: a stored-but-not-applied value here would defeat the whole point. Motivated by a real night: a plug dropped off the network for twenty minutes and came back with the relay off, taking its printer with it — a plug set to "restore last state" cannot do that.
+
 - **The auto-queue is now a real queue, not just a pile.** The panel lists items in their actual dispatch order; adjacent copies of one submission still collapse into a compact ×N row, but the row now expands into its copies, and everything drags: a collapsed batch moves as a block, an individual copy moves anywhere in the order — queue five copies of A, add two of B, pull one B to the front and leave the other at the end, and the list shows exactly that. Every copy (or a whole batch at once) can be edited in the same dialog the per-printer queue uses — target model and location, schedule, print options, macros — and deleted or force-assigned individually. With shortest-job-first enabled the handles hide and a hint explains that the distributor owns the order.
 
 - **The safety margin speaks kilograms.** A farm's buffer doesn't fit a grams field capped at 10 kg — the forecast's safety margin now takes days, grams or kilograms, with the whole projection math (reorder point, safety stock, the ≈-conversions shown next to the field) converting correctly for each unit. The grams cap is gone too.

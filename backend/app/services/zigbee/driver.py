@@ -266,6 +266,62 @@ class ZigbeeSmartPlugService:
         except Exception as exc:  # noqa: BLE001 — the switch itself already succeeded
             logger.debug("Zigbee plug %s: could not update the cluster cache: %s", plug.id, exc)
 
+    # ZCL OnOff ``StartUpOnOff`` (0x4003): what the relay does when mains
+    # power returns. 0=off, 1=on, 2=toggle, 255=previous. ``toggle`` is not
+    # offered — a printer that alternates with every outage helps nobody.
+    # Motivation (2026-08-27): plug 4 dropped off the network for 23 minutes
+    # overnight and came back with the relay OFF — no command from anywhere
+    # in the log. A plug set to ``previous`` cannot do that.
+    _POWER_ON_ATTR = 0x4003
+    _POWER_ON_BY_NAME = {"off": 0, "on": 1, "previous": 255}
+    _POWER_ON_BY_VALUE = {0: "off", 1: "on", 2: "toggle", 255: "previous"}
+
+    async def read_power_on_behavior(self, plug: Any) -> str | None:
+        """The plug's configured power-on state, or None when it cannot say.
+
+        Read via ``read_attributes`` deliberately: this is a CONFIG attribute
+        no quirk transforms, so the raw answer IS the answer — the
+        cached-value rule exists for measured quantities.
+        """
+        cluster = self._cluster(self._device_for(plug), ON_OFF)
+        if cluster is None:
+            return None
+        try:
+            success, _failure = await cluster.read_attributes([self._POWER_ON_ATTR])
+        except Exception as exc:  # noqa: BLE001 — an unreachable plug is an answer, not an error
+            logger.info("Zigbee plug %s: power-on behavior read failed: %s", plug.id, describe_exception(exc))
+            return None
+        if self._POWER_ON_ATTR not in success:
+            return None
+        return self._POWER_ON_BY_VALUE.get(int(success[self._POWER_ON_ATTR]))
+
+    async def write_power_on_behavior(self, plug: Any, mode: str) -> bool:
+        """Set the power-on state. True only when the device acknowledged."""
+        value = self._POWER_ON_BY_NAME.get(mode)
+        if value is None:
+            return False
+        cluster = self._cluster(self._device_for(plug), ON_OFF)
+        if cluster is None:
+            logger.info("Zigbee plug %s: device not reachable, ignoring power-on write", plug.id)
+            return False
+        try:
+            result = await cluster.write_attributes({self._POWER_ON_ATTR: value})
+        except Exception as exc:  # noqa: BLE001 — reported, never raised
+            logger.warning("Zigbee plug %s: power-on behavior write failed: %s", plug.id, describe_exception(exc))
+            return False
+        # write_attributes answers [[WriteAttributesStatusRecord...]] — a
+        # single SUCCESS record means every attribute in the write landed.
+        try:
+            records = result[0]
+            ok = all(getattr(r, "status", 1) == 0 for r in records)
+        except Exception:  # noqa: BLE001 — an unparseable ack is not an ack
+            ok = False
+        if ok:
+            logger.info("Zigbee plug %s: power-on behavior set to '%s'", plug.id, mode)
+        else:
+            logger.warning("Zigbee plug %s: device refused power-on behavior '%s' (%r)", plug.id, mode, result)
+        return ok
+
     async def turn_on(self, plug: Any) -> bool:
         return await self._switch(plug, _CMD_ON, "turn on")
 

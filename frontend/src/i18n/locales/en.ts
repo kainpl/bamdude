@@ -6822,6 +6822,16 @@ export default {
     bucketMinutes: '{{value}} {{unit}} · {{minutes}}-minute average',
   },
   smartPlugs: {
+    powerOn: {
+      label: 'Power-on behavior',
+      hint: 'What the relay does when mains power returns. "Restore last state" means a plug that reboots mid-print comes back exactly as it was.',
+      previous: 'Restore last state',
+      alwaysOn: 'Always on',
+      alwaysOff: 'Always off',
+      unsupported: 'The plug did not answer or does not support this setting.',
+      saved: 'Power-on behavior saved to the plug',
+      saveFailed: 'The plug did not acknowledge the setting',
+    },
     powerHistory: {
       title: 'Power history',
       open: 'Power history',

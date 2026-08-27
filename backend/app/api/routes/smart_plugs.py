@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -551,6 +552,58 @@ async def get_smart_plug(
     if not plug:
         raise HTTPException(404, "Smart plug not found")
     return plug
+
+
+class PowerOnBehaviorUpdate(BaseModel):
+    """The relay's state after mains power returns (ZCL StartUpOnOff)."""
+
+    mode: Literal["on", "off", "previous"]
+
+
+async def _zigbee_plug_or_422(db: AsyncSession, plug_id: int) -> SmartPlug:
+    result = await db.execute(select(SmartPlug).where(SmartPlug.id == plug_id))
+    plug = result.scalar_one_or_none()
+    if not plug:
+        raise HTTPException(404, "Smart plug not found")
+    if plug.plug_type != "zigbee":
+        raise HTTPException(422, "Power-on behavior is a Zigbee plug setting")
+    return plug
+
+
+@router.get("/{plug_id}/power-on-behavior")
+async def get_power_on_behavior(
+    plug_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
+):
+    """What the relay does when mains power returns — read from the device.
+
+    ``mode`` is None when the plug is unreachable or does not implement the
+    attribute; the UI says so instead of showing a guessed value.
+    """
+    plug = await _zigbee_plug_or_422(db, plug_id)
+    from backend.app.services.zigbee.driver import zigbee_smart_plug_service
+
+    mode = await zigbee_smart_plug_service.read_power_on_behavior(plug)
+    return {"mode": mode, "supported": mode is not None}
+
+
+@router.put("/{plug_id}/power-on-behavior")
+async def set_power_on_behavior(
+    plug_id: int,
+    data: PowerOnBehaviorUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_UPDATE),
+):
+    """Write the power-on state to the device. 502 unless it acknowledged —
+    a stored-but-not-applied setting here would defeat its whole purpose."""
+    plug = await _zigbee_plug_or_422(db, plug_id)
+    from backend.app.services.zigbee.driver import zigbee_smart_plug_service
+
+    ok = await zigbee_smart_plug_service.write_power_on_behavior(plug, data.mode)
+    if not ok:
+        raise HTTPException(502, "The plug did not acknowledge the setting — is it powered and in range?")
+    return {"mode": data.mode, "supported": True}
 
 
 async def _void_inflight_energy(db: AsyncSession, printer_id: int, plug_id: int) -> int:
