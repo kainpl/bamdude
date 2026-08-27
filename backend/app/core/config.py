@@ -8,16 +8,20 @@ APP_VERSION = "0.5.4"
 GITHUB_REPO = "kainpl/bamdude"
 
 # Bug-report relay endpoint. The relay holds the GitHub PAT and creates issues
-# against ``GITHUB_REPO`` on behalf of users. Default points at the bamdude.top
-# landing-site relay; self-hosters can override to run their own (~50 LOC FastAPI
-# forwarder) or set to empty string to disable the in-app bug-report UI.
-BUG_REPORT_RELAY_URL = os.environ.get("BUG_REPORT_RELAY_URL", "https://bamdude.top/api/bug-report")
+# against ``GITHUB_REPO`` on behalf of users. Default points at the BamDude Cloud
+# portal relay (cloud.bamdude.top); the old ``bamdude.top`` URL still answers via
+# an nginx bridge for installs that predate this default, so nothing breaks on
+# upgrade. Self-hosters can override to run their own (~50 LOC FastAPI forwarder)
+# or set to empty string to disable the in-app bug-report UI.
+BUG_REPORT_RELAY_URL = os.environ.get("BUG_REPORT_RELAY_URL", "https://cloud.bamdude.top/api/bug-report")
 
 # Anonymized telemetry endpoint (opt-out). Sends a daily anonymized snapshot
 # (version / platform / aggregate counts / feature flags) keyed by a random
-# install id. Override the URL to point at your own collector, or set
+# install id. Default points at the BamDude Cloud portal (cloud.bamdude.top); the
+# old ``bamdude.top`` URL still answers via the nginx bridge for older installs.
+# Override the URL to point at your own collector, or set
 # ``TELEMETRY_DISABLED=true`` (or the in-app Settings toggle) to turn it off.
-TELEMETRY_RELAY_URL = os.environ.get("TELEMETRY_RELAY_URL", "https://bamdude.top/api/telemetry")
+TELEMETRY_RELAY_URL = os.environ.get("TELEMETRY_RELAY_URL", "https://cloud.bamdude.top/api/telemetry")
 TELEMETRY_DISABLED = os.environ.get("TELEMETRY_DISABLED", "").strip().lower() in ("1", "true", "yes")
 
 # App directory - where the application is installed (for static files)

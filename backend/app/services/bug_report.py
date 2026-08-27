@@ -1,6 +1,6 @@
-"""Bug report service — posts to the bamdude.top relay which holds the GitHub PAT.
+"""Bug report service — posts to the BamDude Cloud relay which holds the GitHub PAT.
 
-Self-hosters who don't want to rely on the public bamdude.top relay can override
+Self-hosters who don't want to rely on the public BamDude Cloud relay can override
 ``BUG_REPORT_RELAY_URL`` to point at their own relay (~50 LOC FastAPI service that
 forwards to a maintainer-controlled GitHub PAT). The BamDude instance never holds
 a PAT directly — that asymmetry is what keeps the feature safe to enable by
@@ -41,7 +41,7 @@ async def submit_report(
     screenshot_base64: str | None,
     support_info: dict | None,
 ) -> dict:
-    """Submit a bug report via the configured relay (default ``https://bamdude.top/api/bug-report``)."""
+    """Submit a bug report via the configured relay (default ``https://cloud.bamdude.top/api/bug-report``)."""
     if not _check_rate_limit():
         return {
             "success": False,
