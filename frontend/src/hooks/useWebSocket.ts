@@ -583,8 +583,15 @@ export function useWebSocket() {
         break;
 
       case 'spool_usage_logged':
-        // Filament consumption recorded - refresh spool data
+        // Filament consumption recorded - refresh spool data. The slot hover
+        // cards read the spool THROUGH the assignment row (its embedded spool
+        // carries the weight), so the assignments queries must refresh too —
+        // without them the card showed the pre-print weight until the 30s
+        // staleTime lapsed (2026-08-28).
         debouncedInvalidate('inventory-spools');
+        debouncedInvalidate('spool-assignments');
+        debouncedInvalidate('spoolman-inventory-spools');
+        debouncedInvalidate('spoolman-slot-assignments');
         break;
 
       case 'inventory_changed':
@@ -592,6 +599,7 @@ export function useWebSocket() {
         // inventory across all tabs plus the storage-location catalog counts.
         debouncedInvalidate('inventory-spools');
         debouncedInvalidate('spoolman-inventory-spools');
+        debouncedInvalidate('spool-assignments');
         debouncedInvalidate(inventoryLocationsQueryKey[0]);
         break;
 

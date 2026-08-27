@@ -216,6 +216,8 @@
 
 - **The saved print profile now remembers unticked event macros.** The print/queue dialog sent the macro selection with every profile save, but the server-side schema silently dropped that section — so while the toggles and swap macros round-tripped fine, an unticked start/end macro came back ticked on every open, in both the print dialog and the add-to-queue dialog. The selection is stored as exceptions (the *deselected* macros), so a macro created later still arrives ticked; profiles saved before the fix simply parse with no exceptions.
 
+- **Slot hover cards show the fresh spool weight right after a print.** Completion broadcasts the usage event, but only the inventory list refreshed on it — the hover cards read the spool through the assignment row, which kept its pre-print weight for up to half a minute. The assignment queries now refresh on the same event.
+
 - **A dual-nozzle printer's card lists both nozzles.** The spec line under the printer name showed only the left nozzle's diameter; it now shows all of them (`0.4/0.4mm`), with the hover naming each side's nozzle type.
 
 - **An unreachable printer no longer conjures a phantom "Ext-L missing spool" warning.** The AMS-less rescue (a mapped `0` means the external holder on machines with no AMS) treated "no printer state yet" the same as "no AMS units" — so during a reconnect gap an ordinary AMS-slot print could be flagged as missing an external assignment. The flip now happens only when the machine positively reports no AMS; an unknown state changes nothing.
