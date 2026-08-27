@@ -130,13 +130,18 @@ async def notify_missing_spool_assignments_on_print_start(
     if 0 in used_global_trays:
         state_for_mapping = printer_manager.get_status(printer_id)
         raw = getattr(state_for_mapping, "raw_data", None) if state_for_mapping else None
-        ams_raw = raw.get("ams", {}) if raw else {}
-        ams_units = (
-            ams_raw.get("ams", []) if isinstance(ams_raw, dict) else ams_raw if isinstance(ams_raw, list) else []
-        )
-        if not ams_units:
-            used_global_trays.discard(0)
-            used_global_trays.add(254)
+        # Flip 0 -> external only when the machine POSITIVELY reports no AMS
+        # units. No state at all (reconnect gap) is unknown, not AMS-less —
+        # assuming there flagged a phantom "Ext-L" missing on ordinary
+        # AMS0-T0 prints whenever the status had not arrived yet.
+        if raw is not None:
+            ams_raw = raw.get("ams", {})
+            ams_units = (
+                ams_raw.get("ams", []) if isinstance(ams_raw, dict) else ams_raw if isinstance(ams_raw, list) else []
+            )
+            if not ams_units:
+                used_global_trays.discard(0)
+                used_global_trays.add(254)
     if not used_global_trays:
         return
 
