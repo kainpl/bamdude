@@ -1465,7 +1465,9 @@ async def connect_printer(
     if not printer:
         raise HTTPException(404, "Printer not found")
 
+    logger.info("Manual connect requested for printer %d (%s)", printer.id, printer.name)
     success = await printer_manager.connect_printer(printer)
+    logger.info("Manual connect for printer %d (%s): %s", printer.id, printer.name, "ok" if success else "FAILED")
     return {"connected": success}
 
 
@@ -1481,6 +1483,7 @@ async def disconnect_printer(
     if not printer:
         raise HTTPException(404, "Printer not found")
 
+    logger.info("Manual disconnect requested for printer %d (%s)", printer.id, printer.name)
     printer_manager.disconnect_printer(printer_id)
     return {"connected": False}
 

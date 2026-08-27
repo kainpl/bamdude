@@ -212,6 +212,8 @@
 
 - **The saved print profile now remembers unticked event macros.** The print/queue dialog sent the macro selection with every profile save, but the server-side schema silently dropped that section — so while the toggles and swap macros round-tripped fine, an unticked start/end macro came back ticked on every open, in both the print dialog and the add-to-queue dialog. The selection is stored as exceptions (the *deselected* macros), so a macro created later still arrives ticked; profiles saved before the fix simply parse with no exceptions.
 
+- **The printer menu's Reconnect/Disconnect now say so in the log.** The manual connect and disconnect routes did their work silently — the only trace was an access-log line, so a reconnect pressed against a flapping printer looked like a dead button. Both actions now log the request and the connect logs its outcome.
+
 - **An HMS error no longer flashes "Unknown HMS code" before its real description.** The per-model HMS catalogue is fetched once per session, and on the first error dialog the row asserted "unknown" while that fetch was still in flight, then blinked into the correct text a moment later. While the catalogue is loading the row now says so; "unknown" is only claimed once the catalogue has arrived and genuinely lacks the code.
 
 - **The Windows installer's shortcuts now carry the BamDude icon.** The bundled `.ico` still held the upstream Bambuddy logo, so the Start-Menu and desktop shortcuts (and Add/Remove Programs) showed the wrong identity. Regenerated from the app's own icon.
