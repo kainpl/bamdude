@@ -2934,6 +2934,9 @@ function PrinterCard({
   return (
     <Card
       id={`printer-${printer.id}`}
+      // The click handler below only acts on modifier clicks — a plain click
+      // is a no-op, so the card must not wear a link cursor.
+      pointer={false}
       className={`relative scroll-mt-20 ${isSelected ? 'ring-2 ring-bambu-green' : ''}`}
       style={buildCardScaleStyle(cardSize)}
       onDragEnter={handleCardDragEnter}
