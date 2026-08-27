@@ -5641,6 +5641,47 @@ class TestJournalTrayGate:
             assert client._is_journal_tray(tn) is False, tn
 
 
+class TestPrintErrorIsAScalarRegister:
+    """print_error supersedes its previous value on every push — including 0,
+    the firmware's "cleared". Append-only left a resolved fault on the card
+    until some later push happened to carry hms[] (stuck error, 2026-08-27),
+    and a stale 8-char runout code kept the runout detector armed."""
+
+    @pytest.fixture
+    def client(self):
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        c = BambuMQTTClient(ip_address="192.168.1.51", serial_number="SCALAR01", access_code="12345678")
+        c._was_running = True
+        c._completion_triggered = False
+        c.state.state = "RUNNING"
+        c.state.layer_num = 10
+        c.state.raw_data = {}
+        return c
+
+    def test_zero_clears_the_previous_print_error(self, client):
+        client._process_message({"print": {"print_error": 0x05004030}})
+        assert [e.full_code for e in client.state.hms_errors] == ["05004030"]
+        client._process_message({"print": {"print_error": 0}})
+        assert client.state.hms_errors == []
+
+    def test_a_new_value_replaces_the_old_one(self, client):
+        client._process_message({"print": {"print_error": 0x05004030}})
+        client._process_message({"print": {"print_error": 0x03008015}})
+        assert [e.full_code for e in client.state.hms_errors] == ["03008015"]
+
+    def test_hms_array_entries_survive_a_print_error_clear(self, client):
+        # 16-char hms[] faults belong to the hms channel and only IT clears them.
+        client._process_message({"print": {"hms": [{"attr": 0x07002000, "code": 0x00020001}]}})
+        client._process_message({"print": {"print_error": 0}})
+        assert [e.full_code for e in client.state.hms_errors] == ["0700200000020001"]
+
+    def test_a_push_without_the_field_changes_nothing(self, client):
+        client._process_message({"print": {"print_error": 0x05004030}})
+        client._process_message({"print": {"mc_percent": 50}})
+        assert [e.full_code for e in client.state.hms_errors] == ["05004030"]
+
+
 class TestExternalRunoutTrayClamp:
     """Measured on an A1 mini 2026-08-23: the generic 07FF8011 print_error
     (nominally 'right external' = 255) fires beside the mini's own

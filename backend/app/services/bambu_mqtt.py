@@ -5601,6 +5601,16 @@ class BambuMQTTClient:
         # Format on printer screen: [0500-8061] -> short code: 0500_8061
         if "print_error" in data:
             print_error = data["print_error"]
+            # ``print_error`` is a SCALAR register: whatever 8-char entry the
+            # previous value put into the list is superseded by this push —
+            # including by 0, the firmware's "cleared". The hms[] list above
+            # rebuilds wholesale for the same reason; append-only here left a
+            # resolved fault on the card until some later push happened to
+            # carry hms[] (stuck error, measured live 2026-08-27) — and a
+            # stale 8-char runout code also kept the runout detector armed.
+            # print_error entries are the 8-char full_codes; hms[] entries are
+            # 16-char and are not touched here.
+            self.state.hms_errors = [e for e in self.state.hms_errors if len(e.full_code or "") != 8]
             if print_error and print_error != 0:
                 # Extract components: MMMMEEEE -> MMMM_EEEE
                 module = (print_error >> 16) & 0xFFFF  # High 16 bits (e.g., 0x0500)
