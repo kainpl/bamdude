@@ -86,6 +86,11 @@ class AutoQueueItem(Base):
     # ``PrintQueueItem.selected_macro_ids``.
     selected_macro_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # The slicer's per-filament physical-nozzle array (#1780), captured by a
+    # VP in auto_queue mode and promoted verbatim onto the per-printer item —
+    # see ``PrintQueueItem.nozzle_mapping`` for the full story. m156.
+    nozzle_mapping: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Scheduling
     position: Mapped[int] = mapped_column(Integer, default=0)
     scheduled_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

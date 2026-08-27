@@ -263,6 +263,8 @@ class VirtualPrinterInstance:
         # ``_RECENT_QUEUE_ITEM_TTL`` are evicted opportunistically on each
         # queue-add.
         self._recent_queue_items: dict[str, tuple[list[int], float]] = {}
+        # Same shape, auto_queue flavour — ids of just-committed AutoQueueItems.
+        self._recent_auto_items: dict[str, tuple[list[int], float]] = {}
 
         # Per-instance services
         self._proxy: SlicerProxyManager | None = None
@@ -400,7 +402,12 @@ class VirtualPrinterInstance:
         logger.info("[VP %s] Print command for: %s", self.name, filename)
         if not self.is_proxy and filename and self._mqtt is not None:
             self._schedule_finish_release(filename)
-        if self.mode != "print_queue":
+        # Both queue-building modes consume the stash. auto_queue used to be
+        # excluded here, which was the ROOT of the "options don't reach the
+        # farm" hole: nothing was ever captured for it, so the router row was
+        # built from column defaults and the distributor faithfully copied
+        # those defaults to the real printer.
+        if self.mode not in ("print_queue", "auto_queue"):
             return
         # Stash key must match ``_add_to_print_queue``'s lookup, which uses
         # ``file_path.name`` (the FTP filename WITH extension). The slicer's
@@ -429,7 +436,68 @@ class VirtualPrinterInstance:
         # slicer's pick — retroactively stamp the slicer-driven fields so the
         # dispatcher honours the user's choice. Covers the #1780 round-3 race
         # where Bambu Studio's MQTT lands just past the bumped wait ceiling.
-        await self._restamp_recent_queue_item(stash_key, data)
+        if self.mode == "auto_queue":
+            await self._restamp_recent_auto_item(stash_key, data)
+        else:
+            await self._restamp_recent_queue_item(stash_key, data)
+
+    async def _restamp_recent_auto_item(self, stash_key: str, data: dict) -> None:
+        """Auto-queue flavour of the late-MQTT retro stamp (see below).
+
+        Patches the slicer-driven fields onto still-``pending`` AutoQueueItems
+        the wait window missed. Safe against the distributor for the same
+        reason as the print_queue version: an assigned row is no longer
+        ``pending`` and is left alone.
+        """
+        if not self._session_factory:
+            return
+        entry = self._recent_auto_items.get(stash_key)
+        if entry is None:
+            return
+        item_ids, committed_at = entry
+        if time.monotonic() - committed_at > _RECENT_QUEUE_ITEM_TTL:
+            self._recent_auto_items.pop(stash_key, None)
+            return
+
+        patch: dict = {}
+        for mqtt_field, column in (
+            ("bed_leveling", "bed_levelling"),
+            ("flow_cali", "flow_cali"),
+            ("layer_inspect", "layer_inspect"),
+            ("timelapse", "timelapse"),
+            ("use_ams", "use_ams"),
+        ):
+            if mqtt_field in data:
+                patch[column] = bool(data[mqtt_field])
+        if "timelapse_storage" in data:
+            patch["timelapse_storage"] = data.get("timelapse_storage")
+        nozzle_mapping_json = self._parse_nozzle_mapping(data)
+        if nozzle_mapping_json is not None:
+            patch["nozzle_mapping"] = nozzle_mapping_json
+        if not patch:
+            return
+
+        from sqlalchemy import select as sa_select
+
+        from backend.app.models.auto_queue import AutoQueueItem
+
+        async with self._session_factory() as db:
+            result = await db.execute(
+                sa_select(AutoQueueItem).where(AutoQueueItem.id.in_(item_ids), AutoQueueItem.status == "pending")
+            )
+            rows = list(result.scalars().all())
+            for row in rows:
+                for column, value in patch.items():
+                    setattr(row, column, value)
+            if rows:
+                await db.commit()
+                logger.info(
+                    "[VP %s] Retro-stamped slicer options onto %d pending auto-queue item(s) for %r",
+                    self.name,
+                    len(rows),
+                    stash_key,
+                )
+        self._recent_auto_items.pop(stash_key, None)
 
     async def _restamp_recent_queue_item(self, stash_key: str, data: dict) -> None:
         """Patch slicer-driven fields onto a queue item the MQTT command missed.
@@ -821,6 +889,65 @@ class VirtualPrinterInstance:
             logger.error("Error saving to library: %s", e)
             return None
 
+    async def _take_slicer_options(self, filename: str) -> dict | None:
+        """Pop the stashed slicer ``project_file`` options, waiting briefly.
+
+        Slicers send the FTP upload first and the MQTT command immediately
+        after (typical lag a few hundred ms; #1780 round 3 measured 2.085 s).
+        Shared by BOTH queue-building modes — the auto_queue path not reading
+        this stash was the vault-tracked hole where a farm-distributed print
+        lost every option the operator picked in the Send dialog. The wait is
+        skipped when no MQTT server is attached (unit tests calling handlers
+        directly).
+        """
+        slicer_opts = self._slicer_print_options.pop(filename, None)
+        if slicer_opts is None and self._mqtt is not None:
+            event = asyncio.Event()
+            self._slicer_print_options_events[filename] = event
+            try:
+                await asyncio.wait_for(event.wait(), timeout=_SLICER_OPTIONS_WAIT_TIMEOUT)
+                slicer_opts = self._slicer_print_options.pop(filename, None)
+            except TimeoutError:
+                slicer_opts = None
+            finally:
+                self._slicer_print_options_events.pop(filename, None)
+        # If the cache still misses, workflow flags / nozzle pick will silently
+        # fall back to settings defaults. Surface the missed key so a future
+        # stash/lookup mismatch (the #1780 root cause) is obvious in the log
+        # instead of needing a wire capture to diagnose.
+        if slicer_opts is None:
+            logger.debug(
+                "[VP %s] No slicer options cached for %r (cache keys: %s); "
+                "workflow flags + nozzle pick will fall back to settings defaults.",
+                self.name,
+                filename,
+                sorted(self._slicer_print_options.keys()),
+            )
+        return slicer_opts
+
+    @staticmethod
+    def _parse_nozzle_mapping(slicer_opts: dict | None):
+        """The slicer's nozzle pick as a JSON string for a queue row, or None.
+
+        Accepts a JSON-encoded string defensively; fail-open (drop) on bad
+        JSON so the firmware auto-picks rather than the dispatch breaking.
+        """
+        import json
+
+        if slicer_opts is None:
+            return None
+        raw = slicer_opts.get("nozzle_mapping")
+        if raw is None:
+            return None
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError:
+                return None
+        if isinstance(raw, list) and raw:
+            return json.dumps(raw)
+        return None
+
     async def _add_to_print_queue(self, file_path: Path, source_ip: str) -> None:
         """Save file to library and add to a per-printer queue.
 
@@ -859,29 +986,7 @@ class VirtualPrinterInstance:
         # attached — covers unit tests that invoke ``_add_to_print_queue``
         # directly without going through ``on_print_command``, so they
         # don't pay the wait tax.
-        slicer_opts = self._slicer_print_options.pop(file_path.name, None)
-        if slicer_opts is None and self._mqtt is not None:
-            event = asyncio.Event()
-            self._slicer_print_options_events[file_path.name] = event
-            try:
-                await asyncio.wait_for(event.wait(), timeout=_SLICER_OPTIONS_WAIT_TIMEOUT)
-                slicer_opts = self._slicer_print_options.pop(file_path.name, None)
-            except TimeoutError:
-                slicer_opts = None
-            finally:
-                self._slicer_print_options_events.pop(file_path.name, None)
-        # If the cache still misses, queued workflow flags / nozzle pick will
-        # silently fall back to settings defaults. Surface the missed key so a
-        # future stash/lookup mismatch (the #1780 root cause) is obvious in the
-        # log instead of needing a wire capture to diagnose.
-        if slicer_opts is None:
-            logger.debug(
-                "[VP %s] No slicer options cached for %r (cache keys: %s); "
-                "workflow flags + nozzle pick will fall back to settings defaults.",
-                self.name,
-                file_path.name,
-                sorted(self._slicer_print_options.keys()),
-            )
+        slicer_opts = await self._take_slicer_options(file_path.name)
 
         try:
             # Step 1: save to library (handles file copy + metadata extraction
@@ -1130,21 +1235,35 @@ class VirtualPrinterInstance:
             return None
         from sqlalchemy import select as sa_select
 
-        from backend.app.models.print_options_preference import PrintOptionsPreference
         from backend.app.models.printer import Printer
 
         model = await db.scalar(sa_select(Printer.model).where(Printer.id == printer_id))
+        return await VirtualPrinterInstance._load_system_print_options_for_model(db, model)
+
+    @staticmethod
+    async def _load_system_print_options_for_model(db, model: str | None) -> dict | None:
+        """The system fallback row keyed directly by model — the auto_queue
+        path has a TARGET MODEL but no printer yet, so the printer_id wrapper
+        above cannot serve it."""
         if not model:
             return None
+        from sqlalchemy import select as sa_select
+
+        from backend.app.models.print_options_preference import PrintOptionsPreference
+
         pref = await db.scalar(
             sa_select(PrintOptionsPreference).where(
                 PrintOptionsPreference.user_id.is_(None),
                 PrintOptionsPreference.printer_model == model,
             )
         )
-        if pref is None or not isinstance(pref.options, dict):
+        # getattr-defensive: whatever came back that is not a preference row
+        # (None, or a stub in tests whose session answers every scalar the
+        # same) reads as "no system row" rather than raising.
+        options = getattr(pref, "options", None) if pref is not None else None
+        if not isinstance(options, dict):
             return None
-        print_options = pref.options.get("print_options")
+        print_options = options.get("print_options")
         return print_options if isinstance(print_options, dict) else None
 
     async def _add_to_auto_queue(self, file_path: Path, source_ip: str) -> None:
@@ -1171,6 +1290,11 @@ class VirtualPrinterInstance:
             except OSError:
                 pass
             return
+
+        # Same stash, same wait, same key as ``_add_to_print_queue`` — the
+        # asymmetry here was the vault-tracked hole where a farm-distributed
+        # print lost every option picked in the slicer's Send dialog.
+        slicer_opts = await self._take_slicer_options(file_path.name)
 
         try:
             # Step 1: save to library. Returns the persisted LibraryFile or
@@ -1232,6 +1356,20 @@ class VirtualPrinterInstance:
                 sliced_model = library_file.file_metadata.get("sliced_for_model")
 
             async with self._session_factory() as db:
+                # Precedence per flag: slicer value -> system fallback row for
+                # the TARGET MODEL -> column default — the same ladder as
+                # ``_add_to_print_queue``, resolved before a printer exists.
+                system_opts = await self._load_system_print_options_for_model(
+                    db, requirements.target_model or sliced_model
+                )
+                bed_levelling = _resolve_print_option(slicer_opts, system_opts, "bed_leveling", "bed_levelling", True)
+                flow_cali = _resolve_print_option(slicer_opts, system_opts, "flow_cali", "flow_cali", True)
+                layer_inspect = _resolve_print_option(slicer_opts, system_opts, "layer_inspect", "layer_inspect", False)
+                timelapse = _resolve_print_option(slicer_opts, system_opts, "timelapse", "timelapse", False)
+                use_ams = bool(slicer_opts["use_ams"]) if slicer_opts and "use_ams" in slicer_opts else True
+                timelapse_storage = (slicer_opts or {}).get("timelapse_storage")
+                nozzle_mapping_json = self._parse_nozzle_mapping(slicer_opts)
+
                 # Position at the end of pending items so VP-uploads don't
                 # jump ahead of UI submissions.
                 max_pos = await db.scalar(
@@ -1264,14 +1402,13 @@ class VirtualPrinterInstance:
                     position=next_pos,
                     status="pending",
                     manual_start=not self.auto_dispatch,
-                    # ⚠️ No ``timelapse_storage`` here, and that is not an
-                    # oversight: this path reads no slicer options at all. Unlike
-                    # ``_add_to_print_queue`` it never pops
-                    # ``_slicer_print_options``, so bed levelling, flow cali,
-                    # layer inspect and the timelapse switch itself all come
-                    # from column defaults too. Adding one of the six here would
-                    # need that plumbing and would look like the other five
-                    # already worked.
+                    bed_levelling=bed_levelling,
+                    flow_cali=flow_cali,
+                    layer_inspect=layer_inspect,
+                    timelapse=timelapse,
+                    timelapse_storage=timelapse_storage,
+                    use_ams=use_ams,
+                    nozzle_mapping=nozzle_mapping_json,
                     # Per-VP auto-print G-code injection opt-in (#1516). Copied
                     # onto the per-printer print_queue item when the scheduler
                     # promotes this router row. No-op unless snippets exist.
@@ -1279,6 +1416,10 @@ class VirtualPrinterInstance:
                 )
                 db.add(item)
                 await db.commit()
+                # Same late-MQTT insurance as the print_queue path: if the
+                # slicer's command lands after the wait window, the retro
+                # stamp patches this still-pending row (see #1780 round 3).
+                self._recent_auto_items[file_path.name] = ([item.id], time.monotonic())
                 logger.info(
                     "[VP %s] Added to auto-queue (item %s, library_file=%s, target_model=%s, "
                     "filaments=%s, force_color=%s)",

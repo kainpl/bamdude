@@ -431,6 +431,7 @@ class AutoQueueScheduler:
             require_previous_success=item.require_previous_success,
             auto_off_after=item.auto_off_after,
             ams_mapping=ams_mapping_json,
+            nozzle_mapping=item.nozzle_mapping,
             plate_id=item.plate_id,
             bed_levelling=item.bed_levelling,
             flow_cali=item.flow_cali,
