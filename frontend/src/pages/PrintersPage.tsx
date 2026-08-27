@@ -3098,11 +3098,21 @@ function PrinterCard({
                     </span>
                   )}
                   {printer.model || 'Unknown Model'}
-                  {viewMode === 'expanded' && status?.nozzles && status.nozzles[0]?.nozzle_diameter && (
-                    <span className="text-bambu-gray" title={status.nozzles[0].nozzle_type || 'Nozzle'}>
-                      • {status.nozzles[0].nozzle_diameter}mm
-                    </span>
-                  )}
+                  {viewMode === 'expanded' && (() => {
+                    // Every nozzle, not [0]: a dual-nozzle machine showed only
+                    // its left one. Index 0 = left/primary, 1 = right.
+                    const nozzles = (status?.nozzles ?? []).filter((n) => n.nozzle_diameter);
+                    if (nozzles.length === 0) return null;
+                    const side = (i: number) => (nozzles.length > 1 ? (i === 0 ? 'L: ' : 'R: ') : '');
+                    return (
+                      <span
+                        className="text-bambu-gray"
+                        title={nozzles.map((n, i) => `${side(i)}${n.nozzle_type || 'Nozzle'}`).join(' · ')}
+                      >
+                        • {nozzles.map((n) => n.nozzle_diameter).join('/')}mm
+                      </span>
+                    );
+                  })()}
                   {viewMode === 'expanded' && maintenanceInfo && maintenanceInfo.total_print_hours > 0 && (
                     <span className="text-bambu-gray">
                       <Clock className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)] inline-block mr-1" />
