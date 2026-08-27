@@ -1615,7 +1615,11 @@ async def _track_from_3mf(
     # spool was charged the lot. The queue item's copy is the mapping the print
     # was dispatched with, and it is in the database, so it also survives a
     # restart mid-print.
-    if not slot_to_tray and archive_id:
+    # Fetched both as the fallback source AND to un-lose the -1 external
+    # markers the send-side remap put into the command mapping — on a
+    # dual-external machine only the queue copy still names WHICH external.
+    _needs_queue = not slot_to_tray or any(m == -1 for m in slot_to_tray if isinstance(m, int))
+    if _needs_queue and archive_id:
         queue_result = await db.execute(
             select(PrintQueueItem)
             .where(PrintQueueItem.archive_id == archive_id)
@@ -1627,10 +1631,19 @@ async def _track_from_3mf(
         queue_item = queue_result.scalars().first()
         if queue_item and queue_item.ams_mapping:
             try:
-                slot_to_tray = json.loads(queue_item.ams_mapping)
-                mapping_source = "queue"
+                queue_map = json.loads(queue_item.ams_mapping)
             except (json.JSONDecodeError, TypeError):
-                pass
+                queue_map = None
+            if queue_map and not slot_to_tray:
+                slot_to_tray = queue_map
+                mapping_source = "queue"
+            elif queue_map and slot_to_tray:
+                from backend.app.services.spoolman_tracking import unlose_external_markers
+
+                merged = unlose_external_markers(slot_to_tray, queue_map)
+                if merged is not slot_to_tray:
+                    slot_to_tray = merged
+                    mapping_source = "print_cmd+queue_external"
 
     # 3. Try MQTT mapping field from printer state (universal, all print sources)
     if not slot_to_tray:

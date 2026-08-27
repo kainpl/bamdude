@@ -441,7 +441,7 @@ class TestTrackFrom3MF:
         archive.file_path = "archives/test.3mf"
 
         db = AsyncMock()
-        # no queue lookup: the print-cmd mapping short-circuits it
+        # no queue lookup: [0] carries no lossy external marker
         db.execute = AsyncMock(
             side_effect=[
                 MagicMock(scalar_one_or_none=MagicMock(return_value=archive)),
@@ -491,10 +491,12 @@ class TestTrackFrom3MF:
         archive.file_path = "archives/test.3mf"
 
         db = AsyncMock()
-        # no queue lookup: the print-cmd mapping short-circuits it
+        # -1 also asks the queue for the pre-remap mapping (dual-external
+        # disambiguation) — no queue row here, so the (254, 255) scan resolves.
         db.execute = AsyncMock(
             side_effect=[
                 MagicMock(scalar_one_or_none=MagicMock(return_value=archive)),
+                _no_queue_item(),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=assignment)),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=spool)),
             ]
@@ -532,6 +534,77 @@ class TestTrackFrom3MF:
         assert len(results) == 1
         assert (results[0]["ams_id"], results[0]["tray_id"]) == (255, 0)
         assert results[0]["spool_id"] == 276
+
+    @pytest.mark.asyncio
+    async def test_minus_one_on_a_dual_external_machine_takes_the_queue_items_side(self):
+        """X2D two-nozzle two-color (live 2026-08-27, archive 775): the queue
+        dispatched [0, 255] (ext-2, where the assignment lives) but the send
+        path remapped it to [0, -1]. Both externals exist, so the (254, 255)
+        scan would pick 254 and charge the LEFT holder's spool — here a
+        deliberately planted phantom. The queue copy names the side."""
+        blue = _make_spool(id=219, label_weight=1000, weight_used=0)
+        blue_assignment = _make_assignment(spool_id=219, ams_id=0, tray_id=0)
+        black = _make_spool(id=26, label_weight=3000, weight_used=0)
+        black_assignment = _make_assignment(spool_id=26, ams_id=255, tray_id=1)
+        archive = MagicMock()
+        archive.file_path = "archives/test.3mf"
+
+        queue_item = MagicMock()
+        queue_item.ams_mapping = "[0, 255]"
+        queue_result = MagicMock()
+        queue_result.scalars.return_value.first.return_value = queue_item
+
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[
+                MagicMock(scalar_one_or_none=MagicMock(return_value=archive)),
+                queue_result,
+                MagicMock(scalar_one_or_none=MagicMock(return_value=blue_assignment)),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=blue)),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=black_assignment)),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=black)),
+            ]
+        )
+
+        state = _make_printer_state(
+            [{"id": 0, "tray": [{"id": 0, "tray_type": "PETG"}]}],
+            tray_now=254,
+        )
+        # BOTH externals published — the ambiguity this test exists for.
+        state.raw_data["vt_tray"] = [
+            {"id": 254, "tray_type": "PETG"},
+            {"id": 255, "tray_type": "PETG"},
+        ]
+        pm = _make_printer_manager(state)
+        filament_usage = [
+            {"slot_id": 1, "used_g": 120.0, "type": "PETG", "color": ""},
+            {"slot_id": 2, "used_g": 80.0, "type": "PETG", "color": ""},
+        ]
+
+        with (
+            patch("backend.app.core.config.settings") as mock_settings,
+            patch("backend.app.utils.threemf_tools.extract_filament_usage_from_3mf", return_value=filament_usage),
+        ):
+            mock_path = MagicMock()
+            mock_path.exists.return_value = True
+            mock_settings.base_dir.__truediv__ = MagicMock(return_value=mock_path)
+
+            results = await _track_from_3mf(
+                printer_id=10,
+                archive_id=775,
+                status="completed",
+                print_name="two-color",
+                handled_trays=set(),
+                printer_manager=pm,
+                db=db,
+                ams_mapping=[0, -1],
+            )
+
+        assert len(results) == 2
+        by_spool = {r["spool_id"]: r for r in results}
+        assert set(by_spool) == {219, 26}
+        # The black slot landed on ext-2 (tray_id 1), never the left holder.
+        assert (by_spool[26]["ams_id"], by_spool[26]["tray_id"]) == (255, 1)
 
     @pytest.mark.asyncio
     async def test_slot_to_tray_mapping(self):

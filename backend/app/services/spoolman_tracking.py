@@ -166,6 +166,29 @@ def _resolve_global_tray_id(slot_id: int, slot_to_tray: list | None, ams_trays: 
     return slot_id - 1
 
 
+def unlose_external_markers(slot_to_tray: list | None, queue_mapping: list | None) -> list | None:
+    """Restore concrete external ids the send-side remap destroyed.
+
+    BambuStudio converts 254/255 to ``-1`` in the COMMAND's ams_mapping before
+    sending. On a single-external machine the (254, 255) scan recovers it, but
+    a dual-external machine (X2D / H2 family) makes ``-1`` ambiguous — and the
+    queue item still carries the pre-remap mapping, so a concrete id there
+    outranks guessing (measured live 2026-08-27, archive 775: ``[0, 255]``
+    went out as ``[0, -1]`` and the scan would have charged the LEFT holder's
+    spool for a right-holder print). Slots the queue cannot answer for keep
+    their ``-1`` and take the scan as before.
+    """
+    if not slot_to_tray or not queue_mapping:
+        return slot_to_tray
+    merged = list(slot_to_tray)
+    changed = False
+    for i, mapped in enumerate(merged):
+        if mapped == -1 and i < len(queue_mapping) and isinstance(queue_mapping[i], int) and queue_mapping[i] >= 254:
+            merged[i] = queue_mapping[i]
+            changed = True
+    return merged if changed else slot_to_tray
+
+
 def build_ams_tray_lookup(raw_data: dict) -> dict[int, dict]:
     """Build lookup of global_tray_id -> tray info from printer state.
 
@@ -356,13 +379,19 @@ async def store_print_data(
         return
 
     # Prefer the explicit mapping captured from the print command, then fall back
-    # to any queue mapping stored for scheduled/reprint jobs.
-    slot_to_tray = ams_mapping if ams_mapping is not None else None
-    if not slot_to_tray and queue_item and queue_item.ams_mapping:
+    # to any queue mapping stored for scheduled/reprint jobs. When the command
+    # mapping carries the lossy -1 external marker, the queue copy un-loses it.
+    queue_map = None
+    if queue_item and queue_item.ams_mapping:
         try:
-            slot_to_tray = json.loads(queue_item.ams_mapping)
+            queue_map = json.loads(queue_item.ams_mapping)
         except json.JSONDecodeError:
             pass  # Ignore malformed AMS mapping; fall back to default slot assignment
+    slot_to_tray = ams_mapping if ams_mapping is not None else None
+    if not slot_to_tray:
+        slot_to_tray = queue_map
+    else:
+        slot_to_tray = unlose_external_markers(slot_to_tray, queue_map)
 
     # Delete any existing row for this printer/archive (shouldn't exist, but just in case)
     await db.execute(
