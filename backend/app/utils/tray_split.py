@@ -113,10 +113,18 @@ def compute_layer_segment_grams(
             # Last segment: remainder to avoid rounding drift.
             segment_grams = total_weight - sum_previous
         elif layer_usage:
+            # Proportional along the slot's own gcode timeline, scaled to the
+            # total: absolute mm→grams silently dumped the whole flush budget
+            # (which never appears as gcode extrusion) onto the LAST segment.
             seg_end_layer = boundary_layers[seg_idx + 1]
-            mm_at_start = threemf_tools.get_cumulative_usage_at_layer(layer_usage, seg_start_layer).get(filament_id, 0)
-            mm_at_end = threemf_tools.get_cumulative_usage_at_layer(layer_usage, seg_end_layer).get(filament_id, 0)
-            segment_grams = threemf_tools.mm_to_grams(mm_at_end - mm_at_start, diameter, density)
+            f_start = threemf_tools.slot_progress_fraction(layer_usage, filament_id, seg_start_layer)
+            f_end = threemf_tools.slot_progress_fraction(layer_usage, filament_id, seg_end_layer)
+            if f_start is not None and f_end is not None:
+                segment_grams = total_weight * max(0.0, f_end - f_start)
+            elif denom > 0:
+                segment_grams = total_weight * (seg_end_layer - seg_start_layer) / denom
+            else:
+                segment_grams = total_weight / n_segments
         else:
             # No per-layer data: linear fallback by layer ratio (#1771).
             seg_end_layer = boundary_layers[seg_idx + 1]

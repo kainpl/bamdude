@@ -31,9 +31,13 @@ def _slot_consumed_grams(
     """Consumed-so-far for one slot, capped at the slicer estimate."""
     from backend.app.utils import threemf_tools
 
-    if layer_usage:
-        mm = threemf_tools.get_cumulative_usage_at_layer(layer_usage, current_layer).get(slot_id - 1, 0)
-        grams = threemf_tools.mm_to_grams(mm, props.get("diameter", 1.75), props.get("density", 1.24))
+    fraction = threemf_tools.slot_progress_fraction(layer_usage, slot_id - 1, current_layer)
+    if fraction is not None:
+        # Progress fraction x slicer estimate, NOT absolute gcode grams: the
+        # flush on every filament change lives in firmware macros and never
+        # appears as gcode extrusion, so the absolute figure showed 3 g at
+        # layer 11 of a swap-heavy print whose real consumption was ~7x that.
+        grams = estimate_g * fraction
     elif total_layers > 0:
         grams = estimate_g * min(current_layer / total_layers, 1.0)
     else:

@@ -1766,21 +1766,26 @@ async def _track_from_3mf(
                 from backend.app.utils.threemf_tools import (
                     extract_filament_properties_from_3mf,
                     extract_layer_filament_usage_from_3mf,
-                    get_cumulative_usage_at_layer,
-                    mm_to_grams,
                 )
 
                 layer_usage = extract_layer_filament_usage_from_3mf(file_path, archive.plate_index)
                 if layer_usage:
-                    cumulative_mm = get_cumulative_usage_at_layer(layer_usage, current_layer)
-                    filament_props = extract_filament_properties_from_3mf(file_path)
+                    # Progress fraction of the slot's own gcode timeline x the
+                    # slicer estimate — NOT absolute gcode grams. Flush/purge on
+                    # every filament change happens inside firmware macros and
+                    # never appears as gcode extrusion, so the absolute figure
+                    # under-charged a cancelled swap-heavy print ~7x (measured
+                    # 2026-08-28: slicer totals 46.35 g vs 6.8 g of E-moves).
+                    from backend.app.utils.threemf_tools import slot_progress_fraction
+
+                    _est_by_slot = {u.get("slot_id", 0): u.get("used_g", 0) for u in filament_usage}
                     layer_grams = {}
-                    for filament_id, mm_used in cumulative_mm.items():
-                        slot_id = filament_id + 1  # 0-based to 1-based
-                        props = filament_props.get(slot_id, {})
-                        density = props.get("density", 1.24)
-                        diameter = props.get("diameter", 1.75)
-                        layer_grams[slot_id] = mm_to_grams(mm_used, diameter, density)
+                    for slot_id, est_g in _est_by_slot.items():
+                        if est_g <= 0:
+                            continue
+                        fraction = slot_progress_fraction(layer_usage, slot_id - 1, current_layer)
+                        if fraction is not None:
+                            layer_grams[slot_id] = est_g * fraction
             except Exception:
                 pass  # Fall back to linear scaling
 

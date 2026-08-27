@@ -495,7 +495,9 @@ class TestTrackFrom3mf:
 
     @pytest.mark.asyncio
     async def test_per_layer_partial_print(self):
-        """Failed print at layer N uses gcode cumulative data."""
+        """Failed print at layer N uses the slot's gcode-timeline FRACTION x
+        the slicer estimate — not absolute mm→grams: flush lives in firmware
+        macros and never appears as gcode extrusion (2026-08-28)."""
         spool = _make_spool(spool_id=1, label_weight=1000)
         assignment = _make_assignment(spool_id=1)
         archive = _make_archive(archive_id=10)
@@ -528,15 +530,13 @@ class TestTrackFrom3mf:
             ),
             patch(
                 "backend.app.utils.threemf_tools.get_cumulative_usage_at_layer",
-                return_value={0: 5000.0},
+                # 7500 of the slot's 10000 mm timeline — deliberately NOT the
+                # linear 50% so the assertion can tell fraction from linear.
+                return_value={0: 7500.0},
             ),
             patch(
                 "backend.app.utils.threemf_tools.extract_filament_properties_from_3mf",
                 return_value=filament_props,
-            ),
-            patch(
-                "backend.app.utils.threemf_tools.mm_to_grams",
-                return_value=12.0,  # 5000mm at 1.75mm/1.24g/cm3
             ),
         ):
             mock_settings.base_dir = MagicMock()
@@ -555,8 +555,9 @@ class TestTrackFrom3mf:
             )
 
         assert len(results) == 1
-        # Should use per-layer grams (12.0g), not linear scale (10.0g)
-        assert results[0]["weight_used"] == 12.0
+        # Fraction 7500/10000 x 20 g estimate = 15 g — not the linear 10 g,
+        # and not absolute gcode grams (which exclude the flush entirely).
+        assert results[0]["weight_used"] == 15.0
 
     @pytest.mark.asyncio
     async def test_completed_print_uses_full_weight(self):
@@ -824,8 +825,9 @@ class TestTrackFrom3mf:
         assignment = _make_assignment(spool_id=10, ams_id=2, tray_id=1)
         archive = _make_archive(archive_id=50)
 
-        # db: archive, assignment, spool (no queue lookup when ams_mapping provided)
-        db = _mock_db_sequential([archive, assignment, spool])
+        # db: archive, queue_item(None) — the -1 marker asks the queue for the
+        # pre-remap mapping — then assignment, spool.
+        db = _mock_db_sequential([archive, None, assignment, spool])
 
         printer_manager = MagicMock()
         printer_manager.get_status.return_value = SimpleNamespace(

@@ -270,6 +270,35 @@ def get_cumulative_usage_at_layer(
     return layer_usage.get(max_layer, {})
 
 
+def slot_progress_fraction(
+    layer_usage: dict[int, dict[int, float]] | None,
+    filament_id: int,
+    target_layer: int,
+) -> float | None:
+    """How far along its OWN extrusion timeline a filament is at a layer, 0..1.
+
+    ⚠️ The gcode's E-moves are NOT the whole consumption: flush/purge on a
+    filament change happens inside firmware macros (M620/M621) and never
+    appears as extrusion in the plate gcode — measured live 2026-08-28 on a
+    swap-every-layer print, where the slicer's per-slot totals said 46.35 g
+    and the entire gcode E-sum was 6.8 g. Absolute mm→grams therefore
+    under-counts swap-heavy prints many times over. The timeline is still
+    perfectly good as a PROGRESS measure, so consumers multiply this fraction
+    by the slicer's per-slot estimate (which includes the flush model):
+    proportional along the way, exact at completion.
+
+    Returns None when there is no usable data for the slot (caller falls back
+    to the linear layer-ratio).
+    """
+    if not layer_usage:
+        return None
+    final = layer_usage.get(max(layer_usage), {}).get(filament_id, 0)
+    if final <= 0:
+        return None
+    at_layer = get_cumulative_usage_at_layer(layer_usage, target_layer).get(filament_id, 0)
+    return min(at_layer / final, 1.0)
+
+
 def extract_filament_properties_from_3mf(file_path: Path) -> dict[int, dict]:
     """Extract filament properties (density, diameter, type) from 3MF metadata.
 
