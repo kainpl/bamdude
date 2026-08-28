@@ -185,9 +185,9 @@ class CloudLinkService:
                 return
 
             uplink = Uplink()
-            # The raw allowlist, as the initial filter. ``build_snapshot``
+            # The raw allowlist, as the initial filter. ``build_snapshot_chunks``
             # replaces it with the availability-filtered set at the first
-            # successful hello — that is the set ``drain`` must end up with,
+            # successful hello — that is the set ``flush`` must end up with,
             # and only a session can tell which of these printers are active.
             uplink.set_publish_set(published)
             client = CloudLinkClient(session_factory=sessions, uplink=uplink)
@@ -315,9 +315,9 @@ class CloudLinkService:
         ⚠️ **A removal applies here and now; an addition waits for the
         snapshot.** The in-memory set is intersected with the saved one, so a
         printer that was just unticked stops being published on the very next
-        ``drain`` — the allowlist's whole job is keeping a machine off the
+        ``flush`` — the allowlist's whole job is keeping a machine off the
         internet, and "within a pump cycle" is not the same promise. Additions
-        are left to ``build_snapshot``, which is the only place that also
+        are left to ``build_snapshot_chunks``, which is the only place that also
         checks the printer is available (``is_active AND NOT archived``);
         adding here would publish an archived printer until the snapshot
         arrived to take it away again.

@@ -386,6 +386,14 @@ class Uplink:
         sees it again with whatever is newest by then. Only a dirty printer
         that is emitted (batched, or as an edge) or unpublished is popped.
 
+        ⚠️ **One printer's failure cannot cost the tick.** Building a printer's
+        entry is wrapped per-printer, not around the whole loop: an exception
+        escaping ``flush`` entirely would discard every event and every OTHER
+        printer's batch entry already computed this call, since none of it
+        would ever reach the ``return`` below — the same "a malformed push
+        must cost one frame, not the link" rule :meth:`_normalize_event`
+        follows for events, applied here per printer instead of per message.
+
         Never touches the database — see the module docstring.
         """
         frames: list[AnyFrame] = []
@@ -401,29 +409,52 @@ class Uplink:
                 continue
 
             data = self._dirty[pid]
-            edge = self._connection_event(pid, data)
-            if edge is not None:
-                frames.append(edge)
-                # Stamp the window as used: the batched reading below IS this
-                # printer's report for now, and an unstamped clock would let
-                # the very next ordinary push through immediately behind it.
-                self._last_status_at[pid] = self._now()
-            elif not self._may_send_status(pid):
-                continue  # stays dirty for a later tick
+            try:
+                edge = self._connection_event(pid, data)
+                if edge is not None:
+                    frames.append(edge)
+                    # Stamp the window as used: the batched reading below IS
+                    # this printer's report for now, and an unstamped clock
+                    # would let the very next ordinary push through
+                    # immediately behind it.
+                    self._last_status_at[pid] = self._now()
+                elif not self._may_send_status(pid):
+                    continue  # stays dirty for a later tick
+                # Built BEFORE the pop below: a failure here must not have
+                # already discarded the entry, and must not escape this
+                # printer's own iteration — see the except.
+                printer = self._printer_from_status(pid, data)
+            except Exception as e:
+                # A malformed push must cost one printer, not the tick — see
+                # ``_normalize_event``'s identical rule for events. Anything
+                # already appended to ``frames`` for THIS pid (a connection
+                # edge, above) survives: it was computed and queued before the
+                # failure, and an exception caught here — rather than left to
+                # escape ``flush`` uncaught — can no longer unwind past this
+                # point and discard it, or every event and every OTHER
+                # printer's batch entry built earlier this same call. Popped
+                # rather than retried: a permanently broken entry (a poisoned
+                # identity, say) would otherwise fail identically forever.
+                logger.warning("Cloud Link: could not build a status for printer %s: %s", pid, e)
+                self._dirty.pop(pid, None)
+                continue
             self._dirty.pop(pid)
-            batch.append(self._printer_from_status(pid, data))
+            batch.append(printer)
 
         for start in range(0, len(batch), BATCH_MAX_PRINTERS):
-            self._seq += 1
-            frames.append(
-                StatusBatch(
-                    v=1,
-                    id=new_frame_id(),
-                    ts=frame_timestamp(),
-                    type="status_batch",
-                    data=StatusBatchData(seq=self._seq, printers=batch[start : start + BATCH_MAX_PRINTERS]),
-                )
+            # Construct before committing the counter: a failed construction
+            # must not have spent a seq value nothing was ever sent under.
+            chunk = batch[start : start + BATCH_MAX_PRINTERS]
+            next_seq = self._seq + 1
+            frame = StatusBatch(
+                v=1,
+                id=new_frame_id(),
+                ts=frame_timestamp(),
+                type="status_batch",
+                data=StatusBatchData(seq=next_seq, printers=chunk),
             )
+            self._seq = next_seq
+            frames.append(frame)
         return frames
 
     # --------------------------------------------------------- the normalizer

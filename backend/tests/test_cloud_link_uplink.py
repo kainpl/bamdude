@@ -805,6 +805,48 @@ def test_flush_with_nothing_dirty_returns_no_frames():
     assert uplink.flush() == []
 
 
+# --------------------------------------------- the per-printer failure boundary
+
+
+def test_a_broken_printer_build_does_not_cost_the_tick():
+    """One printer's build failure must not discard the events, or the OTHER
+    printers' batch entries, already computed this same ``flush`` call.
+
+    Before the per-printer ``try/except``, an exception escaping mid-loop
+    unwound all the way out of ``flush`` — discarding the local ``frames``
+    list (every event, every earlier printer's batch entry) since the
+    function never reached its ``return``. A poisoned identity lookup for one
+    printer must cost only that printer's own entry.
+    """
+    uplink = make_uplink({1, 2})
+    real_printer_from_status = uplink._printer_from_status
+
+    def poisoned(pid, data):
+        if pid == 2:
+            raise RuntimeError("a poisoned identity lookup")
+        return real_printer_from_status(pid, data)
+
+    uplink._printer_from_status = poisoned  # type: ignore[method-assign]
+
+    uplink.feed(status_message(1))
+    uplink.feed(status_message(2))
+    uplink.feed(print_start_message(1))
+
+    frames = uplink.flush()
+
+    events = [f for f in frames if f.type == "event"]
+    batches = [f for f in frames if f.type == "status_batch"]
+    assert len(events) == 1 and events[0].data.kind == "print_started", (
+        "the event survives a completely unrelated printer's build failure"
+    )
+    assert len(batches) == 1
+    assert [p.id for p in batches[0].data.printers] == ["1"], "printer 2's broken build cost only its own entry"
+
+    # Popped after the failed attempt is an acceptable outcome — the log is
+    # the record. It must not still be sitting there to retry-loop on forever.
+    assert 2 not in uplink._dirty
+
+
 # --------------------------------------------------------------- the snapshot
 
 
@@ -1191,7 +1233,10 @@ async def test_a_real_broadcast_reaches_the_portal_as_a_status_batch():
     )
     await manager.send_printer_status(7, printer_state_to_dict(state, 7, "X2D"))
 
-    printer = one_status(uplink)
+    frames = uplink.flush()
+    assert len(frames) == 1
+    assert frames[0].type == "status_batch"
+    printer = frames[0].data.printers[0]
     assert printer.id == "7"
     assert printer.state == "printing"
     assert printer.progress == 42.0
@@ -1203,6 +1248,9 @@ async def test_a_real_broadcast_reaches_the_portal_as_a_status_batch():
         "nozzle_target": 220.0,
         "chamber": 38.0,
     }
+    # The one test with nothing hand-copied also proves the real broadcast
+    # path survives the portal's own contract parser.
+    assert parse_frame(make_frame(frames[0])).type == "status_batch"
 
     manager.remove_internal_listener(uplink.feed)
 
