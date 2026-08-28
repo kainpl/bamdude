@@ -79,6 +79,21 @@ def test_archives_purge_is_the_admin_only_negative_control():
     assert _resolve_apikey_scope(Permission.ARCHIVES_PURGE.value) is None
 
 
+# ------------------------------------------------------------------- rung 1
+
+
+@pytest.mark.asyncio
+async def test_an_unregistered_op_name_is_refused_not_raised(ctx):
+    """Defense in depth: dispatch_remote_op must be safe even if a future or
+    mistaken caller skips the membership check it otherwise relies on.
+
+    A plain ``REMOTE_OPS[name]`` would raise ``KeyError`` here instead of
+    returning — this is the regression guard for that.
+    """
+    res = await dispatch_remote_op("does.not.exist", {}, ctx)
+    assert res.ok is False and res.error == "unknown_command"
+
+
 # ------------------------------------------------------------------- rung 3
 
 

@@ -15,9 +15,12 @@ was never built for, or make every future scoped op a new literal in
 **The three-rung gate, applied identically to every registered op:**
 
 1. **Membership** — is ``name`` a key in :data:`REMOTE_OPS` at all. The
-   caller's job (``commands.dispatch``, wired in Task 4): this module assumes
-   it, the same way ``commands.py`` assumes ``ALLOWED_COMMANDS`` was already
-   checked before a handler runs.
+   caller's job first (``commands.dispatch``, wired in Task 4) — but
+   :func:`dispatch_remote_op` never trusts that alone and re-checks with a
+   plain ``.get``, refusing with ``unknown_command`` rather than letting a
+   ``KeyError`` reach the reader task. Same standard ``commands.dispatch``
+   holds for its own name lookup, and for the same reason: this function must
+   answer safely no matter what a future or mistaken caller hands it.
 2. **Scope + denylist ceiling** — :func:`~backend.app.core.auth._resolve_apikey_scope`
    on the op's :class:`~backend.app.core.permissions.Permission`. ``None`` back
    from that call means the permission is either unmapped or explicitly in
@@ -213,7 +216,17 @@ async def dispatch_remote_op(name: str, args: dict, ctx: CommandContext) -> CmdR
     Always returns a result — see the module docstring on why the broad
     ``except Exception`` at the bottom is accepted, not a bug to special-case.
     """
-    op = REMOTE_OPS[name]  # rung 1 (membership) is the caller's job — commands.dispatch, Task 4
+    # Rung 1 (membership) is the caller's job — commands.dispatch, Task 4 — but
+    # this function must still be safe on its own if handed a name that isn't
+    # registered: a plain ``REMOTE_OPS[name]`` would raise ``KeyError`` here,
+    # which is exactly the failure ``commands.dispatch`` refuses to allow for
+    # the same reason ("the answer is a refusal rather than a KeyError on the
+    # reader task"). A ``.get`` with an explicit refusal keeps that guarantee
+    # independent of whatever the caller does or does not check.
+    op = REMOTE_OPS.get(name)
+    if op is None:
+        return CmdResultData(ok=False, error="unknown_command")
+
     budget = _remote_op_budget(ctx)
 
     # Rung 2 — scope + denylist ceiling
