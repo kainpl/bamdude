@@ -7210,6 +7210,8 @@ export default {
     testConfiguration: 'Test Configuration',
     printerFilter: 'Printer Filter',
     onlyFromPrinter: 'Only send notifications for events from this printer',
+    progressFloorLabel: 'Only for prints longer than',
+    progressFloorUnit: 'min — empty inherits the global value ({{minutes}}), 0 = always',
     quietHoursDnd: 'Quiet Hours (Do Not Disturb)',
     quietStart: 'Start',
     quietEnd: 'End',

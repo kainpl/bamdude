@@ -24,6 +24,11 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
   const [isActive, setIsActive] = useState(chat?.is_active ?? false);
   const [notifyEvents, setNotifyEvents] = useState<string[] | null>(chat?.notify_events ?? null);
   const [dailyDigest, setDailyDigest] = useState(chat?.daily_digest ?? false);
+  // Per-chat progress-milestone floor (#28): '' = inherit the global value,
+  // '0' = always send, N = mute prints estimated shorter than N minutes.
+  const [progressMinDuration, setProgressMinDuration] = useState<string>(
+    chat?.progress_min_duration_minutes != null ? String(chat.progress_min_duration_minutes) : ''
+  );
   const [quietHoursEnabled, setQuietHoursEnabled] = useState(chat?.quiet_hours_enabled ?? false);
   const [quietHoursStart, setQuietHoursStart] = useState(chat?.quiet_hours_start ?? '22:00');
   const [quietHoursEnd, setQuietHoursEnd] = useState(chat?.quiet_hours_end ?? '07:00');
@@ -107,6 +112,8 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
       quiet_hours_enabled: quietHoursEnabled,
       quiet_hours_start: quietHoursEnabled ? quietHoursStart : null,
       quiet_hours_end: quietHoursEnabled ? quietHoursEnd : null,
+      progress_min_duration_minutes:
+        progressMinDuration === '' ? null : Math.min(10080, Math.max(0, parseInt(progressMinDuration) || 0)),
     };
 
     if (isEditing) {
@@ -352,13 +359,26 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
                         />
                         <span>
                           {EVENT_LABEL_KEYS[event.event_type] ? t(EVENT_LABEL_KEYS[event.event_type]) : event.label}
-                          {/* TG events are configured strictly per chat, so this
-                              dialog is the ONE place a TG operator would look —
-                              surface the global duration floor here or they
-                              can't know why short prints stay silent (#28). */}
-                          {event.event_type === 'print_progress' && milestoneFloor > 0 && (
-                            <span className="block text-[10px] leading-tight text-bambu-gray">
-                              {t('notifications.progressMilestonesFloorHint', { minutes: milestoneFloor })}
+                          {/* TG events are configured strictly per chat (m045), so
+                              the duration floor (#28) is a PER-CHAT value edited
+                              right here — an admin's 60-minute floor must not
+                              decide for an operator's chat that wants 10. A click
+                              on the input is interactive, so it does not toggle
+                              the surrounding checkbox label. */}
+                          {event.event_type === 'print_progress' && (
+                            <span className="mt-0.5 flex items-center gap-1.5 text-[10px] leading-tight text-bambu-gray">
+                              {t('notifications.progressFloorLabel')}
+                              <input
+                                type="number"
+                                min={0}
+                                max={10080}
+                                step={5}
+                                value={progressMinDuration}
+                                placeholder={String(milestoneFloor)}
+                                onChange={(e) => setProgressMinDuration(e.target.value)}
+                                className="w-14 px-1 py-0.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-[10px] text-center focus:border-bambu-green focus:outline-none"
+                              />
+                              {t('notifications.progressFloorUnit', { minutes: milestoneFloor })}
                             </span>
                           )}
                         </span>

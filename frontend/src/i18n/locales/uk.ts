@@ -7242,6 +7242,8 @@ export default {
     testConfiguration: 'Тест конфігурації',
     printerFilter: 'Фільтр принтера',
     onlyFromPrinter: 'Надсилати сповіщення лише для подій від цього принтера',
+    progressFloorLabel: 'Лише для друків довших за',
+    progressFloorUnit: 'хв — порожньо = глобальне ({{minutes}}), 0 = завжди',
     quietHoursDnd: 'Тихі години (не турбувати)',
     quietStart: 'Початок',
     quietEnd: 'Кінець',

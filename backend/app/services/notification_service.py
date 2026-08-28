@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import smtplib
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
@@ -475,6 +476,16 @@ class NotificationService:
             )
         return False, f"HTTP {response.status_code}: {response.text[:200]}"
 
+    @staticmethod
+    def _passes_progress_floor(effective_floor: int, estimated_minutes: float | None) -> bool:
+        """#28: does a progress milestone clear a duration floor?
+
+        A floor of 0 (or less) means "always send"; an unknown duration
+        estimate fails open — a notification sent to somebody who set a floor
+        is a smaller wrong than one guessed away.
+        """
+        return effective_floor <= 0 or estimated_minutes is None or estimated_minutes >= effective_floor
+
     async def _send_telegram_to_chats(
         self,
         config: dict,
@@ -484,8 +495,14 @@ class NotificationService:
         event_type: str = "unknown",
         printer_id: int | None = None,
         extra_data: dict | None = None,
+        chat_filter: Callable[[Any], bool] | None = None,
     ) -> tuple[bool, str]:
-        """Send Telegram notification to all active chats subscribed to this event."""
+        """Send Telegram notification to all active chats subscribed to this event.
+
+        ``chat_filter`` lets an event apply per-chat criteria beyond
+        ``notify_events`` — today the progress-milestone duration floor (#28),
+        which is per chat because that is telegram's whole authority model.
+        """
         bot_token = config.get("bot_token", "").strip()
         if not bot_token:
             return False, "Bot token is required"
@@ -509,8 +526,9 @@ class NotificationService:
         if not chats:
             return False, "No active Telegram chats configured"
 
-        # Filter chats subscribed to this event
-        target_chats = [c for c in chats if c.should_notify(event_type)]
+        # Filter chats subscribed to this event (plus the event's own
+        # per-chat criteria, when it brought any).
+        target_chats = [c for c in chats if c.should_notify(event_type) and (chat_filter is None or chat_filter(c))]
         if not target_chats:
             return True, f"No chats subscribed to {event_type}"
 
@@ -1075,6 +1093,7 @@ class NotificationService:
         printer_id: int | None = None,
         extra_data: dict | None = None,
         variables: dict[str, Any] | None = None,
+        chat_filter: Callable[[Any], bool] | None = None,
     ) -> tuple[bool, str]:
         """Send notification to a specific provider."""
         # Check quiet hours (skip for Telegram - handled per-chat)
@@ -1102,6 +1121,7 @@ class NotificationService:
                     event_type=event_type,
                     printer_id=printer_id,
                     extra_data=extra_data,
+                    chat_filter=chat_filter,
                 )
             elif provider.provider_type == "email":
                 # finish_photo_url is pulled from the rendered template variables
@@ -1347,6 +1367,7 @@ class NotificationService:
         image_data: bytes | None = None,
         extra_data: dict | None = None,
         variables: dict[str, Any] | None = None,
+        chat_filter: Callable[[Any], bool] | None = None,
     ):
         """Send notification to multiple providers and log the results.
 
@@ -1372,6 +1393,7 @@ class NotificationService:
                     printer_id=printer_id,
                     extra_data=extra_data,
                     variables=variables,
+                    chat_filter=chat_filter,
                 )
 
                 # Also queue for digest if enabled (digest is a summary, not a queue).
@@ -1734,12 +1756,69 @@ class NotificationService:
         db: AsyncSession,
         remaining_time: int | None = None,
         image_data: bytes | None = None,
+        estimated_minutes: float | None = None,
+        image_supplier: Callable[[], Awaitable[bytes | None]] | None = None,
     ):
-        """Handle print progress milestone (25%, 50%, 75%)."""
+        """Handle print progress milestone (25%, 50%, 75%).
+
+        The duration floor (#28) is applied HERE, per recipient, not before
+        the fan-out: telegram chats each carry their own floor (NULL inherits
+        the global setting, 0 always sends) because an admin's 60-minute
+        floor must not decide for an operator's chat that wants 10. Non-chat
+        providers follow the global setting. ``image_supplier`` keeps the
+        ~15 s camera grab lazy — it runs only once somebody is actually
+        going to receive the message.
+        """
         providers = await self._get_providers_for_event(db, "on_print_progress", printer_id)
         if not providers:
             return
 
+        from backend.app.api.routes.settings import get_setting
+
+        try:
+            global_floor = int(await get_setting(db, "notify_progress_min_duration_minutes") or 0)
+        except (TypeError, ValueError):
+            global_floor = 0
+
+        def _chat_passes(chat) -> bool:
+            floor = getattr(chat, "progress_min_duration_minutes", None)
+            return self._passes_progress_floor(global_floor if floor is None else floor, estimated_minutes)
+
+        kept = []
+        any_recipients = False
+        has_telegram = False
+        for p in providers:
+            if p.provider_type == "telegram":
+                kept.append(p)
+                has_telegram = True
+            elif self._passes_progress_floor(global_floor, estimated_minutes):
+                kept.append(p)
+                any_recipients = True
+
+        if has_telegram and not any_recipients:
+            # Decide whether ANY subscribed chat clears its floor before
+            # paying for the snapshot; _send_telegram_to_chats re-applies the
+            # same filter per chat at send time.
+            from sqlalchemy import select as _select
+
+            from backend.app.models.telegram_chat import TelegramChat
+
+            result = await db.execute(_select(TelegramChat).where(TelegramChat.is_active == True))  # noqa: E712
+            any_recipients = any(c.should_notify("print_progress") and _chat_passes(c) for c in result.scalars())
+
+        if not any_recipients:
+            logger.info(
+                "Progress milestone %s%% on %s muted by duration floors (estimated %s min)",
+                progress,
+                printer_name,
+                f"{estimated_minutes:.0f}" if estimated_minutes is not None else "unknown",
+            )
+            return
+
+        if image_data is None and image_supplier is not None:
+            image_data = await image_supplier()
+
+        providers = kept
         eta_str = await self._format_eta(remaining_time, db)
 
         variables = {
@@ -1761,6 +1840,7 @@ class NotificationService:
             printer_name,
             image_data=image_data,
             variables=variables,
+            chat_filter=_chat_passes,
         )
 
     async def on_print_missing_spool_assignment(

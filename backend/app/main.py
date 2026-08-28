@@ -1806,7 +1806,6 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         if current_milestone > last_milestone:
             _last_progress_milestone[printer_id] = current_milestone
             try:
-                from backend.app.api.routes.settings import get_setting
                 from backend.app.models.printer import Printer
 
                 # Read the printer in a short session and release the connection
@@ -1815,56 +1814,34 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                 async with async_session() as db:
                     result = await db.execute(select(Printer).where(Printer.id == printer_id))
                     printer = result.scalar_one_or_none()
-                    _raw_min = await get_setting(db, "notify_progress_min_duration_minutes")
 
-                # #28: milestones only for prints longer than the configured
-                # floor. The whole-print duration is estimated statelessly at
-                # the crossing (remaining time / share still to print), so the
-                # verdict survives restarts and needs no per-print bookkeeping;
-                # an unknown remaining time fails open. Decided BEFORE the
-                # camera snapshot — a muted milestone must not cost a ~15 s
-                # grab. The milestone marker above has already advanced, so a
-                # muted print's later crossings are judged the same way rather
-                # than queueing up.
-                try:
-                    _min_minutes = int(_raw_min) if _raw_min is not None else 0
-                except (TypeError, ValueError):
-                    _min_minutes = 0
-                _muted = False
-                if _min_minutes > 0:
-                    _est = _estimated_total_print_minutes(progress, state.remaining_time)
-                    _muted = _est is not None and _est < _min_minutes
-                    if _muted:
-                        logging.getLogger(__name__).debug(
-                            "Progress milestone %s%% muted for printer %s: estimated %.0f min < %s min floor",
-                            current_milestone,
-                            printer_id,
-                            _est,
-                            _min_minutes,
-                        )
+                printer_name = printer.name if printer else f"Printer {printer_id}"
+                filename = state.subtask_name or state.gcode_file or "Unknown"
+                # remaining_time is in minutes, convert to seconds for notification
+                remaining_time_seconds = state.remaining_time * 60 if state.remaining_time else None
 
-                if not _muted:
-                    printer_name = printer.name if printer else f"Printer {printer_id}"
-                    filename = state.subtask_name or state.gcode_file or "Unknown"
-                    # remaining_time is in minutes, convert to seconds for notification
-                    remaining_time_seconds = state.remaining_time * 60 if state.remaining_time else None
+                # #28: whole-print duration estimated statelessly at the
+                # crossing — the duration floors (global + per telegram chat)
+                # are applied inside on_print_progress, per recipient. The
+                # snapshot is handed over as a supplier so a fully muted
+                # milestone never pays for the ~15 s grab.
+                estimated_minutes = _estimated_total_print_minutes(progress, state.remaining_time)
 
-                    # Capture camera snapshot for notification image attachment (no DB held).
-                    image_data = await _capture_snapshot_for_notification(
-                        printer_id, printer, logging.getLogger(__name__)
+                async def _milestone_snapshot() -> bytes | None:
+                    return await _capture_snapshot_for_notification(printer_id, printer, logging.getLogger(__name__))
+
+                # Notification send needs a session (provider/template lookups).
+                async with async_session() as db:
+                    await notification_service.on_print_progress(
+                        printer_id,
+                        printer_name,
+                        filename,
+                        current_milestone,
+                        db,
+                        remaining_time_seconds,
+                        estimated_minutes=estimated_minutes,
+                        image_supplier=_milestone_snapshot,
                     )
-
-                    # Notification send needs a session (provider/template lookups).
-                    async with async_session() as db:
-                        await notification_service.on_print_progress(
-                            printer_id,
-                            printer_name,
-                            filename,
-                            current_milestone,
-                            db,
-                            remaining_time_seconds,
-                            image_data=image_data,
-                        )
             except Exception as e:
                 logging.getLogger(__name__).warning(f"Progress milestone notification failed: {e}")
     elif progress < 5:

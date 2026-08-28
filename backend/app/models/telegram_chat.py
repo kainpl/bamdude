@@ -110,6 +110,13 @@ class TelegramChat(Base):
     # Daily digest - receive daily summary
     daily_digest: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Per-chat floor for progress milestones (#28): NULL inherits the global
+    # notify_progress_min_duration_minutes, 0 always sends, N mutes prints
+    # estimated shorter than N minutes. Per chat because that is telegram's
+    # whole authority model (m045) — an admin's 60-minute floor must not
+    # decide for an operator's chat that wants 10.
+    progress_min_duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # Quiet hours - suppress notifications during these hours
     quiet_hours_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     quiet_hours_start: Mapped[str | None] = mapped_column(String(5), nullable=True)  # HH:MM

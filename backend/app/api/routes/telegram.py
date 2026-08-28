@@ -44,6 +44,7 @@ def _to_response(chat: TelegramChat) -> TelegramChatResponse:
         quiet_hours_enabled=chat.quiet_hours_enabled,
         quiet_hours_start=chat.quiet_hours_start,
         quiet_hours_end=chat.quiet_hours_end,
+        progress_min_duration_minutes=chat.progress_min_duration_minutes,
         created_at=chat.created_at,
         updated_at=chat.updated_at,
     )
@@ -208,6 +209,7 @@ async def create_chat(
         user_id=data.user_id,
         is_active=data.is_active,
         notify_events=data.notify_events,
+        progress_min_duration_minutes=data.progress_min_duration_minutes,
     )
     db.add(chat)
     await db.commit()

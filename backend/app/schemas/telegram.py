@@ -18,6 +18,12 @@ class TelegramChatCreate(BaseModel):
     quiet_hours_enabled: bool = Field(default=False, description="Enable quiet hours")
     quiet_hours_start: str | None = Field(default=None, description="Quiet hours start (HH:MM)")
     quiet_hours_end: str | None = Field(default=None, description="Quiet hours end (HH:MM)")
+    progress_min_duration_minutes: int | None = Field(
+        default=None,
+        ge=0,
+        le=10080,
+        description="Mute 25/50/75% milestones for prints estimated shorter than this (null = inherit global, 0 = always send)",
+    )
 
 
 class TelegramChatUpdate(BaseModel):
@@ -32,6 +38,7 @@ class TelegramChatUpdate(BaseModel):
     quiet_hours_enabled: bool | None = None
     quiet_hours_start: str | None = None
     quiet_hours_end: str | None = None
+    progress_min_duration_minutes: int | None = Field(default=None, ge=0, le=10080)
 
 
 class TelegramChatResponse(BaseModel):
@@ -50,6 +57,7 @@ class TelegramChatResponse(BaseModel):
     quiet_hours_enabled: bool
     quiet_hours_start: str | None
     quiet_hours_end: str | None
+    progress_min_duration_minutes: int | None = None
     created_at: datetime
     updated_at: datetime
 

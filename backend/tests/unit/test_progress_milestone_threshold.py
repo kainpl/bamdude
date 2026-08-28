@@ -34,6 +34,36 @@ class TestTheEstimate:
         assert _estimated_total_print_minutes(25, -5) is None
 
 
+class TestTheFloorDecision:
+    """The per-recipient gate: ``NotificationService._passes_progress_floor``."""
+
+    def _passes(self, floor, est):
+        from backend.app.services.notification_service import NotificationService
+
+        return NotificationService._passes_progress_floor(floor, est)
+
+    def test_zero_floor_always_sends(self):
+        assert self._passes(0, 5.0)
+
+    def test_unknown_estimate_fails_open(self):
+        assert self._passes(60, None)
+
+    def test_short_print_is_muted_long_print_is_not(self):
+        assert not self._passes(60, 30.0)
+        assert self._passes(60, 60.0)
+        assert self._passes(60, 240.0)
+
+
+class TestPerChatOverride:
+    def test_the_chat_carries_its_own_floor_nullable(self):
+        """m157: NULL inherits the global setting — an admin's 60-minute floor
+        must not decide for an operator's chat that wants 10."""
+        from backend.app.models.telegram_chat import TelegramChat
+
+        column = TelegramChat.__table__.c.progress_min_duration_minutes
+        assert column.nullable
+
+
 class TestTheSettingExists:
     def test_default_is_zero_meaning_always_send(self):
         from backend.app.schemas.settings import AppSettings
