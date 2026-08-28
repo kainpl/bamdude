@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
-from backend.app.models.notification import NotificationLog, NotificationProvider
+from backend.app.models.notification import PROVIDER_EVENT_DEFAULTS, NotificationLog, NotificationProvider
 from backend.app.models.user import User
 from backend.app.schemas.notification import (
     NotificationLogResponse,
@@ -29,59 +29,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
 
-# Telegram-specific coercion: per-event opt-in, quiet hours, and digest opt-in
-# all live on each TelegramChat row after the m045 refactor. The provider row
-# only carries enabled/digest/printer scope. We silently coerce the legacy
-# fields to dispatch-transparent values regardless of what the client sent —
-# the schema still accepts them (shared across all provider types) but for
-# telegram-row writes they no longer have authority.
-_TELEGRAM_FORCED_TRUE_FIELDS = (
-    "on_print_start",
-    "on_print_complete",
-    "on_print_failed",
-    "on_print_stopped",
-    "on_print_progress",
-    "on_print_missing_spool_assignment",
-    "on_printer_offline",
-    "on_printer_error",
-    "on_ai_failure_detection",
-    "on_filament_low",
-    "on_filament_runout",
-    "on_filament_deficit",
-    "on_maintenance_due",
-    "on_ams_humidity_high",
-    "on_ams_temperature_high",
-    "on_ams_drying_suspended",
-    "on_ams_ht_humidity_high",
-    "on_ams_ht_temperature_high",
-    "on_sensor_threshold",
-    "on_sensor_silent",
-    "on_plate_not_empty",
-    "on_bed_cooled",
-    "on_first_layer_complete",
-    "on_queue_job_added",
-    "on_queue_job_started",
-    "on_queue_job_waiting",
-    "on_queue_job_skipped",
-    "on_queue_job_failed",
-    "on_queue_completed",
-    "on_printer_queue_completed",
-    "on_stock_reorder_alert",
-    "on_stock_break_alert",
-)
-
-
+# Telegram-specific coercion: per-event opt-in, quiet hours, digest opt-in and
+# the printer scope all live on each TelegramChat row (m045/m157). The
+# provider row only carries enabled + digest schedule. Events are coerced to
+# the FULL list so any legacy fallback path consulting ``wants_event`` for a
+# telegram provider stays dispatch-transparent.
 def _coerce_telegram_provider_fields(provider: NotificationProvider) -> None:
-    """For provider_type='telegram' force on_* True + quiet_hours off so the
-    legacy provider-level filters become transparent. Per-chat values on
-    ``telegram_chats`` are now the authority."""
     if provider.provider_type != "telegram":
         return
-    for field in _TELEGRAM_FORCED_TRUE_FIELDS:
-        setattr(provider, field, True)
+    provider.subscribed_events = sorted(PROVIDER_EVENT_DEFAULTS)
     provider.quiet_hours_enabled = False
     provider.quiet_hours_start = None
     provider.quiet_hours_end = None
+    # m157: the printer scope lives on each chat (``printer_ids``) — the last
+    # provider-level telegram knob, retired like the rest.
+    provider.printer_id = None
 
 
 def _provider_to_dict(provider: NotificationProvider) -> dict:
@@ -93,47 +55,9 @@ def _provider_to_dict(provider: NotificationProvider) -> dict:
         "enabled": provider.enabled,
         "config": json.loads(provider.config) if isinstance(provider.config, str) else provider.config,
         # Print lifecycle events
-        "on_print_start": provider.on_print_start,
-        "on_print_complete": provider.on_print_complete,
-        "on_print_failed": provider.on_print_failed,
-        "on_print_stopped": provider.on_print_stopped,
-        "on_print_progress": provider.on_print_progress,
-        "on_print_missing_spool_assignment": provider.on_print_missing_spool_assignment,
-        # Printer status events
-        "on_printer_offline": provider.on_printer_offline,
-        "on_printer_error": provider.on_printer_error,
-        "on_ai_failure_detection": provider.on_ai_failure_detection,
-        "on_filament_low": provider.on_filament_low,
-        "on_filament_runout": provider.on_filament_runout,
-        "on_filament_deficit": provider.on_filament_deficit,
-        "on_maintenance_due": provider.on_maintenance_due,
-        # AMS environmental alarms (regular AMS)
-        "on_ams_humidity_high": provider.on_ams_humidity_high,
-        "on_ams_temperature_high": provider.on_ams_temperature_high,
-        "on_ams_drying_suspended": provider.on_ams_drying_suspended,
-        # AMS-HT environmental alarms
-        "on_ams_ht_humidity_high": provider.on_ams_ht_humidity_high,
-        "on_ams_ht_temperature_high": provider.on_ams_ht_temperature_high,
-        # Zigbee sensor alerts
-        "on_sensor_threshold": provider.on_sensor_threshold,
-        "on_sensor_silent": provider.on_sensor_silent,
-        # Build plate detection
-        "on_plate_not_empty": provider.on_plate_not_empty,
-        # Bed cooled
-        "on_bed_cooled": provider.on_bed_cooled,
-        # First layer complete
-        "on_first_layer_complete": provider.on_first_layer_complete,
-        # Print queue events
-        "on_queue_job_added": provider.on_queue_job_added,
-        "on_queue_job_started": provider.on_queue_job_started,
-        "on_queue_job_waiting": provider.on_queue_job_waiting,
-        "on_queue_job_skipped": provider.on_queue_job_skipped,
-        "on_queue_job_failed": provider.on_queue_job_failed,
-        "on_queue_completed": provider.on_queue_completed,
-        "on_printer_queue_completed": provider.on_printer_queue_completed,
-        # Stock forecasting (upstream #1184; scaffold — no backend trigger)
-        "on_stock_reorder_alert": provider.on_stock_reorder_alert,
-        "on_stock_break_alert": provider.on_stock_break_alert,
+        # All 34 event booleans, computed from the JSON subscription list
+        # (m157) — the wire contract is unchanged.
+        **provider.events_map(),
         # Quiet hours
         "progress_min_duration_minutes": provider.progress_min_duration_minutes,
         "quiet_hours_enabled": provider.quiet_hours_enabled,
@@ -183,48 +107,9 @@ async def create_notification_provider(
         provider_type=provider_data.provider_type.value,
         enabled=provider_data.enabled,
         config=json.dumps(provider_data.config),
-        # Print lifecycle events
-        on_print_start=provider_data.on_print_start,
-        on_print_complete=provider_data.on_print_complete,
-        on_print_failed=provider_data.on_print_failed,
-        on_print_stopped=provider_data.on_print_stopped,
-        on_print_progress=provider_data.on_print_progress,
-        on_print_missing_spool_assignment=provider_data.on_print_missing_spool_assignment,
-        # Printer status events
-        on_printer_offline=provider_data.on_printer_offline,
-        on_printer_error=provider_data.on_printer_error,
-        on_ai_failure_detection=provider_data.on_ai_failure_detection,
-        on_filament_low=provider_data.on_filament_low,
-        on_filament_runout=provider_data.on_filament_runout,
-        on_filament_deficit=provider_data.on_filament_deficit,
-        on_maintenance_due=provider_data.on_maintenance_due,
-        # AMS environmental alarms (regular AMS)
-        on_ams_humidity_high=provider_data.on_ams_humidity_high,
-        on_ams_temperature_high=provider_data.on_ams_temperature_high,
-        on_ams_drying_suspended=provider_data.on_ams_drying_suspended,
-        # AMS-HT environmental alarms
-        on_ams_ht_humidity_high=provider_data.on_ams_ht_humidity_high,
-        on_ams_ht_temperature_high=provider_data.on_ams_ht_temperature_high,
-        # Zigbee sensor alerts
-        on_sensor_threshold=provider_data.on_sensor_threshold,
-        on_sensor_silent=provider_data.on_sensor_silent,
-        # Build plate detection
-        on_plate_not_empty=provider_data.on_plate_not_empty,
-        # Bed cooled
-        on_bed_cooled=provider_data.on_bed_cooled,
-        # First layer complete
-        on_first_layer_complete=provider_data.on_first_layer_complete,
-        # Print queue events
-        on_queue_job_added=provider_data.on_queue_job_added,
-        on_queue_job_started=provider_data.on_queue_job_started,
-        on_queue_job_waiting=provider_data.on_queue_job_waiting,
-        on_queue_job_skipped=provider_data.on_queue_job_skipped,
-        on_queue_job_failed=provider_data.on_queue_job_failed,
-        on_queue_completed=provider_data.on_queue_completed,
-        on_printer_queue_completed=provider_data.on_printer_queue_completed,
-        # Stock forecasting (scaffold)
-        on_stock_reorder_alert=provider_data.on_stock_reorder_alert,
-        on_stock_break_alert=provider_data.on_stock_break_alert,
+        # One JSON list instead of 34 boolean kwargs (m157): the schema
+        # still speaks booleans; they fold into the explicit list here.
+        subscribed_events=sorted(field for field in PROVIDER_EVENT_DEFAULTS if getattr(provider_data, field)),
         # Quiet hours
         progress_min_duration_minutes=provider_data.progress_min_duration_minutes,
         quiet_hours_enabled=provider_data.quiet_hours_enabled,
@@ -494,6 +379,11 @@ async def update_notification_provider(
             setattr(provider, key, json.dumps(value))
         elif key == "provider_type" and value is not None:
             setattr(provider, key, value.value)
+        elif key in PROVIDER_EVENT_DEFAULTS:
+            # Event booleans fold into the JSON subscription list (m157);
+            # the wire contract still speaks per-event booleans.
+            if value is not None:
+                provider.set_event(key, bool(value))
         else:
             setattr(provider, key, value)
 

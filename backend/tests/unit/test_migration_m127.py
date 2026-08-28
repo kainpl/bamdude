@@ -50,10 +50,14 @@ async def _prepared(path):
             tables=[Base.metadata.tables[t] for t in _PREREQUISITE_TABLES],
         )
         # SQLite has had DROP COLUMN since 3.35, which this project relies on
-        # elsewhere (``helpers.drop_column``).
+        # elsewhere (``helpers.drop_column``). Since m157 the model no longer
+        # declares the provider event columns at all, so drop only what
+        # create_all actually produced.
         for table, columns in _COLUMNS_M127_ADDS.items():
+            existing = await conn.run_sync(lambda c, t=table: {x["name"] for x in inspect(c).get_columns(t)})
             for column in columns:
-                await conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {column}"))
+                if column in existing:
+                    await conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {column}"))
     return engine
 
 
@@ -140,7 +144,10 @@ async def test_the_models_and_the_migration_agree_on_the_columns(tmp_path):
         smart_sensor_threshold,
     )
 
-    tables = ("smart_sensor_thresholds", "smart_sensors", "notification_providers")
+    # ``notification_providers`` left this comparison at m157: the model
+    # stores subscriptions as JSON, and m127's two provider columns exist
+    # only between m127 and m157 in the chain — pinned below instead.
+    tables = ("smart_sensor_thresholds", "smart_sensors")
 
     def columns_of(sync_conn):
         inspector = inspect(sync_conn)
@@ -162,3 +169,9 @@ async def test_the_models_and_the_migration_agree_on_the_columns(tmp_path):
     await upgraded.dispose()
 
     assert from_models == from_migration
+
+    # The m157 squash must drop what m127 added, or a fresh replay leaves
+    # orphan columns behind.
+    from backend.app.migrations.m157_notifications_rework import _LEGACY_EVENT_COLUMNS
+
+    assert set(_COLUMNS_M127_ADDS["notification_providers"]) <= set(_LEGACY_EVENT_COLUMNS)

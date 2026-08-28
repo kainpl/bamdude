@@ -158,7 +158,7 @@ async def cmd_camera(message: Message, tg_chat=None) -> None:
     if not has_perm(tg_chat, "camera:view"):
         return
 
-    printers = await get_printers_data()
+    printers = await get_printers_data(tg_chat)
     connected = [p for p in printers if p["connected"]]
 
     if not connected:

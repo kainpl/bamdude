@@ -12,6 +12,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from backend.app.i18n import escape_md, get_language, t
 from backend.app.services.telegram_handlers.common import (
     NS,
+    deny_out_of_scope,
     format_time,
     get_maintenance_counts,
     get_next_queue_item,
@@ -43,7 +44,7 @@ async def show_printer_list(message_or_callback, tg_chat: TelegramChat | None = 
             await message_or_callback.answer(t(lang, NS, "auth.no_permission"), show_alert=True)
         return
 
-    printers = await get_printers_data()
+    printers = await get_printers_data(tg_chat)
     title = escape_md(t(lang, NS, "printers.title"))
 
     if not printers:
@@ -134,7 +135,7 @@ async def show_printer_detail(
 ) -> None:
     """Show printer details with control buttons."""
     lang = await get_language()
-    printers = await get_printers_data()
+    printers = await get_printers_data(tg_chat)
     printer = next((p for p in printers if p["id"] == printer_id), None)
 
     if not printer:
@@ -289,6 +290,8 @@ async def cb_printer_list(callback: CallbackQuery, tg_chat: TelegramChat | None 
 async def cb_printer_detail(callback: CallbackQuery, tg_chat: TelegramChat | None = None) -> None:
     await callback.answer()
     printer_id = int(callback.data.split(":")[1])
+    if await deny_out_of_scope(callback, tg_chat, printer_id):
+        return
     await show_printer_detail(callback, printer_id, tg_chat)
 
 
@@ -303,6 +306,8 @@ async def cb_edit_hours(callback: CallbackQuery, state: FSMContext, tg_chat: Tel
         return
 
     printer_id = int(callback.data.split(":")[2])
+    if await deny_out_of_scope(callback, tg_chat, printer_id):
+        return
     total_hours = await get_total_hours(printer_id)
 
     await callback.answer()
@@ -324,13 +329,15 @@ async def cb_edit_hours(callback: CallbackQuery, state: FSMContext, tg_chat: Tel
 
 
 @router.callback_query(F.data.startswith("cancel_hours:"))
-async def cb_cancel_hours(callback: CallbackQuery, state: FSMContext) -> None:
+async def cb_cancel_hours(callback: CallbackQuery, state: FSMContext, tg_chat: TelegramChat | None = None) -> None:
     lang = await get_language()
     await state.clear()
     await callback.answer()
     await callback.message.edit_text(escape_md(t(lang, NS, "printers.hours_cancelled")))
     printer_id = int(callback.data.split(":")[1])
-    await show_printer_detail(callback, printer_id)
+    if await deny_out_of_scope(callback, tg_chat, printer_id):
+        return
+    await show_printer_detail(callback, printer_id, tg_chat)
 
 
 @router.message(PrinterHoursState.waiting_for_hours)

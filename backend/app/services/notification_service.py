@@ -526,9 +526,14 @@ class NotificationService:
         if not chats:
             return False, "No active Telegram chats configured"
 
-        # Filter chats subscribed to this event (plus the event's own
-        # per-chat criteria, when it brought any).
-        target_chats = [c for c in chats if c.should_notify(event_type) and (chat_filter is None or chat_filter(c))]
+        # Filter chats subscribed to this event, inside their printer scope
+        # (m157 — NULL scope = every printer, unattributed events pass for
+        # all), plus the event's own per-chat criteria, when it brought any.
+        target_chats = [
+            c
+            for c in chats
+            if c.should_notify(event_type) and c.allows_printer(printer_id) and (chat_filter is None or chat_filter(c))
+        ]
         if not target_chats:
             return True, f"No chats subscribed to {event_type}"
 
@@ -1306,11 +1311,12 @@ class NotificationService:
             enabled_filter,
             NotificationProvider.provider_type == "telegram",
         )
-        # Non-telegram: keep the legacy provider-level event gate.
+        # Non-telegram: the provider-level event gate — a JSON subscription
+        # list since m157, so membership is decided in Python on the fetched
+        # rows (a handful per install) rather than in SQL.
         other_q = select(NotificationProvider).where(
             enabled_filter,
             NotificationProvider.provider_type != "telegram",
-            getattr(NotificationProvider, event_field).is_(True),
         )
         if printer_filter is not None:
             telegram_q = telegram_q.where(printer_filter)
@@ -1322,7 +1328,7 @@ class NotificationService:
 
         with db.no_autoflush:
             rows = list((await db.execute(telegram_q)).scalars().all())
-            rows.extend((await db.execute(other_q)).scalars().all())
+            rows.extend(p for p in (await db.execute(other_q)).scalars().all() if p.wants_event(event_field))
         return rows
 
     async def _log_notification(
@@ -1763,7 +1769,7 @@ class NotificationService:
 
         The duration floor (#28) is applied HERE, per recipient, not before
         the fan-out: every telegram chat carries its own floor and every other
-        provider its own (m157/m158) — an admin's 60-minute floor must not
+        provider its own (m157) — an admin's 60-minute floor must not
         decide for an operator's chat that wants 10, and a phone push and an
         email digest legitimately want different floors. There is NO global
         value: unset (or 0) simply means "always send". ``image_supplier``
@@ -2096,8 +2102,13 @@ class NotificationService:
         }
         template_key = "filament_runout_backup" if kind == "autoswitch" else "filament_runout"
         title, message = await self._build_message_from_template(db, template_key, variables)
+        # ``template_key`` picks the message; the chat-facing event_type is
+        # ALWAYS "filament_runout" — "filament_runout_backup" is not in the
+        # chat vocabulary, and sending it as the event type made telegram
+        # chats silently unreachable for runouts (should_notify never
+        # matched). One per-chat toggle covers both flavours.
         await self._send_to_providers(
-            providers, title, message, db, template_key, printer_id, printer_name, variables=variables
+            providers, title, message, db, "filament_runout", printer_id, printer_name, variables=variables
         )
 
     async def on_maintenance_due(

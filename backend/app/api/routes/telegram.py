@@ -45,6 +45,7 @@ def _to_response(chat: TelegramChat) -> TelegramChatResponse:
         quiet_hours_start=chat.quiet_hours_start,
         quiet_hours_end=chat.quiet_hours_end,
         progress_min_duration_minutes=chat.progress_min_duration_minutes,
+        printer_ids=chat.printer_ids,
         created_at=chat.created_at,
         updated_at=chat.updated_at,
     )
@@ -72,6 +73,8 @@ EVENT_CATEGORIES = {
             "printer_error",
             "ai_failure_detection",
             "filament_low",
+            "filament_deficit",
+            "filament_runout",
             "maintenance_due",
         ],
     },
@@ -82,6 +85,7 @@ EVENT_CATEGORIES = {
             "ams_temperature_high",
             "ams_ht_humidity_high",
             "ams_ht_temperature_high",
+            "ams_drying_suspended",
         ],
     },
     "sensors": {
@@ -136,11 +140,14 @@ EVENT_LABELS = {
     "printer_error": "Printer error",
     "ai_failure_detection": "AI failure detection",
     "filament_low": "Filament low",
+    "filament_deficit": "Filament will run out mid-print",
+    "filament_runout": "Filament runout",
     "maintenance_due": "Maintenance due",
     "ams_humidity_high": "AMS humidity high",
     "ams_temperature_high": "AMS temperature high",
     "ams_ht_humidity_high": "AMS-HT humidity high",
     "ams_ht_temperature_high": "AMS-HT temperature high",
+    "ams_drying_suspended": "Auto-drying suspended",
     "sensor_above_max": "Reading above limit",
     "sensor_below_min": "Reading below limit",
     "sensor_back_in_range": "Reading back in range",
@@ -210,6 +217,7 @@ async def create_chat(
         is_active=data.is_active,
         notify_events=data.notify_events,
         progress_min_duration_minutes=data.progress_min_duration_minutes,
+        printer_ids=data.printer_ids,
     )
     db.add(chat)
     await db.commit()

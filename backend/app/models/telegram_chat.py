@@ -45,6 +45,9 @@ ALL_NOTIFY_EVENTS = [
     "ai_failure_detection",
     "filament_low",
     "filament_deficit",
+    # One chat toggle covers BOTH runout flavours (waiting for filament /
+    # switched to backup) — the sender normalises the event_type.
+    "filament_runout",
     "maintenance_due",
     # AMS environmental
     "ams_humidity_high",
@@ -110,6 +113,13 @@ class TelegramChat(Base):
     # Daily digest - receive daily summary
     daily_digest: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Printer scope (m157): which printers this chat sees — notifications AND
+    # bot control alike. NULL = all printers, [id, ...] = only those. Moved
+    # here from NotificationProvider.printer_id (the last provider-level
+    # telegram knob): a farm admin's chat watches everything while a
+    # partner's chat on the same bot watches only their machines.
+    printer_ids: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)
+
     # Per-chat floor for progress milestones (#28): NULL or 0 = always send,
     # N mutes prints estimated shorter than N minutes. Per chat because that
     # is telegram's whole authority model (m045) — an admin's 60-minute floor
@@ -138,6 +148,18 @@ class TelegramChat(Base):
     def has_permission(self, permission: str) -> bool:
         """Check if this chat has a specific permission."""
         return permission in self.get_permissions()
+
+    def allows_printer(self, printer_id: int | None) -> bool:
+        """Is this printer inside the chat's scope?
+
+        ``printer_ids is None`` = the chat watches everything. An event with
+        no printer attribution (a test message, farm-wide news) passes for
+        every chat — filtering happens only where there is a printer to
+        filter by.
+        """
+        if self.printer_ids is None or printer_id is None:
+            return True
+        return printer_id in self.printer_ids
 
     def should_notify(self, event_type: str) -> bool:
         """Check if this chat should receive a notification for the given event."""

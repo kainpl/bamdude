@@ -29,6 +29,8 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
   const [progressMinDuration, setProgressMinDuration] = useState<string>(
     chat?.progress_min_duration_minutes != null ? String(chat.progress_min_duration_minutes) : ''
   );
+  // Printer scope (m157): null = all printers, [ids] = only those.
+  const [printerIds, setPrinterIds] = useState<number[] | null>(chat?.printer_ids ?? null);
   const [quietHoursEnabled, setQuietHoursEnabled] = useState(chat?.quiet_hours_enabled ?? false);
   const [quietHoursStart, setQuietHoursStart] = useState(chat?.quiet_hours_start ?? '22:00');
   const [quietHoursEnd, setQuietHoursEnd] = useState(chat?.quiet_hours_end ?? '07:00');
@@ -41,6 +43,7 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
   // not carry. Telegram chat setup is an admin screen anyway.
   const { data: users } = useQuery({ queryKey: ['users'], queryFn: api.getUsers });
   const { data: eventTypes } = useQuery({ queryKey: ['telegram-events'], queryFn: api.getTelegramEvents });
+  const { data: printers } = useQuery({ queryKey: ['printers'], queryFn: api.getPrinters });
 
   // Pull the telegram provider so we can warn the operator when the
   // chat-side daily_digest opt-in won't take effect (provider digest off).
@@ -110,6 +113,7 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
       quiet_hours_end: quietHoursEnabled ? quietHoursEnd : null,
       progress_min_duration_minutes:
         progressMinDuration === '' ? null : Math.min(10080, Math.max(0, parseInt(progressMinDuration) || 0)),
+      printer_ids: printerIds,
     };
 
     if (isEditing) {
@@ -154,6 +158,8 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
     printer_error: 'notifications.printerError',
     ai_failure_detection: 'notifications.aiFailureDetection',
     filament_low: 'notifications.lowFilamentLabel',
+    filament_deficit: 'notifications.filamentDeficit',
+    filament_runout: 'notifications.filamentRunout',
     stock_break_alert: 'notifications.stockBreakAlert',
     stock_reorder_alert: 'notifications.stockReorderAlert',
     maintenance_due: 'notifications.maintenanceDue',
@@ -278,6 +284,49 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
               checked={isActive}
               onChange={setIsActive}
             />
+          </div>
+
+          {/* Printer scope (m157): which printers this chat sees —
+              notifications AND bot control. All printers by default; a
+              narrowed chat browses, prints to and commands only its list. */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <label className="text-sm text-white">{t('telegram.printerScope')}</label>
+                <p className="text-xs text-bambu-gray">{t('telegram.printerScopeDescription')}</p>
+              </div>
+              <Toggle
+                checked={printerIds === null}
+                onChange={(all) => setPrinterIds(all ? null : [])}
+              />
+            </div>
+            {printerIds !== null && (
+              <div className="space-y-1 bg-bambu-dark rounded border border-bambu-dark-tertiary p-3 max-h-40 overflow-y-auto">
+                {(printers ?? []).map((p) => (
+                  <label
+                    key={p.id}
+                    className="flex items-center gap-2 text-xs text-white cursor-pointer hover:bg-bambu-dark-tertiary rounded px-1 py-0.5"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={printerIds.includes(p.id)}
+                      onChange={() =>
+                        setPrinterIds(
+                          printerIds.includes(p.id)
+                            ? printerIds.filter((id) => id !== p.id)
+                            : [...printerIds, p.id]
+                        )
+                      }
+                      className="w-3.5 h-3.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                    />
+                    {p.name}
+                  </label>
+                ))}
+                {printerIds.length === 0 && (
+                  <p className="text-[10px] text-amber-500">{t('telegram.printerScopeEmpty')}</p>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Quiet Hours */}
