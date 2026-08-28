@@ -238,6 +238,7 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 - **Copy one printer's queue onto other printers of the same model** — pick what and where, and the Schedule dialog opens once per item with every chosen printer pinned; filament is mapped per printer inside that one dialog, so three items across four printers is three dialogs, not twelve. A print started outside the queue counts as part of it
 - **Drop a batch of files** on a printer, its queue or the auto-queue — each file gets its own Schedule dialog with a `2 / 5` counter, and anything that cannot be printed says why, by name. On the auto-queue each item's target model comes from its own slicing and cannot be changed
 - **Queue organization** — group prints into collapsible batches, drag-reorder by grip handle, and sort the Printers page by ETA; the timeline shows only committed schedules
+- **The auto-queue is a real queue** — items listed in true dispatch order, batches expand into their copies, and everything drags: a batch as a block or a single copy anywhere in the order. Any copy (or a whole batch) edits in the same dialog the per-printer queue uses; with shortest-job-first the distributor owns the order and the handles hide
 - **Per-printer Maintenance Mode** — park a printer out of service (drops out of dispatch, scheduler, auto-drying, and metrics, and disconnects MQTT) without deleting it
 - **Archive a printer** — soft-retire a sold/decommissioned printer: it disappears from the Printers page, every picker, queues, dispatch, the scheduler, and MQTT, while its full print history is kept. Blocked while printing; cancels the printer's pending queue items. Restore or permanently delete it under Settings → Printing → Archived printers. Distinct from Maintenance Mode, which only parks a printer temporarily and keeps its card visible
 - Auto error-pause on print failure (queue stops, user decides next step)
@@ -344,6 +345,7 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 - Spoolman integration
 
 ### Integrations
+- **BamDude Cloud link (opt-in)** — pair the farm to the [cloud.bamdude.top](https://cloud.bamdude.top) portal and it reports outward: which of the printers you chose to publish are running, how far along, the events worth knowing, and a single camera frame on request. One-way by design — nothing prints from the portal, the request list is fixed in the version you installed, and the link can be cut from either side
 - **Server-side slicing** — OrcaSlicer + BambuStudio sidecar containers ship in the same Compose project (`--profile orca` / `--profile bambu` / `--profile all`); per-job slicer picker in the Slice modal with live reachability badges, bed-type override (Cool / Engineering / High-Temp / Textured PEI / SuperTack), inline multi-plate selection, owner-filter on preset dropdowns
 - Spoolman filament sync
 - MQTT publishing for Home Assistant

@@ -1,5 +1,21 @@
 ## [Unreleased]
 
+## [0.5.5] - 2026-08-28
+
+Image: `ghcr.io/kainpl/bamdude:0.5.5` / `kainpl/bamdude:0.5.5` (`:latest` tracks this).
+
+⚠️ **Every Orca Cloud pairing must be re-connected once after this upgrade.** BamDude now pairs with Orca Cloud under its own issued identity, and with write access — both are baked into the tokens, so the old pairing stops answering. One re-pair in Settings covers it, and what the new scope buys is real: authored filament families can be pushed to Orca Cloud (and Bambu Cloud) straight from BamDude.
+
+**Your farm can report to you from outside the house.** An opt-in link to the BamDude Cloud portal: pick which printers it may describe, and the farm publishes their status, progress and a camera frame on request — one way, outward, with nothing printable from the portal and two independent ways to cut the link. Off unless you turn it on.
+
+**Filament accounting grew up.** A runout is now the one moment reality reports an exact number, and BamDude uses it: the spent spool closes at exactly empty, the print's segments land on the spools that actually fed them, and a deliberate mid-print reel change is a question the assignment dialog asks — not a correction it assumes. Behind that sit filament *families* — the same identity model the slicers use, mirrored from your own cloud presets — one picker everywhere, no more hardcoded tables. And the numbers move while the print runs: live per-slot consumption on the printer card, flush included.
+
+**The auto-queue is now a real queue, not just a pile.** Items list in true dispatch order, batches expand into copies, everything drags, and every copy can be edited in the same dialog the per-printer queue uses.
+
+**Staggered start now actually staggers.** Clearing the plates on a farm set to "two at a time" started everything inside two seconds — enough to trip the mains. The slot is held until a printer is genuinely seen starting, so the limit means what it says.
+
+Elsewhere: the library sidebar got two honest roots (Internal / External) and folders created on a NAS share are real directories now; a CSV edited in a European-locale spreadsheet imports again, with explicit encoding/delimiter/decimal options both ways; the forecast sorts on every column and its safety margin speaks kilograms; a Zigbee plug's power-on behaviour is editable so a power blip can't leave a printer dark; slicer Send-dialog options survive the trip through an auto-distributing virtual printer; and the copy-count cap is 999 everywhere it was 50.
+
 ### Security
 
 - **Four dependency advisories closed.** A high-severity CPU-exhaustion flaw in `js-yaml` (CVE-2026-59870), an XSS in `dompurify` where removing an `IN_PLACE` hook left a detached subtree executable, a denial-of-service in `brace-expansion`, and an infinite loop in `nanoid`. All four are frontend build/runtime dependencies; `npm audit` now reports nothing.
@@ -49,7 +65,6 @@
 - **"New preset" picks its base from what's actually yours.** The base-preset dropdown is split into two groups: your own presets and families (custom filaments created in BamDude appear here once pushed — a new preset based on one becomes that family's child), and standard presets narrowed to the printer models of your farm instead of the full list for every machine Bambu makes.
 
 - **Bambu Cloud stays signed in past the token's lifetime.** The login response's refresh token is now stored alongside the access token, and when Bambu reports the stored token expired, BamDude first renews the pair silently — the connection self-heals within minutes instead of demanding a re-login with an email code every few months. If the renewal is refused, the familiar "sign-in expired" flow appears exactly as before; access tokens pasted by hand have no refresh token and keep the old behaviour.
-
 
 - **The print dialog offers the labels you actually have.** It used to show six fixed buttons that had nothing to do with the designs in Settings: drawing a new one added no button, and renaming one renamed nothing. Now it reads the catalogue — every design, with the name and the one-line description you write in the editor, and its size on the right.
 
@@ -157,6 +172,16 @@
 
 - **Telegram can now aim a job at a room, not just at a printer model.** "Any P1S" is a useful answer on a one-room farm and a poor one when the P1S you meant is upstairs. Choosing a model in the bot now offers the places that actually hold one, and the job is routed there — the same location filter the print dialog has had, reaching the shelves inside a workshop you pick. The step is skipped entirely when there is nothing to choose between, so a farm with no locations set up sees no extra tap.
 
+- **A Zigbee plug's power-on behavior is editable from its dialog.** What the relay does when mains power returns — restore last state, always on, always off — read from and written to the device itself (ZCL StartUpOnOff), never stored locally: a stored-but-not-applied value here would defeat the whole point. Motivated by a real night: a plug dropped off the network for twenty minutes and came back with the relay off, taking its printer with it — a plug set to "restore last state" cannot do that.
+
+- **The auto-queue is now a real queue, not just a pile.** The panel lists items in their actual dispatch order; adjacent copies of one submission still collapse into a compact ×N row, but the row now expands into its copies, and everything drags: a collapsed batch moves as a block, an individual copy moves anywhere in the order — queue five copies of A, add two of B, pull one B to the front and leave the other at the end, and the list shows exactly that. Every copy (or a whole batch at once) can be edited in the same dialog the per-printer queue uses — target model and location, schedule, print options, macros — and deleted or force-assigned individually. With shortest-job-first enabled the handles hide and a hint explains that the distributor owns the order.
+
+- **The safety margin speaks kilograms.** A farm's buffer doesn't fit a grams field capped at 10 kg — the forecast's safety margin now takes days, grams or kilograms, with the whole projection math (reorder point, safety stock, the ≈-conversions shown next to the field) converting correctly for each unit. The grams cap is gone too.
+
+- **Every forecast column sorts, and the choice sticks.** The Filament → Forecast table gained sorting on the three columns that lacked it (Spools, Empty By, Reorder By — dateless rows always sink to the end), and the per-spool table inside an expanded row is now sortable by every column too. Both remember the chosen column and direction across reloads, the same way the inventory table does.
+
+- **A deliberate mid-print spool change now splits the usage — the assignment dialog asks.** Swapping a reel preventively ("take this colour to another printer", "don't want it running out overnight") only ever happens with the print paused, but until now the assignment made around that pause was read as a wrong-link correction and the whole print was attributed to the finishing spool. The dialog now follows the pauses: with the printer *paused*, assigning a spool asks one question — *replacement or correction?* — and "replacement" journals a boundary at the current layer, so the outgoing spool keeps what it already fed and is never force-closed at its label weight. Already *resumed* by the time you get to the UI — the usual flow at the machine — and the dialog offers a default-off toggle on an amber badge panel instead (green once armed); ticking it places the boundary on the layer of the pause where the swap actually happened, not on the moment of the click. A print that was never paused shows neither: the feeding spool cannot physically be swapped without pausing, so an assignment then is always a correction — and bulk re-linking mid-print (started the job, then remembered the assignments) stays exactly as friction-free as before.
+
 ### Changed
 
 - **The slot dialog's colour suggestions come from your own spools.** For the picked family it offers the distinct colours of your non-archived spools of that filament — instead of the global colour catalog's hundreds of shades you never bought.
@@ -166,7 +191,6 @@
 - **Spoolman spools assign through the family catalog too**, and the last two hardcoded filament tables are gone: a linked calibration's family (or the material's generic family) drives the tray identity, multi-colour spools write all their colours, and the retired per-slot "preset memory" table plus the old FE-computed identity column are dropped by a cleanup migration that first folds any remaining values into the family link — nothing an upgrader had is lost.
 
 - **AMS slot assignment goes through the family catalog — one path instead of two piles of guesswork.** The printer gets the family id and the proper versioned preset id straight from the catalog; temperatures come from the actual preset for that printer and nozzle (spool overrides still win); multi-colour spools now write **all** their colours to the tray, exactly as Bambu Studio does. A custom family is only sent to printers that declare support for user presets — others get the generic family of the same material, with a note in the log. The old behaviour of copying whatever id happened to be on the tray before is gone: that id belonged to the previous spool.
-
 
 - **"N items queued" now counts the jobs, not the printers.** Sending one file to four printers at two copies each queues eight jobs; the message said four. It was counting the requests it sent — one per printer — while each of those writes a job per copy. The number was only ever right when the copy count was one.
 
@@ -189,18 +213,6 @@
     ⚠️ **A recording is not capped and now outlives the dialog.** That is the point — it runs until stopped so an intermittent fault can be caught unattended — but it does mean a session you forget about keeps writing. The size beside the download button is there to make that visible.
 
 - **The `:dev` image now tracks the latest pre-release instead of the latest commit.** It used to be rebuilt on every push, by a workflow that ran alongside the tests rather than after them — so the one image aimed at testers was the one image nobody checked, and a commit with failing tests published it anyway. It is now published together with each beta, and passes the same green-CI gate as a stable release. Anyone pinning `:dev` gets fewer updates and tested ones.
-
-### Added
-
-- **A Zigbee plug's power-on behavior is editable from its dialog.** What the relay does when mains power returns — restore last state, always on, always off — read from and written to the device itself (ZCL StartUpOnOff), never stored locally: a stored-but-not-applied value here would defeat the whole point. Motivated by a real night: a plug dropped off the network for twenty minutes and came back with the relay off, taking its printer with it — a plug set to "restore last state" cannot do that.
-
-- **The auto-queue is now a real queue, not just a pile.** The panel lists items in their actual dispatch order; adjacent copies of one submission still collapse into a compact ×N row, but the row now expands into its copies, and everything drags: a collapsed batch moves as a block, an individual copy moves anywhere in the order — queue five copies of A, add two of B, pull one B to the front and leave the other at the end, and the list shows exactly that. Every copy (or a whole batch at once) can be edited in the same dialog the per-printer queue uses — target model and location, schedule, print options, macros — and deleted or force-assigned individually. With shortest-job-first enabled the handles hide and a hint explains that the distributor owns the order.
-
-- **The safety margin speaks kilograms.** A farm's buffer doesn't fit a grams field capped at 10 kg — the forecast's safety margin now takes days, grams or kilograms, with the whole projection math (reorder point, safety stock, the ≈-conversions shown next to the field) converting correctly for each unit. The grams cap is gone too.
-
-- **Every forecast column sorts, and the choice sticks.** The Filament → Forecast table gained sorting on the three columns that lacked it (Spools, Empty By, Reorder By — dateless rows always sink to the end), and the per-spool table inside an expanded row is now sortable by every column too. Both remember the chosen column and direction across reloads, the same way the inventory table does.
-
-- **A deliberate mid-print spool change now splits the usage — the assignment dialog asks.** Swapping a reel preventively ("take this colour to another printer", "don't want it running out overnight") only ever happens with the print paused, but until now the assignment made around that pause was read as a wrong-link correction and the whole print was attributed to the finishing spool. The dialog now follows the pauses: with the printer *paused*, assigning a spool asks one question — *replacement or correction?* — and "replacement" journals a boundary at the current layer, so the outgoing spool keeps what it already fed and is never force-closed at its label weight. Already *resumed* by the time you get to the UI — the usual flow at the machine — and the dialog offers a default-off toggle on an amber badge panel instead (green once armed); ticking it places the boundary on the layer of the pause where the swap actually happened, not on the moment of the click. A print that was never paused shows neither: the feeding spool cannot physically be swapped without pausing, so an assignment then is always a correction — and bulk re-linking mid-print (started the job, then remembered the assignments) stays exactly as friction-free as before.
 
 ### Fixed
 
@@ -265,7 +277,6 @@
 - **HMS dialog buttons no longer vanish on the first live update.** The printer's own prompts with choices (e.g. the "check the nozzle — Done / Retry" prompt after loading filament) rendered their buttons and then lost them the moment a live status push arrived: the WebSocket payload described HMS errors without their actions. Both payloads now carry the same fields, so the buttons stay — and pressing them drives the printer remotely, exactly like answering on the touchscreen.
 
 - **Filament names on AMS slots and tooltips come from the local catalog — instantly, offline, custom families included.** Every hover used to fire a cloud request per tray (and showed nothing without a Bambu login); the hardcoded 88-name fallback table is gone too. The calibration wizard still fetches full preset content from the cloud for its auto-fill — that is now an explicit opt-in on its one request, not a side effect of every tooltip.
-
 
 - **Scanning a network folder no longer freezes the rest of BamDude.** Point the library at a NAS share and press Scan, and everything else could start failing with *database is locked* — dispatching a print, logging in, saving a setting. The scan held the database open from the first file to the last, and on a share of any size that is minutes; it also read every file on the thread that answers requests, so the browser lost its connection to BamDude while it ran and could not get it back.
 
