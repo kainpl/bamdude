@@ -76,8 +76,8 @@ describe('per-plate copies', () => {
     expect(onQuantityChange).not.toHaveBeenCalled();
   });
 
-  it('stops at fifty, the same ceiling the shared field has', async () => {
-    renderSelector({ quantities: { 1: 50, 2: 1 } });
+  it('stops at the shared ceiling (999)', async () => {
+    renderSelector({ quantities: { 1: 999, 2: 1 } });
 
     expect(screen.getByLabelText('More')).toBeDisabled();
   });

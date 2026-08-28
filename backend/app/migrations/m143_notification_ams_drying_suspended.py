@@ -39,8 +39,10 @@ async def upgrade(conn):
     # a provider-level flag must never be the thing that drops an event.
     from sqlalchemy import text
 
+    # TRUE, not 1: SQLite reads both, PostgreSQL rejects an integer in a
+    # boolean column and aborts the whole migration chain.
     await conn.execute(
-        text("UPDATE notification_providers SET on_ams_drying_suspended = 1 WHERE provider_type = 'telegram'")
+        text("UPDATE notification_providers SET on_ams_drying_suspended = TRUE WHERE provider_type = 'telegram'")
     )
 
 
